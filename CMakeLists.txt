@@ -855,6 +855,24 @@ set_target_properties(bone_root_inheritance_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME bone_root_inheritance COMMAND bone_root_inheritance_tests)
 
+foreach(context_test bone_transform_context_tests bone_transform_context_lifecycle_tests)
+    add_executable(${context_test} EXCLUDE_FROM_ALL tests/${context_test}.cpp)
+    target_link_libraries(${context_test} PRIVATE mikumikustudio_core winmm dsound)
+    set_target_properties(${context_test} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME ${context_test} COMMAND ${context_test})
+endforeach()
+
+# Compile the same production solver with probes enabled to verify that private
+# evaluations neither write diagnostics nor consume the legacy probe counter.
+add_executable(bone_transform_context_diag_tests EXCLUDE_FROM_ALL
+    tests/bone_transform_context_lifecycle_tests.cpp src/model/bone_transform.cpp)
+target_compile_definitions(bone_transform_context_diag_tests PRIVATE MIKUMIKUSTUDIO_DIAG=1)
+target_link_libraries(bone_transform_context_diag_tests PRIVATE mikumikustudio_core winmm dsound)
+set_target_properties(bone_transform_context_diag_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME bone_transform_context_diagnostics COMMAND bone_transform_context_diag_tests)
+
 # ---------------------------------------------------------------------------
 # d3dx9_43 import stubs - MikuMikuEffect (MME) compatibility
 # ---------------------------------------------------------------------------

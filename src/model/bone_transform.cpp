@@ -60,12 +60,14 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_transform_context.hpp"
 #include <Windows.h>
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/model.hpp"
@@ -205,72 +207,31 @@ bool IsKnee(const mdl::BoneRecord& bone) {
                         kNameKneeRJp, 6) == 0;
 }
 
-// ---- D3DX wrappers with manual fallbacks ---------------------------------
-
-void MatRotQuatFallback(D3DXMATRIXF* out, const float q[4]) {
-    const float xx = q[0] * q[0], yy = q[1] * q[1], zz = q[2] * q[2];
-    const float xy = q[0] * q[1], xz = q[0] * q[2], yz = q[1] * q[2];
-    const float wx = q[3] * q[0], wy = q[3] * q[1], wz = q[3] * q[2];
-    out->m[0][0] = 1.0f - 2.0f * (yy + zz);
-    out->m[0][1] = 2.0f * (xy - wz);
-    out->m[0][2] = 2.0f * (xz + wy);
-    out->m[1][0] = 2.0f * (xy + wz);
-    out->m[1][1] = 1.0f - 2.0f * (xx + zz);
-    out->m[1][2] = 2.0f * (yz - wx);
-    out->m[2][0] = 2.0f * (xz - wy);
-    out->m[2][1] = 2.0f * (yz + wx);
-    out->m[2][2] = 1.0f - 2.0f * (xx + yz);
-    out->m[0][3] = out->m[1][3] = out->m[2][3] = 0.0f;
-    out->m[3][0] = out->m[3][1] = out->m[3][2] = 0.0f;
-    out->m[3][3] = 1.0f;
-}
-
-void MatRotQuat(D3DXMATRIXF* out, const float q[4]) {
-    auto* api = &d3dx::Get();
-    if (api->Load() && api->matrixRotationQuaternion != nullptr)
-        api->matrixRotationQuaternion(out, q);
-    else
-        MatRotQuatFallback(out, q);
-}
-
-void Vec3Norm(float out[3], const float in[3]) {
-    auto* api = &d3dx::Get();
-    if (api->Load() && api->vec3Normalize != nullptr) {
-        api->vec3Normalize(out, in);
-        return;
-    }
-    const float len = std::sqrt(in[0] * in[0] + in[1] * in[1] +
-                                in[2] * in[2]);
-    if (len > 0.0f) {
-        out[0] = in[0] / len;
-        out[1] = in[1] / len;
-        out[2] = in[2] / len;
-    } else {
-        out[0] = out[1] = out[2] = 0.0f;
-    }
-}
-
-// D3DXQuaternionMultiply semantics: out = q2 * q1.
-void QuatMul(float out[4], const float q1[4], const float q2[4]) {
-    auto* api = &d3dx::Get();
-    if (api->Load() && api->quatMultiply != nullptr) {
-        api->quatMultiply(out, q1, q2);
-        return;
-    }
-    out[0] = q2[3] * q1[0] + q2[0] * q1[3] + q2[1] * q1[2] - q2[2] * q1[1];
-    out[1] = q2[3] * q1[1] - q2[0] * q1[2] + q2[1] * q1[3] + q2[2] * q1[0];
-    out[2] = q2[3] * q1[2] + q2[0] * q1[1] - q2[1] * q1[0] + q2[2] * q1[3];
-    out[3] = q2[3] * q1[3] - q2[0] * q1[0] - q2[1] * q1[1] - q2[2] * q1[2];
-}
-
+// ---- D3 backend adapter ---------------------------------------------------
+// Legacy evaluation reads the mutable global d3dx table and refreshes it via
+// Load() on every math call: MME rewrites the exe's IAT right after the first
+// Direct3DCreate9, so cached entry points would bypass its hooks.  A private
+// workspace passes its frozen, fully resolved table instead and never touches
+// the global table.
 struct D3 {
-    d3dx::Api* api = &d3dx::Get();
+    d3dx::Api* legacyApi = nullptr;
+    const d3dx::Api* frozenApi = nullptr;
+
+    D3() : legacyApi(&d3dx::Get()) {}
+    explicit D3(const d3dx::Api* frozen) : frozenApi(frozen) {}
+
+    const d3dx::Api* Resolve() {
+        if (frozenApi != nullptr)
+            return frozenApi;
+        return legacyApi->Load() ? legacyApi : nullptr;
+    }
 
     void rotX(D3DXMATRIXF* o, float a) { ElemRot(o, a, 0, true); }
     void rotY(D3DXMATRIXF* o, float a) { ElemRot(o, a, 1, true); }
     void rotZ(D3DXMATRIXF* o, float a) { ElemRot(o, a, 2, true); }
     void mul(D3DXMATRIXF* o, const D3DXMATRIXF* a, const D3DXMATRIXF* b) {
-        if (api->Load()) {
+        const d3dx::Api* api = Resolve();
+        if (api != nullptr) {
             api->multiply(o, const_cast<D3DXMATRIXF*>(a),
                           const_cast<D3DXMATRIXF*>(b));
             return;
@@ -294,7 +255,8 @@ struct D3 {
         o->m[3][3] = 1.0f;
     }
     void quatFromMatrix(float out[4], const D3DXMATRIXF* m) {
-        if (api->Load() && api->quatFromMatrix) {
+        const d3dx::Api* api = Resolve();
+        if (api != nullptr && api->quatFromMatrix != nullptr) {
             api->quatFromMatrix(out, const_cast<D3DXMATRIXF*>(m));
             return;
         }
@@ -323,10 +285,11 @@ struct D3 {
 
 private:
     void ElemRot(D3DXMATRIXF* o, float a, int axis, bool) {
+        const d3dx::Api* api = Resolve();
         bool done = false;
-        if (axis == 0 && api->Load() && api->rotX) { api->rotX(o, a); done = true; }
-        if (axis == 1 && api->Load() && api->rotY) { api->rotY(o, a); done = true; }
-        if (axis == 2 && api->Load() && api->rotZ) { api->rotZ(o, a); done = true; }
+        if (axis == 0 && api != nullptr && api->rotX != nullptr) { api->rotX(o, a); done = true; }
+        if (axis == 1 && api != nullptr && api->rotY != nullptr) { api->rotY(o, a); done = true; }
+        if (axis == 2 && api != nullptr && api->rotZ != nullptr) { api->rotZ(o, a); done = true; }
         if (done) return;
         std::memset(o, 0, sizeof(*o));
         o->m[0][0] = o->m[1][1] = o->m[2][2] = o->m[3][3] = 1.0f;
@@ -342,6 +305,64 @@ private:
     }
 };
 
+// ---- D3DX wrappers with manual fallbacks ---------------------------------
+
+void MatRotQuatFallback(D3DXMATRIXF* out, const float q[4]) {
+    const float xx = q[0] * q[0], yy = q[1] * q[1], zz = q[2] * q[2];
+    const float xy = q[0] * q[1], xz = q[0] * q[2], yz = q[1] * q[2];
+    const float wx = q[3] * q[0], wy = q[3] * q[1], wz = q[3] * q[2];
+    out->m[0][0] = 1.0f - 2.0f * (yy + zz);
+    out->m[0][1] = 2.0f * (xy - wz);
+    out->m[0][2] = 2.0f * (xz + wy);
+    out->m[1][0] = 2.0f * (xy + wz);
+    out->m[1][1] = 1.0f - 2.0f * (xx + zz);
+    out->m[1][2] = 2.0f * (yz - wx);
+    out->m[2][0] = 2.0f * (xz - wy);
+    out->m[2][1] = 2.0f * (yz + wx);
+    out->m[2][2] = 1.0f - 2.0f * (xx + yz);
+    out->m[0][3] = out->m[1][3] = out->m[2][3] = 0.0f;
+    out->m[3][0] = out->m[3][1] = out->m[3][2] = 0.0f;
+    out->m[3][3] = 1.0f;
+}
+
+void MatRotQuat(D3& d3, D3DXMATRIXF* out, const float q[4]) {
+    const d3dx::Api* api = d3.Resolve();
+    if (api != nullptr && api->matrixRotationQuaternion != nullptr)
+        api->matrixRotationQuaternion(out, q);
+    else
+        MatRotQuatFallback(out, q);
+}
+
+void Vec3Norm(D3& d3, float out[3], const float in[3]) {
+    const d3dx::Api* api = d3.Resolve();
+    if (api != nullptr && api->vec3Normalize != nullptr) {
+        api->vec3Normalize(out, in);
+        return;
+    }
+    const float len = std::sqrt(in[0] * in[0] + in[1] * in[1] +
+                                in[2] * in[2]);
+    if (len > 0.0f) {
+        out[0] = in[0] / len;
+        out[1] = in[1] / len;
+        out[2] = in[2] / len;
+    } else {
+        out[0] = out[1] = out[2] = 0.0f;
+    }
+}
+
+// D3DXQuaternionMultiply semantics: out = q2 * q1.
+void QuatMul(D3& d3, float out[4], const float q1[4], const float q2[4]) {
+    const d3dx::Api* api = d3.Resolve();
+    if (api != nullptr && api->quatMultiply != nullptr) {
+        api->quatMultiply(out, q1, q2);
+        return;
+    }
+    out[0] = q2[3] * q1[0] + q2[0] * q1[3] + q2[1] * q1[2] - q2[2] * q1[1];
+    out[1] = q2[3] * q1[1] - q2[0] * q1[2] + q2[1] * q1[3] + q2[2] * q1[0];
+    out[2] = q2[3] * q1[2] + q2[0] * q1[1] - q2[1] * q1[0] + q2[2] * q1[3];
+    out[3] = q2[3] * q1[3] - q2[0] * q1[0] - q2[1] * q1[1] - q2[2] * q1[2];
+}
+
 // ---- shared pieces --------------------------------------------------------
 
 // quat of the source bone's +116 matrix scaled about its own axis by
@@ -349,9 +370,8 @@ private:
 // x64 (0x7FF7CB4DA373..0x7FF7CB4DA476): acosf/sqrtf/sinf/cosf and a
 // divss sin/len - single precision end to end; kPiF is the float image
 // 0x4048F5C3 (dword_7FF7CB552B90).
-void InheritRotQuat(float q[4], const mdl::BoneRecord* bones, int srcIdx,
-                    float rate) {
-    D3 d3;
+void InheritRotQuat(D3& d3, float q[4], const mdl::BoneRecord* bones,
+                    int srcIdx, float rate) {
     D3DXMATRIXF rot;
     std::memcpy(&rot, bones[srcIdx].matLocal, sizeof(rot));
     float sq[4];
@@ -381,7 +401,7 @@ void InheritRotQuat(float q[4], const mdl::BoneRecord* bones, int srcIdx,
         part[3] = std::cos(scaled);
     }
     float out[4];
-    QuatMul(out, part, q);
+    QuatMul(d3, out, part, q);
     q[0] = out[0];
     q[1] = out[1];
     q[2] = out[2];
@@ -549,13 +569,13 @@ void Cross3X87(float dst[3], const float a[3], const float b[3]) {
 }
 
 // axis = transpose(bone+180 rotation) * axis, normalized (LABEL_135)
-void ProjectAxisOnLocal(float axis[3], const mdl::BoneRecord& bone) {
+void ProjectAxisOnLocal(D3& d3, float axis[3], const mdl::BoneRecord& bone) {
     const float* r = bone.matWorld;
     float out[3];
     out[0] = Dot3X87(r, axis);
     out[1] = Dot3X87(r + 4, axis);
     out[2] = Dot3X87(r + 8, axis);
-    Vec3Norm(axis, out);
+    Vec3Norm(d3, axis, out);
 }
 
 // reflect-clamp one euler angle into [lo, hi]; `twist` disables the
@@ -602,8 +622,9 @@ void BoneTransform_PhysicsSweptLocals(D3& d3, mdl::BoneRecord* boneRecords,
             continue;
         float q[4] = {bone.physicsQuat[0], bone.physicsQuat[1], bone.physicsQuat[2], bone.physicsQuat[3]};
         if (bone.flags & mdl::kBoneFlagRotInherit)
-            InheritRotQuat(q, boneRecords, bone.tailIdx, bone.inheritRatio);
-        MatRotQuat(reinterpret_cast<D3DXMATRIXF*>(bone.matLocal), q);
+            InheritRotQuat(d3, q, boneRecords, bone.tailIdx,
+                           bone.inheritRatio);
+        MatRotQuat(d3, reinterpret_cast<D3DXMATRIXF*>(bone.matLocal), q);
         if (bone.flags & mdl::kBoneFlagTransInherit) {
             mdl::BoneRecord& src = boneRecords[bone.tailIdx];
             const float r = bone.inheritRatio;
@@ -679,15 +700,16 @@ void BoneTransform_StandardLocals(D3& d3, mdl::BoneRecord* boneRecords,
             const mdl::BoneRecord& src = boneRecords[bone.tailIdx];
             float sq[4] = {src.physicsQuat[0], src.physicsQuat[1], src.physicsQuat[2], src.physicsQuat[3]};
             float out[4];
-            QuatMul(out, sq, q);
+            QuatMul(d3, out, sq, q);
             q[0] = out[0];
             q[1] = out[1];
             q[2] = out[2];
             q[3] = out[3];
         }
         if (bone.flags & mdl::kBoneFlagRotInherit)
-            InheritRotQuat(q, boneRecords, bone.tailIdx, bone.inheritRatio);
-        MatRotQuat(reinterpret_cast<D3DXMATRIXF*>(bone.matLocal), q);
+            InheritRotQuat(d3, q, boneRecords, bone.tailIdx,
+                           bone.inheritRatio);
+        MatRotQuat(d3, reinterpret_cast<D3DXMATRIXF*>(bone.matLocal), q);
         float inhX = 0.0f, inhY = 0.0f, inhZ = 0.0f;
         if (bone.flags & mdl::kBoneFlagTransInherit) {
             const mdl::BoneRecord& src = boneRecords[bone.tailIdx];
@@ -832,7 +854,8 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
                          mdl::BoneRecord* boneRecords, int boneCount,
                          mdl::IkChain* iks,
                          int ikCount, unsigned char afterPhysics,
-                         int layer, int physicsMode, bool pmx2) {
+                         int layer, int physicsMode, bool pmx2,
+                         bool allowDiagnostics) {
     for (int ci = 0; ci < ikCount; ++ci) {
         mdl::IkChain& ik = iks[ci];
         // Deliberate hardening: the original loads the chain's file-supplied
@@ -875,7 +898,7 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
             mdl::BoneRecord& root = ikRoot;
             float q[4] = {root.physicsQuat[0], root.physicsQuat[1], root.physicsQuat[2],
                           root.physicsQuat[3]};
-            MatRotQuat(reinterpret_cast<D3DXMATRIXF*>(root.matLocal), q);
+            MatRotQuat(d3, reinterpret_cast<D3DXMATRIXF*>(root.matLocal), q);
             D3DXMATRIXF tmp, cur;
             d3.translation(&tmp, -root.position[0], -root.position[1],
                            -root.position[2]);
@@ -921,12 +944,13 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
                                linkPos[2] - rootPos[2]};
                 float d2[3] = {linkPos[0] - eff[0], linkPos[1] - eff[1],
                                linkPos[2] - eff[2]};
-                Vec3Norm(d1, d1);
-                Vec3Norm(d2, d2);
+                Vec3Norm(d3, d1, d1);
+                Vec3Norm(d3, d2, d2);
                 const float diff2 = SquaredDiff3X87(d1, d2);
 #ifdef MIKUMIKUSTUDIO_DIAG
-                WriteIkPrecheck(m, ci, iter, li, d1, d2, diff2, target,
-                                root, link);
+                if (allowDiagnostics)
+                    WriteIkPrecheck(m, ci, iter, li, d1, d2, diff2, target,
+                                    root, link);
 #endif
                 if (diff2 < 1e-7f) {                   // 0x494F37 / x64 comiss
                     iter = loops;                      // skip all iterations
@@ -952,7 +976,7 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
                             axis[2] = 0.0f;
                         }
                     } else {
-                        ProjectAxisOnLocal(axis, link);
+                        ProjectAxisOnLocal(d3, axis, link);
                     }
                 } else if (link.twistEnable != 0 && iter < twist) {
                     const float limXlo = link.ikLimitMin[0];
@@ -983,7 +1007,7 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
                             axis[2] = dot3 < 0.0f ? -1.0f : 1.0f;
                         } else if (link.flags & mdl::kBoneFlagFixedAxis) {
                             // fixed axis +508..516 (0x4951D7)
-                            ProjectAxisOnLocal(axis, link);
+                            ProjectAxisOnLocal(d3, axis, link);
                             const float fx = link.axis[0];
                             const float fy = link.axis[1];
                             const float fz = link.axis[2];
@@ -992,7 +1016,7 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
                             axis[1] = fy;
                             axis[2] = fz;
                         } else {
-                            ProjectAxisOnLocal(axis, link);
+                            ProjectAxisOnLocal(d3, axis, link);
                         }
                     } else {
                         // hinge: axis = +-X by row-1 dot (0x495038)
@@ -1011,9 +1035,9 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
                     }
                 } else {
                     if ((link.flags & mdl::kBoneFlagFixedAxis) == 0) {
-                        ProjectAxisOnLocal(axis, link);   // 0x495544 block
+                        ProjectAxisOnLocal(d3, axis, link);   // 0x495544 block
                     } else {                             // 0x4953DF
-                        ProjectAxisOnLocal(axis, link);
+                        ProjectAxisOnLocal(d3, axis, link);
                         const float fx = link.axis[0];
                         const float fy = link.axis[1];
                         const float fz = link.axis[2];
@@ -1054,12 +1078,13 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
                 float acc[4] = {link.rotQuat2[0], link.rotQuat2[1],
                                 link.rotQuat2[2], link.rotQuat2[3]};
 #ifdef MIKUMIKUSTUDIO_DIAG
-                WriteIkProbe(m, ci, iter, li, loops,
-                             ik.boneIndex, ik.targetBone, child[li], d1, d2,
-                             axis, dot, static_cast<float>(half), acc, rotq);
+                if (allowDiagnostics)
+                    WriteIkProbe(m, ci, iter, li, loops, ik.boneIndex,
+                                 ik.targetBone, child[li], d1, d2, axis, dot,
+                                 static_cast<float>(half), acc, rotq);
 #endif
                 float outq[4];
-                QuatMul(outq, acc, rotq);              // acc = rot * acc
+                QuatMul(d3, outq, acc, rotq);          // acc = rot * acc
                 link.rotQuat2[0] = outq[0];
                 link.rotQuat2[1] = outq[1];
                 link.rotQuat2[2] = outq[2];
@@ -1069,7 +1094,7 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
                                    link.physicsQuat[3]};
                     float linkQuat[4] = {link.rotQuat2[0], link.rotQuat2[1],
                                    link.rotQuat2[2], link.rotQuat2[3]};
-                    QuatMul(outq, q0, linkQuat);             // acc = acc * q376
+                    QuatMul(d3, outq, q0, linkQuat);         // acc = acc * q376
                     link.rotQuat2[0] = outq[0];
                     link.rotQuat2[1] = outq[1];
                     link.rotQuat2[2] = outq[2];
@@ -1078,7 +1103,7 @@ void BoneTransform_CcdIk(D3& d3, unsigned char* m,
                 float lq[4] = {link.rotQuat2[0], link.rotQuat2[1],
                                link.rotQuat2[2], link.rotQuat2[3]};
                 D3DXMATRIXF rotM;
-                MatRotQuat(&rotM, lq);
+                MatRotQuat(d3, &rotM, lq);
                 if (pmx2 && link.twistEnable != 0) {
                     // euler decomposition + limit clamp + rebuild
                     // (0x495921..0x496429; x64 0x7FF7CB4DC2D3..DC845: the
@@ -1300,15 +1325,16 @@ void BoneTransform_PostIkPass(D3& d3, mdl::BoneRecord* boneRecords,
             float sq[4] = {sourceQuat[0], sourceQuat[1], sourceQuat[2],
                            sourceQuat[3]};
             float out[4];
-            QuatMul(out, sq, q);
+            QuatMul(d3, out, sq, q);
             q[0] = out[0];
             q[1] = out[1];
             q[2] = out[2];
             q[3] = out[3];
         }
         if (bone.flags & mdl::kBoneFlagRotInherit)
-            InheritRotQuat(q, boneRecords, bone.tailIdx, bone.inheritRatio);
-        MatRotQuat(reinterpret_cast<D3DXMATRIXF*>(bone.matLocal), q);
+            InheritRotQuat(d3, q, boneRecords, bone.tailIdx,
+                           bone.inheritRatio);
+        MatRotQuat(d3, reinterpret_cast<D3DXMATRIXF*>(bone.matLocal), q);
         float inhX = 0.0f, inhY = 0.0f, inhZ = 0.0f;
         if (bone.flags & mdl::kBoneFlagTransInherit) {
             const mdl::BoneRecord& src = boneRecords[bone.tailIdx];
@@ -1346,20 +1372,12 @@ void BoneTransform_PostIkPass(D3& d3, mdl::BoneRecord* boneRecords,
     }
 }
 
-}  // namespace
-
-void ArmBoneTransformIkProbe() {
-#ifdef MIKUMIKUSTUDIO_DIAG
-    InterlockedExchange(&gIkProbeArmed, 1);
-    InterlockedExchange(&gIkProbeWritten, 0);
-#endif
-}
-
-void BoneFrameTransform(unsigned char* m, unsigned char afterPhysics,
-                        int layer, unsigned char* const* modelSlots,
-                        int physicsMode) {                             // 0x493A60
-    D3 d3;
-    bone_scale::RestoreTransforms(m);
+// Shared five-pass driver.  The legacy entry allows diagnostics; an
+// independent workspace passes false and never reads the probe globals or
+// writes trace files.
+void RunFivePhases(D3& d3, unsigned char* m, unsigned char afterPhysics,
+                   int layer, unsigned char* const* modelSlots,
+                   int physicsMode, bool allowDiagnostics) {
     mdl::ModelRecord& model = *mdl::Mdl(m);
     const int boneCount = static_cast<int>(model.boneCount);
     mdl::BoneRecord* boneRecords = model.boneTable;
@@ -1378,12 +1396,97 @@ void BoneFrameTransform(unsigned char* m, unsigned char afterPhysics,
     BoneTransform_WorldPass(d3, boneRecords, boneCount, extTable,
                             modelSlots, afterPhysics, layer,
                             physicsMode);                            // C 0x49455F
-    BoneTransform_CcdIk(d3, m, boneRecords, boneCount, iks, ikCount, afterPhysics,
-                        layer, physicsMode,
-                        pmx2);                                        // D 0x494A56
+    BoneTransform_CcdIk(d3, m, boneRecords, boneCount, iks, ikCount,
+                        afterPhysics, layer, physicsMode, pmx2,
+                        allowDiagnostics);                            // D 0x494A56
     BoneTransform_PostIkPass(d3, boneRecords, boneCount, extTable,
                              modelSlots, afterPhysics, layer,
                              physicsMode);                           // E 0x496881
+}
+
+}  // namespace
+
+// ---- independent CPU math context ----------------------------------------
+// Owns one DLL reference plus a private, immutable table of the eight CPU
+// entry points the five passes use.  No graphics device, no global d3dx
+// table and no host IAT hook is involved.
+struct BoneTransformContext::Impl {
+    HMODULE module = nullptr;
+    d3dx::Api api;
+
+    ~Impl() {
+        if (module != nullptr)
+            FreeLibrary(module);
+    }
+};
+
+std::shared_ptr<const BoneTransformContext> BoneTransformContext::Create() {
+    std::unique_ptr<Impl> impl(new Impl());
+    HMODULE module = LoadLibraryA(sizeof(void*) == 8 ? "d3dx9_43.dll"
+                                                     : "d3dx9_32.dll");
+    if (module == nullptr)
+        return nullptr;
+    impl->module = module;
+    d3dx::Api& api = impl->api;
+    api.rotX = reinterpret_cast<d3dx::FnMatrixOp1>(
+        GetProcAddress(module, "D3DXMatrixRotationX"));
+    api.rotY = reinterpret_cast<d3dx::FnMatrixOp1>(
+        GetProcAddress(module, "D3DXMatrixRotationY"));
+    api.rotZ = reinterpret_cast<d3dx::FnMatrixOp1>(
+        GetProcAddress(module, "D3DXMatrixRotationZ"));
+    api.multiply = reinterpret_cast<d3dx::FnMatrixOp2>(
+        GetProcAddress(module, "D3DXMatrixMultiply"));
+    api.quatFromMatrix = reinterpret_cast<d3dx::FnVecQuat>(
+        GetProcAddress(module, "D3DXQuaternionRotationMatrix"));
+    api.vec3Normalize = reinterpret_cast<d3dx::FnVec3Normalize>(
+        GetProcAddress(module, "D3DXVec3Normalize"));
+    api.quatMultiply = reinterpret_cast<d3dx::FnQuatMultiply>(
+        GetProcAddress(module, "D3DXQuaternionMultiply"));
+    api.matrixRotationQuaternion = reinterpret_cast<d3dx::FnMatrixQuat>(
+        GetProcAddress(module, "D3DXMatrixRotationQuaternion"));
+    // Translation stays local (D3::translation), so the table is complete
+    // with these eight entries and the context has no fallback backend.
+    if (api.rotX == nullptr || api.rotY == nullptr || api.rotZ == nullptr ||
+        api.multiply == nullptr || api.quatFromMatrix == nullptr ||
+        api.vec3Normalize == nullptr || api.quatMultiply == nullptr ||
+        api.matrixRotationQuaternion == nullptr)
+        return nullptr;  // ~Impl frees the DLL reference
+    return std::shared_ptr<const BoneTransformContext>(
+        new BoneTransformContext(std::move(impl)));
+}
+
+BoneTransformContext::BoneTransformContext(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+
+BoneTransformContext::~BoneTransformContext() = default;
+
+void ArmBoneTransformIkProbe() {
+#ifdef MIKUMIKUSTUDIO_DIAG
+    InterlockedExchange(&gIkProbeArmed, 1);
+    InterlockedExchange(&gIkProbeWritten, 0);
+#endif
+}
+
+void BoneFrameTransform(unsigned char* m, unsigned char afterPhysics,
+                        int layer, unsigned char* const* modelSlots,
+                        int physicsMode) {                             // 0x493A60
+    D3 d3;
+    bone_scale::RestoreTransforms(m);
+    RunFivePhases(d3, m, afterPhysics, layer, modelSlots, physicsMode,
+                  /*allowDiagnostics=*/true);
+}
+
+// Independent workspace entry: no RestoreTransforms, no global scale state,
+// no probes, and only the context's frozen math table.
+void BoneFrameTransformPrivate(mdl::ModelRecord& ownedModel,
+                               unsigned char afterPhysics, int layer,
+                               unsigned char* const* ownedModelSlots,
+                               int physicsMode,
+                               const BoneTransformContext& context) {
+    D3 d3(&context.impl_->api);
+    RunFivePhases(d3, reinterpret_cast<unsigned char*>(&ownedModel),
+                  afterPhysics, layer, ownedModelSlots, physicsMode,
+                  /*allowDiagnostics=*/false);
 }
 
 }  // namespace mikumikustudio
