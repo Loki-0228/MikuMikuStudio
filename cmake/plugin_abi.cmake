@@ -268,6 +268,19 @@ add_custom_command(TARGET host_event_tests POST_BUILD
 add_test(NAME plugin_abi_host_events COMMAND host_event_tests)
 set_tests_properties(plugin_abi_host_events PROPERTIES TIMEOUT 120
     ENVIRONMENT "MMS_PLUGIN_TEST_DIR=${CMAKE_BINARY_DIR}/tests/host-events/PLUGINS;MMS_ABI_PROBE_LOG=${CMAKE_BINARY_DIR}/tests/host-events/plugin.log")
+add_executable(frame_phase_tests EXCLUDE_FROM_ALL tests/plugins/frame_phase_tests.cpp
+    res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES} exports/MikuMikuDance.def)
+target_include_directories(frame_phase_tests PRIVATE include)
+target_link_options(frame_phase_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}"
+    /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+target_link_libraries(frame_phase_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
+set_target_properties(frame_phase_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(frame_phase_tests mms_lifecycle_plugin)
+if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
+    add_test(NAME plugin_abi_frame_phases COMMAND frame_phase_tests
+        "${CMAKE_BINARY_DIR}/tests/frame-phases" "$<TARGET_FILE:mms_lifecycle_plugin>")
+    set_tests_properties(plugin_abi_frame_phases PROPERTIES TIMEOUT 120)
+endif()
 target_link_libraries(business_event_tests PRIVATE mms_plugin_runtime)
 target_include_directories(business_event_tests PRIVATE src/plugins)
 target_link_options(business_event_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)

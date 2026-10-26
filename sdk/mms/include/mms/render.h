@@ -3,9 +3,10 @@
 
 // Render service 1.0: device generation, frame information and resource leases
 // for plugins that keep device-dependent objects. A lease names plugin-owned
-// resources; the host invokes the release callback when the device is lost,
-// before the plugin is stopped, or during explicit release. The callback runs
-// on the UI thread outside plugin callbacks and must only free device objects.
+// resources; the host invokes the release callback when the device is lost.
+// Explicit releaseLease and plugin retirement only remove the registration;
+// the plugin remains responsible for its resources during normal shutdown.
+// The callback runs on the UI thread and must only free device objects.
 #define MMS_RENDER_API_VERSION_MAJOR 1u
 #define MMS_RENDER_API_VERSION_MINOR 0u
 #define MMS_RENDER_LEASE_DEVICE 1u

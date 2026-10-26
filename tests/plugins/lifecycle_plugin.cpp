@@ -27,6 +27,25 @@ struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; Mm
     unsigned frameCallbacks = 0, phaseBegins = 0, phaseEnds = 0; };
 static bool PropertiesMode(const Plugin* p) { return p->id == "org.example.gui-properties-panel"; }
 static Plugin* refreshProbe = nullptr;
+// Test-only hook: production-style event dispatch can synchronously re-enter
+// host frame entries without changing the fixture when no hook is installed.
+using RenderReentryHook = void (MMS_CALL*)(void*);
+static RenderReentryHook renderReentryHook = nullptr;
+static void* renderReentryContext = nullptr;
+static uint64_t renderProbeCounts[3]{};
+extern "C" __declspec(dllexport) void MMS_CALL MmsTestSetRenderReentryHook(RenderReentryHook hook, void* context) {
+    renderReentryHook = hook;
+    renderReentryContext = context;
+    for (auto& count : renderProbeCounts) count = 0;
+}
+extern "C" __declspec(dllexport) void MMS_CALL MmsTestGetRenderProbeCounts(uint64_t* counts) {
+    if (counts) for (unsigned i = 0; i < 3; ++i) counts[i] = renderProbeCounts[i];
+}
+extern "C" __declspec(dllexport) void MMS_CALL MmsTestReadRenderCounts(uint64_t* frames, uint64_t* begins, uint64_t* ends) {
+    if (frames) *frames = renderProbeCounts[0];
+    if (begins) *begins = renderProbeCounts[1];
+    if (ends) *ends = renderProbeCounts[2];
+}
 static void Log(Plugin* p, const char* s) {
     p->host.log(p->host.context, 1, S(s));
     wchar_t path[32768]{}; auto n = GetEnvironmentVariableW(L"MMS_ABI_PROBE_LOG", path, 32768);
@@ -112,6 +131,7 @@ static MmsResult AcquireRenderLease(Plugin* p) {
 static void MMS_CALL FrameCallback(void* context, const MmsRenderInfoV1* info) {
     auto* p = static_cast<Plugin*>(context);
     if (!info || !info->frameIndex || !info->deviceGeneration) { Log(p, "FRAME_CALLBACK_FAIL"); return; }
+    ++renderProbeCounts[0];
     if (p->frameCallbacks >= 3) return;
     ++p->frameCallbacks;
     char line[96]{};
@@ -124,8 +144,10 @@ static void MMS_CALL PhaseCallback(void* context, const MmsRenderInfoV1* info, u
     auto* p = static_cast<Plugin*>(context);
     if (!info || !info->deviceGeneration) { Log(p, "FRAME_PHASE_FAIL"); return; }
     if (phase == MMS_RENDER_PHASE_BEGIN) {
+        ++renderProbeCounts[1];
         if (p->phaseBegins < 2) { ++p->phaseBegins; Log(p, "FRAME_PHASE_BEGIN"); }
     } else if (phase == MMS_RENDER_PHASE_END) {
+        ++renderProbeCounts[2];
         if (p->phaseEnds < 2) { ++p->phaseEnds; Log(p, "FRAME_PHASE_END"); }
     } else {
         Log(p, "FRAME_PHASE_FAIL");
@@ -393,6 +415,19 @@ static void MMS_CALL Event(void* context, const MmsEventV1* event) {
         if(event->kind==MMS_EVENT_LANGUAGE_CHANGED) {
             if(value>2){Log(p,"LANGUAGE_VALUE_FAIL");return;}
             Log(p,"EVENT_LANGUAGE");
+            if (renderReentryHook) {
+                const std::array<uint64_t, 3> before{{renderProbeCounts[0], renderProbeCounts[1], renderProbeCounts[2]}};
+                MmsRenderInfoV1 beforeInfo{}, afterInfo{};
+                const auto beforeResult = p->render.query(p->render.context, &beforeInfo);
+                Log(p, "RENDER_REENTRY_BEGIN");
+                renderReentryHook(renderReentryContext);
+                Log(p, "RENDER_REENTRY_END");
+                const auto afterResult = p->render.query(p->render.context, &afterInfo);
+                const bool unchanged = beforeResult == MMS_OK && afterResult == MMS_OK &&
+                    beforeInfo.frameIndex == afterInfo.frameIndex &&
+                    before[0] == renderProbeCounts[0] && before[1] == renderProbeCounts[1] && before[2] == renderProbeCounts[2];
+                Log(p, unchanged ? "RENDER_REENTRY_PASS" : "RENDER_REENTRY_FAIL");
+            }
         } else {
             if(!value){Log(p,"DPI_VALUE_FAIL");return;}
             Log(p,"EVENT_DPI");

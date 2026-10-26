@@ -7,9 +7,11 @@
 #include "mikumikustudio/plugin_scene.hpp"
 #include "mikumikustudio/plugin_storage.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include <mms/plugin.h>
 #include <Windows.h>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -48,6 +50,17 @@ static bool WaitFor(const wchar_t* path, const char* markers, int iterations) {
     }
     return false;
 }
+using RenderReentryHook = void (MMS_CALL*)(void*);
+using SetRenderHook = void (MMS_CALL*)(RenderReentryHook, void*);
+using GetRenderCounts = void (MMS_CALL*)(uint64_t*);
+struct RenderReentryProbe { MMDApp* app; unsigned calls = 0; };
+static void MMS_CALL ReenterRender(void* context) {
+    auto& probe = *static_cast<RenderReentryProbe*>(context);
+    ++probe.calls;
+    plugins::PluginFrameBegin(probe.app);
+    plugins::PluginFramePresented(probe.app);
+    plugins::PluginFrameEnd(probe.app);
+}
 int wmain() {
     const wchar_t* logPath = _wgetenv(L"MMS_ABI_PROBE_LOG");
     if (!logPath || !*logPath) { std::fprintf(stderr, "MMS_ABI_PROBE_LOG missing\n"); return 2; }
@@ -70,7 +83,31 @@ int wmain() {
     plugins::PluginFrameBegin(&app);
     plugins::PluginFramePresented(&app);
     plugins::PluginFrameEnd(&app);
+    const wchar_t* pluginsRoot = _wgetenv(L"MMS_PLUGIN_TEST_DIR");
+    const auto fixturePath = pluginsRoot ? std::filesystem::path(pluginsRoot) / L"test" / L"lifecycle.dll" : std::filesystem::path{};
+    HMODULE fixture = fixturePath.empty() ? nullptr : GetModuleHandleW(fixturePath.c_str());
+    const auto setHook = fixture ? reinterpret_cast<SetRenderHook>(GetProcAddress(fixture, "MmsTestSetRenderReentryHook")) : nullptr;
+    const auto getCounts = fixture ? reinterpret_cast<GetRenderCounts>(GetProcAddress(fixture, "MmsTestGetRenderProbeCounts")) : nullptr;
+    Check(setHook && getCounts, "loaded lifecycle fixture exposes reverse-reentry probe");
+    RenderReentryProbe reentry{&app};
+    if (setHook && getCounts) setHook(ReenterRender, &reentry);
     plugins::PluginNotifyLanguageChanged(&app);
+    if (setHook && getCounts) {
+        Check(WaitFor(logPath, "RENDER_REENTRY_END", 800), "ordinary language event executes reverse-reentry hook");
+        const auto reentryBody = ReadLog(logPath);
+        Check(reentry.calls == 1 && reentryBody.find("RENDER_REENTRY_PASS") != std::string::npos &&
+              reentryBody.find("RENDER_REENTRY_FAIL") == std::string::npos,
+              "ordinary plugin callback cannot dispatch nested render callbacks or advance frame index");
+        uint64_t before[3]{}, after[3]{};
+        getCounts(before);
+        plugins::PluginFrameBegin(&app);
+        plugins::PluginFramePresented(&app);
+        plugins::PluginFrameEnd(&app);
+        getCounts(after);
+        Check(after[0] == before[0] + 1 && after[1] == before[1] + 1 && after[2] == before[2] + 1,
+              "all render notifications resume after ordinary plugin callback returns");
+        setHook(nullptr, nullptr);
+    }
     plugins::PluginNotifyDeviceLost(&app);
     Check(WaitFor(logPath, "EVENT_DEVICE_LOST\nRENDER_LOST_QUERY", 800),
         "device lost reaches the plugin before restoration");

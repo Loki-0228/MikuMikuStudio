@@ -242,15 +242,15 @@ void PluginNotifyDeviceRestored(MMDApp* app) { NotifyDeviceRestoredEvent(app); }
 void PluginNotifyObjectRemoved(MMDApp* app, const void* native) { NotifyObjectRemovedEvent(app, native); }
 void PluginNotifyDpiChanged(MMDApp* app, unsigned dpi) { NotifyDpiChangedEvent(app, dpi); }
 void PluginFrameBegin(MMDApp* app) {
-    if (!manager || !app || owner != app) return;
+    if (!manager || !app || owner != app || manager->InCallback()) return;
     manager->Render().FrameBegin();
 }
 void PluginFrameEnd(MMDApp* app) {
-    if (!manager || !app || owner != app) return;
+    if (!manager || !app || owner != app || manager->InCallback()) return;
     manager->Render().FrameEnd();
 }
 void PluginFramePresented(MMDApp* app) {
-    if (!manager || !app || owner != app) return;
+    if (!manager || !app || owner != app || manager->InCallback()) return;
     auto* renderer = app->Renderer();
     if (!renderer || !renderer->device) return;
     IDirect3DSurface9* backbuffer = nullptr;
