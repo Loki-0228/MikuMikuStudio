@@ -9,8 +9,8 @@ import sys
 
 binary, model, plugin, output = [Path(value).resolve() for value in sys.argv[1:5]]
 mode = sys.argv[5] if len(sys.argv) == 6 else '--evaluation-only'
-if len(sys.argv) not in (5, 6) or mode not in ('--evaluation-only', '--evaluation-morph-only'):
-    raise ValueError('expected binary model plugin output [--evaluation-morph-only]')
+if len(sys.argv) not in (5, 6) or mode not in ('--evaluation-only', '--evaluation-morph-only', '--evaluation-display-only'):
+    raise ValueError('expected binary model plugin output [--evaluation-morph-only|--evaluation-display-only]')
 output.mkdir(exist_ok=False)
 for name in ('data', 'temp', 'local'):
     (output / name).mkdir()
@@ -23,7 +23,7 @@ manifest = dict(schemaVersion=1, id='org.example.evaluation-host', name='Evaluat
     version='1.0.0', kind='native', abi=dict(major=1, minMinor=0),
     entry='mms_evaluation_host_probe.dll', architecture='x64', minWindows='6.1.7601',
     capabilities=['scene.evaluate'], requiresServices=[dict(id='mms.scene.evaluate', major=1,
-        minMinor=1 if mode == '--evaluation-morph-only' else 0)],
+        minMinor=2 if mode == '--evaluation-display-only' else 1 if mode == '--evaluation-morph-only' else 0)],
     dependencies=[], nativeDependencies=[], reloadPolicy='restart')
 (package / 'plugin.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
 env = dict(os.environ, TEMP=str(output/'temp'), TMP=str(output/'temp'),

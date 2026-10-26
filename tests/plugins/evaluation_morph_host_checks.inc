@@ -10,7 +10,7 @@ void Run(MMDApp* app) {
     MmsEvaluationApiV1_1 api{};
     Check(getter && getter(&api) == MMS_OK && api.h.minor == 1, "real plugin receives evaluation1.1 table");
     MmsEvaluationCapsV1 caps{};
-    Check(api.getCapabilities(api.context, &caps) == MMS_OK && caps.flags == 3, "production host advertises bone and morph channels");
+    Check(api.getCapabilities(api.context, &caps) == MMS_OK && (caps.flags & 3) == 3, "production host advertises bone and morph channels");
     wchar_t path[32768]{};
     const auto length = GetEnvironmentVariableW(L"MMS_SCENE_TEST_MODEL", path, 32768);
     Check(length && length < 32768, "combined evaluation PMX fixture supplied");

@@ -269,6 +269,12 @@ std::uint32_t DisplayMotionSnapshot::KeyCount() const noexcept {
     return impl_ ? static_cast<std::uint32_t>(impl_->frames.size()) : 0;
 }
 
+bool DisplayMotionSnapshot::KeyFrame(std::uint32_t index, std::uint32_t& out) const noexcept {
+    if (!impl_ || index >= impl_->frames.size()) return false;
+    out = impl_->frames[index];
+    return true;
+}
+
 std::uint32_t DisplayMotionSnapshot::IkCount() const noexcept {
     return impl_ ? impl_->ikCount : 0;
 }

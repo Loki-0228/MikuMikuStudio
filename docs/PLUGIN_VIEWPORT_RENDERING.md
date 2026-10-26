@@ -18,13 +18,13 @@
 
 内部 [BoneMotionSnapshot](records/abi-frozen-bone-motion-2026-10-27.md) 已冻结可达原生关键帧、尺度和自由曲线，支持源删除后的并发非负时间采样。[`mms.scene.evaluate` 1.1](../sdk/mms/evaluation.md) 通过同一 C ABI 提供骨骼通道和表情直接权重，绑定原场景对象及元素身份，提供有额度限制的独立源租约。通道掩码 `1`、`2`、`3` 分别选择骨骼、表情或两者，组合捕获共享身份、计费与生命周期规则。1.0 的函数表和只捕获骨骼的创建语义保持不变。`captureId` 区分每次捕获，`hostRevision` 仅作历史元数据，不能当作动作内容版本。
 
-该服务输出模拟前的已注册局部骨骼动作通道及表情直接权重，对外部父级及不支持的派生骨骼明确拒绝，不包含未注册编辑姿态。完整场景源、实例、帧租约、显示、层级、IK 及约束求值仍待实现。负帧、动作层和物理仍须独立实现和验收。局部通道不能冒充 `ANIMATED` 世界矩阵或 `PHYSICS` 阶段。采样须保持主播放头、编辑姿态及历史不变。原始兼容产品配置尚未开放此求值服务。
+该服务输出模拟前的已注册局部骨骼动作通道及表情直接权重，对外部父级及不支持的派生骨骼明确拒绝，不包含未注册编辑姿态。完整场景源、实例、帧租约、层级、IK 及约束求值仍待实现。负帧、动作层和物理仍须独立实现和验收。局部通道不能冒充 `ANIMATED` 世界矩阵或 `PHYSICS` 阶段。采样须保持主播放头、编辑姿态及历史不变。原始兼容产品配置尚未开放此求值服务。
 
 [冻结表情权重](records/abi-frozen-morph-motion-2026-10-27.md)由内部 `morph_curve::SamplingState` 持有原生键与私有协调的自由曲线，支持源销毁后的无分配并发读取。[表情求值服务](records/abi-morph-evaluation-service-2026-10-27.md)已将它接入 `mms.scene.evaluate` 1.1，共用原源句柄、额度和停止保护。权重不夹取到 `[0, 1]`，不含组或翻转展开及最终形变。完整姿态求值、独立播放时钟和渲染器提供者继续待实现。
 
 内部 [DisplayMotionSnapshot](records/abi-frozen-display-motion-2026-10-27.md) 已拥有可达显示键、IK 链到骨骼的映射、selector 到骨骼的映射，以及完整的原始外部父级选择对和连续有效窗口。selector 0 保留模型全局外部父级语义。快照在 CPU 上按非负时间阶梯采样，分数帧保持前键状态，源模型销毁后仍可无分配并发读取。
 
-该快照仅为内部数据载体，尚未公开显示轨道 C ABI，也未接入 `mms.scene.evaluate` 1.1。外部父级仍保存原始模型槽号与骨骼索引，尚未在同一次场景捕获中解析稳定身份或冻结目标动作。IK 求解和世界空间求值帧仍待实现。
+[`mms.scene.evaluate` 1.2](records/abi-display-evaluation-service-2026-10-27.md) 已接入显示快照。通道位 `4` 可与骨骼位 `1`、表情位 `2` 组合，读取显示状态、IK 开关及外部父级选择。捕获在 UI 安全点解析所有可达关键帧的外部目标稳定身份，包括未来键；无效目标使所选通道捕获整体失败。旧源保留目标身份和连续窗口，模型删除及槽位复用不改变旧结果。目标动作、IK 求解和世界空间求值帧仍待实现。
 
 | 代码入口 | 已有范围与限制 |
 | --- | --- |
@@ -33,7 +33,7 @@
 | `sdk/mms/include/mms/scene.h` | 定义对象、网格、材质、纹理描述、骨骼及各求值阶段。定义阶段枚举不等于宿主已经提供对应结果。 |
 | `src/plugins/scene_host.cpp::Capture` | 当前只发布 `MMS_STAGE_BIND`。请求其他阶段或其他时间会拒绝，不临时移动主播放头。 |
 | `src/plugins/scene_store.cpp` | UI 线程获取快照，冻结后用租约保留数据。读取与释放可在其他线程执行，数据不暴露原生模型指针。 |
-| `sdk/mms/include/mms/evaluation.h` | `mms.scene.evaluate` 1.1：安全点按通道掩码捕获骨骼动作、表情权重或两者，后台按有理数秒读取；修改、删除及工程切换不改变旧源。1.0 创建仍只捕获骨骼。未提供完整求值帧。 |
+| `sdk/mms/include/mms/evaluation.h` | `mms.scene.evaluate` 1.2：安全点按掩码捕获骨骼、表情和显示通道，后台按有理数秒读取。父级身份与窗口固定，修改、删除及工程切换不改变旧源。旧函数前缀及 1.0 骨骼创建语义不变；未提供完整求值帧。 |
 | `sdk/mms/include/mms/surface.h` | 支持插件子窗口与多视图工厂。`MMS_SURFACE_MULTIPLE_VIEWS` 不代表多个独立 3D 渲染上下文。 |
 | `src/render/frame_scene.cpp::RenderFrameScene` | 依赖活动 `MMDApp`、DX9 设备和每帧缓存，也会更新变形、效果和叠加层。不能直接当作无副作用的任意视口函数。 |
 | `src/render/frame_presentation.cpp`、`viewport_render_scale.cpp` | 已区分部分场景图像与界面呈现，并支持预览缩放。渲染目标仍按 `MMDApp*` 保存。 |

@@ -30,6 +30,7 @@ public:
     static std::unique_ptr<DisplayMotionSnapshot> Capture(const unsigned char* model,
         std::uint64_t maxRetainedBytes = 64ull * 1024 * 1024);
     std::uint32_t KeyCount() const noexcept;
+    bool KeyFrame(std::uint32_t index, std::uint32_t& out) const noexcept;
     std::uint32_t IkCount() const noexcept;
     std::uint32_t SelectorCount() const noexcept;
     std::uint64_t RetainedBytes() const noexcept;

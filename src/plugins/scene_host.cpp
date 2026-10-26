@@ -16,6 +16,7 @@
 #include "evaluation_store.hpp"
 #include "mikumikustudio/bone_motion_snapshot.hpp"
 #include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/display_motion_snapshot.hpp"
 #endif
 #include <algorithm>
 #include <new>
@@ -248,9 +249,88 @@ std::shared_ptr<EvaluationStore> CreateEvaluationStore(MMDApp* app) {
                 out = {Header<MmsMorphWeightV1>(), weight, 0}; return MMS_OK;
             };
         }
+        if (channels & MMS_EVALUATION_CAP_DISPLAY) {
+            std::shared_ptr<DisplayMotionSnapshot> motion = DisplayMotionSnapshot::Capture(source, limit - bytes);
+            if (motion->RetainedBytes() > limit - bytes) return MMS_E_MEMORY;
+            bytes += motion->RetainedBytes();
+            const auto charge = [&](uint64_t count, uint64_t stride) {
+                if (count > (limit - bytes) / stride) throw std::length_error("display evaluation source budget");
+                bytes += count * stride;
+            };
+            charge(motion->IkCount(), sizeof(MmsEvaluationIkV1));
+            charge(motion->SelectorCount(), sizeof(MmsEvaluationSelectorV1));
+            data->ik.resize(motion->IkCount()); data->selectors.resize(motion->SelectorCount());
+            charge(data->ik.capacity() - data->ik.size(), sizeof(MmsEvaluationIkV1));
+            charge(data->selectors.capacity() - data->selectors.size(), sizeof(MmsEvaluationSelectorV1));
+            for (uint32_t i = 0; i < motion->IkCount(); ++i) {
+                int32_t bone = -1;
+                if (!motion->IkBone(i, bone)) return MMS_E_FAILED;
+                data->ik[i] = {Header<MmsEvaluationIkV1>(), identities.Element(source, MMS_CHANNEL_BONES, uint32_t(bone))};
+            }
+            for (uint32_t i = 0; i < motion->SelectorCount(); ++i) {
+                int32_t bone = -1;
+                if (!motion->SelectorBone(i, bone)) return MMS_E_FAILED;
+                auto& target = data->selectors[i]; target.h = Header<MmsEvaluationSelectorV1>();
+                if (bone == -1) target.flags = MMS_EVALUATION_SELECTOR_GLOBAL;
+                else target.bone = identities.Element(source, MMS_CHANNEL_BONES, uint32_t(bone));
+            }
+            struct Target { MmsObjectRef object; MmsId bone; };
+            using Targets = std::map<std::pair<int32_t, int32_t>, Target>;
+            // Map tree nodes, its sentinel and the shared ownership/closures
+            // are conservatively charged into the same source, not a new lease.
+            constexpr auto nodeBytes = sizeof(Targets::value_type) + 4 * sizeof(void*);
+            charge(1, sizeof(Targets) + nodeBytes + 256);
+            auto targets = std::make_shared<Targets>();
+            for (uint32_t key = 0; key < motion->KeyCount(); ++key) {
+                uint32_t frame = 0;
+                if (!motion->KeyFrame(key, frame)) return MMS_E_FAILED;
+                for (uint32_t i = 0; i < motion->SelectorCount(); ++i) {
+                    DisplaySelectorSample parent;
+                    if (motion->SampleSelector(int(i), frame, parent) != DisplayMotionStatus::Ok) return MMS_E_FAILED;
+                    // Disabled references still retain the original window.
+                    if (parent.modelIndex == -1) continue;
+                    const auto pair = std::make_pair(parent.modelIndex, parent.boneIndex);
+                    if (targets->find(pair) != targets->end()) continue;
+                    if (parent.modelIndex < 0 || parent.modelIndex >= kModelSlotCount || parent.boneIndex < 0) return MMS_E_STALE;
+                    const auto* targetModel = app->ModelSlot(parent.modelIndex);
+                    if (!targetModel) return MMS_E_STALE;
+                    const auto* identity = identities.Retained(targetModel);
+                    if (!identity || !identity->present || !identity->published) return MMS_E_STALE;
+                    const auto& targetRecord = *mdl::Mdl(targetModel);
+                    if (!targetRecord.boneTable || uint32_t(parent.boneIndex) >= targetRecord.boneCount) return MMS_E_STALE;
+                    charge(1, nodeBytes);
+                    const Target target{identity->object, identities.Element(targetModel, MMS_CHANNEL_BONES, uint32_t(parent.boneIndex))};
+                    targets->emplace(pair, target);
+                }
+            }
+            data->sampleVisibility = [motion](double frame, MmsDisplayStateV1& out) {
+                uint8_t visible = 0;
+                if (motion->SampleVisibility(frame, visible) != DisplayMotionStatus::Ok) return MMS_E_FAILED;
+                out = {Header<MmsDisplayStateV1>(), visible, 0}; return MMS_OK;
+            };
+            data->sampleIk = [motion](uint32_t index, double frame, MmsIkStateV1& out) {
+                uint8_t enabled = 0;
+                if (motion->SampleIk(int(index), frame, enabled) != DisplayMotionStatus::Ok) return MMS_E_FAILED;
+                out = {Header<MmsIkStateV1>(), enabled, 0}; return MMS_OK;
+            };
+            data->sampleParent = [motion, targets = std::shared_ptr<const Targets>(std::move(targets))]
+                (uint32_t index, double frame, MmsParentSelectionV1& out) {
+                DisplaySelectorSample parent;
+                if (motion->SampleSelector(int(index), frame, parent) != DisplayMotionStatus::Ok) return MMS_E_FAILED;
+                MmsParentSelectionV1 value{}; value.h = Header<MmsParentSelectionV1>();
+                value.windowStart = parent.windowStart; value.windowEnd = parent.windowEnd;
+                if (parent.modelIndex != -1) {
+                    const auto found = targets->find({parent.modelIndex, parent.boneIndex});
+                    if (found == targets->end()) return MMS_E_FAILED;
+                    value.target = found->second.object; value.bone = found->second.bone;
+                    value.flags = MMS_EVALUATION_PARENT_ACTIVE;
+                }
+                out = value; return MMS_OK;
+            };
+        }
         data->retainedBytes = bytes;
         out = std::move(data); return MMS_OK;
-    });
+    }, MMS_EVALUATION_CAP_BONE_CHANNELS | MMS_EVALUATION_CAP_MORPH_WEIGHTS | MMS_EVALUATION_CAP_DISPLAY);
 #endif
 }
 void ForgetSceneObject(const void* token) {

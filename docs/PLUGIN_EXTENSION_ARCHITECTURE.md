@@ -50,7 +50,7 @@ auto event = events.subscribe(topic, [=] { updateLayer(layer); });
 | `mms.events`、`mms.tasks` | 提案：主题订阅、受预算约束的工作任务。 | 本文及 UI 呈现 |
 | `mms.ui.geometry`、`style`、`paint`、`presentation`、`input`、`overlay`、`layout.session` | 提案：坐标、样式、辅助绘制、临时外观、输入和可撤回布局。 | UI 呈现 |
 | `mms.scene`、`mms.storage` | 已有绑定快照和插件工程序列化；不提供任意时间求值或模型拓扑写入。 | SDK 参考 |
-| `mms.scene.evaluate` 1.0、1.1 | 提供已注册骨骼局部通道和表情直接权重。1.1 的掩码 `1`、`2`、`3` 选择骨骼、表情或两者，共用原场景身份、额度、源句柄及停止保护。1.0 创建仍只捕获骨骼。未提供完整场景帧、显示、层级、IK、表情形变或物理求值。原始兼容产品未开放此服务。 | [求值接口参考](../sdk/mms/evaluation.md)、[表情求值服务记录](records/abi-morph-evaluation-service-2026-10-27.md) |
+| `mms.scene.evaluate` 1.0、1.1、1.2 | 提供已注册骨骼局部通道、表情直接权重、显示状态、IK 开关和外部父级选择。通道位 `1`、`2`、`4` 可组合，共用身份、额度、源句柄及停止保护。1.0 创建仍只捕获骨骼。父级身份在捕获时固定，但不冻结目标动作；完整场景帧、层级与 IK 求解、表情形变及物理仍待实现。原始兼容产品未开放生产服务。 | [求值接口参考](../sdk/mms/evaluation.md)、[显示求值服务记录](records/abi-display-evaluation-service-2026-10-27.md) |
 | `mms.render`、`mms.render.image` | 已有设备状态、资源租约、帧回调和 CPU 图像租约。ImagePanel 包装原 surface 与 CPU 图像，不创建另一套图像身份或生命周期。 | [设备与资源租约](../sdk/mms/render.md)、[CPU 图像](../sdk/mms/render-image.md)、[图像面板](../sdk/mms/image-panel.md) |
 | 完整场景源与求值帧、`mms.scene.clock`、多视口及渲染器提供者 | 提案：完整场景求值、独立播放时钟、相机、渲染器和视口图像输出。现有通道采样及 CPU 图像显示不等于这些能力已实现。 | [视口与洋葱皮](PLUGIN_VIEWPORT_RENDERING.md) |
 | `mms.data.schema`、`mms.data.read`、`mms.data.edit`、`mms.resources` | 提案：公共数据、私有结构、不可变资源和原子编辑候选。 | [数据扩展](PLUGIN_DATA_EXTENSIONS.md) |

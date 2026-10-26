@@ -18,6 +18,9 @@ constexpr uint32_t kMaxSources = 128;
 // cannot alias a source. Reaching the 63-bit bound is exhaustion, not memory
 // pressure, because the sequence itself cannot allocate another handle.
 constexpr uint64_t kHandleLimit = 0x7fffffffffffffffull;
+// The shared display sampler dispatches on these internal kinds; they never
+// appear in a public record.
+constexpr uint32_t kDisplayVisibility = 0, kDisplayIk = 1, kDisplayParent = 2;
 
 using Index = std::map<MmsId, uint32_t, IdLess>;
 // The supported MSVC tree allocates a separate sentinel node and holds its link
@@ -90,11 +93,16 @@ struct EvaluationStore::Payload {
     Index index, morphIndex;
     MmsObjectRef object{};
     uint64_t bytes = 0, captureId = 0, hostRevision = 0;
-    uint32_t boneCount = 0, morphCount = 0, flags = 0;
+    uint32_t boneCount = 0, morphCount = 0, ikCount = 0, selectorCount = 0, flags = 0;
 };
 
 EvaluationStore::EvaluationStore(Capture capture) : capture_(std::move(capture)) {}
-EvaluationStore::EvaluationStore(CaptureChannels captureChannels) : captureChannels_(std::move(captureChannels)) {}
+EvaluationStore::EvaluationStore(CaptureChannels captureChannels, uint32_t supportedChannels)
+    : captureChannels_(std::move(captureChannels)), supportedChannels_(supportedChannels) {
+    constexpr uint32_t known = MMS_EVALUATION_CAP_BONE_CHANNELS | MMS_EVALUATION_CAP_MORPH_WEIGHTS |
+        MMS_EVALUATION_CAP_DISPLAY;
+    if (!supportedChannels_ || (supportedChannels_ & ~known)) throw std::invalid_argument("invalid supported channels");
+}
 EvaluationStore::~EvaluationStore() = default;
 
 MmsEvaluationApiV1 EvaluationStore::Api(Client& client) {
@@ -211,6 +219,76 @@ MmsEvaluationApiV1_1 EvaluationStore::Api11(Client& client) {
     return api;
 }
 
+MmsEvaluationApiV1_2 EvaluationStore::Api12(Client& client) {
+    // The first eleven entries are the frozen V1.1 table, so the display
+    // operations extend one lease system rather than starting another. Only
+    // the header version differs; Api12 still never writes Client::owner.
+    const MmsEvaluationApiV1_1 base = Api11(client);
+    MmsEvaluationApiV1_2 api{};
+    api.h = MmsHeader{sizeof(MmsEvaluationApiV1_2), 1, 2};
+    api.context = base.context;
+    api.getCapabilities = base.getCapabilities;
+    api.createSource = base.createSource;
+    api.describeSource = base.describeSource;
+    api.boneAt = base.boneAt;
+    api.sampleBone = base.sampleBone;
+    api.retain = base.retain;
+    api.release = base.release;
+    api.createSourceChannels = base.createSourceChannels;
+    api.describeSourceChannels = base.describeSourceChannels;
+    api.morphAt = base.morphAt;
+    api.sampleMorph = base.sampleMorph;
+    api.describeSourceDisplay = [](void* context, MmsHandle source, MmsEvaluationSourceInfoV1_2* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->DescribeDisplay(client, source, out);
+        });
+    };
+    api.ikAt = [](void* context, MmsHandle source, uint32_t index, MmsEvaluationIkV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->IkAt(client, source, index, out);
+        });
+    };
+    api.selectorAt = [](void* context, MmsHandle source, uint32_t index, MmsEvaluationSelectorV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->SelectorAt(client, source, index, out);
+        });
+    };
+    api.sampleVisibility = [](void* context, MmsHandle source, MmsTime time, MmsDisplayStateV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->SampleVisibility(client, source, time, out);
+        });
+    };
+    api.sampleIk = [](void* context, MmsHandle source, uint32_t index, MmsTime time, MmsIkStateV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->SampleIk(client, source, index, time, out);
+        });
+    };
+    api.sampleParent = [](void* context, MmsHandle source, uint32_t index, MmsTime time, MmsParentSelectionV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->SampleParent(client, source, index, time, out);
+        });
+    };
+    return api;
+}
+
 void EvaluationStore::Retire(Client& client) noexcept {
     try {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -231,9 +309,8 @@ MmsResult EvaluationStore::Capabilities(Client& client, MmsEvaluationCapsV1* out
     if (client.retired) return MMS_E_NOT_READY;
     MmsEvaluationCapsV1 caps{};
     caps.h = Header<MmsEvaluationCapsV1>();
-    caps.flags = captureChannels_
-        ? (MMS_EVALUATION_CAP_BONE_CHANNELS | MMS_EVALUATION_CAP_MORPH_WEIGHTS)
-        : MMS_EVALUATION_CAP_BONE_CHANNELS;
+    // Advertise exactly the channels this store was built to capture.
+    caps.flags = supportedChannels_;
     caps.maxSources = kMaxSources;
     caps.maxSourceBytes = kMaxSourceBytes;
     caps.maxClientBytes = kMaxClientBytes;
@@ -256,20 +333,23 @@ MmsResult EvaluationStore::CreateChannels(Client& client, const MmsEvaluationSou
     if (query->flags || query->reserved) return MMS_E_ARGUMENT;
     if (Empty(query->object.id) || !query->object.generation) return MMS_E_ARGUMENT;
     if (query->maxRetainedBytes > kMaxSourceBytes) return MMS_E_ARGUMENT;
-    constexpr uint32_t known = MMS_EVALUATION_CAP_BONE_CHANNELS | MMS_EVALUATION_CAP_MORPH_WEIGHTS;
+    constexpr uint32_t known = MMS_EVALUATION_CAP_BONE_CHANNELS | MMS_EVALUATION_CAP_MORPH_WEIGHTS |
+        MMS_EVALUATION_CAP_DISPLAY;
+    // A zero mask or a bit this version does not define is a malformed request.
     if (!channels || (channels & ~known)) return MMS_E_ARGUMENT;
-    if (!capture_ && !captureChannels_) return MMS_E_NOT_READY;
     const bool bones = (channels & MMS_EVALUATION_CAP_BONE_CHANNELS) != 0;
     const bool morphs = (channels & MMS_EVALUATION_CAP_MORPH_WEIGHTS) != 0;
+    const bool display = (channels & MMS_EVALUATION_CAP_DISPLAY) != 0;
     const uint64_t bound = query->maxRetainedBytes ? query->maxRetainedBytes : kMaxSourceBytes;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (client.retired) return MMS_E_NOT_READY;
-        // A 1.0 capturer froze bone channels only, so morph selection is a
-        // capability mismatch rather than a capture failure. Retirement still
-        // refuses every new operation first.
-        if (morphs && !captureChannels_) return MMS_E_UNSUPPORTED;
+        // Selection is limited to the channels this store was built to freeze,
+        // so a known but unadvertised bit is a capability mismatch. Retirement
+        // still refuses every new operation first.
+        if (channels & ~supportedChannels_) return MMS_E_UNSUPPORTED;
+        if (!capture_ && !captureChannels_) return MMS_E_NOT_READY;
         if (acquiring_) return MMS_E_BUSY;
         if (client.handles >= kMaxHandlesPerClient || sources_.size() >= kMaxTotalHandles) return MMS_E_BUSY;
         if (next_ >= kHandleLimit) return MMS_E_BUSY;
@@ -292,13 +372,20 @@ MmsResult EvaluationStore::CreateChannels(Client& client, const MmsEvaluationSou
         // The capture reports the channels it froze; a mismatch means records
         // may not correspond to the requested source.
         if (data->channels != channels) return MMS_E_ARGUMENT;
-        if (data->bones.size() > UINT32_MAX || data->morphs.size() > UINT32_MAX) return MMS_E_ARGUMENT;
+        if (data->bones.size() > UINT32_MAX || data->morphs.size() > UINT32_MAX ||
+            data->ik.size() > UINT32_MAX || data->selectors.size() > UINT32_MAX) return MMS_E_ARGUMENT;
         // An unselected channel may not carry records or a callback, while a
         // selected channel must supply its sampler even when it froze nothing.
         if (!bones && (!data->bones.empty() || data->sample)) return MMS_E_ARGUMENT;
         if (!morphs && (!data->morphs.empty() || data->sampleMorph)) return MMS_E_ARGUMENT;
+        if (!display && (!data->ik.empty() || !data->selectors.empty() ||
+            data->sampleVisibility || data->sampleIk || data->sampleParent)) return MMS_E_ARGUMENT;
         if (bones && !data->sample) return MMS_E_FAILED;
         if (morphs && !data->sampleMorph) return MMS_E_FAILED;
+        // Display captures one visibility record, one IK switch per chain and
+        // one parent selection per target, so all three samplers are required
+        // even when both display vectors are empty.
+        if (display && (!data->sampleVisibility || !data->sampleIk || !data->sampleParent)) return MMS_E_FAILED;
 
         // Build every store-owned index before taking the mutex. A failed
         // validation or allocation below publishes nothing. A morph ID that
@@ -317,6 +404,17 @@ MmsResult EvaluationStore::CreateChannels(Client& client, const MmsEvaluationSou
             if (index.find(morph.id) != index.end()) return MMS_E_ARGUMENT;
             if (!morphIndex.emplace(morph.id, static_cast<uint32_t>(n)).second) return MMS_E_ARGUMENT;
         }
+        // IK chains and selectors are sampled by index only, so duplicate bone
+        // IDs and bones shared with the other channels are legal. A selector is
+        // either global to the source model or bound to one nonempty bone.
+        for (const auto& ik : data->ik) {
+            if (!Valid(&ik) || Empty(ik.bone)) return MMS_E_ARGUMENT;
+        }
+        for (const auto& selector : data->selectors) {
+            if (!Valid(&selector) || selector.reserved) return MMS_E_ARGUMENT;
+            if (selector.flags & ~MMS_EVALUATION_SELECTOR_GLOBAL) return MMS_E_ARGUMENT;
+            if ((selector.flags & MMS_EVALUATION_SELECTOR_GLOBAL) ? !Empty(selector.bone) : Empty(selector.bone)) return MMS_E_ARGUMENT;
+        }
 
         // The host reports its own snapshot through retainedBytes; the store
         // adds its payload and one conservative node per channel entry plus
@@ -325,6 +423,8 @@ MmsResult EvaluationStore::CreateChannels(Client& client, const MmsEvaluationSou
         uint64_t charge = sizeof(EvaluationData);
         if (!AddBytes(charge, data->bones.capacity(), sizeof(MmsEvaluationBoneV1))) return MMS_E_MEMORY;
         if (!AddBytes(charge, data->morphs.capacity(), sizeof(MmsEvaluationMorphV1))) return MMS_E_MEMORY;
+        if (!AddBytes(charge, data->ik.capacity(), sizeof(MmsEvaluationIkV1))) return MMS_E_MEMORY;
+        if (!AddBytes(charge, data->selectors.capacity(), sizeof(MmsEvaluationSelectorV1))) return MMS_E_MEMORY;
         if (data->retainedBytes > charge) charge = data->retainedBytes;
         if (!AddBytes(charge, 1, sizeof(Payload))) return MMS_E_MEMORY;
         if (!AddBytes(charge, static_cast<uint64_t>(index.size()) + 1, kIndexNodeBytes)) return MMS_E_MEMORY;
@@ -339,6 +439,8 @@ MmsResult EvaluationStore::CreateChannels(Client& client, const MmsEvaluationSou
         payload->hostRevision = data->hostRevision;
         payload->boneCount = static_cast<uint32_t>(data->bones.size());
         payload->morphCount = static_cast<uint32_t>(data->morphs.size());
+        payload->ikCount = static_cast<uint32_t>(data->ik.size());
+        payload->selectorCount = static_cast<uint32_t>(data->selectors.size());
         payload->flags = channels;
         payload->bytes = charge;
 
@@ -421,6 +523,31 @@ MmsResult EvaluationStore::DescribeChannels(Client& client, MmsHandle source, Mm
     return MMS_OK;
 }
 
+MmsResult EvaluationStore::DescribeDisplay(Client& client, MmsHandle source, MmsEvaluationSourceInfoV1_2* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.retired) return MMS_E_NOT_READY;
+    const auto found = sources_.find(source);
+    if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+    const Payload& payload = *found->second.data;
+    // The V1.2 description keeps the V1.1 fields and appends the two display
+    // counts, so one capture is described through every table version.
+    MmsEvaluationSourceInfoV1_2 info{};
+    info.h = MmsHeader{sizeof(MmsEvaluationSourceInfoV1_2), 1, 2};
+    info.object = payload.object;
+    info.captureId = payload.captureId;
+    info.hostRevision = payload.hostRevision;
+    info.retainedBytes = payload.bytes;
+    info.boneCount = payload.boneCount;
+    info.flags = payload.flags;
+    info.morphCount = payload.morphCount;
+    info.reserved = 0;
+    info.ikCount = payload.ikCount;
+    info.selectorCount = payload.selectorCount;
+    *out = info;
+    return MMS_OK;
+}
+
 MmsResult EvaluationStore::BoneAt(Client& client, MmsHandle source, uint32_t index, MmsEvaluationBoneV1* out) {
     if (!out) return MMS_E_ARGUMENT;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -449,6 +576,37 @@ MmsResult EvaluationStore::MorphAt(Client& client, MmsHandle source, uint32_t in
     MmsEvaluationMorphV1 morph = payload.data->morphs[index];
     morph.h = Header<MmsEvaluationMorphV1>();
     *out = morph;
+    return MMS_OK;
+}
+
+MmsResult EvaluationStore::IkAt(Client& client, MmsHandle source, uint32_t index, MmsEvaluationIkV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.retired) return MMS_E_NOT_READY;
+    const auto found = sources_.find(source);
+    if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+    const Payload& payload = *found->second.data;
+    if (!(payload.flags & MMS_EVALUATION_CAP_DISPLAY)) return MMS_E_UNSUPPORTED;
+    if (index >= payload.ikCount) return MMS_E_NOT_FOUND;
+    MmsEvaluationIkV1 ik = payload.data->ik[index];
+    ik.h = Header<MmsEvaluationIkV1>();
+    *out = ik;
+    return MMS_OK;
+}
+
+MmsResult EvaluationStore::SelectorAt(Client& client, MmsHandle source, uint32_t index, MmsEvaluationSelectorV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.retired) return MMS_E_NOT_READY;
+    const auto found = sources_.find(source);
+    if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+    const Payload& payload = *found->second.data;
+    if (!(payload.flags & MMS_EVALUATION_CAP_DISPLAY)) return MMS_E_UNSUPPORTED;
+    if (index >= payload.selectorCount) return MMS_E_NOT_FOUND;
+    MmsEvaluationSelectorV1 selector = payload.data->selectors[index];
+    selector.h = Header<MmsEvaluationSelectorV1>();
+    selector.reserved = 0;
+    *out = selector;
     return MMS_OK;
 }
 
@@ -551,6 +709,110 @@ MmsResult EvaluationStore::SampleMorph(Client& client, MmsHandle source, MmsId m
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (result == MMS_OK) *out = value;
+        // If Release erased the entry while the callback was running, this is
+        // the last payload reference and the byte charge is returned here.
+        Settle(payload, client);
+        payload.reset();
+        if (client.active) --client.active;
+    }
+    return result;
+}
+
+MmsResult EvaluationStore::SampleVisibility(Client& client, MmsHandle source, MmsTime time, MmsDisplayStateV1* out) {
+    return ReadDisplay(client, source, kDisplayVisibility, 0, time, out);
+}
+
+MmsResult EvaluationStore::SampleIk(Client& client, MmsHandle source, uint32_t index, MmsTime time, MmsIkStateV1* out) {
+    return ReadDisplay(client, source, kDisplayIk, index, time, out);
+}
+
+MmsResult EvaluationStore::SampleParent(Client& client, MmsHandle source, uint32_t index, MmsTime time, MmsParentSelectionV1* out) {
+    return ReadDisplay(client, source, kDisplayParent, index, time, out);
+}
+
+MmsResult EvaluationStore::ReadDisplay(Client& client, MmsHandle source, uint32_t kind, uint32_t index,
+    MmsTime time, void* out) {
+    if (!out || kind > kDisplayParent) return MMS_E_ARGUMENT;
+    double frame = 0;
+    if (!FrameTime(time, frame)) return MMS_E_ARGUMENT;
+
+    std::shared_ptr<const Payload> payload;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (client.retired) return MMS_E_NOT_READY;
+        const auto found = sources_.find(source);
+        if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+        const auto& candidate = found->second.data;
+        if (!(candidate->flags & MMS_EVALUATION_CAP_DISPLAY)) return MMS_E_UNSUPPORTED;
+        // Visibility is one source-wide record; IK and parent selections resolve
+        // by index inside the same frozen capture.
+        if (kind == kDisplayIk && index >= candidate->ikCount) return MMS_E_NOT_FOUND;
+        if (kind == kDisplayParent && index >= candidate->selectorCount) return MMS_E_NOT_FOUND;
+        // The copy and the pin are registered together, so Release cannot free
+        // the payload between lookup and the first callback instruction.
+        payload = candidate;
+        ++client.active;
+    }
+
+    MmsDisplayStateV1 visibility{};
+    MmsIkStateV1 ikState{};
+    MmsParentSelectionV1 parentState{};
+    const MmsResult result = Gateway([&]() -> MmsResult {
+        if (kind == kDisplayVisibility) {
+            // The host writes into a private local record. Nothing reaches the
+            // caller until every produced field has been validated.
+            MmsDisplayStateV1 produced{};
+            const MmsResult sampled = payload->data->sampleVisibility(frame, produced);
+            if (sampled != MMS_OK) return sampled;
+            if (produced.visible > 255 || produced.reserved) return MMS_E_FAILED;
+            produced.h = Header<MmsDisplayStateV1>();
+            produced.reserved = 0;
+            visibility = produced;
+            return MMS_OK;
+        }
+        if (kind == kDisplayIk) {
+            MmsIkStateV1 produced{};
+            const MmsResult sampled = payload->data->sampleIk(index, frame, produced);
+            if (sampled != MMS_OK) return sampled;
+            if (produced.enabled > 255 || produced.reserved) return MMS_E_FAILED;
+            produced.h = Header<MmsIkStateV1>();
+            produced.reserved = 0;
+            ikState = produced;
+            return MMS_OK;
+        }
+        MmsParentSelectionV1 produced{};
+        const MmsResult sampled = payload->data->sampleParent(index, frame, produced);
+        if (sampled != MMS_OK) return sampled;
+        const uint32_t maximum = static_cast<uint32_t>(frame_limits::maximum);
+        // The window is frozen metadata: a zero end is unbounded, a bounded end
+        // is exclusive, and both ends must contain the sampled frame.
+        if (produced.windowStart > maximum || produced.windowEnd > maximum) return MMS_E_FAILED;
+        if (produced.windowEnd && produced.windowEnd <= produced.windowStart) return MMS_E_FAILED;
+        if (frame < static_cast<double>(produced.windowStart)) return MMS_E_FAILED;
+        if (produced.windowEnd && !(frame < static_cast<double>(produced.windowEnd))) return MMS_E_FAILED;
+        // ACTIVE selects the frozen target and bone; an inactive record stays
+        // empty. The target is metadata, so no live model is consulted here.
+        if ((produced.flags & ~MMS_EVALUATION_PARENT_ACTIVE) || produced.reserved) return MMS_E_FAILED;
+        if (produced.flags & MMS_EVALUATION_PARENT_ACTIVE) {
+            if (Empty(produced.target.id) || !produced.target.generation || Empty(produced.bone)) return MMS_E_FAILED;
+        } else if (!Empty(produced.target.id) || produced.target.generation || !Empty(produced.bone)) {
+            return MMS_E_FAILED;
+        }
+        produced.h = Header<MmsParentSelectionV1>();
+        produced.reserved = 0;
+        parentState = produced;
+        return MMS_OK;
+    });
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // The caller-owned output is written only after the whole record passed
+        // validation, so a rejection leaves it untouched.
+        if (result == MMS_OK) {
+            if (kind == kDisplayVisibility) *static_cast<MmsDisplayStateV1*>(out) = visibility;
+            else if (kind == kDisplayIk) *static_cast<MmsIkStateV1*>(out) = ikState;
+            else *static_cast<MmsParentSelectionV1*>(out) = parentState;
+        }
         // If Release erased the entry while the callback was running, this is
         // the last payload reference and the byte charge is returned here.
         Settle(payload, client);

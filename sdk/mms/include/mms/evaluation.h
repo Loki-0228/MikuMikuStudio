@@ -8,6 +8,9 @@
  * advertised. Future versions may append evaluated-frame/instance operations. */
 #define MMS_EVALUATION_CAP_BONE_CHANNELS 1u
 #define MMS_EVALUATION_CAP_MORPH_WEIGHTS 2u
+#define MMS_EVALUATION_CAP_DISPLAY 4u
+#define MMS_EVALUATION_SELECTOR_GLOBAL 1u
+#define MMS_EVALUATION_PARENT_ACTIVE 1u
 #define MMS_EVALUATION_BONE_LOCAL 1u
 #define MMS_EVALUATION_BONE_EXTERNAL_PARENT 2u
 #define MMS_EVALUATION_BONE_DERIVED 4u
@@ -96,5 +99,61 @@ typedef struct MmsEvaluationApiV1_1 {
     MmsResult (MMS_CALL *morphAt)(void*, MmsHandle, uint32_t, MmsEvaluationMorphV1*);
     MmsResult (MMS_CALL *sampleMorph)(void*, MmsHandle, MmsId, MmsTime, MmsMorphWeightV1*);
 } MmsEvaluationApiV1_1;
+
+/* 1.2: registered visibility, IK switches and external-parent selection.
+ * Parent identities are frozen metadata, not evaluated target transforms. */
+typedef struct MmsEvaluationSourceInfoV1_2 {
+    MmsHeader h;
+    MmsObjectRef object;
+    uint64_t captureId, hostRevision, retainedBytes;
+    uint32_t boneCount, flags;
+    uint32_t morphCount, reserved;
+    uint32_t ikCount, selectorCount;
+} MmsEvaluationSourceInfoV1_2;
+typedef struct MmsEvaluationIkV1 {
+    MmsHeader h;
+    MmsId bone; /* Chain index is local to this source; bone is a scene ID. */
+} MmsEvaluationIkV1;
+typedef struct MmsEvaluationSelectorV1 {
+    MmsHeader h;
+    MmsId bone; /* Empty only for GLOBAL, which applies to the source model. */
+    uint32_t flags, reserved;
+} MmsEvaluationSelectorV1;
+typedef struct MmsDisplayStateV1 {
+    MmsHeader h;
+    uint32_t visible, reserved; /* Original byte widened to uint32, not bool. */
+} MmsDisplayStateV1;
+typedef struct MmsIkStateV1 {
+    MmsHeader h;
+    uint32_t enabled, reserved; /* Original byte widened to uint32, not bool. */
+} MmsIkStateV1;
+typedef struct MmsParentSelectionV1 {
+    MmsHeader h;
+    MmsObjectRef target;
+    MmsId bone;
+    uint32_t windowStart, windowEnd; /* Registered frame boundaries; end 0 is unbounded. */
+    uint32_t flags, reserved; /* ACTIVE requires target and bone; otherwise both empty. */
+} MmsParentSelectionV1;
+typedef struct MmsEvaluationApiV1_2 {
+    MmsHeader h;
+    void* context;
+    MmsResult (MMS_CALL *getCapabilities)(void*, MmsEvaluationCapsV1*);
+    MmsResult (MMS_CALL *createSource)(void*, const MmsEvaluationSourceQueryV1*, MmsHandle*);
+    MmsResult (MMS_CALL *describeSource)(void*, MmsHandle, MmsEvaluationSourceInfoV1*);
+    MmsResult (MMS_CALL *boneAt)(void*, MmsHandle, uint32_t, MmsEvaluationBoneV1*);
+    MmsResult (MMS_CALL *sampleBone)(void*, MmsHandle, MmsId, MmsTime, MmsBoneChannelsV1*);
+    MmsResult (MMS_CALL *retain)(void*, MmsHandle, MmsHandle*);
+    MmsResult (MMS_CALL *release)(void*, MmsHandle);
+    MmsResult (MMS_CALL *createSourceChannels)(void*, const MmsEvaluationSourceQueryV1*, uint32_t, MmsHandle*);
+    MmsResult (MMS_CALL *describeSourceChannels)(void*, MmsHandle, MmsEvaluationSourceInfoV1_1*);
+    MmsResult (MMS_CALL *morphAt)(void*, MmsHandle, uint32_t, MmsEvaluationMorphV1*);
+    MmsResult (MMS_CALL *sampleMorph)(void*, MmsHandle, MmsId, MmsTime, MmsMorphWeightV1*);
+    MmsResult (MMS_CALL *describeSourceDisplay)(void*, MmsHandle, MmsEvaluationSourceInfoV1_2*);
+    MmsResult (MMS_CALL *ikAt)(void*, MmsHandle, uint32_t, MmsEvaluationIkV1*);
+    MmsResult (MMS_CALL *selectorAt)(void*, MmsHandle, uint32_t, MmsEvaluationSelectorV1*);
+    MmsResult (MMS_CALL *sampleVisibility)(void*, MmsHandle, MmsTime, MmsDisplayStateV1*);
+    MmsResult (MMS_CALL *sampleIk)(void*, MmsHandle, uint32_t, MmsTime, MmsIkStateV1*);
+    MmsResult (MMS_CALL *sampleParent)(void*, MmsHandle, uint32_t, MmsTime, MmsParentSelectionV1*);
+} MmsEvaluationApiV1_2;
 #pragma pack(pop)
 #endif

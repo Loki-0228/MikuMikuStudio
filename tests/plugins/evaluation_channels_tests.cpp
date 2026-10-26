@@ -172,7 +172,7 @@ static void InvalidInputsAndOwnership() {
         MmsHandle output = sentinel;
         CHECK(api.createSourceChannels(api.context, query, mask, &output) == MMS_E_ARGUMENT && output == sentinel);
     };
-    for (uint32_t mask : {0u, 4u, 7u, UINT32_MAX}) rejected(&valid, mask);
+    for (uint32_t mask : {0u, 8u, 15u, UINT32_MAX}) rejected(&valid, mask);
     rejected(nullptr, both); CHECK(api.createSourceChannels(api.context, &valid, both, nullptr) == MMS_E_ARGUMENT);
     for (unsigned field = 0; field < 8; ++field) {
         auto query = valid;

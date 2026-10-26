@@ -13,6 +13,11 @@ struct EvaluationData {
     std::function<MmsResult(uint32_t index, double frame, MmsBoneChannelsV1&)> sample;
     std::vector<MmsEvaluationMorphV1> morphs;
     std::function<MmsResult(uint32_t index, double frame, MmsMorphWeightV1&)> sampleMorph;
+    std::vector<MmsEvaluationIkV1> ik;
+    std::vector<MmsEvaluationSelectorV1> selectors;
+    std::function<MmsResult(double frame, MmsDisplayStateV1&)> sampleVisibility;
+    std::function<MmsResult(uint32_t index, double frame, MmsIkStateV1&)> sampleIk;
+    std::function<MmsResult(uint32_t index, double frame, MmsParentSelectionV1&)> sampleParent;
 };
 class EvaluationStore {
 public:
@@ -30,12 +35,13 @@ public:
     explicit EvaluationStore(Capture);
     using CaptureChannels = std::function<MmsResult(const MmsEvaluationSourceQueryV1&,
         uint32_t channels, uint64_t maxBytes, std::shared_ptr<const EvaluationData>&)>;
-    explicit EvaluationStore(CaptureChannels);
+    explicit EvaluationStore(CaptureChannels, uint32_t supportedChannels = 3);
     ~EvaluationStore();
     EvaluationStore(const EvaluationStore&) = delete;
     EvaluationStore& operator=(const EvaluationStore&) = delete;
     MmsEvaluationApiV1 Api(Client&);
     MmsEvaluationApiV1_1 Api11(Client&);
+    MmsEvaluationApiV1_2 Api12(Client&);
     // Retire rejects new operations except release. Existing source handles
     // and admitted calls pin the client until plugins drain them and join work.
     void Retire(Client&) noexcept;
@@ -45,6 +51,7 @@ private:
     struct Entry { Client* owner; std::shared_ptr<const Payload> data; };
     Capture capture_;
     CaptureChannels captureChannels_;
+    uint32_t supportedChannels_ = MMS_EVALUATION_CAP_BONE_CHANNELS;
     DWORD thread_ = GetCurrentThreadId();
     mutable std::mutex mutex_;
     std::map<MmsHandle, Entry> sources_;
@@ -59,6 +66,13 @@ private:
     MmsResult MorphAt(Client&, MmsHandle, uint32_t, MmsEvaluationMorphV1*);
     MmsResult Sample(Client&, MmsHandle, MmsId, MmsTime, MmsBoneChannelsV1*);
     MmsResult SampleMorph(Client&, MmsHandle, MmsId, MmsTime, MmsMorphWeightV1*);
+    MmsResult DescribeDisplay(Client&, MmsHandle, MmsEvaluationSourceInfoV1_2*);
+    MmsResult IkAt(Client&, MmsHandle, uint32_t, MmsEvaluationIkV1*);
+    MmsResult SelectorAt(Client&, MmsHandle, uint32_t, MmsEvaluationSelectorV1*);
+    MmsResult SampleVisibility(Client&, MmsHandle, MmsTime, MmsDisplayStateV1*);
+    MmsResult SampleIk(Client&, MmsHandle, uint32_t, MmsTime, MmsIkStateV1*);
+    MmsResult SampleParent(Client&, MmsHandle, uint32_t, MmsTime, MmsParentSelectionV1*);
+    MmsResult ReadDisplay(Client&, MmsHandle, uint32_t kind, uint32_t index, MmsTime, void*);
     MmsResult Retain(Client&, MmsHandle, MmsHandle*);
     MmsResult Release(Client&, MmsHandle);
     void Settle(const std::shared_ptr<const Payload>&, Client&) noexcept;
