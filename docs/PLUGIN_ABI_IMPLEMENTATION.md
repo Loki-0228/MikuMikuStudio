@@ -1,5 +1,7 @@
 # 插件 ABI 实现与验收记录
 
+[2026-10-27 独立 CPU 表情求值](records/abi-morph-evaluation-2026-10-27.md)：内部 `MorphEvaluationFrame` 将冻结定义与直接权重计算为稀疏位置、五族 UV、骨骼偏移和材质结果，保留原生组贡献、四元数和加乘顺序。专项 873 项含真实原生逐位对照；定义 1,466 项、权重 922 项、原生运行及真实 PMX/PMD 关键帧到结果的后台生命周期验证通过，两产品构建通过。尚未接入公开场景帧，不包含 IK、蒙皮或最终渲染；main 阴影继续暂缓，正式 release 未覆盖。
+
 [2026-10-27 独立表情求值载荷](records/abi-morph-definition-snapshot-2026-10-27.md)：内部 `MorphDefinitionSnapshot` 持有 PMD 顶点和 PMX 0–8 类表情载荷，以及顶点、UV、材质恢复基准。专项 1,466 项、表情权重 922 项、骨架 372 项及真实 PMX/PMD 删除重载验证通过，两产品构建通过。未生成最终形变或新增公共 ABI；翻转、冲量表情仍缺加载和求值实现，捕获明确拒绝。main 阴影同步暂缓，正式 release 未覆盖。
 
 [2026-10-27 独立骨架定义](records/abi-bone-definition-snapshot-2026-10-27.md)：内部 `BoneDefinitionSnapshot` 深拷贝骨架、PMX 原链与运行 IK 链、selector 映射，保留顺序及类型语义，源销毁后并发读取。专项 372 项、骨骼动作 973 项、显示轨道 4,426 项、真实 PMX/PMD 及 PMM 生命周期通过，两产品构建通过。审查发现的 PMD 未启用字段过严校验已用失败反例修复。尚未生成或公开完整姿态，main 阴影同步暂缓，正式 release 未覆盖。

@@ -35,15 +35,15 @@
 //      36/56 set to 1.0).  Type 8 morphs (and type-0 groups referring to
 //      them, weight * ref weight) contribute 128-byte entries at morph+124,
 //      count morph+84 { int matIdx (-1 = all materials); byte calcMode@+4
-//      (1 = additive, 0 = multiplicative); channel deltas at the same
+//      (nonzero = additive, 0 = multiplicative); channel deltas at the same
 //      offsets as the pools }:
 //        additive:       add[ch] += delta[ch] * w
 //        multiplicative: mul[ch]  = (1 - (1 - delta[ch]) * w) * mul[ch]
 //   3. Compose (0x4996C9..0x4999D0): for every material (count model+28,
 //      2292-byte records at model+32):  mat[dst] = mul[ch]*base[ch] + add[ch]
 //      with base = the load-time pool at model+8756.  Only 16 of the 28
-//      channels are written back; the other 12 accumulate in the pools but
-//      are never consumed - faithful to the original.
+//      channels are written back. The other 12 are texture/sphere/toon tint
+//      add/multiply channels consumed separately by model_renderers.cpp.
 //
 // Deviation: the original unrolls every channel access per code path; the
 // port loops over the same offset sets (arithmetic identical, order of
