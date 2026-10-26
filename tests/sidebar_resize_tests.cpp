@@ -744,6 +744,7 @@ void CheckShadowFilter(MMDApp* app) {
 #include "plugins/bone_kinematic_host_checks.inc"
 #include "plugins/morph_definition_host_checks.inc"
 #include "plugins/morph_evaluation_host_checks.inc"
+#include "plugins/bone_evaluation_host_checks.inc"
 #include "plugins/evaluation_morph_host_checks.inc"
 #include "plugins/evaluation_display_host_checks.inc"
 #include "plugins/slider_hover_host_checks.inc"
@@ -877,6 +878,9 @@ int main(int argc, char** argv) {
     }
     if(argc==2 && std::string(argv[1])=="--bone-kinematic-only") {
         bone_kinematic_probe::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
+    }
+    if(argc==2 && std::string(argv[1])=="--bone-evaluation-only") {
+        bone_evaluation_probe::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }
     if(argc==2 && std::string(argv[1])=="--morph-definition-only") {
         morph_definition_probe::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
