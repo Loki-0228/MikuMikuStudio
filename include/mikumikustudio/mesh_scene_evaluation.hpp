@@ -4,6 +4,7 @@
 #include "mikumikustudio/mesh_evaluation.hpp"
 
 namespace mikumikustudio {
+class MeshDefinitionSnapshot;
 // Internal coherent scene capture. The caller serializes Capture with model
 // edits and lifetime changes. No model pointer is retained afterwards.
 class MeshSceneFrame final {
@@ -39,6 +40,9 @@ public:
         std::uint32_t count, std::uint64_t maxRetainedBytes = 512ull * 1024 * 1024);
     std::uint32_t ModelCount() const noexcept;
     std::uint64_t RetainedBytes() const noexcept;
+    // Frozen topology and bind data captured alongside this scene; index order
+    // matches BoneSceneFrame::ModelAt. Borrowed until the source is destroyed.
+    const MeshDefinitionSnapshot* MeshAt(std::uint32_t index) const noexcept;
     // Uses the same exact time and frozen inputs for bones and geometry.
     // Borrowed inputs/context remain alive through the call; no partial frame
     // escapes. Workspace limit is conservative accounting, not a heap cap.

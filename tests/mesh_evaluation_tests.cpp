@@ -175,6 +175,8 @@ void SceneCapture(const BoneTransformContext& context) {
         BoneSceneModelInput input{0,{123,456,1},model->raw()};
         source=MeshSceneSource::Capture(&input,1);
         CHECK(source->ModelCount()==1);
+        CHECK(source->MeshAt(0) && !source->MeshAt(1));
+        MeshDefinitionVertex frozenBind{};CHECK(source->MeshAt(0)->VertexAt(3,frozenBind));
         CHECK(Throws<std::length_error>([&]{MeshSceneSource::Capture(&input,1,source->RetainedBytes()-1);}));
         CHECK(MeshSceneSource::Capture(&input,1,source->RetainedBytes())->RetainedBytes()==source->RetainedBytes());
         old=source->EvaluateAt(time,context);
@@ -209,9 +211,11 @@ void SceneCapture(const BoneTransformContext& context) {
         for(int n=0;n<300&&!succeeded;++n){failAfter=n;try{auto result=source->EvaluateAt(time,context);failAfter=-1;CHECK(result->ModelCount()==1);succeeded=true;}catch(const std::bad_alloc&){failAfter=-1;++failed;}catch(...){failAfter=-1;throw;}}
         CHECK(succeeded&&failed>0);
         geometry.pmx[3].position[0]=999;
+        MeshDefinitionVertex unchangedBind{};CHECK(source->MeshAt(0)->VertexAt(3,unchangedBind));CHECK(Bits(frozenBind.position,unchangedBind.position));
     }
     auto fresh=source->EvaluateAt(time,context);
     MeshEvaluationVertex actual{}; CHECK(fresh->ModelFrame(0)->VertexAt(3,actual)); CHECK(Bits(actual,expected));
+    MeshDefinitionVertex sourceAfterDelete{};CHECK(source->MeshAt(0)->VertexAt(3,sourceAfterDelete));CHECK(sourceAfterDelete.position[0]!=999);
     std::atomic<unsigned> evalErrors{0};std::array<std::thread,4> evaluations;
     for(auto& worker:evaluations)worker=std::thread([&]{try{for(unsigned n=0;n<4;++n){auto frame=source->EvaluateAt(time,context);MeshEvaluationVertex value;if(!frame->ModelFrame(0)->VertexAt(3,value)||!Bits(value,expected))++evalErrors;}}catch(...){++evalErrors;}});
     for(auto& worker:evaluations)worker.join();CHECK(evalErrors==0);
@@ -220,7 +224,7 @@ void SceneCapture(const BoneTransformContext& context) {
     for(auto& worker:workers) worker=std::thread([&]{for(unsigned j=0;j<100;++j){MeshEvaluationVertex v;if(!old->ModelFrame(0)->VertexAt(3,v)||!Bits(v,expected))++errors;}});
     for(auto& worker:workers)worker.join();CHECK(errors==0);
     auto empty=MeshSceneSource::Capture(nullptr,0); auto emptyFrame=empty->EvaluateAt(time,context);
-    CHECK(empty->ModelCount()==0 && emptyFrame->ModelCount()==0 && !emptyFrame->ModelFrame(0));
+    CHECK(empty->ModelCount()==0 && !empty->MeshAt(0) && emptyFrame->ModelCount()==0 && !emptyFrame->ModelFrame(0));
     EvaluationTime boundary;CHECK(EvaluationTime::FromSeconds(18014398509481983LL,540431955284459520ULL,boundary));
     CHECK(boundary.Frame()==1.0 && boundary.DiscreteFrame()==0);
     auto boundaryFrame=empty->EvaluateAt(boundary,context);

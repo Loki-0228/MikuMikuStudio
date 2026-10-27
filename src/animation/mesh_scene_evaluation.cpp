@@ -70,6 +70,9 @@ std::uint32_t MeshSceneSource::ModelCount() const noexcept {
     return static_cast<std::uint32_t>(impl_->models.size());
 }
 std::uint64_t MeshSceneSource::RetainedBytes() const noexcept { return impl_->bytes; }
+const MeshDefinitionSnapshot* MeshSceneSource::MeshAt(std::uint32_t index) const noexcept {
+    return index < impl_->models.size() ? impl_->models[index].mesh.get() : nullptr;
+}
 
 std::unique_ptr<MeshSceneFrame> MeshSceneSource::EvaluateAt(
     const EvaluationTime& time, const BoneTransformContext& context,

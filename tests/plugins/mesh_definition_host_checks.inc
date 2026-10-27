@@ -161,6 +161,7 @@ void RunImpl(MMDApp* app) {
     {
         const Proof proof(app,raw);
         scene=MeshSceneSource::Capture(&input,1);
+        Check(scene->MeshAt(0)&&Matches(*scene->MeshAt(0),original)&&!scene->MeshAt(1),"coherent scene owns real topology and bind data from the same capture");
         geometry=scene->EvaluateAt(time,*context);
         auto mesh=MeshDefinitionSnapshot::Capture(raw);
         auto definitions=MorphDefinitionSnapshot::Capture(raw);
@@ -217,6 +218,7 @@ void RunImpl(MMDApp* app) {
     app->CurrentFrame()=0;const auto project=std::filesystem::absolute(L"mesh-definition.pmm");
     Check(SaveSceneCopy(app,project.c_str()),"save real model in PMM");
     ResetAppState(app);Check(!app->ModelSlot(0),"delete original source model");Workers(*old,original,*newer,edited);
+    Check(scene->MeshAt(0)&&Matches(*scene->MeshAt(0),original),"coherent scene topology survives real source deletion");
     auto detached=scene->EvaluateAt(time,*context);scene.reset();
     Check(detached->ModelFrame(0)->VertexCount()==frozenGeometry.size(),"frozen scene evaluates after real source deletion");
     for(uint32_t i=0;i<frozenGeometry.size();++i){MeshEvaluationVertex vertex;Check(detached->ModelFrame(0)->VertexAt(i,vertex),"read detached real vertex");

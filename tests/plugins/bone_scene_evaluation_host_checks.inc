@@ -1,5 +1,10 @@
 #include "mikumikustudio/bone_scene_evaluation.hpp"
+#include "mikumikustudio/mesh_scene_evaluation.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
+#include <d3d9.h>
+
+namespace mikumikustudio { bool UpdateModelVertexBuffersCpu(MMDApp*, unsigned char*, const float[16]); }
 
 // Include after bone_evaluation_host_checks.inc. Its native fresh-basis helper
 // and deep source/history proofs are shared; the scene oracle below is native.
@@ -64,6 +69,66 @@ ScenePoses NativeAt(MMDApp* app,int frame,bool wrongPerModel=false) {
     return result;
 }
 Oracle Native(MMDApp* app) {Oracle out;for(unsigned t=0;t<6;++t) out[t]=NativeAt(app,kFrames[t]);return out;}
+// Test-owned typed COM buffers let the real native CPU worker run without
+// reading from, replacing or requiring a GPU-managed vertex buffer.
+struct CpuBuffer final : IDirect3DVertexBuffer9 {
+    std::vector<float> values; bool locked=false;
+    explicit CpuBuffer(size_t count):values(count,-999.f){}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID,void** out) override {if(out)*out=nullptr;return E_NOINTERFACE;}
+    ULONG STDMETHODCALLTYPE AddRef() override{return 2;}
+    ULONG STDMETHODCALLTYPE Release() override{return 1;}
+    HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9**) override{return E_NOTIMPL;}
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID,const void*,DWORD,DWORD) override{return E_NOTIMPL;}
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID,void*,DWORD*) override{return E_NOTIMPL;}
+    HRESULT STDMETHODCALLTYPE FreePrivateData(REFGUID) override{return E_NOTIMPL;}
+    DWORD STDMETHODCALLTYPE SetPriority(DWORD) override{return 0;}
+    DWORD STDMETHODCALLTYPE GetPriority() override{return 0;}
+    void STDMETHODCALLTYPE PreLoad() override{}
+    D3DRESOURCETYPE STDMETHODCALLTYPE GetType() override{return D3DRTYPE_VERTEXBUFFER;}
+    HRESULT STDMETHODCALLTYPE Lock(UINT offset,UINT size,void** out,DWORD flags) override {
+        if(locked||!out||offset||size!=values.size()*sizeof(float)||flags)return E_FAIL;
+        locked=true;*out=values.data();return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE Unlock() override{if(!locked)return E_FAIL;locked=false;return S_OK;}
+    HRESULT STDMETHODCALLTYPE GetDesc(D3DVERTEXBUFFER_DESC*) override{return E_NOTIMPL;}
+};
+struct NativeMesh { std::vector<float> values; uint32_t count=0,uvCount=0; };
+using SceneMeshes=std::array<NativeMesh,3>;
+SceneMeshes NativeMeshes(MMDApp* app) {
+    SceneMeshes result;const float world[16]{1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    for(unsigned row=0;row<3;++row) {
+        auto* raw=app->ModelSlot(kSlots[row]);auto& model=*mdl::Mdl(raw);
+        auto& out=result[row];out.count=model.vertexCount;out.uvCount=model.pmxAdditionalUvCount;
+        Check(model.physicsMode==2 && out.count>0 && out.uvCount<=4,"native three-model fixture has actual PMX vertices and valid UV stride");
+        const auto stride=8u+4u*out.uvCount;
+        CpuBuffer body(size_t(out.count)*stride),edge(size_t(out.count)*4);
+        struct RestoreBuffers {
+            mdl::ModelRecord& model;void* body;void* edge;
+            ~RestoreBuffers(){model.vertexBuffer=body;model.vertexBuffer2=edge;}
+        } restore{model,model.vertexBuffer,model.vertexBuffer2};
+        model.vertexBuffer=&body;model.vertexBuffer2=&edge;
+        Check(UpdateModelVertexBuffersCpu(app,raw,world),"real CPU skinning fills private typed buffers for loaded model");
+        Check(!body.locked&&!edge.locked,"native skinning unlocks its test buffers");
+        out.values=std::move(body.values);
+        model_vertex_cache::Forget(raw);
+    }
+    return result;
+}
+bool MeshFrameMatches(const MeshSceneFrame& actual,const SceneMeshes& expected) {
+    if(actual.ModelCount()!=3)return false;
+    for(unsigned row=0;row<3;++row) {
+        const auto* frame=actual.ModelFrame(row);const auto& src=expected[row];
+        if(!frame||frame->VertexCount()!=src.count||frame->AdditionalUvCount()!=src.uvCount)return false;
+        const auto stride=8u+4u*src.uvCount;
+        for(uint32_t i=0;i<src.count;++i) {
+            MeshEvaluationVertex vertex{};if(!frame->VertexAt(i,vertex))return false;
+            const float* native=src.values.data()+size_t(i)*stride;
+            if(std::memcmp(vertex.position.data(),native,12)||std::memcmp(vertex.normal.data(),native+3,12)||std::memcmp(vertex.uv.data(),native+6,8))return false;
+            for(unsigned u=0;u<src.uvCount;++u)if(std::memcmp(vertex.additionalUv[u].data(),native+8+u*4,16))return false;
+        }
+    }
+    return true;
+}
 bool FrameMatches(const BoneSceneFrame& actual,const ScenePoses& wanted,const Infos& info,double time) {
     if(actual.ModelCount()!=3||actual.Frame()!=time)return false;
     for(unsigned i=0;i<3;++i) {BoneSceneModelInfo got{};const auto* child=actual.ModelFrame(i);
@@ -137,6 +202,22 @@ void Run(MMDApp* app) {
     const auto key=targetModel.boneCount+3*2;const auto saved=targetModel.boneKeys[key];targetModel.boneKeys[key].position[0]+=1.75f;
     const auto edited=Native(app);targetModel.boneKeys[key]=saved;
     Check(bone_evaluation_probe::Different(original[2][1],edited[2][1])&&bone_evaluation_probe::Different(original[2][0],edited[2][0]),"changing only target motion affects consumer and transitive dependent");
+    // Bind one existing vertex in each dependent to a bone that actually
+    // changes. The original fixture's active skinning weights need not name
+    // any affected bone, so pose differences alone cannot prove deformation.
+    for(unsigned row:{0u,1u}) {
+        auto& model=*mdl::Mdl(app->ModelSlot(kSlots[row]));uint32_t chosen=model.boneCount;
+        for(uint32_t bone=0;bone<model.boneCount;++bone)
+            if(original[2][row][bone].scaled!=edited[2][row][bone].scaled){chosen=bone;break;}
+        Check(chosen<model.boneCount&&model.vertexCount>0,"dependent has a changing bone and a vertex");
+        model.pmxVertices[0].weightType=mdl::PmxWeightType::bdef1;
+        model.pmxVertices[0].bone[0]=int32_t(chosen);
+    }
+    NativeAt(app,10);const auto originalMeshes=NativeMeshes(app);
+    targetModel.boneKeys[key].position[0]+=1.75f;
+    NativeAt(app,10);const auto editedMeshes=NativeMeshes(app);targetModel.boneKeys[key]=saved;
+    Check(originalMeshes[1].values!=editedMeshes[1].values&&originalMeshes[0].values!=editedMeshes[0].values,
+        "real target motion changes consumer and transitive dependent skinned vertices");
     for(unsigned slot=0;slot<3;++slot){bone_scale::RestoreTransforms(app->ModelSlot(slot));mdl::Mdl(app->ModelSlot(slot))->boneTable[0].trans[0]=123;}
     app->CurrentFrame()=0;app->SceneModified()=0;
     // Current time is inactive: nevertheless every future reference is validated.
@@ -144,24 +225,34 @@ void Run(MMDApp* app) {
     for(const auto invalid:{mdl::BoneReference{99,0},mdl::BoneReference{1,100000}}){future=invalid;bool rejected=false;
         {const Proof proof(app);try{auto unused=BoneSceneSource::Capture(inputs.data(),3);}catch(const std::invalid_argument&){rejected=true;}proof.Verify();}
         Check(rejected,"future missing slot or invalid target bone rejects scene capture atomically");}future=futureSaved;
-    std::unique_ptr<BoneSceneSource> old,newer;
-    {const Proof proof(app);old=BoneSceneSource::Capture(inputs.data(),3);Check(old&&Matches(*old,*context,original,info),"captured scene matches real native phase and model order");ExactBeforeParentKey(*old,*context,info);proof.Verify();}
+    std::unique_ptr<BoneSceneSource> old,newer;std::unique_ptr<MeshSceneSource> oldMeshes,newMeshes;
+    EvaluationTime meshTime;Check(EvaluationTime::FromFrame(10,meshTime),"independent mesh comparison time is valid");
+    {const Proof proof(app);old=BoneSceneSource::Capture(inputs.data(),3);Check(old&&Matches(*old,*context,original,info),"captured scene matches real native phase and model order");ExactBeforeParentKey(*old,*context,info);
+        oldMeshes=MeshSceneSource::Capture(inputs.data(),3);auto frame=oldMeshes->EvaluateAt(meshTime,*context);
+        Check(FrameMatches(frame->Bones(),original[2],info,10)&&MeshFrameMatches(*frame,originalMeshes),"three frozen models match native phase order and actual CPU skinned vertices");proof.Verify();}
     targetModel.boneKeys[key].position[0]+=1.75f;
-    {const Proof proof(app);newer=BoneSceneSource::Capture(inputs.data(),3);Workers(*old,*newer,*context,original,edited,info);proof.Verify();}
+    {const Proof proof(app);newer=BoneSceneSource::Capture(inputs.data(),3);Workers(*old,*newer,*context,original,edited,info);
+        newMeshes=MeshSceneSource::Capture(inputs.data(),3);auto after=newMeshes->EvaluateAt(meshTime,*context);auto before=oldMeshes->EvaluateAt(meshTime,*context);
+        Check(FrameMatches(after->Bones(),edited[2],info,10)&&MeshFrameMatches(*after,editedMeshes),"edited target yields native consumer and transitive skinned geometry");
+        Check(FrameMatches(before->Bones(),original[2],info,10)&&MeshFrameMatches(*before,originalMeshes),"old mesh scene retains original target motion");proof.Verify();}
     targetModel.boneKeys[key]=saved;
     auto retainedOld=old->Evaluate(10,*context),retainedNew=newer->Evaluate(10,*context);
     NativeAt(app,0);for(unsigned slot=0;slot<3;++slot)bone_scale::RestoreTransforms(app->ModelSlot(slot));app->CurrentFrame()=0;
     const auto project=std::filesystem::absolute(L"bone-scene-evaluation.pmm");Check(SaveSceneCopy(app,project.c_str()),"save real three-model PMM with registered external-parent windows");
     ResetAppState(app);Workers(*old,*newer,*context,original,edited,info);ExactBeforeParentKey(*old,*context,info);
+    {auto before=oldMeshes->EvaluateAt(meshTime,*context);auto after=newMeshes->EvaluateAt(meshTime,*context);
+        Check(MeshFrameMatches(*before,originalMeshes)&&MeshFrameMatches(*after,editedMeshes),"mesh scenes retain original and edited geometry after all source models are deleted");}
     load();auto replacementInputs=PublishInputs(app);const auto replacementInfo=Describe(replacementInputs);
     Check(!SameId(info[2].identity,replacementInfo[2].identity),"reused target slot receives a different real host identity");
     {const Proof proof(app);auto replacement=BoneSceneSource::Capture(replacementInputs.data(),3);Check(replacement&&Matches(*replacement,*context,original,replacementInfo),"new scene capture uses replacement identities");Workers(*old,*newer,*context,original,edited,info);proof.Verify();}
     ResetAppState(app);wcscpy_s(app->state.envFileName,project.c_str());LoadSceneFile();Check(app->ModelSlot(0)&&app->ModelSlot(1)&&app->ModelSlot(2),"reload actual three-model PMM");
     auto reloadInputs=PublishInputs(app);const auto reloadInfo=Describe(reloadInputs);
     {const Proof proof(app);auto restored=BoneSceneSource::Capture(reloadInputs.data(),3);Check(restored&&Matches(*restored,*context,original,reloadInfo),"PMM reload preserves native dependency motion and phase ordering");Workers(*old,*newer,*context,original,edited,info);proof.Verify();}
-    ResetAppState(app);old.reset();newer.reset();context.reset();bool retained=false;
+    auto retainedMesh=oldMeshes->EvaluateAt(meshTime,*context);
+    ResetAppState(app);old.reset();newer.reset();oldMeshes.reset();newMeshes.reset();context.reset();bool retained=false;
     std::thread reader([&]{retained=FrameMatches(*retainedOld,original[2],info,10)&&FrameMatches(*retainedNew,edited[2],info,10);});reader.join();
     Check(retained,"owned scene frames retain identities and poses after all models sources and math context are destroyed");
+    Check(MeshFrameMatches(*retainedMesh,originalMeshes),"owned three-model mesh frame survives source models and math context");
     std::puts("Frozen bone scene: actual three-model two-phase native parity, frozen target motion, identities and lifetime passed");
 }
 }
