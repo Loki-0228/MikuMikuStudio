@@ -231,5 +231,135 @@ void SceneCapture(const BoneTransformContext& context) {
     CHECK(boundaryFrame->Time().Frame()==1.0 && boundaryFrame->Time().DiscreteFrame()==0);
     CHECK(old->Time().Frame()==5.25 && old->Time().DiscreteFrame()==5);
 }
+
+mdl::MaterialMorphChannels MaterialChannels(float seed) {
+    mdl::MaterialMorphChannels value{};
+    for(unsigned i=0;i<4;++i){value.diffuse[i]=seed+.01f*float(i);value.edgeColor[i]=seed+.05f*float(i);
+        value.textureTint[i]=seed+.09f*float(i);value.sphereTint[i]=seed+.13f*float(i);value.toonTint[i]=seed+.17f*float(i);}
+    for(unsigned i=0;i<3;++i){value.specular[i]=seed+.02f*float(i);value.ambient[i]=seed+.03f*float(i);}
+    value.specularPower=seed+.21f;value.edgeSize=seed+.23f;return value;
 }
-int main(){try{auto ctx=BoneTransformContext::Create();CHECK(bool(ctx));mesh_probe::Case(false,0,*ctx);for(unsigned u=0;u<=4;++u)mesh_probe::Case(true,u,*ctx);mesh_probe::EmptyAndLifetime();mesh_probe::SceneCapture(*ctx);std::printf("PASS %u checks: CPU oracle PMD and PMX UV 0-4 and coherent scene\n",checks);return 0;}catch(const std::exception& e){failAfter=-1;std::fprintf(stderr,"FAIL %s exception: %s\n",currentCase,e.what());return 1;}}
+struct MaterialFixture {
+    Model& model;
+    Geometry geometry;
+    std::array<mdl::ModelMaterialRecord,2> materials{};
+    std::array<mdl::MaterialMorphPool,2> base{},add{},mul{};
+    std::array<mdl::PmxMaterialMorphEntry,2> additive{},multiply{};
+    std::array<mdl::PmxGroupMorphEntry,3> group{{{1,.5f},{2,-.25f},{1,-.375f}}};
+    explicit MaterialFixture(Model& input,bool pmx):model(input),geometry(input,pmx,0) {
+        auto& r=*model.record;r.materialCount=2;r.materials=materials.data();
+        r.materialMorphPools={base.data(),add.data(),mul.data()};
+        for(unsigned i=0;i<2;++i){auto& m=materials[i];base[i].channels=MaterialChannels(float(i+1)*.5f);
+            for(unsigned c=0;c<3;++c){m.diffuse[c]=float(10+i+c);m.diffuseMirror[c]=float(20+i+c);m.specular[c]=float(30+i+c);m.ambient[c]=float(40+i+c);}
+            m.diffuse[3]=.6f+float(i)*.1f;for(unsigned c=0;c<4;++c)m.edgeColor[c]=float(i+c+1)*.2f;
+            m.specularPower=2+float(i);m.edgeSize=.25f+float(i);}
+        if(!pmx)return;
+        r.morphCount=3;
+        for(unsigned i=0;i<3;++i){geometry.morphs[i]={};std::snprintf(geometry.morphs[i].name,20,"material-%u",i);geometry.morphs[i].panel=mdl::MorphPanel::other;}
+        additive[0].materialIndex=-1;additive[0].operation=1;additive[0].channels=MaterialChannels(.125f);
+        additive[1].materialIndex=0;additive[1].operation=197;additive[1].channels=MaterialChannels(-.2f);
+        multiply[0].materialIndex=-1;multiply[0].operation=0;multiply[0].channels=MaterialChannels(.5f);
+        multiply[1].materialIndex=1;multiply[1].operation=0;multiply[1].channels=MaterialChannels(1.25f);
+        geometry.morphs[0].type=0;geometry.morphs[0].groupCount=3;geometry.morphs[0].groupEntries=group.data();
+        geometry.morphs[1].type=8;geometry.morphs[1].materialCount=2;geometry.morphs[1].materialEntries=additive.data();
+        geometry.morphs[2].type=8;geometry.morphs[2].materialCount=2;geometry.morphs[2].materialEntries=multiply.data();
+        CHECK(mdl::MorphKeyPoolEnsure(r,6));
+        const float first[]{-1.5f,2.25f,-.75f},last[]{2.5f,-1.25f,1.75f};
+        for(unsigned i=0;i<3;++i){r.morphKeys[i]={};r.morphKeys[3+i]={};r.morphKeys[i].allocated=1;r.morphKeys[i].next=3+i;r.morphKeys[i].value=first[i];
+            r.morphKeys[3+i].allocated=1;r.morphKeys[3+i].frame=10;r.morphKeys[3+i].previous=i;r.morphKeys[3+i].value=last[i];}
+    }
+};
+bool MaterialMatches(const MeshSceneMaterial& actual,const mdl::ModelMaterialRecord& native,
+                     const mdl::MaterialMorphChannels* add,const mdl::MaterialMorphChannels* mul,bool pmx) {
+    if(actual.physicsMode!=(pmx?2:0))return false;
+    for(unsigned i=0;i<3;++i)if(!Bits(actual.nativeDiffuse[i],native.diffuse[i])||
+        !Bits(actual.diffuseMirrorAndAlpha[i],native.diffuseMirror[i])||!Bits(actual.specular[i],native.specular[i])||!Bits(actual.ambient[i],native.ambient[i]))return false;
+    if(!Bits(actual.diffuseMirrorAndAlpha[3],native.diffuse[3])||!Bits(actual.specularPower,native.specularPower)||!Bits(actual.edgeSize,native.edgeSize))return false;
+    for(unsigned i=0;i<4;++i){if(!Bits(actual.edgeColor[i],native.edgeColor[i]))return false;
+        if(pmx){if(!Bits(actual.textureAdd[i],add->textureTint[i])||!Bits(actual.textureMultiply[i],mul->textureTint[i])||
+            !Bits(actual.sphereAdd[i],add->sphereTint[i])||!Bits(actual.sphereMultiply[i],mul->sphereTint[i])||
+            !Bits(actual.toonAdd[i],add->toonTint[i])||!Bits(actual.toonMultiply[i],mul->toonTint[i]))return false;}
+        else if(actual.textureAdd[i]!=0||actual.sphereAdd[i]!=0||actual.toonAdd[i]!=0||
+            actual.textureMultiply[i]!=1||actual.sphereMultiply[i]!=1||actual.toonMultiply[i]!=1)return false;
+    }return true;
+}
+bool SameMaterial(const MeshSceneMaterial& a,const MeshSceneMaterial& b){
+    return a.physicsMode==b.physicsMode && Bits(a.nativeDiffuse,b.nativeDiffuse) && Bits(a.specular,b.specular) && Bits(a.ambient,b.ambient) &&
+        Bits(a.diffuseMirrorAndAlpha,b.diffuseMirrorAndAlpha) && Bits(a.edgeColor,b.edgeColor) &&
+        Bits(a.textureAdd,b.textureAdd) && Bits(a.textureMultiply,b.textureMultiply) && Bits(a.sphereAdd,b.sphereAdd) &&
+        Bits(a.sphereMultiply,b.sphereMultiply) && Bits(a.toonAdd,b.toonAdd) && Bits(a.toonMultiply,b.toonMultiply) &&
+        Bits(a.specularPower,b.specularPower) && Bits(a.edgeSize,b.edgeSize);
+}
+void SceneMaterial(const BoneTransformContext& context,bool pmx){
+    currentCase=pmx?"coherent PMX materials native oracle":"coherent PMD static materials";
+    std::unique_ptr<MeshSceneFrame> retained;std::array<MeshSceneMaterial,2> expected{};
+    {
+        Model model;MaterialFixture fixture(model,pmx);
+        BoneSceneModelInput input{0,{991,992,1},model.raw()};
+        auto legacy=MeshSceneSource::Capture(&input,1);
+        auto source=MeshSceneSource::CaptureWithMaterials(&input,1);
+        CHECK(!legacy->HasMaterials()&&source->HasMaterials()&&source->RetainedBytes()>legacy->RetainedBytes());
+        CHECK(Throws<std::length_error>([&]{MeshSceneSource::Capture(&input,1,legacy->RetainedBytes()-1);}));
+        CHECK(MeshSceneSource::Capture(&input,1,legacy->RetainedBytes())->RetainedBytes()==legacy->RetainedBytes());
+        CHECK(Throws<std::length_error>([&]{MeshSceneSource::CaptureWithMaterials(&input,1,source->RetainedBytes()-1);}));
+        CHECK(MeshSceneSource::CaptureWithMaterials(&input,1,source->RetainedBytes())->RetainedBytes()==source->RetainedBytes());
+        auto sampling=morph_curve::SamplingState::Capture(model.raw());
+        for(double f:{0.,5.,10.}){
+            EvaluationTime time;CHECK(EvaluationTime::FromFrame(f,time));
+            const auto beforeMaterials=fixture.materials;const auto beforeAdd=fixture.add;const auto beforeMul=fixture.mul;
+            auto frame=source->EvaluateAt(time,context);
+            auto legacyFrame=legacy->EvaluateAt(time,context);
+            CHECK(!legacyFrame->HasMaterials()&&frame->HasMaterials()&&legacyFrame->MaterialCount(0)==0&&frame->RetainedBytes()>legacyFrame->RetainedBytes());
+            MeshSceneMaterial oldOutput;std::memset(&oldOutput,0xa5,sizeof(oldOutput));std::array<unsigned char,sizeof(oldOutput)> oldBytes{};
+            std::memcpy(oldBytes.data(),&oldOutput,sizeof(oldOutput));
+            CHECK(!legacyFrame->MaterialAt(0,0,oldOutput)&&std::memcmp(oldBytes.data(),&oldOutput,sizeof(oldOutput))==0);
+            CHECK(Throws<std::length_error>([&]{legacy->EvaluateAt(time,context,legacyFrame->RetainedBytes()-1);}));
+            CHECK(legacy->EvaluateAt(time,context,legacyFrame->RetainedBytes())->RetainedBytes()==legacyFrame->RetainedBytes());
+            for(unsigned vertex=0;vertex<Geometry::count;++vertex){MeshEvaluationVertex a,b;
+                CHECK(frame->ModelFrame(0)->VertexAt(vertex,a)&&legacyFrame->ModelFrame(0)->VertexAt(vertex,b));CHECK(Bits(a,b));}
+            CHECK(Bits(beforeMaterials,fixture.materials)&&Bits(beforeAdd,fixture.add)&&Bits(beforeMul,fixture.mul));
+            if(pmx){for(unsigned m=0;m<3;++m){float value=0;CHECK(sampling->Sample(int(m),f,value));fixture.geometry.morphs[m].value=value;}ModelApplyMorphs(model.raw());}
+            CHECK(frame->MaterialCount(0)==2 && frame->MaterialCount(1)==0);
+            for(unsigned material=0;material<2;++material){MeshSceneMaterial value{};CHECK(frame->MaterialAt(0,material,value));
+                CHECK(MaterialMatches(value,fixture.materials[material],pmx?&fixture.add[material].channels:nullptr,pmx?&fixture.mul[material].channels:nullptr,pmx));expected[material]=value;}
+            CHECK(expected[0].nativeDiffuse[0]!=expected[0].diffuseMirrorAndAlpha[0]);
+            auto unchanged=expected[0];std::array<unsigned char,sizeof(unchanged)> before{};std::memcpy(before.data(),&unchanged,sizeof(unchanged));
+            CHECK(!frame->MaterialAt(1,0,unchanged)&&std::memcmp(before.data(),&unchanged,sizeof(unchanged))==0);
+            CHECK(!frame->MaterialAt(0,2,unchanged)&&std::memcmp(before.data(),&unchanged,sizeof(unchanged))==0);
+            CHECK(Throws<std::length_error>([&]{source->EvaluateAt(time,context,frame->RetainedBytes()-1);}));
+            CHECK(source->EvaluateAt(time,context,frame->RetainedBytes())->RetainedBytes()==frame->RetainedBytes());
+            retained=std::move(frame);
+        }
+        EvaluationTime time;CHECK(EvaluationTime::FromFrame(10,time));bool succeeded=false;unsigned failures=0;
+        for(int point=0;point<300&&!succeeded;++point){failAfter=point;try{auto value=source->EvaluateAt(time,context);failAfter=-1;CHECK(value->MaterialCount(0)==2);succeeded=true;}
+            catch(const std::bad_alloc&){failAfter=-1;++failures;}catch(...){failAfter=-1;throw;}}
+        CHECK(succeeded&&failures>0);
+        std::atomic<unsigned> errors{0};std::array<std::thread,4> workers;
+        for(auto& worker:workers)worker=std::thread([&]{try{for(unsigned n=0;n<4;++n){auto frame=source->EvaluateAt(time,context);for(unsigned i=0;i<2;++i){MeshSceneMaterial value{};if(!frame->MaterialAt(0,i,value)||!SameMaterial(value,expected[i]))++errors;}}}catch(...){++errors;}});
+        for(auto& worker:workers)worker.join();CHECK(errors==0);
+    }
+    for(unsigned i=0;i<2;++i){MeshSceneMaterial value{};CHECK(retained->MaterialAt(0,i,value)&&SameMaterial(value,expected[i]));}
+    std::atomic<unsigned> errors{0};std::array<std::thread,4> readers;
+    for(auto& reader:readers)reader=std::thread([&]{for(unsigned n=0;n<100;++n)for(unsigned i=0;i<2;++i){MeshSceneMaterial value{};if(!retained->MaterialAt(0,i,value)||!SameMaterial(value,expected[i]))++errors;}});
+    for(auto& reader:readers)reader.join();CHECK(errors==0);
+}
+void NonfiniteMaterialPreservesMesh(const BoneTransformContext& context){
+    currentCase="unavailable material does not reject existing mesh";
+    for(bool pmx:{false,true}){
+        Model model;MaterialFixture fixture(model,pmx);
+        fixture.materials[0].diffuse[0]=std::numeric_limits<float>::quiet_NaN();
+        BoneSceneModelInput input{0,{881,882,1},model.raw()};
+        auto legacy=MeshSceneSource::Capture(&input,1);
+        auto source=MeshSceneSource::CaptureWithMaterials(&input,1);EvaluationTime time;
+        CHECK(EvaluationTime::FromFrame(5,time));auto frame=source->EvaluateAt(time,context);
+        auto legacyFrame=legacy->EvaluateAt(time,context);
+        CHECK(!legacyFrame->HasMaterials()&&legacyFrame->MaterialCount(0)==0&&legacyFrame->ModelFrame(0));
+        CHECK(frame->ModelFrame(0) && frame->ModelFrame(0)->VertexCount()==Geometry::count && frame->MaterialCount(0)==2);
+        MeshSceneMaterial output;std::memset(&output,0xa5,sizeof(output));std::array<unsigned char,sizeof(output)> before{};
+        std::memcpy(before.data(),&output,sizeof(output));
+        CHECK(!frame->MaterialAt(0,0,output)&&std::memcmp(before.data(),&output,sizeof(output))==0);
+        CHECK(frame->MaterialAt(0,1,output));
+    }
+}
+}
+int main(){try{auto ctx=BoneTransformContext::Create();CHECK(bool(ctx));mesh_probe::Case(false,0,*ctx);for(unsigned u=0;u<=4;++u)mesh_probe::Case(true,u,*ctx);mesh_probe::EmptyAndLifetime();mesh_probe::SceneCapture(*ctx);mesh_probe::SceneMaterial(*ctx,true);mesh_probe::SceneMaterial(*ctx,false);mesh_probe::NonfiniteMaterialPreservesMesh(*ctx);std::printf("PASS %u checks: CPU oracle PMD and PMX UV 0-4 and coherent scene\n",checks);return 0;}catch(const std::exception& e){failAfter=-1;std::fprintf(stderr,"FAIL %s exception: %s\n",currentCase,e.what());return 1;}}
