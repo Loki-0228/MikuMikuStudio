@@ -4,6 +4,7 @@
 #include "bone_evaluation_tests.cpp"
 #undef main
 #include "mikumikustudio/mesh_evaluation.hpp"
+#include "mikumikustudio/mesh_scene_evaluation.hpp"
 #include "mikumikustudio/mesh_definition_snapshot.hpp"
 #include "mikumikustudio/morph_evaluation.hpp"
 #include "mikumikustudio/mmd_app.hpp"
@@ -160,4 +161,66 @@ void EmptyAndLifetime(){
     for(auto& thread:threads)thread.join();CHECK(failures==0);
 }
 }
-int main(){try{auto ctx=BoneTransformContext::Create();CHECK(bool(ctx));mesh_probe::Case(false,0,*ctx);for(unsigned u=0;u<=4;++u)mesh_probe::Case(true,u,*ctx);mesh_probe::EmptyAndLifetime();std::printf("PASS %u checks: CPU oracle PMD and PMX UV 0-4\n",checks);return 0;}catch(const std::exception& e){failAfter=-1;std::fprintf(stderr,"FAIL %s exception: %s\n",currentCase,e.what());return 1;}}
+namespace mesh_probe {
+void SceneCapture(const BoneTransformContext& context) {
+    currentCase="coherent mesh scene";
+    std::unique_ptr<MeshSceneSource> source;
+    std::unique_ptr<MeshSceneFrame> old;
+    MeshEvaluationVertex expected{};
+    EvaluationTime time; CHECK(EvaluationTime::FromFrame(5.25, time));
+    {
+        auto model=std::make_unique<Model>();
+        Geometry geometry(*model,true,2);
+        model->record->morphCount=2;
+        BoneSceneModelInput input{0,{123,456,1},model->raw()};
+        source=MeshSceneSource::Capture(&input,1);
+        CHECK(source->ModelCount()==1);
+        CHECK(Throws<std::length_error>([&]{MeshSceneSource::Capture(&input,1,source->RetainedBytes()-1);}));
+        CHECK(MeshSceneSource::Capture(&input,1,source->RetainedBytes())->RetainedBytes()==source->RetainedBytes());
+        old=source->EvaluateAt(time,context);
+        CHECK(old->ModelCount()==1 && old->ModelFrame(0) && !old->ModelFrame(1));
+        BoneSceneModelInfo info{}; CHECK(old->Bones().ModelAt(0,info));
+        CHECK(info.identity.lo==123 && info.identity.hi==456 && info.identity.generation==1);
+        CHECK(old->ModelFrame(0)->VertexAt(3,expected));
+        auto mesh=MeshDefinitionSnapshot::Capture(model->raw());
+        auto definitions=MorphDefinitionSnapshot::Capture(model->raw());
+        auto sampling=morph_curve::SamplingState::Capture(model->raw());
+        std::array<float,2> sampled{};
+        for(unsigned i=0;i<sampled.size();++i) CHECK(sampling->Sample(i,time.Frame(),sampled[i]));
+        auto morph=MorphEvaluationFrame::Evaluate(*definitions,sampled.data(),unsigned(sampled.size()));
+        auto separate=Mesh::Evaluate(*mesh,*morph,*old->Bones().ModelFrame(0),context);
+        for(unsigned i=0;i<Geometry::count;++i){MeshEvaluationVertex a,b;CHECK(old->ModelFrame(0)->VertexAt(i,a)&&separate->VertexAt(i,b));CHECK(Bits(a,b));}
+        CHECK(Throws<std::length_error>([&]{source->EvaluateAt(time,context,old->RetainedBytes()-1);}));
+        CHECK(source->EvaluateAt(time,context,old->RetainedBytes())->RetainedBytes()==old->RetainedBytes());
+        CHECK(Throws<std::length_error>([&]{source->EvaluateAt(time,context,old->RetainedBytes(),0);}));
+        BoneSceneModelInput duplicate[]{input,input};
+        CHECK(Throws<std::invalid_argument>([&]{MeshSceneSource::Capture(duplicate,2);}));
+        Model second; Geometry other(second,true,1); second.record->morphCount=2;
+        other.pmx[3].position[0]+=10;
+        BoneSceneModelInput pair[]{input,{1,{789,123,2},second.raw()}};
+        auto pairSource=MeshSceneSource::Capture(pair,2);
+        auto pairFrame=pairSource->EvaluateAt(time,context);
+        BoneSceneModelInfo secondInfo{}; CHECK(pairFrame->Bones().ModelAt(1,secondInfo));
+        CHECK(secondInfo.identity.lo==789 && secondInfo.identity.generation==2);
+        MeshEvaluationVertex firstVertex{},secondVertex{};
+        CHECK(pairFrame->ModelFrame(0)->VertexAt(3,firstVertex) && pairFrame->ModelFrame(1)->VertexAt(3,secondVertex));
+        CHECK(Bits(firstVertex,expected) && !Bits(firstVertex,secondVertex));
+        bool succeeded=false;unsigned failed=0;
+        for(int n=0;n<300&&!succeeded;++n){failAfter=n;try{auto result=source->EvaluateAt(time,context);failAfter=-1;CHECK(result->ModelCount()==1);succeeded=true;}catch(const std::bad_alloc&){failAfter=-1;++failed;}catch(...){failAfter=-1;throw;}}
+        CHECK(succeeded&&failed>0);
+        geometry.pmx[3].position[0]=999;
+    }
+    auto fresh=source->EvaluateAt(time,context);
+    MeshEvaluationVertex actual{}; CHECK(fresh->ModelFrame(0)->VertexAt(3,actual)); CHECK(Bits(actual,expected));
+    std::atomic<unsigned> evalErrors{0};std::array<std::thread,4> evaluations;
+    for(auto& worker:evaluations)worker=std::thread([&]{try{for(unsigned n=0;n<4;++n){auto frame=source->EvaluateAt(time,context);MeshEvaluationVertex value;if(!frame->ModelFrame(0)->VertexAt(3,value)||!Bits(value,expected))++evalErrors;}}catch(...){++evalErrors;}});
+    for(auto& worker:evaluations)worker.join();CHECK(evalErrors==0);
+    source.reset(); CHECK(old->ModelFrame(0)->VertexAt(3,actual)); CHECK(Bits(actual,expected));
+    std::atomic<unsigned> errors{0};std::array<std::thread,4> workers;
+    for(auto& worker:workers) worker=std::thread([&]{for(unsigned j=0;j<100;++j){MeshEvaluationVertex v;if(!old->ModelFrame(0)->VertexAt(3,v)||!Bits(v,expected))++errors;}});
+    for(auto& worker:workers)worker.join();CHECK(errors==0);
+    auto empty=MeshSceneSource::Capture(nullptr,0); auto emptyFrame=empty->EvaluateAt(time,context);
+    CHECK(empty->ModelCount()==0 && emptyFrame->ModelCount()==0 && !emptyFrame->ModelFrame(0));
+}
+}
+int main(){try{auto ctx=BoneTransformContext::Create();CHECK(bool(ctx));mesh_probe::Case(false,0,*ctx);for(unsigned u=0;u<=4;++u)mesh_probe::Case(true,u,*ctx);mesh_probe::EmptyAndLifetime();mesh_probe::SceneCapture(*ctx);std::printf("PASS %u checks: CPU oracle PMD and PMX UV 0-4 and coherent scene\n",checks);return 0;}catch(const std::exception& e){failAfter=-1;std::fprintf(stderr,"FAIL %s exception: %s\n",currentCase,e.what());return 1;}}

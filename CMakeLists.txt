@@ -350,6 +350,7 @@ add_library(mikumikustudio_core STATIC
     src/animation/bone_definition_snapshot.cpp
     src/animation/mesh_definition_snapshot.cpp
     src/animation/mesh_evaluation.cpp
+    src/animation/mesh_scene_evaluation.cpp
     src/animation/bone_evaluation.cpp
     src/animation/morph_definition_snapshot.cpp
     src/animation/morph_evaluation.cpp
@@ -570,6 +571,7 @@ if(MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932")
         src/animation/bone_definition_snapshot.cpp
         src/animation/mesh_definition_snapshot.cpp
         src/animation/mesh_evaluation.cpp
+        src/animation/mesh_scene_evaluation.cpp
         src/animation/bone_evaluation.cpp
         src/animation/morph_definition_snapshot.cpp
         src/animation/morph_evaluation.cpp
