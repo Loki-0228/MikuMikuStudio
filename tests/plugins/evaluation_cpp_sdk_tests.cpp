@@ -296,9 +296,105 @@ void ThreadAuthority(){
         readOk=source.Info(info)==MMS_OK&&source.Evaluate({7,30},frame)==MMS_OK&&frame.ReadBonePose(0,0,pose)==MMS_OK&&pose.rigid[12]==7.f&&frame.Retain(retained)==MMS_OK&&frame.Release()==MMS_OK&&retained.Release()==MMS_OK;
     });reader.join();CHECK(readOk);CHECK(source.Release()==MMS_OK&&fake.Live()==0);
 }
+
+struct MeshFake : Fake {
+    enum MeshOp {MeshCaps,MeshInfo,Indices,Materials,BindVertices,Vertices,MeshOpCount};
+    MmsEvaluationApiV1_5 mesh{};
+    std::array<MmsResult,MeshOpCount> meshResults{};
+    std::array<unsigned,MeshOpCount> meshCalls{};
+    int fault=0;MmsResult queryResult=MMS_OK;
+    MeshFake(){
+        std::memcpy(&mesh,&table,sizeof(table));mesh.h={sizeof(mesh),1,5};
+        mesh.getMeshCapabilities=Caps15;mesh.createMeshSceneSource=Create;
+        mesh.describeMesh=Info15;mesh.readMeshIndices=Indices15;mesh.readMeshMaterials=Materials15;
+        mesh.readMeshBindVertices=Bind15;mesh.readMeshVertices=Vertices15;
+    }
+    MmsHostV1 MeshHost(){auto host=Host();host.queryService=Query15;return host;}
+    static MeshFake& Self15(void* context){return *static_cast<MeshFake*>(context);}
+    static MmsResult MMS_CALL Query15(void* context,MmsString name,uint32_t major,uint32_t minor,uint32_t bytes,void* out){auto& f=Self15(context);
+        f.queryMajor=major;f.queryMinor=minor;f.queryBytes=bytes;f.queriedName=name.bytes==18&&!std::memcmp(name.data,"mms.scene.evaluate",18);
+        if(!out||bytes<sizeof(f.mesh))return MMS_E_ARGUMENT;std::memcpy(out,&f.mesh,sizeof(f.mesh));return f.queryResult;
+    }
+    static MmsResult MMS_CALL Caps15(void* context,MmsEvaluationMeshCapsV1* out){auto& f=Self15(context);++f.meshCalls[MeshCaps];
+        *out={H<MmsEvaluationMeshCapsV1>(),MMS_EVALUATION_MESH_TOPOLOGY|MMS_EVALUATION_MESH_CPU_VERTICES,4,{0,0}};
+        if(f.fault==1)out->h.major=2;if(f.fault==2)out->maxItemsPerRead=0;if(f.fault==3)out->reserved[0]=1;
+        return f.meshResults[MeshCaps];
+    }
+    static MmsResult MMS_CALL Info15(void* context,MmsHandle handle,uint32_t model,MmsEvaluationMeshInfoV1* out){auto& f=Self15(context);++f.meshCalls[MeshInfo];
+        const auto* slot=f.Find(handle);if(!slot||slot->frame||model>1)return MMS_E_NOT_FOUND;
+        *out={H<MmsEvaluationMeshInfoV1>(),{{11+model,22},7},4,6,2,1,3,0};
+        if(f.fault==4)out->h.size=1;if(f.fault==5)out->additionalUvCount=5;if(f.fault==6)out->reserved=1;
+        return f.meshResults[MeshInfo];
+    }
+    static bool Range(MeshFake& f,MmsHandle handle,uint32_t model,uint32_t first,uint32_t count,uint32_t extent,bool frame){
+        auto* slot=f.Find(handle);return slot&&slot->frame==frame&&model<2&&first<=extent&&count<=extent-first;
+    }
+    static MmsResult MMS_CALL Indices15(void* context,MmsHandle h,uint32_t model,uint32_t first,uint32_t count,uint32_t* out){auto& f=Self15(context);++f.meshCalls[Indices];
+        if(!Range(f,h,model,first,count,6,false)||(count&&!out))return MMS_E_ARGUMENT;
+        for(uint32_t i=0;i<count;++i)out[i]=(first+i)%4;return f.meshResults[Indices];
+    }
+    static MmsResult MMS_CALL Materials15(void* context,MmsHandle h,uint32_t model,uint32_t first,uint32_t count,MmsEvaluationMeshMaterialV1* out){auto& f=Self15(context);++f.meshCalls[Materials];
+        if(!Range(f,h,model,first,count,2,false)||(count&&!out))return MMS_E_ARGUMENT;
+        for(uint32_t i=0;i<count;++i){out[i]={H<MmsEvaluationMeshMaterialV1>(),(first+i)*3,3,{0,0}};if(f.fault==7)out[i].reserved[0]=1;if(f.fault==8)out[i].h.major=2;}
+        return f.meshResults[Materials];
+    }
+    static MmsResult Vertex15(void* context,MmsHandle h,uint32_t model,uint32_t first,uint32_t count,MmsEvaluationMeshVertexV1* out,bool frame){auto& f=Self15(context);const auto op=frame?Vertices:BindVertices;++f.meshCalls[op];
+        if(!Range(f,h,model,first,count,4,frame)||(count&&!out))return MMS_E_ARGUMENT;
+        for(uint32_t i=0;i<count;++i){out[i]={};out[i].h=H<MmsEvaluationMeshVertexV1>();out[i].position[0]=float(first+i)+(frame?10.f:0.f);out[i].normal[1]=1;out[i].uv[0]=.25f;out[i].additionalUv[0]=.5f;
+            if(f.fault==9)out[i].h.major=2;if(f.fault==10)out[i].position[0]=std::numeric_limits<float>::quiet_NaN();if(f.fault==11)out[i].reserved[1]=1;}
+        return f.meshResults[op];
+    }
+    static MmsResult MMS_CALL Bind15(void* c,MmsHandle h,uint32_t m,uint32_t first,uint32_t count,MmsEvaluationMeshVertexV1* out){return Vertex15(c,h,m,first,count,out,false);}
+    static MmsResult MMS_CALL Vertices15(void* c,MmsHandle h,uint32_t m,uint32_t first,uint32_t count,MmsEvaluationMeshVertexV1* out){return Vertex15(c,h,m,first,count,out,true);}
+};
+static_assert(!std::is_copy_constructible_v<sdk::EvaluationMeshSource> && std::is_nothrow_move_constructible_v<sdk::EvaluationMeshSource>);
+static_assert(!std::is_copy_constructible_v<sdk::EvaluationMeshFrame> && std::is_nothrow_move_constructible_v<sdk::EvaluationMeshFrame>);
+static_assert(!std::is_move_assignable_v<sdk::EvaluationMeshSource> && !std::is_move_assignable_v<sdk::EvaluationMeshFrame>);
+
+void MeshSdk(){
+    stage="mesh sdk";MeshFake fake;sdk::EvaluationMeshServices service;
+    CHECK(sdk::EvaluationMeshServices::Query(fake.MeshHost(),service)==MMS_OK&&service.ready());
+    CHECK(fake.queryMajor==1&&fake.queryMinor==5&&fake.queryBytes==sizeof(MmsEvaluationApiV1_5)&&fake.queriedName);
+    MmsEvaluationMeshCapsV1 caps{};CHECK(service.Capabilities(caps)==MMS_OK&&caps.maxItemsPerRead==4&&caps.flags==3);
+    sdk::EvaluationMeshSource source;CHECK(service.Capture(source)==MMS_OK&&source.get()!=0);
+    MmsEvaluationMeshInfoV1 info{};CHECK(source.MeshInfo(0,info)==MMS_OK&&info.vertexCount==4&&info.indexCount==6&&info.additionalUvCount==1);
+    MmsEvaluationSceneInfoV1 sourceInfo{};MmsEvaluationSceneModelV1 model{};MmsEvaluationSceneBoneV1 bone{};
+    CHECK(source.Info(sourceInfo)==MMS_OK&&source.ModelAt(0,model)==MMS_OK&&source.BoneAt(0,0,bone)==MMS_OK);
+    std::vector<uint32_t> indices{999};std::vector<MmsEvaluationMeshMaterialV1> materials(1);std::vector<MmsEvaluationMeshVertexV1> bind(1),vertices(1);
+    CHECK(source.ReadIndices(0,1,3,indices)==MMS_OK&&indices==std::vector<uint32_t>({1,2,3}));
+    CHECK(source.ReadMaterials(0,0,2,materials)==MMS_OK&&materials.size()==2&&materials[1].firstIndex==3);
+    CHECK(source.ReadBindVertices(0,0,2,bind)==MMS_OK&&bind.size()==2&&bind[1].position[0]==1);
+    sdk::EvaluationMeshFrame frame;CHECK(source.Evaluate({1,2},frame)==MMS_OK);
+    MmsEvaluationFrameInfoV1 frameInfo{};MmsEvaluationScenePoseV1 pose{};
+    CHECK(frame.Info(frameInfo)==MMS_OK&&frame.ModelAt(0,model)==MMS_OK&&frame.ReadBonePose(0,0,pose)==MMS_OK);
+    CHECK(frame.ReadVertices(0,1,2,vertices)==MMS_OK&&vertices.size()==2&&vertices[0].position[0]==11);
+    for(auto op:{MeshFake::Indices,MeshFake::Materials,MeshFake::BindVertices,MeshFake::Vertices}){
+        fake.meshResults[op]=MMS_E_FAILED;const auto oldIndices=indices;const auto oldMaterials=materials;const auto oldBind=bind;const auto oldVertices=vertices;
+        const auto result=op==MeshFake::Indices?source.ReadIndices(0,0,1,indices):op==MeshFake::Materials?source.ReadMaterials(0,0,1,materials):op==MeshFake::BindVertices?source.ReadBindVertices(0,0,1,bind):frame.ReadVertices(0,0,1,vertices);
+        CHECK(result==MMS_E_FAILED&&indices==oldIndices&&materials.size()==oldMaterials.size()&&bind.size()==oldBind.size()&&vertices.size()==oldVertices.size());
+        CHECK(!std::memcmp(materials.data(),oldMaterials.data(),materials.size()*sizeof(materials[0]))&&!std::memcmp(bind.data(),oldBind.data(),bind.size()*sizeof(bind[0]))&&!std::memcmp(vertices.data(),oldVertices.data(),vertices.size()*sizeof(vertices[0])));
+        fake.meshResults[op]=MMS_OK;
+    }
+    for(int fault:{4,5,6}){auto output=Poison<MmsEvaluationMeshInfoV1>();fake.fault=fault;CHECK(source.MeshInfo(0,output)==(fault==4?MMS_E_VERSION:MMS_E_FAILED)&&Unchanged(output));}fake.fault=0;
+    for(int fault:{7,8}){auto prior=materials;fake.fault=fault;CHECK(source.ReadMaterials(0,0,1,materials)==(fault==8?MMS_E_VERSION:MMS_E_FAILED));CHECK(materials.size()==prior.size()&&!std::memcmp(materials.data(),prior.data(),materials.size()*sizeof(materials[0])));}fake.fault=0;
+    for(int fault:{9,10,11}){auto prior=vertices;fake.fault=fault;CHECK(frame.ReadVertices(0,0,1,vertices)==(fault==9?MMS_E_VERSION:MMS_E_FAILED));CHECK(vertices.size()==prior.size()&&!std::memcmp(vertices.data(),prior.data(),vertices.size()*sizeof(vertices[0])));}fake.fault=0;
+    auto prior=vertices;failAfter=0;const auto failed=frame.ReadVertices(0,0,1,vertices);failAfter=-1;CHECK(failed==MMS_E_MEMORY&&vertices.size()==prior.size()&&!std::memcmp(vertices.data(),prior.data(),vertices.size()*sizeof(vertices[0])));
+    CHECK(source.ReadIndices(0,6,0,indices)==MMS_OK&&indices.empty());indices={99};CHECK(source.ReadIndices(0,7,0,indices)==MMS_E_ARGUMENT&&indices==std::vector<uint32_t>({99}));
+    CHECK(source.ReadIndices(0,0,5,indices)==MMS_E_ARGUMENT&&indices==std::vector<uint32_t>({99}));
+    sdk::EvaluationMeshSource retained; sdk::EvaluationMeshFrame retainedFrame;
+    CHECK(source.Retain(retained)==MMS_OK&&frame.Retain(retainedFrame)==MMS_OK);
+    const auto sourceHandle=source.get(),frameHandle=frame.get();sdk::EvaluationMeshSource moved(std::move(source));sdk::EvaluationMeshFrame movedFrame(std::move(frame));
+    CHECK(!source&&!frame&&moved.get()==sourceHandle&&movedFrame.get()==frameHandle);
+    fake.results[Release]=MMS_E_BUSY;CHECK(moved.Release()==MMS_E_BUSY&&moved.get()==sourceHandle);fake.results[Release]=MMS_OK;
+    CHECK(moved.Release()==MMS_OK&&retained.Release()==MMS_OK&&movedFrame.ReadVertices(0,0,1,vertices)==MMS_OK);
+    CHECK(movedFrame.Release()==MMS_OK&&retainedFrame.Release()==MMS_OK&&fake.Live()==0);
+    sdk::EvaluationMeshServices preserved=service;fake.queryResult=MMS_E_UNSUPPORTED;
+    CHECK(sdk::EvaluationMeshServices::Query(fake.MeshHost(),preserved)==MMS_E_UNSUPPORTED&&preserved.ready()&&preserved.api().context==service.api().context);
+    Fake oldHost;sdk::EvaluationMeshServices missing;CHECK(sdk::EvaluationMeshServices::Query(oldHost.Host(),missing)==MMS_E_VERSION&&!missing.ready());
+}
 } // namespace
 int main(){
-    try{Negotiation();Ownership();FailedReads();FailedOwnership();ReleaseAndTransfer();ThreadAuthority();}
+    try{Negotiation();Ownership();FailedReads();FailedOwnership();ReleaseAndTransfer();ThreadAuthority();MeshSdk();}
     catch(const std::exception& error){failAfter=-1;std::fprintf(stderr,"EXCEPTION %s: %s\n",stage,error.what());return 1;}
     catch(...){failAfter=-1;std::fprintf(stderr,"EXCEPTION %s\n",stage);return 1;}
     std::printf("evaluation_cpp_sdk_tests: %u checks passed\n",checks);return 0;

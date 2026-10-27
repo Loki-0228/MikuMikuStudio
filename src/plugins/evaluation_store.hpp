@@ -35,10 +35,17 @@ struct EvaluationSceneFrameData {
     std::vector<uint8_t> visibility;
     uint64_t retainedBytes = 0;
     std::function<MmsResult(uint32_t model, uint32_t bone, MmsEvaluationScenePoseV1&)> sample;
+    std::vector<uint32_t> meshVertexCounts;
+    std::vector<uint32_t> meshAdditionalUvCounts;
+    std::function<MmsResult(uint32_t model, uint32_t vertex, MmsEvaluationMeshVertexV1&)> meshVertex;
 };
 struct EvaluationSceneSourceData {
     std::shared_ptr<const EvaluationSceneModels> models;
     uint64_t hostRevision = 0, retainedBytes = 0;
+    std::function<MmsResult(uint32_t model, MmsEvaluationMeshInfoV1&)> meshInfo;
+    std::function<MmsResult(uint32_t model, uint32_t index, uint32_t&)> meshIndex;
+    std::function<MmsResult(uint32_t model, uint32_t material, MmsEvaluationMeshMaterialV1&)> meshMaterial;
+    std::function<MmsResult(uint32_t model, uint32_t vertex, MmsEvaluationMeshVertexV1&)> meshBindVertex;
     std::function<MmsResult(const EvaluationTime&, uint64_t maxFrameBytes,
         uint64_t maxWorkspaceBytes, std::shared_ptr<const EvaluationSceneFrameData>&)> evaluate;
 };
@@ -61,7 +68,7 @@ public:
         uint32_t channels, uint64_t maxBytes, std::shared_ptr<const EvaluationData>&)>;
     using CaptureScene = std::function<MmsResult(const MmsEvaluationSceneQueryV1&,
         uint64_t maxBytes, std::shared_ptr<const EvaluationSceneSourceData>&)>;
-    explicit EvaluationStore(CaptureChannels, uint32_t supportedChannels = 3, CaptureScene scene = {});
+    explicit EvaluationStore(CaptureChannels, uint32_t supportedChannels = 3, CaptureScene scene = {}, CaptureScene meshScene = {});
     ~EvaluationStore();
     EvaluationStore(const EvaluationStore&) = delete;
     EvaluationStore& operator=(const EvaluationStore&) = delete;
@@ -70,6 +77,7 @@ public:
     MmsEvaluationApiV1_2 Api12(Client&);
     MmsEvaluationApiV1_3 Api13(Client&);
     MmsEvaluationApiV1_4 Api14(Client&);
+    MmsEvaluationApiV1_5 Api15(Client&);
     // Retire rejects new operations except release. Existing source handles
     // and admitted calls pin the client until plugins drain them and join work.
     void Retire(Client&) noexcept;
@@ -80,6 +88,7 @@ private:
     Capture capture_;
     CaptureChannels captureChannels_;
     CaptureScene captureScene_;
+    CaptureScene captureMeshScene_;
     uint32_t supportedChannels_ = MMS_EVALUATION_CAP_BONE_CHANNELS;
     DWORD thread_ = GetCurrentThreadId();
     mutable std::mutex mutex_;
@@ -105,7 +114,11 @@ private:
     MmsResult SampleParentState(Client&, MmsHandle, uint32_t, MmsTime, MmsParentStateV1*);
     MmsResult ReadDisplay(Client&, MmsHandle, uint32_t kind, uint32_t index, MmsTime, void*);
     MmsResult SceneCapabilities(Client&, MmsEvaluationSceneCapsV1*);
-    MmsResult CreateScene(Client&, const MmsEvaluationSceneQueryV1*, MmsHandle*);
+    MmsResult CreateScene(Client&, const MmsEvaluationSceneQueryV1*, MmsHandle*, bool mesh = false);
+    MmsResult MeshCapabilities(Client&, MmsEvaluationMeshCapsV1*);
+    MmsResult DescribeMesh(Client&, MmsHandle, uint32_t, MmsEvaluationMeshInfoV1*);
+    MmsResult ReadMesh(Client&, MmsHandle, uint32_t, uint32_t, uint32_t, void*, uint32_t);
+    void FinishMeshRead(std::shared_ptr<const Payload>&, Client&, uint64_t workspace) noexcept;
     MmsResult DescribeScene(Client&, MmsHandle, MmsEvaluationSceneInfoV1*);
     MmsResult SceneModelAt(Client&, MmsHandle, uint32_t, MmsEvaluationSceneModelV1*);
     MmsResult SceneBoneAt(Client&, MmsHandle, uint32_t, uint32_t, MmsEvaluationSceneBoneV1*);
@@ -115,6 +128,5 @@ private:
     MmsResult ReadBonePose(Client&, MmsHandle, uint32_t, uint32_t, MmsEvaluationScenePoseV1*);
     MmsResult Retain(Client&, MmsHandle, MmsHandle*);
     MmsResult Release(Client&, MmsHandle);
-    void Settle(const std::shared_ptr<const Payload>&, Client&) noexcept;
 };
 }

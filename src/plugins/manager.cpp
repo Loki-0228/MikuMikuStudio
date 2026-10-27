@@ -440,6 +440,12 @@ struct Manager::Impl {
         }
         if (id == "mms.scene.evaluate" && evaluations) {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            if (minor == 5) {
+                if (major != 1) return MMS_E_VERSION;
+                if (!out || bytes < sizeof(MmsEvaluationApiV1_5)) return MMS_E_ARGUMENT;
+                const auto api = evaluations->Api15(i.evaluation);
+                std::memcpy(out, &api, sizeof(api)); return MMS_OK;
+            }
             if (minor == 4) {
                 if (major != 1) return MMS_E_VERSION;
                 if (!out || bytes < sizeof(MmsEvaluationApiV1_4)) return MMS_E_ARGUMENT;
@@ -768,7 +774,9 @@ struct Manager::Impl {
                 const auto paired = registry.Refresh().PropertyRefresh().BindClient(i.refresh, i.ui);
                 if (paired != MMS_OK) throw std::runtime_error("property refresh client pairing failed result=" + std::to_string(paired));
                 for (const auto& required : m.services) {
-                    alignas(8) unsigned char table[256]{};
+                    // The service preflight must fit every published table,
+                    // including append-only evaluation 1.5 (288 bytes).
+                    alignas(8) unsigned char table[4096]{};
                     auto r = Query(i, Text(required.id), required.major, required.minor, sizeof(table), table);
                     if (r) throw std::runtime_error("required service unavailable: " + required.id + " result=" + std::to_string(r));
                 }

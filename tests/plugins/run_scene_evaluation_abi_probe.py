@@ -26,7 +26,7 @@ def main():
     shutil.copy2(plugin, package / "mms_evaluation_host_probe.dll")
     manifest = dict(schemaVersion=1, id="org.example.evaluation-host", name="Scene frame probe", version="1.0.0",
         kind="native", abi=dict(major=1, minMinor=0), entry="mms_evaluation_host_probe.dll", architecture="x64",
-        minWindows="6.1.7601", capabilities=["scene.evaluate"], requiresServices=[dict(id="mms.scene.evaluate", major=1, minMinor=4)],
+        minWindows="6.1.7601", capabilities=["scene.evaluate"], requiresServices=[dict(id="mms.scene.evaluate", major=1, minMinor=5)],
         dependencies=[], nativeDependencies=[], reloadPolicy="restart")
     (package / "plugin.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     exe = root / "probe.exe"

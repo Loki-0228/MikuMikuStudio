@@ -1,6 +1,6 @@
 # 冻结动作与骨架场景求值
 
-`mms.scene.evaluate` 1.4 提供已注册通道采样，以及冻结完整模型集合的独立骨架场景帧。[C 接口表](include/mms/evaluation.h)保留 1.0 至 1.3 的函数，追加场景来源和帧入口。插件在 UI 线程通过 `MmsHostV1::queryService` 查询一次，随后可以缓存返回的函数表。
+`mms.scene.evaluate` 1.5 提供已注册通道采样、独立骨架场景帧及同源网格读取。[C 接口表](include/mms/evaluation.h)保留 1.0 至 1.4 的函数。插件在 UI 线程通过 `MmsHostV1::queryService` 查询，随后可以缓存返回的函数表。
 
 完整配置的生产插件运行时开放此服务，当前通道能力掩码为 `7`。`MMD_ORIGINAL_PROFILE` 配置的 `CreateEvaluationStore` 工厂返回空对象，未开放此服务。插件以服务查询及对应能力函数的结果判断可用性，不能仅根据 SDK 头文件判断。
 
@@ -8,7 +8,7 @@
 
 一次 `createSource` 冻结一个模型的已注册骨骼通道，包括原生关键帧及其插值、MMS 自由曲线、尺度关键帧及其插值。未注册的当前编辑姿态不属于采样内容。创建和采样均不移动播放头，不覆盖编辑姿态，不推进物理，也不写入工程或撤销历史。
 
-`sampleBone` 返回层级变换之前的局部通道。结果尚未叠加 IK、表情、动作层或物理。服务不提供完整场景帧，也不声明 `MMS_STAGE_ANIMATED` 支持。附件、相机、灯光和其他非模型对象不在当前捕获范围内。
+`sampleBone` 返回层级变换之前的局部通道，尚未叠加 IK、表情、动作层或物理。1.4 场景帧另行求值骨架；服务不声明 `MMS_STAGE_ANIMATED` 支持。附件、相机、灯光和其他非模型对象不在当前捕获范围内。
 
 1.1 的 `createSourceChannels` 可选择骨骼通道、表情权重，或同时选择两者。表情结果是已注册的直接权重，包括原生关键帧与 MMS 自由曲线。结果保留负数和超过 `1` 的有限权重，不夹取到 `[0, 1]`。该表情权重采样入口不展开 group 或 flip，也不计算顶点、骨骼、UV、材质或其他表情形变；1.4 骨架场景帧会另行合成骨骼表情。当前未注册的表情编辑值不参与采样。本次扩展不改变 VMD 格式、插值协议或标记策略。
 
@@ -27,10 +27,25 @@
 | `1, 2` | `MmsEvaluationApiV1_2` | 152 | `size = 152, major = 1, minor = 2` |
 | `1, 3` | `MmsEvaluationApiV1_3` | 160 | `size = 160, major = 1, minor = 3` |
 | `1, 4` | `MmsEvaluationApiV1_4` | 232 | `size = 232, major = 1, minor = 4` |
+| `1, 5` | `MmsEvaluationApiV1_5` | 288 | `size = 288, major = 1, minor = 5` |
 
-每个新版本保留前一版本的全部函数，五个版本共用 `context` 和句柄。返回的 `context` 属于当前插件实例，调用方原样传给表内函数。表版本不等于通道能力；插件应分别通过 `getCapabilities` 和 `getSceneCapabilities` 查询旧通道及骨架场景能力。查询缓冲区小于所请求表的大小时返回 `MMS_E_ARGUMENT`，不会降级写入旧表。主版本不匹配或次版本大于 `4` 时返回 `MMS_E_VERSION`。失败保留输出缓冲区，成功只写所请求版本的表。
+每个新版本保留前一版本的全部函数，所有版本共用 `context` 和句柄。返回的 `context` 属于当前插件实例，调用方原样传给表内函数。表版本不等于通道能力；插件应分别通过 `getCapabilities`、`getSceneCapabilities` 和 `getMeshCapabilities` 查询能力。查询缓冲区小于所请求表的大小时返回 `MMS_E_ARGUMENT`，不会降级写入旧表。主版本不匹配或次版本大于 `5` 时返回 `MMS_E_VERSION`。失败保留输出缓冲区，成功只写所请求版本的表。
 
 在插件清单中声明 `capabilities: ["scene.evaluate"]`。若插件必须依赖此服务，在 `requiresServices` 中增加 `{"id":"mms.scene.evaluate","major":1,"minMinor":0}`。必须调用表情入口的插件将 `minMinor` 设为 `1`，必须调用显示或 IK 入口的插件设为 `2`。需要区分地面与继承父级的插件设为 `3`，需要独立骨架场景帧的插件设为 `4`。其他清单字段沿用 [SDK 入门](README.md) 的约定。可选功能不应把此服务声明为必需，应在查询失败后关闭对应功能。
+
+## 1.5 同源网格
+
+需要网格的插件查询 1.5，并以 `getMeshCapabilities` 确认 `MMS_EVALUATION_MESH_TOPOLOGY` 和 `MMS_EVALUATION_MESH_CPU_VERTICES`。清单中必须使用该能力时，将 `minMinor` 设为 `5`。`createMeshSceneSource` 使用与骨架来源相同的查询结构，须在 UI 线程安全点调用；已有的 `createSceneSource` 仍只创建骨架来源。网格来源同时可用于原有的场景身份、骨骼和 `evaluateFrame` 函数。
+
+对来源调用 `describeMesh` 获取模型身份、顶点数、索引数、材质段数及启用的附加 UV 数。`readMeshIndices`、`readMeshMaterials` 和 `readMeshBindVertices` 读取同一次捕获的绑定网格；索引每三个构成一个三角形，材质段描述连续的索引范围。对来源求值后，用 `readMeshVertices` 从帧读取变形位置、法线、UV 和附加 UV。模型顺序与同来源的 `sceneModelAt`、帧的 `frameModelAt` 相同，顶点索引只在该模型和 `captureId` 下有效。
+
+每次读取的 `count` 不得超过能力返回的 `maxItemsPerRead`（当前 4096），也不得越过范围。零长度读取允许空输出指针和 `first` 等于元素数量；它仍校验句柄、模型和范围。读取完整成功才写入调用方数组，失败保留全部输出；宿主不返回内部数组指针。未启用的附加 UV 通道填零。后台线程可读取或求值；插件停止前应等待工作结束并释放句柄。
+
+**拓扑属于来源，变形顶点属于帧。** 帧能在来源释放或原模型删除后独立读取，但不能用帧句柄读取拓扑；插件需要拓扑时应保留同一个来源句柄，或先复制数据。旧 1.4 骨架来源和帧的网格读取返回 `MMS_E_UNSUPPORTED`。不支持的权重类型（包括当前未实现的 QDEF）明确拒绝捕获。
+
+当前结果不包含材质表情后的最终材质、纹理、相机、物理模拟或最终渲染图像，也不构成 PMX 2.1 支持。额度为保留数据和受控工作区的限制，不是进程峰值内存的硬上限。
+
+C++17 插件可通过 `mms/cpp/evaluation.hpp` 使用同一组 C 句柄：`EvaluationMeshServices::Query` 显式查询 1.5，`Capture` 创建 `EvaluationMeshSource`，再调用 `MeshInfo`、`ReadIndices`、`ReadMaterials`、`ReadBindVertices` 或 `Evaluate`。`EvaluationMeshFrame::ReadVertices` 读取帧顶点。批量方法使用 `std::vector`，失败保留原有内容；来源和帧支持 `Retain`、显式 `Release` 和移动构造。不要让服务上下文先于仍存活的包装对象销毁，也不要让同一包装对象的释放与读取并发。
 
 `MmsEvaluationSourceQueryV1` 的字段约定如下。
 

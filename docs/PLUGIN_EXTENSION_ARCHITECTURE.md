@@ -1,5 +1,7 @@
 # 插件扩展统一架构方案
 
+2026-10-27：`mms.scene.evaluate` 1.5 的网格来源和 CPU 顶点读取已接入同一 C ABI 与 C++ 包装；拓扑仍通过来源句柄读取。见[公开网格记录](records/abi-public-mesh-2026-10-27.md)。下方较早版本表保留各批次范围。
+
 本文是 UI、交互、视口、数据格式和编辑工具的设计约定。基础 C++17 UI 包装、声明式 INPUT、工具栏及属性扩展行、SELF／注册 SUBTREE 刷新、按钮及 INPUT STATE 已实现，其余新增能力按表中状态区分。INPUT 编辑仅在受控共同历史宿主启用，普通启动仍为只读。当前可用接口以 [SDK README](../sdk/mms/README.md) 和[实施记录](PLUGIN_ABI_IMPLEMENTATION.md)为准。
 现有 `MmsHostV1`、各 V1 函数表和已发布结构保持兼容。本文不开放普通宿主的 `mms.edit`，也不把内部 C++ 计划器视为公共编辑接口。
 

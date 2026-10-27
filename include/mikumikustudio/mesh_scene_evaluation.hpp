@@ -43,6 +43,7 @@ public:
     // Frozen topology and bind data captured alongside this scene; index order
     // matches BoneSceneFrame::ModelAt. Borrowed until the source is destroyed.
     const MeshDefinitionSnapshot* MeshAt(std::uint32_t index) const noexcept;
+    bool ModelAt(std::uint32_t index, BoneSceneModelInfo& out) const noexcept;
     // Uses the same exact time and frozen inputs for bones and geometry.
     // Borrowed inputs/context remain alive through the call; no partial frame
     // escapes. Workspace limit is conservative accounting, not a heap cap.

@@ -11,9 +11,12 @@
 #include <mms/evaluation.h>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <new>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace mms::sdk {
 namespace evaluation_detail {
@@ -229,6 +232,196 @@ public:
         if(result!=MMS_OK) return result;
         if(!candidate) return MMS_E_FAILED;
         out.lease_.Adopt(api_,candidate);return MMS_OK;
+    }
+};
+
+// Mesh wrappers negotiate 1.5 explicitly. They own the SAME C source and
+// frame handles as the 1.4 functions; there is no parallel object registry.
+namespace evaluation_detail {
+inline MmsEvaluationApiV1_4 Prefix(const MmsEvaluationApiV1_5& api) noexcept {
+    MmsEvaluationApiV1_4 result{};
+    static_assert(offsetof(MmsEvaluationApiV1_5,getMeshCapabilities)==sizeof(result),"evaluation prefix");
+    std::memcpy(&result,&api,sizeof(result));
+    return result;
+}
+inline bool CompleteMesh(const MmsEvaluationApiV1_5& api) noexcept {
+    return Complete(Prefix(api)) && api.getMeshCapabilities && api.createMeshSceneSource && api.describeMesh &&
+        api.readMeshIndices && api.readMeshMaterials && api.readMeshBindVertices && api.readMeshVertices;
+}
+inline bool MeshCaps(const MmsEvaluationMeshCapsV1& caps) noexcept {
+    constexpr std::uint32_t known=MMS_EVALUATION_MESH_TOPOLOGY|MMS_EVALUATION_MESH_CPU_VERTICES;
+    return !(caps.flags&~known) && caps.maxItemsPerRead && !caps.reserved[0] && !caps.reserved[1];
+}
+inline bool MeshInfo(const MmsEvaluationMeshInfoV1& info) noexcept {
+    constexpr std::uint32_t known=MMS_EVALUATION_MESH_TOPOLOGY|MMS_EVALUATION_MESH_CPU_VERTICES;
+    return Object(info.object) && !(info.flags&~known) && !info.reserved &&
+        info.additionalUvCount<=4 && info.indexCount%3==0;
+}
+inline bool MeshMaterial(const MmsEvaluationMeshMaterialV1& value) noexcept {
+    return !value.reserved[0] && !value.reserved[1] && value.firstIndex%3==0 &&
+        value.indexCount%3==0 && value.indexCount<=UINT32_MAX-value.firstIndex;
+}
+inline bool MeshVertex(const MmsEvaluationMeshVertexV1& value) noexcept {
+    if(value.reserved[0] || value.reserved[1]) return false;
+    for(float n:value.position) if(!std::isfinite(n)) return false;
+    for(float n:value.normal) if(!std::isfinite(n)) return false;
+    for(float n:value.uv) if(!std::isfinite(n)) return false;
+    for(float n:value.additionalUv) if(!std::isfinite(n)) return false;
+    return true;
+}
+inline MmsResult MeshCapabilities(const MmsEvaluationApiV1_5& api,MmsEvaluationMeshCapsV1& out) noexcept {
+    return Read(out,[&](auto& value){return api.getMeshCapabilities(api.context,&value);},MeshCaps);
+}
+template<class T,class ReadFunction,class Validate>
+MmsResult MeshBatch(const MmsEvaluationApiV1_5& api,std::uint32_t count,
+    std::vector<T>& out,ReadFunction&& read,Validate&& valid) noexcept {
+    return Call([&]() -> MmsResult {
+        MmsEvaluationMeshCapsV1 caps{};
+        const auto capResult=MeshCapabilities(api,caps);
+        if(capResult!=MMS_OK) return capResult;
+        if(count>caps.maxItemsPerRead) return MMS_E_ARGUMENT;
+        std::vector<T> candidate(count);
+        const auto result=read(count ? candidate.data() : nullptr);
+        if(result!=MMS_OK) return result;
+        for(const auto& value:candidate) {
+            if constexpr(!std::is_same_v<T,std::uint32_t>)
+                if(!ValueHeader(value)) return MMS_E_VERSION;
+            if(!valid(value)) return MMS_E_FAILED;
+        }
+        out.swap(candidate);return MMS_OK;
+    });
+}
+} // namespace evaluation_detail
+
+class EvaluationMeshSource;
+class EvaluationMeshServices;
+class EvaluationMeshFrame {
+    evaluation_detail::Lease lease_;
+    MmsEvaluationApiV1_5 api_{};
+    friend class EvaluationMeshSource;
+public:
+    EvaluationMeshFrame() noexcept=default;
+    EvaluationMeshFrame(const EvaluationMeshFrame&)=delete;
+    EvaluationMeshFrame& operator=(const EvaluationMeshFrame&)=delete;
+    EvaluationMeshFrame(EvaluationMeshFrame&&) noexcept=default;
+    EvaluationMeshFrame& operator=(EvaluationMeshFrame&&)=delete;
+    explicit operator bool() const noexcept {return lease_.handle!=0;}
+    MmsHandle get() const noexcept {return lease_.handle;}
+    const MmsEvaluationApiV1_5& api() const noexcept {return api_;}
+    MmsResult Info(MmsEvaluationFrameInfoV1& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::Read(out,[&](auto& value){return api_.describeFrame(api_.context,get(),&value);},evaluation_detail::FrameInfo);
+    }
+    MmsResult ModelAt(std::uint32_t index,MmsEvaluationSceneModelV1& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::Read(out,[&](auto& value){return api_.frameModelAt(api_.context,get(),index,&value);},
+            [](const auto& value){return evaluation_detail::Model(value,true);});
+    }
+    MmsResult ReadBonePose(std::uint32_t model,std::uint32_t bone,MmsEvaluationScenePoseV1& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::Read(out,[&](auto& value){return api_.readBonePose(api_.context,get(),model,bone,&value);},evaluation_detail::Pose);
+    }
+    MmsResult ReadVertices(std::uint32_t model,std::uint32_t first,std::uint32_t count,
+        std::vector<MmsEvaluationMeshVertexV1>& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::MeshBatch(api_,count,out,[&](auto* data){return api_.readMeshVertices(api_.context,get(),model,first,count,data);},evaluation_detail::MeshVertex);
+    }
+    MmsResult Retain(EvaluationMeshFrame& out) const noexcept {
+        const auto result=lease_.Retain(out.lease_);if(result==MMS_OK)out.api_=api_;return result;
+    }
+    MmsResult Release() noexcept {const auto result=lease_.Release();if(result==MMS_OK)api_={};return result;}
+    MmsHandle detach() noexcept {api_={};return lease_.Detach();}
+};
+
+class EvaluationMeshSource {
+    evaluation_detail::Lease lease_;
+    MmsEvaluationApiV1_5 api_{};
+    friend class EvaluationMeshServices;
+public:
+    EvaluationMeshSource() noexcept=default;
+    EvaluationMeshSource(const EvaluationMeshSource&)=delete;
+    EvaluationMeshSource& operator=(const EvaluationMeshSource&)=delete;
+    EvaluationMeshSource(EvaluationMeshSource&&) noexcept=default;
+    EvaluationMeshSource& operator=(EvaluationMeshSource&&)=delete;
+    explicit operator bool() const noexcept {return lease_.handle!=0;}
+    MmsHandle get() const noexcept {return lease_.handle;}
+    const MmsEvaluationApiV1_5& api() const noexcept {return api_;}
+    MmsResult Info(MmsEvaluationSceneInfoV1& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::Read(out,[&](auto& value){return api_.describeSceneSource(api_.context,get(),&value);},evaluation_detail::SourceInfo);
+    }
+    MmsResult ModelAt(std::uint32_t index,MmsEvaluationSceneModelV1& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::Read(out,[&](auto& value){return api_.sceneModelAt(api_.context,get(),index,&value);},
+            [](const auto& value){return evaluation_detail::Model(value,false);});
+    }
+    MmsResult BoneAt(std::uint32_t model,std::uint32_t index,MmsEvaluationSceneBoneV1& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::Read(out,[&](auto& value){return api_.sceneBoneAt(api_.context,get(),model,index,&value);},
+            [index](const auto& value){return evaluation_detail::Id(value.bone)&&value.index==index&&!value.reserved;});
+    }
+    MmsResult MeshInfo(std::uint32_t model,MmsEvaluationMeshInfoV1& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::Read(out,[&](auto& value){return api_.describeMesh(api_.context,get(),model,&value);},evaluation_detail::MeshInfo);
+    }
+    MmsResult ReadIndices(std::uint32_t model,std::uint32_t first,std::uint32_t count,std::vector<std::uint32_t>& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::MeshBatch(api_,count,out,[&](auto* data){return api_.readMeshIndices(api_.context,get(),model,first,count,data);},[](auto){return true;});
+    }
+    MmsResult ReadMaterials(std::uint32_t model,std::uint32_t first,std::uint32_t count,std::vector<MmsEvaluationMeshMaterialV1>& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::MeshBatch(api_,count,out,[&](auto* data){return api_.readMeshMaterials(api_.context,get(),model,first,count,data);},evaluation_detail::MeshMaterial);
+    }
+    MmsResult ReadBindVertices(std::uint32_t model,std::uint32_t first,std::uint32_t count,std::vector<MmsEvaluationMeshVertexV1>& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::MeshBatch(api_,count,out,[&](auto* data){return api_.readMeshBindVertices(api_.context,get(),model,first,count,data);},evaluation_detail::MeshVertex);
+    }
+    MmsResult Evaluate(MmsTime time,EvaluationMeshFrame& out,EvaluationFrameOptions options={}) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        if(out)return MMS_E_BUSY;
+        const MmsEvaluationFrameQueryV1 query{evaluation_detail::Header<MmsEvaluationFrameQueryV1>(),get(),time,options.maxRetainedBytes,options.maxWorkspaceBytes,0,0};
+        MmsHandle candidate=0;
+        const auto result=evaluation_detail::Call([&]{return api_.evaluateFrame(api_.context,&query,&candidate);});
+        if(result!=MMS_OK)return result;
+        if(!candidate || candidate==get())return MMS_E_FAILED;
+        out.lease_.Adopt(evaluation_detail::Prefix(api_),candidate);out.api_=api_;return MMS_OK;
+    }
+    MmsResult Retain(EvaluationMeshSource& out) const noexcept {
+        const auto result=lease_.Retain(out.lease_);if(result==MMS_OK)out.api_=api_;return result;
+    }
+    MmsResult Release() noexcept {const auto result=lease_.Release();if(result==MMS_OK)api_={};return result;}
+    MmsHandle detach() noexcept {api_={};return lease_.Detach();}
+};
+
+class EvaluationMeshServices {
+    MmsEvaluationApiV1_5 api_{};
+    bool ready_=false;
+public:
+    EvaluationMeshServices() noexcept=default;
+    static MmsResult Query(const MmsHostV1& host,EvaluationMeshServices& out) noexcept {
+        if(host.h.size<sizeof(host)||host.h.major!=1)return MMS_E_VERSION;
+        if(!host.queryService)return MMS_E_ARGUMENT;
+        return evaluation_detail::Call([&]() -> MmsResult {
+            MmsEvaluationApiV1_5 table{};
+            const auto result=host.queryService(host.context,{"mms.scene.evaluate",18},1,5,static_cast<std::uint32_t>(sizeof(table)),&table);
+            if(result!=MMS_OK)return result;
+            if(table.h.size<sizeof(table)||table.h.major!=1||table.h.minor<5)return MMS_E_VERSION;
+            if(!evaluation_detail::CompleteMesh(table))return MMS_E_UNSUPPORTED;
+            EvaluationMeshServices candidate;candidate.api_=table;candidate.ready_=true;out=candidate;return MMS_OK;
+        });
+    }
+    bool ready() const noexcept {return ready_;}
+    const MmsEvaluationApiV1_5& api() const noexcept {return api_;}
+    MmsResult Capabilities(MmsEvaluationMeshCapsV1& out) const noexcept {
+        if(!ready_)return MMS_E_NOT_READY;return evaluation_detail::MeshCapabilities(api_,out);
+    }
+    MmsResult Capture(EvaluationMeshSource& out,std::uint64_t maxRetainedBytes=0) const noexcept {
+        if(!ready_)return MMS_E_NOT_READY;if(out)return MMS_E_BUSY;
+        const MmsEvaluationSceneQueryV1 query{evaluation_detail::Header<MmsEvaluationSceneQueryV1>(),maxRetainedBytes,0,0};
+        MmsHandle candidate=0;
+        const auto result=evaluation_detail::Call([&]{return api_.createMeshSceneSource(api_.context,&query,&candidate);});
+        if(result!=MMS_OK)return result;if(!candidate)return MMS_E_FAILED;
+        out.lease_.Adopt(evaluation_detail::Prefix(api_),candidate);out.api_=api_;return MMS_OK;
     }
 };
 } // namespace mms::sdk

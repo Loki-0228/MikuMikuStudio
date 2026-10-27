@@ -335,3 +335,66 @@ static_assert(std::is_standard_layout<MmsEvaluationFrameInfoV1>::value && std::i
 static_assert(std::is_standard_layout<MmsEvaluationScenePoseV1>::value && std::is_trivially_copyable<MmsEvaluationScenePoseV1>::value, "MmsEvaluationScenePoseV1 POD");
 static_assert(std::is_standard_layout<MmsEvaluationApiV1_4>::value && std::is_trivially_copyable<MmsEvaluationApiV1_4>::value, "MmsEvaluationApiV1_4 POD");
 static_assert(std::is_same<decltype(MmsEvaluationApiV1_4::readBonePose), MmsResult (MMS_CALL *)(void*, MmsHandle, uint32_t, uint32_t, MmsEvaluationScenePoseV1*)>::value, "scene pose signature");
+
+static_assert(sizeof(MmsEvaluationMeshCapsV1) == 24, "mesh evaluation capabilities layout");
+static_assert(sizeof(MmsEvaluationMeshInfoV1) == 56, "mesh evaluation information layout");
+static_assert(sizeof(MmsEvaluationMeshMaterialV1) == 24, "mesh evaluation material layout");
+static_assert(sizeof(MmsEvaluationMeshVertexV1) == 112, "mesh evaluation vertex layout");
+static_assert(offsetof(MmsEvaluationMeshInfoV1, object) == 8, "mesh identity offset");
+static_assert(offsetof(MmsEvaluationMeshInfoV1, vertexCount) == 32, "mesh counts offset");
+static_assert(offsetof(MmsEvaluationMeshVertexV1, position) == 8, "mesh position offset");
+static_assert(offsetof(MmsEvaluationMeshVertexV1, normal) == 20, "mesh normal offset");
+static_assert(offsetof(MmsEvaluationMeshVertexV1, uv) == 32, "mesh UV offset");
+static_assert(offsetof(MmsEvaluationMeshVertexV1, additionalUv) == 40, "mesh additional UV offset");
+static_assert(offsetof(MmsEvaluationMeshVertexV1, reserved) == 104, "mesh reserved offset");
+static_assert(sizeof(MmsEvaluationApiV1_5) == 288, "MmsEvaluationApiV1_5 layout");
+#define MMS_EVALUATION_15_PREFIX(member) \
+    static_assert(offsetof(MmsEvaluationApiV1_5, member) == offsetof(MmsEvaluationApiV1_4, member), "evaluation1.5 " #member " offset"); \
+    static_assert(std::is_same<decltype(MmsEvaluationApiV1_5::member), decltype(MmsEvaluationApiV1_4::member)>::value, "evaluation1.5 " #member " type")
+MMS_EVALUATION_15_PREFIX(h);
+MMS_EVALUATION_15_PREFIX(context);
+MMS_EVALUATION_15_PREFIX(getCapabilities);
+MMS_EVALUATION_15_PREFIX(createSource);
+MMS_EVALUATION_15_PREFIX(describeSource);
+MMS_EVALUATION_15_PREFIX(boneAt);
+MMS_EVALUATION_15_PREFIX(sampleBone);
+MMS_EVALUATION_15_PREFIX(retain);
+MMS_EVALUATION_15_PREFIX(release);
+MMS_EVALUATION_15_PREFIX(createSourceChannels);
+MMS_EVALUATION_15_PREFIX(describeSourceChannels);
+MMS_EVALUATION_15_PREFIX(morphAt);
+MMS_EVALUATION_15_PREFIX(sampleMorph);
+MMS_EVALUATION_15_PREFIX(describeSourceDisplay);
+MMS_EVALUATION_15_PREFIX(ikAt);
+MMS_EVALUATION_15_PREFIX(selectorAt);
+MMS_EVALUATION_15_PREFIX(sampleVisibility);
+MMS_EVALUATION_15_PREFIX(sampleIk);
+MMS_EVALUATION_15_PREFIX(sampleParent);
+MMS_EVALUATION_15_PREFIX(sampleParentState);
+MMS_EVALUATION_15_PREFIX(getSceneCapabilities);
+MMS_EVALUATION_15_PREFIX(createSceneSource);
+MMS_EVALUATION_15_PREFIX(describeSceneSource);
+MMS_EVALUATION_15_PREFIX(sceneModelAt);
+MMS_EVALUATION_15_PREFIX(sceneBoneAt);
+MMS_EVALUATION_15_PREFIX(evaluateFrame);
+MMS_EVALUATION_15_PREFIX(describeFrame);
+MMS_EVALUATION_15_PREFIX(frameModelAt);
+MMS_EVALUATION_15_PREFIX(readBonePose);
+#undef MMS_EVALUATION_15_PREFIX
+static_assert(offsetof(MmsEvaluationApiV1_5, getMeshCapabilities) == sizeof(MmsEvaluationApiV1_4), "evaluation1.5 extension offset");
+static_assert(offsetof(MmsEvaluationApiV1_5, createMeshSceneSource) == 240, "mesh scene create offset");
+static_assert(offsetof(MmsEvaluationApiV1_5, describeMesh) == 248, "mesh info offset");
+static_assert(offsetof(MmsEvaluationApiV1_5, readMeshIndices) == 256, "mesh indices offset");
+static_assert(offsetof(MmsEvaluationApiV1_5, readMeshMaterials) == 264, "mesh materials offset");
+static_assert(offsetof(MmsEvaluationApiV1_5, readMeshBindVertices) == 272, "mesh bind vertex offset");
+static_assert(offsetof(MmsEvaluationApiV1_5, readMeshVertices) == 280, "mesh evaluated vertex offset");
+static_assert(std::is_same<decltype(MmsEvaluationApiV1_5::createMeshSceneSource), MmsResult (MMS_CALL *)(void*, const MmsEvaluationSceneQueryV1*, MmsHandle*)>::value, "mesh source signature");
+static_assert(std::is_same<decltype(MmsEvaluationApiV1_5::readMeshIndices), MmsResult (MMS_CALL *)(void*, MmsHandle, uint32_t, uint32_t, uint32_t, uint32_t*)>::value, "mesh indices signature");
+static_assert(std::is_same<decltype(MmsEvaluationApiV1_5::readMeshMaterials), MmsResult (MMS_CALL *)(void*, MmsHandle, uint32_t, uint32_t, uint32_t, MmsEvaluationMeshMaterialV1*)>::value, "mesh materials signature");
+static_assert(std::is_same<decltype(MmsEvaluationApiV1_5::readMeshBindVertices), MmsResult (MMS_CALL *)(void*, MmsHandle, uint32_t, uint32_t, uint32_t, MmsEvaluationMeshVertexV1*)>::value, "mesh bind vertex signature");
+static_assert(std::is_same<decltype(MmsEvaluationApiV1_5::readMeshVertices), MmsResult (MMS_CALL *)(void*, MmsHandle, uint32_t, uint32_t, uint32_t, MmsEvaluationMeshVertexV1*)>::value, "mesh evaluated vertex signature");
+static_assert(std::is_standard_layout<MmsEvaluationMeshCapsV1>::value && std::is_trivially_copyable<MmsEvaluationMeshCapsV1>::value, "mesh capabilities POD");
+static_assert(std::is_standard_layout<MmsEvaluationMeshInfoV1>::value && std::is_trivially_copyable<MmsEvaluationMeshInfoV1>::value, "mesh information POD");
+static_assert(std::is_standard_layout<MmsEvaluationMeshMaterialV1>::value && std::is_trivially_copyable<MmsEvaluationMeshMaterialV1>::value, "mesh material POD");
+static_assert(std::is_standard_layout<MmsEvaluationMeshVertexV1>::value && std::is_trivially_copyable<MmsEvaluationMeshVertexV1>::value, "mesh vertex POD");
+static_assert(std::is_standard_layout<MmsEvaluationApiV1_5>::value && std::is_trivially_copyable<MmsEvaluationApiV1_5>::value, "evaluation 1.5 POD");

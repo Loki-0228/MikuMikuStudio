@@ -25,6 +25,7 @@ static constexpr uint64_t MiB=1024ull*1024;
 static constexpr MmsHandle sentinel=0x123456789abcdef0ull;
 static constexpr MmsObjectRef object{{11,22},3};
 template<class T>static T Poison(){T v;std::memset(&v,0xa5,sizeof(v));return v;}
+template<class T>static bool Bits(const T& a,const T& b){return !std::memcmp(&a,&b,sizeof(T));}
 template<class T>static bool Unchanged(const T& v){const auto p=Poison<T>();return !std::memcmp(&v,&p,sizeof(v));}
 template<class T>static bool HeaderOk(const T& v,unsigned minor=0){return v.h.size==sizeof(v)&&v.h.major==1&&v.h.minor==minor;}
 static MmsEvaluationSceneQueryV1 SceneQuery(uint64_t bytes=0){return {Header<MmsEvaluationSceneQueryV1>(),bytes,0,0};}
@@ -40,7 +41,8 @@ struct Gate{
 struct Control{
     std::atomic<int> captureMode{0},frameMode{0},poseMode{0};std::atomic<unsigned> captures{0},evaluations{0},samples{0};
     std::atomic<uint64_t> sourceBytes{4096},frameBytes{8192},generation{3};std::atomic<double> continuous{-1};std::atomic<uint32_t> discrete{UINT32_MAX};
-    std::shared_ptr<Gate> evaluateGate,poseGate;std::weak_ptr<const EvaluationSceneModels> models;
+    std::shared_ptr<Gate> evaluateGate,poseGate,meshGate;std::weak_ptr<const EvaluationSceneModels> models;
+    std::atomic<int> meshMode{0};
     bool empty=false;
 };
 static MmsEvaluationScenePoseV1 Pose(double frame,uint64_t generation,unsigned model,unsigned boneIndex){
@@ -87,11 +89,71 @@ static EvaluationStore::CaptureScene SceneCapture(const std::shared_ptr<Control>
         };
         if(mode==2)frame->models={};if(mode==3)frame->models=std::make_shared<EvaluationSceneModels>(*models);
         if(mode==4)frame->visibility.clear();if(mode==5)frame->visibility.push_back(0);if(mode==6)frame->sample={};
+        if(mode==10){frame->meshVertexCounts={4,2};frame->meshVertex=[](uint32_t,uint32_t,MmsEvaluationMeshVertexV1&){return MMS_OK;};}
         result=frame;return mode==9?MMS_E_CANCELLED:MMS_OK;
     };
     if(mode==2)source->models={};if(mode==3)source->evaluate={};out=source;return mode==12?MMS_E_CANCELLED:MMS_OK;
 };}
 static std::unique_ptr<EvaluationStore> Store(const std::shared_ptr<Control>& control){return std::make_unique<EvaluationStore>(ChannelCapture(),1,SceneCapture(control));}
+// Mock immutable CPU mesh data. The callback intentionally writes into its
+// supplied temporary before injected failures to verify public atomic output.
+static MmsEvaluationMeshVertexV1 MeshVertex(uint32_t model,uint32_t index,bool bind) {
+    MmsEvaluationMeshVertexV1 v{};v.h=Header<MmsEvaluationMeshVertexV1>();
+    v.position[0]=float(index)+float(model)*10+(bind?0.f:2.f);v.position[1]=1;v.position[2]=-2;
+    v.normal[1]=1;v.uv[0]=float(index)*.25f;v.uv[1]=.5f;
+    for(unsigned i=0;i<4;++i)v.additionalUv[i]=float(i+1);return v;
+}
+static EvaluationStore::CaptureScene MeshSceneCapture(const std::shared_ptr<Control>& control) {
+    return [control](const auto& query,uint64_t budget,std::shared_ptr<const EvaluationSceneSourceData>& out)->MmsResult {
+        std::shared_ptr<const EvaluationSceneSourceData> base;
+        const auto status=SceneCapture(control)(query,budget,base);if(status!=MMS_OK||!base)return status;
+        auto source=std::make_shared<EvaluationSceneSourceData>(*base);auto evaluate=base->evaluate;
+        source->meshInfo=[control](uint32_t model,MmsEvaluationMeshInfoV1& info)->MmsResult {
+            if(model>1)return MMS_E_NOT_FOUND;
+            info={};info.h=Header<MmsEvaluationMeshInfoV1>();info.vertexCount=model?2u:4u;
+            info.object=model?MmsObjectRef{{77,88},control->generation.load()+1}:MmsObjectRef{{11,22},control->generation.load()};
+            info.indexCount=model?0u:6u;info.materialCount=model?0u:2u;info.additionalUvCount=1;
+            info.flags=MMS_EVALUATION_MESH_TOPOLOGY|MMS_EVALUATION_MESH_CPU_VERTICES;
+            if(control->meshMode==10)info.reserved=1;
+            if(control->meshMode==11)info.additionalUvCount=5;
+            return MMS_OK;
+        };
+        const auto maybe=[control](uint32_t index)->MmsResult {
+            if(control->meshGate&&!control->meshGate->Wait())return MMS_E_FAILED;
+            if(index==1){switch(control->meshMode.load()){
+                case 3:return MMS_E_CANCELLED;case 4:throw std::bad_alloc();case 5:throw std::runtime_error("mesh");}}
+            return MMS_OK;
+        };
+        source->meshIndex=[maybe](uint32_t model,uint32_t index,uint32_t& out)->MmsResult {
+            static const uint32_t values[]{0,1,2,2,1,3};out=values[index%6];return maybe(index);
+        };
+        source->meshMaterial=[maybe,control](uint32_t,uint32_t index,MmsEvaluationMeshMaterialV1& out)->MmsResult {
+            out={};out.h=Header<MmsEvaluationMeshMaterialV1>();out.firstIndex=index*3;out.indexCount=3;
+            if(control->meshMode==2&&index==1)out.reserved[0]=1;return maybe(index);
+        };
+        source->meshBindVertex=[maybe,control](uint32_t model,uint32_t index,MmsEvaluationMeshVertexV1& out)->MmsResult {
+            out=MeshVertex(model,index,true);
+            if(control->meshMode==1&&index==1)out.position[0]=std::numeric_limits<float>::quiet_NaN();
+            if(control->meshMode==12)out.additionalUv[4]=7;
+            if(control->meshMode==2&&index==1)out.reserved[0]=1;return maybe(index);
+        };
+        source->evaluate=[evaluate,maybe,control](const EvaluationTime& time,uint64_t retained,uint64_t workspace,std::shared_ptr<const EvaluationSceneFrameData>& result)->MmsResult {
+            std::shared_ptr<const EvaluationSceneFrameData> original;
+            const auto status=evaluate(time,retained,workspace,original);if(status!=MMS_OK||!original)return status;
+            auto frame=std::make_shared<EvaluationSceneFrameData>(*original);
+            frame->meshVertexCounts=frame->models->empty()?std::vector<uint32_t>{}:std::vector<uint32_t>{4,2};
+            frame->meshAdditionalUvCounts=frame->models->empty()?std::vector<uint32_t>{}:std::vector<uint32_t>{1,1};
+            frame->meshVertex=[maybe,control](uint32_t model,uint32_t index,MmsEvaluationMeshVertexV1& out)->MmsResult {
+                out=MeshVertex(model,index,false);
+                if(control->meshMode==1&&index==1)out.normal[1]=std::numeric_limits<float>::infinity();
+                if(control->meshMode==12)out.additionalUv[4]=7;
+                if(control->meshMode==2&&index==1)out.reserved[0]=1;return maybe(index);
+            };
+            result=frame;return MMS_OK;
+        };
+        out=source;return MMS_OK;
+    };
+}
 static MmsHandle Capture(const Api& api,uint64_t bytes=0){MmsHandle out=sentinel;const auto q=SceneQuery(bytes);CHECK(api.createSceneSource(api.context,&q,&out)==MMS_OK&&out&&out!=sentinel);return out;}
 static MmsHandle Evaluate(const Api& api,MmsHandle source,MmsTime time={1,4},uint64_t bytes=0,uint64_t workspace=0){const auto query=FrameQuery(source,time,bytes,workspace);MmsHandle out=sentinel;CHECK(api.evaluateFrame(api.context,&query,&out)==MMS_OK&&out&&out!=sentinel);return out;}
 static MmsEvaluationSceneInfoV1 DescribeSource(const Api& api,MmsHandle source){auto out=Poison<MmsEvaluationSceneInfoV1>();CHECK(api.describeSceneSource(api.context,source,&out)==MMS_OK&&HeaderOk(out));return out;}
@@ -338,6 +400,263 @@ static void FailedLegacyCaptureKeepsLeaseDuringDestruction(){
         CHECK(client.active==0&&client.handles==0&&client.bytes==0&&client.workspaceBytes==0&&!store.HasLeases(client));
     }
 }
-int main(){try{TablesAndCapabilities();EnumerationTimeAndLifetime();AdmissionAndKinds();BadHostPayloads();SharedBudgetsAndFaults();SourceAndFrameInFlight();ParallelWorkspaceBudgets();FailedLegacyCaptureKeepsLeaseDuringDestruction();
+static void MeshPublicContracts(){
+    section="1.5 mesh source, batches, identity and atomic failures";
+    auto control=std::make_shared<Control>();
+    EvaluationStore store(ChannelCapture(),1,SceneCapture(control),MeshSceneCapture(control));
+    EvaluationStore::Client client,foreign;client.owner=foreign.owner=&store;
+    const auto api=store.Api15(client),other=store.Api15(foreign);const auto old=store.Api14(client);
+    CHECK(api.h.major==1&&api.h.minor==5&&api.h.size==sizeof(api));
+    CHECK(!std::memcmp(reinterpret_cast<const char*>(&api)+sizeof(MmsHeader),reinterpret_cast<const char*>(&old)+sizeof(MmsHeader),sizeof(old)-sizeof(MmsHeader)));
+    MmsEvaluationMeshCapsV1 caps{};CHECK(api.getMeshCapabilities(api.context,&caps)==MMS_OK&&HeaderOk(caps));
+    CHECK((caps.flags&(MMS_EVALUATION_MESH_TOPOLOGY|MMS_EVALUATION_MESH_CPU_VERTICES))==(MMS_EVALUATION_MESH_TOPOLOGY|MMS_EVALUATION_MESH_CPU_VERTICES));
+    CHECK(caps.maxItemsPerRead>=6&&!caps.reserved[0]&&!caps.reserved[1]);
+    const auto query=SceneQuery();MmsHandle source=sentinel;
+    CHECK(api.createMeshSceneSource(api.context,&query,&source)==MMS_OK&&source!=sentinel);
+    MmsEvaluationMeshInfoV1 info{};CHECK(api.describeMesh(api.context,source,0,&info)==MMS_OK&&HeaderOk(info));
+    CHECK(Same(info.object,object)&&info.vertexCount==4&&info.indexCount==6&&info.materialCount==2&&info.additionalUvCount==1&&!info.reserved);
+    std::array<uint32_t,6> indices{};const std::array<uint32_t,6> expectedIndices{0,1,2,2,1,3};
+    CHECK(api.readMeshIndices(api.context,source,0,0,6,indices.data())==MMS_OK&&indices==expectedIndices);
+    std::array<MmsEvaluationMeshMaterialV1,2> materials{};
+    CHECK(api.readMeshMaterials(api.context,source,0,0,2,materials.data())==MMS_OK);
+    CHECK(HeaderOk(materials[0])&&HeaderOk(materials[1])&&materials[0].firstIndex==0&&materials[1].firstIndex==3&&materials[0].indexCount==3&&materials[1].indexCount==3&&!materials[1].reserved[0]);
+    std::array<MmsEvaluationMeshVertexV1,4> bind{};
+    CHECK(api.readMeshBindVertices(api.context,source,0,0,4,bind.data())==MMS_OK);
+    for(uint32_t i=0;i<4;++i){const auto expected=MeshVertex(0,i,true);CHECK(!std::memcmp(&bind[i],&expected,sizeof(expected)));}
+    auto frameQuery=FrameQuery(source);MmsHandle frame=sentinel;
+    CHECK(api.evaluateFrame(api.context,&frameQuery,&frame)==MMS_OK&&frame!=sentinel);
+    std::array<MmsEvaluationMeshVertexV1,4> vertices{};
+    CHECK(api.readMeshVertices(api.context,frame,0,0,4,vertices.data())==MMS_OK);
+    for(uint32_t i=0;i<4;++i){const auto expected=MeshVertex(0,i,false);CHECK(!std::memcmp(&vertices[i],&expected,sizeof(expected)));}
+    control->meshMode=12;
+    CHECK(api.readMeshBindVertices(api.context,source,0,0,1,bind.data())==MMS_OK&&bind[0].additionalUv[4]==0);
+    CHECK(api.readMeshVertices(api.context,frame,0,0,1,vertices.data())==MMS_OK&&vertices[0].additionalUv[4]==0);
+    control->meshMode=0;
+    CHECK(api.readMeshIndices(api.context,source,0,6,0,nullptr)==MMS_OK);
+    CHECK(api.readMeshMaterials(api.context,source,0,2,0,nullptr)==MMS_OK);
+    CHECK(api.readMeshBindVertices(api.context,source,0,4,0,nullptr)==MMS_OK);
+    CHECK(api.readMeshVertices(api.context,frame,0,4,0,nullptr)==MMS_OK);
+    CHECK(api.readMeshIndices(api.context,source,0,7,0,nullptr)==MMS_E_ARGUMENT);
+    CHECK(api.readMeshVertices(api.context,frame,0,5,0,nullptr)==MMS_E_ARGUMENT);
+    auto poisonIndex=Poison<std::array<uint32_t,6>>();const auto indexBefore=poisonIndex;
+    auto poisonVertices=Poison<std::array<MmsEvaluationMeshVertexV1,4>>();const auto vertexBefore=poisonVertices;
+    auto poisonMaterials=Poison<std::array<MmsEvaluationMeshMaterialV1,2>>();const auto materialBefore=poisonMaterials;
+    auto poisonedInfo=Poison<MmsEvaluationMeshInfoV1>();
+    CHECK(api.describeMesh(api.context,source,2,&poisonedInfo)==MMS_E_NOT_FOUND&&Unchanged(poisonedInfo));
+    CHECK(api.readMeshIndices(api.context,source,0,UINT32_MAX,2,poisonIndex.data())==MMS_E_ARGUMENT&&Bits(poisonIndex,indexBefore));
+    CHECK(api.readMeshIndices(api.context,source,0,0,caps.maxItemsPerRead+1,poisonIndex.data())==MMS_E_ARGUMENT&&Bits(poisonIndex,indexBefore));
+    CHECK(api.readMeshIndices(api.context,source,0,0,1,nullptr)==MMS_E_ARGUMENT);
+    CHECK(api.readMeshVertices(api.context,frame,0,3,2,poisonVertices.data())==MMS_E_ARGUMENT&&Bits(poisonVertices,vertexBefore));
+    CHECK(other.describeMesh(other.context,source,0,&poisonedInfo)==MMS_E_NOT_FOUND&&Unchanged(poisonedInfo));
+    CHECK(other.readMeshVertices(other.context,frame,0,0,4,poisonVertices.data())==MMS_E_NOT_FOUND&&Bits(poisonVertices,vertexBefore));
+    MmsHandle legacy=sentinel;CHECK(api.createSceneSource(api.context,&query,&legacy)==MMS_OK);
+    MmsHandle legacyFrame=sentinel;frameQuery=FrameQuery(legacy);CHECK(api.evaluateFrame(api.context,&frameQuery,&legacyFrame)==MMS_OK);
+    control->frameMode=10;MmsHandle malformedFrame=sentinel;
+    CHECK(api.evaluateFrame(api.context,&frameQuery,&malformedFrame)==MMS_E_FAILED&&malformedFrame==sentinel);
+    control->frameMode=0;
+    CHECK(api.describeMesh(api.context,legacy,0,&poisonedInfo)==MMS_E_UNSUPPORTED&&Unchanged(poisonedInfo));
+    CHECK(api.readMeshVertices(api.context,legacyFrame,0,0,1,poisonVertices.data())==MMS_E_UNSUPPORTED&&Bits(poisonVertices,vertexBefore));
+    for(int mode:{1,2,3,4,5}){
+        control->meshMode=mode;const auto expected=mode==4?MMS_E_MEMORY:mode==3?MMS_E_CANCELLED:MMS_E_FAILED;
+        CHECK(api.readMeshVertices(api.context,frame,0,0,4,poisonVertices.data())==expected&&Bits(poisonVertices,vertexBefore));
+        CHECK(api.readMeshBindVertices(api.context,source,0,0,4,poisonVertices.data())==expected&&Bits(poisonVertices,vertexBefore));
+        if(mode!=1)CHECK(api.readMeshMaterials(api.context,source,0,0,2,poisonMaterials.data())==expected&&Bits(poisonMaterials,materialBefore));
+    }
+    for(int mode:{10,11}){control->meshMode=mode;CHECK(api.describeMesh(api.context,source,0,&poisonedInfo)==MMS_E_FAILED&&Unchanged(poisonedInfo));}
+    control->meshMode=0;
+    // A host may use a bounded stack staging buffer or allocate one. If it
+    // allocates, failure must preserve every byte; allocation-free success is
+    // also valid and is checked against the same expected output.
+    auto allocationOutput=vertexBefore;failAfter=0;
+    const auto allocationResult=api.readMeshVertices(api.context,frame,0,0,4,allocationOutput.data());failAfter=-1;
+    CHECK((allocationResult==MMS_E_MEMORY&&Bits(allocationOutput,vertexBefore))||
+          (allocationResult==MMS_OK&&allocationOutput[3].position[0]==5));
+    MmsHandle alias=sentinel;const auto bytes=client.bytes;CHECK(api.retain(api.context,frame,&alias)==MMS_OK&&client.bytes==bytes);
+    CHECK(api.release(api.context,frame)==MMS_OK&&api.release(api.context,source)==MMS_OK);
+    vertices={};CHECK(api.readMeshVertices(api.context,alias,0,0,4,vertices.data())==MMS_OK&&vertices[3].position[0]==5);
+    CHECK(api.release(api.context,alias)==MMS_OK&&api.release(api.context,legacy)==MMS_OK&&api.release(api.context,legacyFrame)==MMS_OK&&!store.HasLeases(client));
+}
+static void MeshReadInFlight(){
+    section="1.5 admitted source and frame reads survive release and retirement";
+    for(bool frameRead:{false,true}){
+        auto control=std::make_shared<Control>();control->meshGate=std::make_shared<Gate>();const auto gate=control->meshGate;CHECK(gate->ready&&gate->proceed);
+        EvaluationStore store(ChannelCapture(),1,SceneCapture(control),MeshSceneCapture(control));EvaluationStore::Client client;client.owner=&store;const auto api=store.Api15(client);
+        const auto query=SceneQuery();MmsHandle source=0;CHECK(api.createMeshSceneSource(api.context,&query,&source)==MMS_OK);
+        MmsHandle handle=source;
+        if(frameRead){const auto q=FrameQuery(source);handle=0;CHECK(api.evaluateFrame(api.context,&q,&handle)==MMS_OK);CHECK(api.release(api.context,source)==MMS_OK);}
+        std::array<uint32_t,6> indices{};std::array<MmsEvaluationMeshVertexV1,4> vertices{};MmsResult status=MMS_E_FAILED;
+        Workers workers{gate,{}};
+        workers.threads[0]=std::thread([&]{status=frameRead?api.readMeshVertices(api.context,handle,0,0,4,vertices.data()):api.readMeshIndices(api.context,handle,0,0,6,indices.data());});
+        CHECK(WaitForSingleObject(gate->ready,10000)==WAIT_OBJECT_0);
+        const auto bytes=client.bytes;store.Retire(client);CHECK(api.release(api.context,handle)==MMS_OK&&client.handles==0&&client.active==1&&client.bytes==bytes&&store.HasLeases(client));
+        auto untouched=Poison<MmsEvaluationMeshVertexV1>();CHECK(api.readMeshVertices(api.context,handle,0,0,1,&untouched)==MMS_E_NOT_READY&&Unchanged(untouched));
+        SetEvent(gate->proceed);workers.threads[0].join();CHECK(status==MMS_OK&&client.active==0&&client.bytes==0&&!store.HasLeases(client));
+        const std::array<uint32_t,6> expectedIndices{0,1,2,2,1,3};
+        if(frameRead)CHECK(vertices[3].position[0]==5);else CHECK(indices==expectedIndices);
+    }
+}
+static void MeshDestroyOutsideMutex(){
+    section="1.5 last admitted mesh read keeps charge and pin through host destruction";
+    for(bool frameRead:{false,true}){
+        struct Handshake {
+            HANDLE entered=CreateEventW(nullptr,TRUE,FALSE,nullptr), observed=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+            std::atomic<bool> destructorTimedOut{false},observerTimedOut{false};
+            ~Handshake(){if(entered)CloseHandle(entered);if(observed)CloseHandle(observed);}
+        };
+        struct HostResource {
+            std::shared_ptr<Handshake> state;
+            explicit HostResource(std::shared_ptr<Handshake> value):state(std::move(value)){}
+            ~HostResource(){SetEvent(state->entered);if(WaitForSingleObject(state->observed,5000)!=WAIT_OBJECT_0)state->destructorTimedOut=true;}
+        };
+        auto state=std::make_shared<Handshake>();CHECK(state->entered&&state->observed);
+        auto control=std::make_shared<Control>();control->meshGate=std::make_shared<Gate>();const auto gate=control->meshGate;CHECK(gate->ready&&gate->proceed);
+        auto capture=MeshSceneCapture(control);
+        EvaluationStore::CaptureScene wrapped=[capture,state,frameRead](const auto& query,uint64_t budget,std::shared_ptr<const EvaluationSceneSourceData>& out)->MmsResult {
+            std::shared_ptr<const EvaluationSceneSourceData> original;const auto status=capture(query,budget,original);
+            if(status!=MMS_OK||!original)return status;
+            auto source=std::make_shared<EvaluationSceneSourceData>(*original);
+            if(!frameRead){
+                auto resource=std::make_shared<HostResource>(state);auto inner=source->meshIndex;
+                source->meshIndex=[resource,inner](uint32_t model,uint32_t index,uint32_t& value){return inner(model,index,value);};
+            }else{
+                auto inner=source->evaluate;
+                source->evaluate=[state,inner](const EvaluationTime& time,uint64_t limit,uint64_t workspace,std::shared_ptr<const EvaluationSceneFrameData>& result)->MmsResult {
+                    std::shared_ptr<const EvaluationSceneFrameData> old;const auto status=inner(time,limit,workspace,old);if(status!=MMS_OK||!old)return status;
+                    auto frame=std::make_shared<EvaluationSceneFrameData>(*old);auto resource=std::make_shared<HostResource>(state);auto read=frame->meshVertex;
+                    frame->meshVertex=[resource,read](uint32_t model,uint32_t index,MmsEvaluationMeshVertexV1& value){return read(model,index,value);};
+                    result=frame;return MMS_OK;
+                };
+            }
+            out=source;return MMS_OK;
+        };
+        EvaluationStore store(ChannelCapture(),1,SceneCapture(control),wrapped);EvaluationStore::Client client;client.owner=&store;const auto api=store.Api15(client);
+        const auto query=SceneQuery();MmsHandle source=0;CHECK(api.createMeshSceneSource(api.context,&query,&source)==MMS_OK);
+        MmsHandle handle=source;
+        if(frameRead){const auto q=FrameQuery(source);handle=0;CHECK(api.evaluateFrame(api.context,&q,&handle)==MMS_OK);CHECK(api.release(api.context,source)==MMS_OK);}
+        const auto charged=client.bytes;CHECK(charged>0);
+        std::array<uint32_t,6> indices{};std::array<MmsEvaluationMeshVertexV1,4> vertices{};MmsResult status=MMS_E_FAILED;
+        std::atomic<bool> observerLease{false},observerCharge{false},observerQuery{false};
+        Workers workers{gate,{}};
+        workers.threads[0]=std::thread([&]{status=frameRead?api.readMeshVertices(api.context,handle,0,0,4,vertices.data()):api.readMeshIndices(api.context,handle,0,0,6,indices.data());});
+        CHECK(WaitForSingleObject(gate->ready,10000)==WAIT_OBJECT_0);
+        CHECK(api.release(api.context,handle)==MMS_OK&&client.handles==0&&client.active==1&&client.bytes==charged);
+        workers.threads[1]=std::thread([&]{
+            if(WaitForSingleObject(state->entered,10000)!=WAIT_OBJECT_0)state->observerTimedOut=true;
+            else {
+                observerLease=store.HasLeases(client);
+                observerCharge=client.handles==0&&client.active==1&&client.bytes==charged;
+                MmsEvaluationMeshCapsV1 caps{};observerQuery=api.getMeshCapabilities(api.context,&caps)==MMS_OK;
+            }
+            SetEvent(state->observed);
+        });
+        SetEvent(gate->proceed);workers.threads[0].join();workers.threads[1].join();
+        CHECK(!state->destructorTimedOut&&!state->observerTimedOut&&observerLease&&observerCharge&&observerQuery);
+        CHECK(status==MMS_OK&&client.handles==0&&client.active==0&&client.bytes==0&&client.workspaceBytes==0&&!store.HasLeases(client));
+    }
+}
+static void LegacySceneDestroyOutsideMutex(){
+    section="1.4 last pose read and frame evaluation keep leases during host destruction";
+    for(bool poseRead:{false,true}){
+        struct Handshake {
+            HANDLE entered=CreateEventW(nullptr,TRUE,FALSE,nullptr), observed=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+            std::atomic<bool> destructorTimedOut{false},observerTimedOut{false};
+            ~Handshake(){if(entered)CloseHandle(entered);if(observed)CloseHandle(observed);}
+        };
+        struct HostResource {
+            std::shared_ptr<Handshake> state;
+            explicit HostResource(std::shared_ptr<Handshake> value):state(std::move(value)){}
+            ~HostResource(){SetEvent(state->entered);if(WaitForSingleObject(state->observed,5000)!=WAIT_OBJECT_0)state->destructorTimedOut=true;}
+        };
+        auto state=std::make_shared<Handshake>();CHECK(state->entered&&state->observed);
+        auto control=std::make_shared<Control>();auto gate=std::make_shared<Gate>();CHECK(gate->ready&&gate->proceed);
+        if(poseRead)control->poseGate=gate;else control->evaluateGate=gate;
+        auto capture=SceneCapture(control);
+        EvaluationStore::CaptureScene wrapped=[capture,state,poseRead](const auto& query,uint64_t budget,std::shared_ptr<const EvaluationSceneSourceData>& out)->MmsResult {
+            std::shared_ptr<const EvaluationSceneSourceData> original;const auto status=capture(query,budget,original);
+            if(status!=MMS_OK||!original)return status;
+            auto source=std::make_shared<EvaluationSceneSourceData>(*original);auto inner=source->evaluate;
+            if(!poseRead){
+                auto resource=std::make_shared<HostResource>(state);
+                source->evaluate=[resource,inner](const EvaluationTime& time,uint64_t limit,uint64_t workspace,std::shared_ptr<const EvaluationSceneFrameData>& result){return inner(time,limit,workspace,result);};
+            }else{
+                source->evaluate=[state,inner](const EvaluationTime& time,uint64_t limit,uint64_t workspace,std::shared_ptr<const EvaluationSceneFrameData>& result)->MmsResult {
+                    std::shared_ptr<const EvaluationSceneFrameData> old;const auto status=inner(time,limit,workspace,old);if(status!=MMS_OK||!old)return status;
+                    auto frame=std::make_shared<EvaluationSceneFrameData>(*old);auto resource=std::make_shared<HostResource>(state);auto read=frame->sample;
+                    frame->sample=[resource,read](uint32_t model,uint32_t bone,MmsEvaluationScenePoseV1& value){return read(model,bone,value);};
+                    result=frame;return MMS_OK;
+                };
+            }
+            out=source;return MMS_OK;
+        };
+        EvaluationStore store(ChannelCapture(),1,wrapped);EvaluationStore::Client client;const auto api=Bind(store,client);const auto source=Capture(api);
+        MmsHandle handle=source,createdFrame=sentinel;
+        if(poseRead){handle=Evaluate(api,source);CHECK(api.release(api.context,source)==MMS_OK);}
+        const auto charged=client.bytes;CHECK(charged>0);
+        auto pose=Poison<MmsEvaluationScenePoseV1>();MmsResult status=MMS_E_FAILED;const auto query=FrameQuery(source);
+        std::atomic<bool> observerLease{false},observerCharge{false},observerQuery{false};Workers workers{gate,{}};
+        workers.threads[0]=std::thread([&]{status=poseRead?api.readBonePose(api.context,handle,0,0,&pose):api.evaluateFrame(api.context,&query,&createdFrame);});
+        CHECK(WaitForSingleObject(gate->ready,10000)==WAIT_OBJECT_0);
+        CHECK(api.release(api.context,handle)==MMS_OK&&client.handles==0&&client.active==1&&client.bytes==charged);
+        workers.threads[1]=std::thread([&]{
+            if(WaitForSingleObject(state->entered,10000)!=WAIT_OBJECT_0)state->observerTimedOut=true;
+            else {
+                observerLease=store.HasLeases(client);
+                observerCharge=client.handles==(poseRead?0u:1u)&&client.active==1&&client.bytes>=charged&&
+                    (poseRead?client.workspaceBytes==0:client.workspaceBytes==128*MiB);
+                MmsEvaluationSceneCapsV1 caps{};observerQuery=api.getSceneCapabilities(api.context,&caps)==MMS_OK;
+            }
+            SetEvent(state->observed);
+        });
+        SetEvent(gate->proceed);workers.threads[0].join();workers.threads[1].join();
+        CHECK(!state->destructorTimedOut&&!state->observerTimedOut&&observerLease&&observerCharge&&observerQuery);
+        CHECK(status==MMS_OK&&client.active==0&&client.workspaceBytes==0);
+        if(poseRead){CHECK(PoseMatches(pose,7.5,3,0,0)&&client.handles==0&&client.bytes==0&&!store.HasLeases(client));}
+        else {CHECK(createdFrame!=sentinel&&client.handles==1&&client.bytes==DescribeFrame(api,createdFrame).retainedBytes);
+            CHECK(api.release(api.context,createdFrame)==MMS_OK&&client.bytes==0&&!store.HasLeases(client));}
+    }
+}
+static void FailedMeshCaptureDestroyOutsideMutex(){
+    section="1.5 failed capture preserves acquisition and admission until host destruction";
+    struct Handshake {
+        HANDLE entered=CreateEventW(nullptr,TRUE,FALSE,nullptr),observed=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+        std::atomic<bool> destructorTimedOut{false},observerTimedOut{false},observerQuery{false};
+        MmsEvaluationApiV1_5 api{};MmsResult nested=MMS_E_FAILED;MmsHandle nestedHandle=sentinel;
+        ~Handshake(){if(entered)CloseHandle(entered);if(observed)CloseHandle(observed);}
+    };
+    struct HostResource {
+        std::shared_ptr<Handshake> state;
+        explicit HostResource(std::shared_ptr<Handshake> value):state(std::move(value)){}
+        ~HostResource(){
+            SetEvent(state->entered);
+            if(WaitForSingleObject(state->observed,5000)!=WAIT_OBJECT_0){state->destructorTimedOut=true;return;}
+            // Only reenter on the UI thread after the observer has proved the
+            // store mutex is available; otherwise an old lock-held destructor
+            // would deadlock this bounded regression permanently.
+            if(state->observerQuery){const auto query=SceneQuery();state->nested=state->api.createMeshSceneSource(state->api.context,&query,&state->nestedHandle);}
+        }
+    };
+    auto state=std::make_shared<Handshake>();CHECK(state->entered&&state->observed);
+    auto control=std::make_shared<Control>();auto capture=MeshSceneCapture(control);
+    EvaluationStore::CaptureScene wrapped=[capture,state](const auto& query,uint64_t budget,std::shared_ptr<const EvaluationSceneSourceData>& out)->MmsResult {
+        std::shared_ptr<const EvaluationSceneSourceData> original;const auto status=capture(query,budget,original);if(status!=MMS_OK||!original)return status;
+        auto source=std::make_shared<EvaluationSceneSourceData>(*original);auto resource=std::make_shared<HostResource>(state);auto inner=source->meshIndex;
+        source->meshIndex=[resource,inner](uint32_t model,uint32_t index,uint32_t& value){return inner(model,index,value);};
+        out=source;return MMS_E_CANCELLED;
+    };
+    EvaluationStore store(ChannelCapture(),1,SceneCapture(control),wrapped);EvaluationStore::Client client;client.owner=&store;state->api=store.Api15(client);
+    std::atomic<bool> observerLease{false},observerAdmission{false};
+    std::thread observer([&]{
+        if(WaitForSingleObject(state->entered,10000)!=WAIT_OBJECT_0)state->observerTimedOut=true;
+        else {observerLease=store.HasLeases(client);observerAdmission=client.handles==0&&client.active==1&&client.bytes==0;
+            MmsEvaluationMeshCapsV1 caps{};state->observerQuery=state->api.getMeshCapabilities(state->api.context,&caps)==MMS_OK;}
+        SetEvent(state->observed);
+    });
+    const auto query=SceneQuery();MmsHandle out=sentinel;const auto status=state->api.createMeshSceneSource(state->api.context,&query,&out);
+    observer.join();
+    CHECK(!state->destructorTimedOut&&!state->observerTimedOut&&observerLease&&observerAdmission&&state->observerQuery);
+    CHECK(state->nested==MMS_E_BUSY&&state->nestedHandle==sentinel&&control->captures==1);
+    CHECK(status==MMS_E_CANCELLED&&out==sentinel&&client.handles==0&&client.active==0&&client.bytes==0&&!store.HasLeases(client));
+}
+int main(){try{TablesAndCapabilities();EnumerationTimeAndLifetime();AdmissionAndKinds();BadHostPayloads();SharedBudgetsAndFaults();SourceAndFrameInFlight();ParallelWorkspaceBudgets();FailedLegacyCaptureKeepsLeaseDuringDestruction();MeshPublicContracts();MeshReadInFlight();MeshDestroyOutsideMutex();LegacySceneDestroyOutsideMutex();FailedMeshCaptureDestroyOutsideMutex();
     std::printf("PASS %u mock evaluation scene checks\n",checks);return 0;
 }catch(const std::exception& error){failAfter=-1;std::fprintf(stderr,"FAIL %s unexpected exception: %s\n",section,error.what());return 1;}}

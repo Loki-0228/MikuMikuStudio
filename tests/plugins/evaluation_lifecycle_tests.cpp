@@ -22,7 +22,7 @@ struct Gate {
     HANDLE proceed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     ~Gate() { if (entered) CloseHandle(entered); if (proceed) CloseHandle(proceed); }
 };
-enum class GateKind { Bone, Morph, Display, Parent, ParentState, Scene };
+enum class GateKind { Bone, Morph, Display, Parent, ParentState, Scene, MeshSource, MeshFrame };
 static std::shared_ptr<EvaluationStore> Store(std::shared_ptr<Gate> gate = {}, GateKind kind = GateKind::Bone,
                                             bool legacy = false, uint32_t supported = 7) {
     EvaluationStore::CaptureChannels capture = [gate, kind](const MmsEvaluationSourceQueryV1& query, uint32_t channels, uint64_t budget,
@@ -102,6 +102,35 @@ static std::shared_ptr<EvaluationStore> Store(std::shared_ptr<Gate> gate = {}, G
         }
         out = std::move(data); return MMS_OK;
     };
+    if (kind == GateKind::MeshSource || kind == GateKind::MeshFrame) {
+        EvaluationStore::CaptureScene mesh = [gate,kind](const MmsEvaluationSceneQueryV1&,uint64_t,
+            std::shared_ptr<const EvaluationSceneSourceData>& out)->MmsResult {
+            auto models=std::make_shared<EvaluationSceneModels>();models->push_back({{{11,22},1},{{33,44}}});
+            auto data=std::make_shared<EvaluationSceneSourceData>();data->models=models;data->retainedBytes=8192;
+            data->meshInfo=[](uint32_t model,MmsEvaluationMeshInfoV1& v)->MmsResult {
+                if(model)return MMS_E_NOT_FOUND;v={};v.object={{11,22},1};v.vertexCount=2;v.indexCount=3;v.materialCount=1;
+                v.flags=MMS_EVALUATION_MESH_TOPOLOGY|MMS_EVALUATION_MESH_CPU_VERTICES;return MMS_OK;
+            };
+            data->meshIndex=[gate,kind](uint32_t,uint32_t index,uint32_t& out)->MmsResult {
+                if(gate&&kind==GateKind::MeshSource){SetEvent(gate->entered);if(WaitForSingleObject(gate->proceed,15000)!=WAIT_OBJECT_0)return MMS_E_FAILED;}
+                out=index==2?1:0;return MMS_OK;
+            };
+            data->meshMaterial=[](uint32_t,uint32_t,MmsEvaluationMeshMaterialV1& out)->MmsResult {out={};out.indexCount=3;return MMS_OK;};
+            data->meshBindVertex=[](uint32_t,uint32_t index,MmsEvaluationMeshVertexV1& out)->MmsResult {out={};out.position[0]=float(index);return MMS_OK;};
+            data->evaluate=[gate,kind,models](const mikumikustudio::EvaluationTime&,uint64_t,uint64_t,std::shared_ptr<const EvaluationSceneFrameData>& result)->MmsResult {
+                auto frame=std::make_shared<EvaluationSceneFrameData>();frame->models=models;frame->visibility={1};frame->retainedBytes=8192;
+                frame->sample=[](uint32_t,uint32_t,MmsEvaluationScenePoseV1& pose)->MmsResult {pose={};return MMS_OK;};
+                frame->meshVertexCounts={2};frame->meshAdditionalUvCounts={0};
+                frame->meshVertex=[gate,kind](uint32_t,uint32_t index,MmsEvaluationMeshVertexV1& out)->MmsResult {
+                    if(gate&&kind==GateKind::MeshFrame){SetEvent(gate->entered);if(WaitForSingleObject(gate->proceed,15000)!=WAIT_OBJECT_0)return MMS_E_FAILED;}
+                    out={};out.position[0]=float(index+10);return MMS_OK;
+                };
+                result=frame;return MMS_OK;
+            };
+            out=data;return MMS_OK;
+        };
+        return std::make_shared<EvaluationStore>(std::move(capture),supported,EvaluationStore::CaptureScene{},std::move(mesh));
+    }
     if (kind == GateKind::Scene) {
         EvaluationStore::CaptureScene scene = [gate](const MmsEvaluationSceneQueryV1&, uint64_t,
                 std::shared_ptr<const EvaluationSceneSourceData>& out) {
@@ -419,7 +448,7 @@ static void InFlight(const fs::path& root, const fs::path& fixture, GateKind kin
         case GateKind::Display: result = probe.api12.sampleVisibility(probe.api12.context, probe.source, {1, 2}, &visibility); break;
         case GateKind::Parent: result = probe.api12.sampleParent(probe.api12.context, probe.source, 0, {1, 2}, &parent); break;
         case GateKind::ParentState: result = probe.parentState(0, {1, 1}, &parentState); break;
-        case GateKind::Scene: break; // Separate DLL scene path below.
+        case GateKind::Scene: case GateKind::MeshSource: case GateKind::MeshFrame: break; // Separate DLL paths below.
         }
     })};
     CHECK(WaitForSingleObject(gate->entered, 10000) == WAIT_OBJECT_0);
@@ -435,7 +464,7 @@ static void InFlight(const fs::path& root, const fs::path& fixture, GateKind kin
     case GateKind::Display: CHECK(visibility.h.size == sizeof(visibility) && visibility.h.major == 1 && visibility.h.minor == 0 && visibility.visible == 197 && visibility.reserved == 0); break;
     case GateKind::Parent: CHECK(ValidParent(parent)); break;
     case GateKind::ParentState: CHECK(ValidGround(parentState)); break;
-    case GateKind::Scene: break;
+    case GateKind::Scene: case GateKind::MeshSource: case GateKind::MeshFrame: break;
     }
     CHECK(manager.Stop()); CHECK(Count(logs, "EVALUATION_DESTROY") == 1);
     CHECK(GetModuleHandleW(dll.c_str()) == nullptr);
@@ -465,6 +494,49 @@ static void SceneInFlight(const fs::path& root,const fs::path& fixture) {
     CHECK(manager.Stop()&&GetModuleHandleW(dll.c_str())==nullptr&&Count(logs,"EVALUATION_DESTROY")==1);
     std::cout<<"scene-inflight-holdok PASS\n";
 }
+static void MeshInFlight(const fs::path& root,const fs::path& fixture,GateKind kind) {
+    const bool frameRead=kind==GateKind::MeshFrame;
+    const std::string mode=frameRead?"mesh-frame-inflight-holdok":"mesh-source-inflight-holdok";
+    const auto base=root/mode;const auto dll=Package(base/"PLUGINS",fixture,mode);
+    auto gate=std::make_shared<Gate>();CHECK(gate->entered&&gate->proceed);
+    auto store=Store(gate,kind);std::vector<std::string> logs;
+    Manager manager(base/"data",[&](const auto& s){logs.push_back(s);},{},false,{},false,store);manager.Load(base/"PLUGINS");Probe probe(dll);
+    const auto module=GetModuleHandleW(dll.c_str());CHECK(module);
+    using Get=MmsResult(MMS_CALL*)(MmsEvaluationApiV1_5*);
+    using Create=MmsResult(MMS_CALL*)(const MmsEvaluationSceneQueryV1*,MmsHandle*);
+    using Evaluate=MmsResult(MMS_CALL*)(const MmsEvaluationFrameQueryV1*,MmsHandle*);
+    using Indices=MmsResult(MMS_CALL*)(MmsHandle,uint32_t*);
+    using Vertices=MmsResult(MMS_CALL*)(MmsHandle,MmsEvaluationMeshVertexV1*);
+    const auto get=reinterpret_cast<Get>(GetProcAddress(module,"MmsEvaluationTestGet15"));
+    const auto create=reinterpret_cast<Create>(GetProcAddress(module,"MmsEvaluationTestMeshCreate"));
+    const auto evaluate=reinterpret_cast<Evaluate>(GetProcAddress(module,"MmsEvaluationTestSceneEvaluate"));
+    const auto indices=reinterpret_cast<Indices>(GetProcAddress(module,"MmsEvaluationTestMeshIndices"));
+    const auto vertices=reinterpret_cast<Vertices>(GetProcAddress(module,"MmsEvaluationTestMeshVertices"));
+    MmsEvaluationApiV1_5 api{};MmsEvaluationSceneQueryV1 query{};query.h=Header<MmsEvaluationSceneQueryV1>();MmsHandle source=0;
+    CHECK(get&&create&&evaluate&&indices&&vertices&&get(&api)==MMS_OK&&create(&query,&source)==MMS_OK);
+    auto* client=static_cast<EvaluationStore::Client*>(api.context);CHECK(client&&client->owner==store.get());
+    MmsHandle handle=source;
+    if(frameRead){MmsEvaluationFrameQueryV1 request{};request.h=Header<MmsEvaluationFrameQueryV1>();request.source=source;request.time={1,2};
+        handle=0;CHECK(evaluate(&request,&handle)==MMS_OK&&handle);CHECK(api.release(api.context,source)==MMS_OK);}
+    uint32_t indexOutput[3]{0x5a5a5a5a,0x5a5a5a5a,0x5a5a5a5a};
+    MmsEvaluationMeshVertexV1 vertexOutput[2];std::memset(vertexOutput,0x5a,sizeof(vertexOutput));
+    MmsResult result=MMS_E_FAILED;
+    struct Join {std::shared_ptr<Gate> gate;std::thread worker;~Join(){SetEvent(gate->proceed);if(worker.joinable())worker.join();}};
+    Join join{gate,std::thread([&]{result=frameRead?vertices(handle,vertexOutput):indices(handle,indexOutput);})};
+    CHECK(WaitForSingleObject(gate->entered,10000)==WAIT_OBJECT_0);
+    CHECK(api.release(api.context,handle)==MMS_OK&&probe.release()==MMS_OK);
+    const auto charged=client->bytes;CHECK(charged>0&&client->active==1&&client->handles==0&&store->HasLeases(*client));
+    CHECK(!manager.Stop()&&GetModuleHandleW(dll.c_str())!=nullptr&&Count(logs,"EVALUATION_DESTROY")==0);
+    CHECK(client->bytes==charged&&client->active==1);
+    uint32_t refused[3]{0x12345678,0x12345678,0x12345678};
+    CHECK(indices(handle,refused)==MMS_E_NOT_READY&&refused[0]==0x12345678&&refused[1]==0x12345678&&refused[2]==0x12345678);
+    SetEvent(gate->proceed);join.worker.join();
+    CHECK(result==MMS_OK&&client->active==0&&client->bytes==0&&!store->HasLeases(*client));
+    if(frameRead)CHECK(vertexOutput[0].position[0]==10&&vertexOutput[1].position[0]==11);
+    else CHECK(indexOutput[0]==0&&indexOutput[1]==0&&indexOutput[2]==1);
+    CHECK(manager.Stop()&&GetModuleHandleW(dll.c_str())==nullptr&&Count(logs,"EVALUATION_DESTROY")==1);
+    std::cout<<mode<<" PASS\n";
+}
 int wmain(int argc, wchar_t** argv) {
     if (argc != 3) { std::fprintf(stderr, "usage: evaluation_lifecycle_tests <output-parent> <fixture.dll>\n"); return 2; }
     try {
@@ -477,6 +549,7 @@ int wmain(int argc, wchar_t** argv) {
         InFlight(root, fixture, GateKind::Display); InFlight(root, fixture, GateKind::Parent);
         InFlight(root, fixture, GateKind::ParentState);
         SceneInFlight(root, fixture);
+        MeshInFlight(root,fixture,GateKind::MeshSource);MeshInFlight(root,fixture,GateKind::MeshFrame);
         RunCase(root, fixture, "failinstance");
         std::cout << "Evaluation lifecycle PASS: " << checks << " checks\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL after " << checks << " checks: " << error.what() << '\n'; return 1; }

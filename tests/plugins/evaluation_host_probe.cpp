@@ -8,7 +8,9 @@ MmsEvaluationApiV1_1 api11{};
 MmsEvaluationApiV1_2 api12{};
 MmsEvaluationApiV1_3 api13{};
 MmsEvaluationApiV1_4 api14{};
+MmsEvaluationApiV1_5 api15{};
 mms::sdk::EvaluationServices sdkServices;
+mms::sdk::EvaluationMeshServices sdkMeshServices;
 MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1*, void** out) {
     if (!host || !out) return MMS_E_ARGUMENT;
     constexpr char service[] = "mms.scene.evaluate";
@@ -22,14 +24,19 @@ MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1*, void** 
     if (parent != MMS_OK) return parent;
     const auto scene = host->queryService(host->context, {service, sizeof(service)-1}, 1, 4, sizeof(api14), &api14);
     if (scene != MMS_OK) return scene;
+    const auto mesh = host->queryService(host->context, {service, sizeof(service)-1}, 1, 5, sizeof(api15), &api15);
+    if (mesh != MMS_OK) return mesh;
     const auto sdk = mms::sdk::EvaluationServices::Query(*host, sdkServices);
+    if (sdk != MMS_OK) return sdk;
+    const auto meshSdk = mms::sdk::EvaluationMeshServices::Query(*host, sdkMeshServices);
+    if (meshSdk != MMS_OK) return meshSdk;
     if (sdk == MMS_OK) *out = &api;
     return sdk;
 }
 MmsResult MMS_CALL Start(void*) { return MMS_OK; }
 void MMS_CALL Event(void*, const MmsEventV1*) {}
 MmsResult MMS_CALL Stop(void*) { return MMS_OK; }
-void MMS_CALL Destroy(void*) { api = {}; api11 = {}; api12 = {}; api13 = {}; api14 = {}; sdkServices = {}; }
+void MMS_CALL Destroy(void*) { api = {}; api11 = {}; api12 = {}; api13 = {}; api14 = {}; api15 = {}; sdkServices = {}; sdkMeshServices = {}; }
 }
 extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostGetApi(MmsEvaluationApiV1* out) {
     if (!out || !api.context) return MMS_E_NOT_READY;
@@ -50,6 +57,38 @@ extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostGetApi13(Mm
 extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostGetApi14(MmsEvaluationApiV1_4* out) {
     if (!out || !api14.context) return MMS_E_NOT_READY;
     *out = api14; return MMS_OK;
+}
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostGetApi15(MmsEvaluationApiV1_5* out) {
+    if (!out || !api15.context) return MMS_E_NOT_READY;
+    *out = api15; return MMS_OK;
+}
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostSdkMesh(
+    MmsEvaluationMeshInfoV1* info, uint32_t* index, MmsEvaluationMeshMaterialV1* material,
+    MmsEvaluationMeshVertexV1* bindVertex, MmsEvaluationMeshVertexV1* frameVertex,
+    MmsEvaluationSceneModelV1* model) {
+    if(!info||!index||!material||!bindVertex||!frameVertex||!model)return MMS_E_ARGUMENT;
+    mms::sdk::EvaluationMeshSource source, alias;
+    mms::sdk::EvaluationMeshFrame frame, frameAlias;
+    MmsEvaluationMeshInfoV1 infoCopy{};MmsEvaluationSceneModelV1 modelCopy{};
+    std::vector<uint32_t> indices;std::vector<MmsEvaluationMeshMaterialV1> materials;
+    std::vector<MmsEvaluationMeshVertexV1> binding, vertices;
+    auto result=sdkMeshServices.Capture(source);
+    if(result==MMS_OK)result=source.Retain(alias);
+    if(result==MMS_OK)result=source.Release();
+    if(result==MMS_OK)result=alias.MeshInfo(0,infoCopy);
+    if(result==MMS_OK&&(!infoCopy.vertexCount||!infoCopy.indexCount||!infoCopy.materialCount))result=MMS_E_NOT_FOUND;
+    if(result==MMS_OK)result=alias.ReadIndices(0,0,1,indices);
+    if(result==MMS_OK)result=alias.ReadMaterials(0,0,1,materials);
+    if(result==MMS_OK)result=alias.ReadBindVertices(0,0,1,binding);
+    if(result==MMS_OK)result=alias.Evaluate({1,3},frame);
+    if(result==MMS_OK)result=alias.Release();
+    if(result==MMS_OK)result=frame.Retain(frameAlias);
+    if(result==MMS_OK)result=frame.Release();
+    if(result==MMS_OK)result=frameAlias.ModelAt(0,modelCopy);
+    if(result==MMS_OK)result=frameAlias.ReadVertices(0,0,1,vertices);
+    if(result==MMS_OK)result=frameAlias.Release();
+    if(result==MMS_OK){*info=infoCopy;*index=indices[0];*material=materials[0];*bindVertex=binding[0];*frameVertex=vertices[0];*model=modelCopy;}
+    return result;
 }
 extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostSdkFrame(MmsEvaluationSceneModelV1* model, MmsEvaluationScenePoseV1* pose) {
     if (!model || !pose) return MMS_E_ARGUMENT;

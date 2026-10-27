@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace mikumikustudio::plugins {
@@ -19,6 +20,7 @@ constexpr uint32_t kMaxSources = 128;
 constexpr uint64_t kMaxWorkspaceBytes = 128ull * 1024 * 1024;
 constexpr uint64_t kMaxClientWorkspaceBytes = 256ull * 1024 * 1024;
 constexpr uint64_t kMaxTotalWorkspaceBytes = 512ull * 1024 * 1024;
+constexpr uint32_t kMaxMeshBatch = 4096;
 // Handles start above the 62-bit mark so small integers from other services
 // cannot alias a source. Reaching the 63-bit bound is exhaustion, not memory
 // pressure, because the sequence itself cannot allocate another handle.
@@ -52,6 +54,11 @@ bool AddBytes(uint64_t& total, uint64_t count, uint64_t stride) noexcept {
     if (stride && count > (UINT64_MAX - total) / stride) return false;
     total += count * stride;
     return true;
+}
+bool ValidMeshInfo(const MmsEvaluationMeshInfoV1& info, const MmsObjectRef& object) noexcept {
+    constexpr uint32_t flags = MMS_EVALUATION_MESH_TOPOLOGY | MMS_EVALUATION_MESH_CPU_VERTICES;
+    return Same(info.object.id, object.id) && info.object.generation == object.generation &&
+        info.flags == flags && !info.reserved && info.additionalUvCount <= 4 && info.indexCount % 3 == 0;
 }
 
 // Account the immutable identity map independently for every scene source and
@@ -213,8 +220,8 @@ struct EvaluationStore::Payload {
 };
 
 EvaluationStore::EvaluationStore(Capture capture) : capture_(std::move(capture)) {}
-EvaluationStore::EvaluationStore(CaptureChannels captureChannels, uint32_t supportedChannels, CaptureScene scene)
-    : captureChannels_(std::move(captureChannels)), captureScene_(std::move(scene)), supportedChannels_(supportedChannels) {
+EvaluationStore::EvaluationStore(CaptureChannels captureChannels, uint32_t supportedChannels, CaptureScene scene, CaptureScene meshScene)
+    : captureChannels_(std::move(captureChannels)), captureScene_(std::move(scene)), captureMeshScene_(std::move(meshScene)), supportedChannels_(supportedChannels) {
     constexpr uint32_t known = MMS_EVALUATION_CAP_BONE_CHANNELS | MMS_EVALUATION_CAP_MORPH_WEIGHTS |
         MMS_EVALUATION_CAP_DISPLAY;
     if (!supportedChannels_ || (supportedChannels_ & ~known)) throw std::invalid_argument("invalid supported channels");
@@ -545,6 +552,36 @@ MmsEvaluationApiV1_4 EvaluationStore::Api14(Client& client) {
             if (!client.owner) return MMS_E_ARGUMENT;
             return client.owner->ReadBonePose(client, frame, model, bone, out);
         });
+    };
+    return api;
+}
+
+MmsEvaluationApiV1_5 EvaluationStore::Api15(Client& client) {
+    const auto base = Api14(client);
+    MmsEvaluationApiV1_5 api{};
+    static_assert(offsetof(MmsEvaluationApiV1_5, getMeshCapabilities) == sizeof(MmsEvaluationApiV1_4), "evaluation 1.4 prefix");
+    std::memcpy(&api, &base, sizeof(base));
+    api.h = MmsHeader{sizeof(api), 1, 5};
+    api.getMeshCapabilities = [](void* ctx, MmsEvaluationMeshCapsV1* out) {
+        return Gateway([&] { if (!ctx) return MMS_E_ARGUMENT; auto& c=*static_cast<Client*>(ctx); return c.owner ? c.owner->MeshCapabilities(c,out) : MMS_E_ARGUMENT; });
+    };
+    api.createMeshSceneSource = [](void* ctx,const MmsEvaluationSceneQueryV1* q,MmsHandle* out) {
+        return Gateway([&] { if (!ctx) return MMS_E_ARGUMENT; auto& c=*static_cast<Client*>(ctx); return c.owner ? c.owner->CreateScene(c,q,out,true) : MMS_E_ARGUMENT; });
+    };
+    api.describeMesh = [](void* ctx,MmsHandle h,uint32_t m,MmsEvaluationMeshInfoV1* out) {
+        return Gateway([&] { if (!ctx) return MMS_E_ARGUMENT; auto& c=*static_cast<Client*>(ctx); return c.owner ? c.owner->DescribeMesh(c,h,m,out) : MMS_E_ARGUMENT; });
+    };
+    api.readMeshIndices = [](void* ctx,MmsHandle h,uint32_t m,uint32_t first,uint32_t count,uint32_t* out) {
+        return Gateway([&] { if (!ctx) return MMS_E_ARGUMENT; auto& c=*static_cast<Client*>(ctx); return c.owner ? c.owner->ReadMesh(c,h,m,first,count,out,0) : MMS_E_ARGUMENT; });
+    };
+    api.readMeshMaterials = [](void* ctx,MmsHandle h,uint32_t m,uint32_t first,uint32_t count,MmsEvaluationMeshMaterialV1* out) {
+        return Gateway([&] { if (!ctx) return MMS_E_ARGUMENT; auto& c=*static_cast<Client*>(ctx); return c.owner ? c.owner->ReadMesh(c,h,m,first,count,out,1) : MMS_E_ARGUMENT; });
+    };
+    api.readMeshBindVertices = [](void* ctx,MmsHandle h,uint32_t m,uint32_t first,uint32_t count,MmsEvaluationMeshVertexV1* out) {
+        return Gateway([&] { if (!ctx) return MMS_E_ARGUMENT; auto& c=*static_cast<Client*>(ctx); return c.owner ? c.owner->ReadMesh(c,h,m,first,count,out,2) : MMS_E_ARGUMENT; });
+    };
+    api.readMeshVertices = [](void* ctx,MmsHandle h,uint32_t m,uint32_t first,uint32_t count,MmsEvaluationMeshVertexV1* out) {
+        return Gateway([&] { if (!ctx) return MMS_E_ARGUMENT; auto& c=*static_cast<Client*>(ctx); return c.owner ? c.owner->ReadMesh(c,h,m,first,count,out,3) : MMS_E_ARGUMENT; });
     };
     return api;
 }
@@ -933,12 +970,8 @@ MmsResult EvaluationStore::Sample(Client& client, MmsHandle source, MmsId bone, 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (result == MMS_OK) *out = value;
-        // If Release erased the entry while the callback was running, this is
-        // the last payload reference and the byte charge is returned here.
-        Settle(payload, client);
-        payload.reset();
-        if (client.active) --client.active;
     }
+    FinishMeshRead(payload,client,0);
     return result;
 }
 
@@ -986,12 +1019,8 @@ MmsResult EvaluationStore::SampleMorph(Client& client, MmsHandle source, MmsId m
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (result == MMS_OK) *out = value;
-        // If Release erased the entry while the callback was running, this is
-        // the last payload reference and the byte charge is returned here.
-        Settle(payload, client);
-        payload.reset();
-        if (client.active) --client.active;
     }
+    FinishMeshRead(payload,client,0);
     return result;
 }
 
@@ -1106,12 +1135,8 @@ MmsResult EvaluationStore::ReadDisplay(Client& client, MmsHandle source, uint32_
             else if (kind == kDisplayParentState) *static_cast<MmsParentStateV1*>(out) = parentState;
             else *static_cast<MmsParentSelectionV1*>(out) = parentSelection;
         }
-        // If Release erased the entry while the callback was running, this is
-        // the last payload reference and the byte charge is returned here.
-        Settle(payload, client);
-        payload.reset();
-        if (client.active) --client.active;
     }
+    FinishMeshRead(payload,client,0);
     return result;
 }
 
@@ -1132,7 +1157,149 @@ MmsResult EvaluationStore::SceneCapabilities(Client& client, MmsEvaluationSceneC
     return MMS_OK;
 }
 
-MmsResult EvaluationStore::CreateScene(Client& client, const MmsEvaluationSceneQueryV1* query, MmsHandle* out) {
+MmsResult EvaluationStore::MeshCapabilities(Client& client, MmsEvaluationMeshCapsV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.retired) return MMS_E_NOT_READY;
+    MmsEvaluationMeshCapsV1 value{}; value.h = Header<MmsEvaluationMeshCapsV1>();
+    value.flags = captureMeshScene_ ? MMS_EVALUATION_MESH_TOPOLOGY | MMS_EVALUATION_MESH_CPU_VERTICES : 0;
+    value.maxItemsPerRead = kMaxMeshBatch; *out = value; return MMS_OK;
+}
+
+MmsResult EvaluationStore::DescribeMesh(Client& client, MmsHandle source, uint32_t model, MmsEvaluationMeshInfoV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::shared_ptr<const Payload> payload;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (client.retired) return MMS_E_NOT_READY;
+        const auto found=sources_.find(source);
+        if (found==sources_.end() || found->second.owner!=&client) return MMS_E_NOT_FOUND;
+        if (found->second.data->kind!=Payload::Kind::SceneSource || !found->second.data->sceneSource->meshInfo) return MMS_E_UNSUPPORTED;
+        if (model>=found->second.data->sceneSource->models->size()) return MMS_E_NOT_FOUND;
+        payload=found->second.data; ++client.active;
+    }
+    MmsEvaluationMeshInfoV1 value{};
+    const auto result=Gateway([&]() -> MmsResult {
+        const auto status=payload->sceneSource->meshInfo(model,value);
+        if (status!=MMS_OK) return status;
+        if (!ValidMeshInfo(value,(*payload->sceneSource->models)[model].object)) return MMS_E_FAILED;
+        value.h=Header<MmsEvaluationMeshInfoV1>(); return MMS_OK;
+    });
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (result==MMS_OK) *out=value;
+    }
+    FinishMeshRead(payload,client,0);
+    return result;
+}
+
+MmsResult EvaluationStore::ReadMesh(Client& client, MmsHandle handle, uint32_t model,
+    uint32_t first, uint32_t count, void* out, uint32_t kind) {
+    if (kind>3 || count>kMaxMeshBatch || (count && !out)) return MMS_E_ARGUMENT;
+    std::shared_ptr<const Payload> payload;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (client.retired) return MMS_E_NOT_READY;
+        const auto found=sources_.find(handle);
+        if (found==sources_.end() || found->second.owner!=&client) return MMS_E_NOT_FOUND;
+        const auto& p=found->second.data;
+        if (kind==3) {
+            if (p->kind!=Payload::Kind::SceneFrame || !p->sceneFrame->meshVertex) return MMS_E_UNSUPPORTED;
+            if (model>=p->sceneFrame->models->size()) return MMS_E_NOT_FOUND;
+            if (model>=p->sceneFrame->meshVertexCounts.size() || model>=p->sceneFrame->meshAdditionalUvCounts.size()) return MMS_E_FAILED;
+        } else {
+            if (p->kind!=Payload::Kind::SceneSource || !p->sceneSource->meshInfo) return MMS_E_UNSUPPORTED;
+            if (model>=p->sceneSource->models->size()) return MMS_E_NOT_FOUND;
+        }
+        payload=p;++client.active;
+    }
+    uint64_t workspace=0;
+    const auto result=Gateway([&]() -> MmsResult {
+        MmsEvaluationMeshInfoV1 info{};uint32_t extent=0,uvCount=0;
+        if (kind==3) { extent=payload->sceneFrame->meshVertexCounts[model]; uvCount=payload->sceneFrame->meshAdditionalUvCounts[model]; }
+        else {
+            auto status=payload->sceneSource->meshInfo(model,info);
+            if (status!=MMS_OK) return status;
+            if (!ValidMeshInfo(info,(*payload->sceneSource->models)[model].object)) return MMS_E_FAILED;
+            uvCount=info.additionalUvCount;
+            extent=kind==0 ? info.indexCount : kind==1 ? info.materialCount : info.vertexCount;
+        }
+        if (first>extent || count>extent-first) return MMS_E_ARGUMENT;
+        if (!count) return MMS_OK;
+        const uint64_t stride=kind==0 ? sizeof(uint32_t) : kind==1 ? sizeof(MmsEvaluationMeshMaterialV1) : sizeof(MmsEvaluationMeshVertexV1);
+        workspace=64;
+        if (!AddBytes(workspace,count,stride)) return MMS_E_MEMORY;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (client.workspaceBytes>kMaxClientWorkspaceBytes-workspace || totalWorkspaceBytes_>kMaxTotalWorkspaceBytes-workspace) { workspace=0; return MMS_E_MEMORY; }
+            client.workspaceBytes+=workspace;totalWorkspaceBytes_+=workspace;
+        }
+        auto copy=[&](auto tag) -> MmsResult {
+            using T=decltype(tag);
+            std::vector<T> values(count);
+            if (values.capacity()>count) return MMS_E_MEMORY;
+            for (uint32_t i=0;i<count;++i) {
+                MmsResult status=MMS_E_FAILED;
+                if constexpr (std::is_same<T,uint32_t>::value) {
+                    status=payload->sceneSource->meshIndex(model,first+i,values[i]);
+                    if (status==MMS_OK && values[i]>=info.vertexCount) return MMS_E_FAILED;
+                } else if constexpr (std::is_same<T,MmsEvaluationMeshMaterialV1>::value) {
+                    auto& value=values[i];status=payload->sceneSource->meshMaterial(model,first+i,value);
+                    if (status==MMS_OK) {
+                        if (value.reserved[0] || value.reserved[1] || value.firstIndex>info.indexCount || value.indexCount>info.indexCount-value.firstIndex || value.firstIndex%3 || value.indexCount%3) return MMS_E_FAILED;
+                        value.h=Header<MmsEvaluationMeshMaterialV1>();
+                    }
+                } else {
+                    auto& value=values[i];status=kind==2 ? payload->sceneSource->meshBindVertex(model,first+i,value) : payload->sceneFrame->meshVertex(model,first+i,value);
+                    if (status==MMS_OK) {
+                        if (value.reserved[0] || value.reserved[1]) return MMS_E_FAILED;
+                        for (float n:value.position) if (!std::isfinite(n)) return MMS_E_FAILED;
+                        for (float n:value.normal) if (!std::isfinite(n)) return MMS_E_FAILED;
+                        for (float n:value.uv) if (!std::isfinite(n)) return MMS_E_FAILED;
+                        for (float n:value.additionalUv) if (!std::isfinite(n)) return MMS_E_FAILED;
+                        for (uint32_t j=uvCount*4;j<16;++j) value.additionalUv[j]=0;
+                        value.h=Header<MmsEvaluationMeshVertexV1>();
+                    }
+                }
+                if (status!=MMS_OK) return status;
+            }
+            std::memcpy(out,values.data(),values.size()*sizeof(T));return MMS_OK;
+        };
+        if (kind==0) return copy(uint32_t{});
+        if (kind==1) return copy(MmsEvaluationMeshMaterialV1{});
+        return copy(MmsEvaluationMeshVertexV1{});
+    });
+    FinishMeshRead(payload,client,workspace);
+    return result;
+}
+
+void EvaluationStore::FinishMeshRead(std::shared_ptr<const Payload>& payload,
+                                     Client& client, uint64_t workspace) noexcept {
+    uint64_t finalBytes=0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // Other handles or admitted reads are protected by this mutex. If a
+        // reference remains, dropping ours cannot run the payload destructor.
+        if (payload && payload.use_count()==1) finalBytes=payload->bytes;
+        else payload.reset();
+        if (!finalBytes) {
+            client.workspaceBytes-=workspace;totalWorkspaceBytes_-=workspace;
+            --client.active;return;
+        }
+    }
+    // A last payload can own arbitrary host closures. Destroy it outside the
+    // store mutex while retaining both the charge and the admission pin.
+    payload.reset();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        client.bytes=client.bytes>=finalBytes ? client.bytes-finalBytes : 0;
+        totalBytes_=totalBytes_>=finalBytes ? totalBytes_-finalBytes : 0;
+        client.workspaceBytes-=workspace;totalWorkspaceBytes_-=workspace;
+        --client.active;
+    }
+}
+
+MmsResult EvaluationStore::CreateScene(Client& client, const MmsEvaluationSceneQueryV1* query, MmsHandle* out, bool mesh) {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     if (!out || !Valid(query)) return MMS_E_ARGUMENT;
     const auto request = *query;
@@ -1141,7 +1308,7 @@ MmsResult EvaluationStore::CreateScene(Client& client, const MmsEvaluationSceneQ
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (client.retired) return MMS_E_NOT_READY;
-        if (!captureScene_) return MMS_E_UNSUPPORTED;
+        if (!(mesh ? captureMeshScene_ : captureScene_)) return MMS_E_UNSUPPORTED;
         if (acquiring_) return MMS_E_BUSY;
         if (client.handles >= kMaxHandlesPerClient || sources_.size() >= kMaxTotalHandles ||
             next_ >= kHandleLimit || !captureId_) return MMS_E_BUSY;
@@ -1152,9 +1319,10 @@ MmsResult EvaluationStore::CreateScene(Client& client, const MmsEvaluationSceneQ
     std::shared_ptr<const EvaluationSceneSourceData> data;
     std::shared_ptr<Payload> payload;
     const auto result = Gateway([&]() -> MmsResult {
-        const auto captured = captureScene_(request, bound, data);
+        const auto captured = (mesh ? captureMeshScene_ : captureScene_)(request, bound, data);
         if (captured != MMS_OK) return captured;
         if (!data || !data.use_count() || !data->models || !data->models.use_count() || !data->evaluate) return MMS_E_FAILED;
+        if (mesh && (!data->meshInfo || !data->meshIndex || !data->meshMaterial || !data->meshBindVertex)) return MMS_E_FAILED;
         uint64_t verified = sizeof(EvaluationSceneSourceData);
         const auto measured = SceneModelBytes(*data->models, verified);
         if (measured != MMS_OK) return measured;
@@ -1194,12 +1362,12 @@ MmsResult EvaluationStore::CreateScene(Client& client, const MmsEvaluationSceneQ
         *out = handle;
         return MMS_OK;
     });
+    // On failure host-owned candidate destructors may reenter the store. Keep
+    // admission pinned but release candidates outside the mutex.
+    payload.reset();
+    data.reset();
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        // On failure destroy every unpublished candidate before removing the
-        // admission pin (including host callback closures and identity maps).
-        payload.reset();
-        data.reset();
         acquiring_ = false;
         --client.active;
     }
@@ -1294,16 +1462,28 @@ MmsResult EvaluationStore::EvaluateFrame(Client& client, const MmsEvaluationFram
         const auto evaluated = source->sceneSource->evaluate(time, bound, workspace, data);
         if (evaluated != MMS_OK) return evaluated;
         if (!data || !data.use_count() || !data->models || !data->models.use_count() || !data->sample) return MMS_E_FAILED;
+        if (source->sceneSource->meshInfo && (!data->meshVertex || data->meshVertexCounts.size() != data->models->size() || data->meshAdditionalUvCounts.size() != data->models->size())) return MMS_E_FAILED;
+        if (!source->sceneSource->meshInfo && (data->meshVertex || !data->meshVertexCounts.empty() || !data->meshAdditionalUvCounts.empty())) return MMS_E_FAILED;
         const auto& identities = source->sceneSource->models;
         // Matching contents alone cannot establish the same frozen capture.
         // Check both address and shared ownership, without copying that lease.
         if (data->models.get() != identities.get() || data->models.owner_before(identities) ||
             identities.owner_before(data->models)) return MMS_E_FAILED;
+        if (source->sceneSource->meshInfo) {
+            for (uint32_t i=0;i<identities->size();++i) {
+                MmsEvaluationMeshInfoV1 info{};
+                const auto status=source->sceneSource->meshInfo(i,info);
+                if (status!=MMS_OK) return status;
+                if (!ValidMeshInfo(info,(*identities)[i].object) || info.vertexCount!=data->meshVertexCounts[i] || info.additionalUvCount!=data->meshAdditionalUvCounts[i]) return MMS_E_FAILED;
+            }
+        }
         if (data->visibility.size() != identities->size()) return MMS_E_FAILED;
         uint64_t verified = sizeof(EvaluationSceneFrameData);
         const auto measured = SceneModelBytes(*data->models, verified);
         if (measured != MMS_OK) return measured;
         if (!AddBytes(verified, data->visibility.capacity(), sizeof(uint8_t))) return MMS_E_MEMORY;
+        if (!AddBytes(verified, data->meshVertexCounts.capacity(), sizeof(uint32_t))) return MMS_E_MEMORY;
+        if (!AddBytes(verified, data->meshAdditionalUvCounts.capacity(), sizeof(uint32_t))) return MMS_E_MEMORY;
         if (data->retainedBytes < verified) return MMS_E_FAILED;
         uint64_t charge = data->retainedBytes;
         if (!AddBytes(charge, 1, sizeof(Payload)) || !AddBytes(charge, 2, kIndexNodeBytes) ||
@@ -1336,18 +1516,11 @@ MmsResult EvaluationStore::EvaluateFrame(Client& client, const MmsEvaluationFram
         *out = handle;
         return MMS_OK;
     });
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        // These can own identity-map references or host closures; discard them
-        // while both the source pin and workspace reservation are still held.
-        payload.reset();
-        data.reset();
-        Settle(source, client);
-        source.reset();
-        client.workspaceBytes -= workspace;
-        totalWorkspaceBytes_ -= workspace;
-        --client.active;
-    }
+    // Unpublished candidates can own host closures. Destroy them outside the
+    // mutex while the source, admission pin and workspace remain charged.
+    payload.reset();
+    data.reset();
+    FinishMeshRead(source,client,workspace);
     return result;
 }
 
@@ -1427,10 +1600,8 @@ MmsResult EvaluationStore::ReadBonePose(Client& client, MmsHandle frame, uint32_
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (result == MMS_OK) *out = value;
-        Settle(payload, client);
-        payload.reset();
-        --client.active;
     }
+    FinishMeshRead(payload,client,0);
     return result;
 }
 
@@ -1456,27 +1627,21 @@ MmsResult EvaluationStore::Retain(Client& client, MmsHandle source, MmsHandle* o
 
 MmsResult EvaluationStore::Release(Client& client, MmsHandle source) {
     return Gateway([&]() -> MmsResult {
-        std::lock_guard<std::mutex> lock(mutex_);
-        // Release is the only call allowed after Retire: plugins drain handles
-        // there, and the manager waits on HasLeases.
-        const auto found = sources_.find(source);
-        if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
-        auto payload = found->second.data;
-        sources_.erase(found);
-        if (client.handles) --client.handles;
-        Settle(payload, client);
-        payload.reset();
+        std::shared_ptr<const Payload> payload;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            // Release remains available after Retire. Keep an admission pin
+            // until a final host-owned payload has finished destruction.
+            const auto found = sources_.find(source);
+            if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+            payload = found->second.data;
+            sources_.erase(found);
+            if (client.handles) --client.handles;
+            ++client.active;
+        }
+        FinishMeshRead(payload, client, 0);
         return MMS_OK;
     });
 }
 
-void EvaluationStore::Settle(const std::shared_ptr<const Payload>& payload, Client& client) noexcept {
-    // The caller holds mutex_ and has already erased or is finalizing the last
-    // reference it owns. One remaining reference means no handle and no call in
-    // flight still uses the payload.
-    if (!payload || payload.use_count() != 1) return;
-    const uint64_t bytes = payload->bytes;
-    client.bytes = client.bytes >= bytes ? client.bytes - bytes : 0;
-    totalBytes_ = totalBytes_ >= bytes ? totalBytes_ - bytes : 0;
-}
 }
