@@ -29,6 +29,7 @@ struct MeshSceneSource::Impl {
 struct MeshSceneFrame::Impl {
     std::unique_ptr<BoneSceneFrame> bones;
     std::vector<std::unique_ptr<MeshEvaluationFrame>> models;
+    EvaluationTime time;
     std::uint64_t bytes = 0;
 };
 MeshSceneSource::MeshSceneSource() = default;
@@ -80,6 +81,7 @@ std::unique_ptr<MeshSceneFrame> MeshSceneSource::EvaluateAt(
     auto result = std::unique_ptr<MeshSceneFrame>(new MeshSceneFrame);
     result->impl_ = std::make_unique<MeshSceneFrame::Impl>();
     auto& out = *result->impl_;
+    out.time = time;
     out.models.resize(count);
     Charge(retained, out.models.capacity() - count,
            sizeof(std::unique_ptr<MeshEvaluationFrame>), retainedLimit);
@@ -112,6 +114,7 @@ std::uint32_t MeshSceneFrame::ModelCount() const noexcept {
     return static_cast<std::uint32_t>(impl_->models.size());
 }
 std::uint64_t MeshSceneFrame::RetainedBytes() const noexcept { return impl_->bytes; }
+EvaluationTime MeshSceneFrame::Time() const noexcept { return impl_->time; }
 const BoneSceneFrame& MeshSceneFrame::Bones() const noexcept { return *impl_->bones; }
 const MeshEvaluationFrame* MeshSceneFrame::ModelFrame(std::uint32_t i) const noexcept {
     return i < impl_->models.size() ? impl_->models[i].get() : nullptr;

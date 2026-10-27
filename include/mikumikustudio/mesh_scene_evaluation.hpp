@@ -17,6 +17,8 @@ public:
     MeshSceneFrame& operator=(const MeshSceneFrame&) = delete;
     std::uint32_t ModelCount() const noexcept;
     std::uint64_t RetainedBytes() const noexcept;
+    // Preserve the exact discrete side even when Frame() rounds across a key.
+    EvaluationTime Time() const noexcept;
     // Borrowed immutable children survive the source and input models.
     const BoneSceneFrame& Bones() const noexcept;
     const MeshEvaluationFrame* ModelFrame(std::uint32_t index) const noexcept;

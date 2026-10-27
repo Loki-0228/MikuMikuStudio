@@ -221,6 +221,11 @@ void SceneCapture(const BoneTransformContext& context) {
     for(auto& worker:workers)worker.join();CHECK(errors==0);
     auto empty=MeshSceneSource::Capture(nullptr,0); auto emptyFrame=empty->EvaluateAt(time,context);
     CHECK(empty->ModelCount()==0 && emptyFrame->ModelCount()==0 && !emptyFrame->ModelFrame(0));
+    EvaluationTime boundary;CHECK(EvaluationTime::FromSeconds(18014398509481983LL,540431955284459520ULL,boundary));
+    CHECK(boundary.Frame()==1.0 && boundary.DiscreteFrame()==0);
+    auto boundaryFrame=empty->EvaluateAt(boundary,context);
+    CHECK(boundaryFrame->Time().Frame()==1.0 && boundaryFrame->Time().DiscreteFrame()==0);
+    CHECK(old->Time().Frame()==5.25 && old->Time().DiscreteFrame()==5);
 }
 }
 int main(){try{auto ctx=BoneTransformContext::Create();CHECK(bool(ctx));mesh_probe::Case(false,0,*ctx);for(unsigned u=0;u<=4;++u)mesh_probe::Case(true,u,*ctx);mesh_probe::EmptyAndLifetime();mesh_probe::SceneCapture(*ctx);std::printf("PASS %u checks: CPU oracle PMD and PMX UV 0-4 and coherent scene\n",checks);return 0;}catch(const std::exception& e){failAfter=-1;std::fprintf(stderr,"FAIL %s exception: %s\n",currentCase,e.what());return 1;}}

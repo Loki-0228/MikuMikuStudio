@@ -1,4 +1,9 @@
 #include "mikumikustudio/mesh_definition_snapshot.hpp"
+#include "mikumikustudio/mesh_scene_evaluation.hpp"
+#include "mikumikustudio/bone_transform_context.hpp"
+#include "mikumikustudio/morph_definition_snapshot.hpp"
+#include "mikumikustudio/morph_evaluation.hpp"
+#include "mikumikustudio/morph_curve.hpp"
 #include "mikumikustudio/gpu_model.hpp"
 #include <array>
 #include <tuple>
@@ -147,6 +152,28 @@ void RunImpl(MMDApp* app) {
     app->CurrentFrame()=7;app->SceneModified()=0;const auto original=ReadBind(app,model);
     std::unique_ptr<MeshDefinitionSnapshot> old;
     {const Proof proof(app,raw);old=MeshDefinitionSnapshot::Capture(raw);Check(old&&Matches(*old,original),"all loaded bind vertices active influences UVs triangles and material segments match BIND");InvalidReads(*old);proof.Verify();}
+    auto context=BoneTransformContext::Create();Check(bool(context),"private CPU math context is available");
+    EvaluationTime time;Check(EvaluationTime::FromFrame(5.25,time),"fractional geometry frame is valid");
+    BoneSceneModelInput input{0,{123,456,1},raw};
+    std::unique_ptr<MeshSceneSource> scene;
+    std::unique_ptr<MeshSceneFrame> geometry;
+    std::vector<MeshEvaluationVertex> frozenGeometry;
+    {
+        const Proof proof(app,raw);
+        scene=MeshSceneSource::Capture(&input,1);
+        geometry=scene->EvaluateAt(time,*context);
+        auto mesh=MeshDefinitionSnapshot::Capture(raw);
+        auto definitions=MorphDefinitionSnapshot::Capture(raw);
+        auto tracks=morph_curve::SamplingState::Capture(raw);
+        std::vector<float> weights(tracks->MorphCount());
+        for(uint32_t i=0;i<weights.size();++i)Check(tracks->Sample(i,time.Frame(),weights[i]),"sample real model morph track");
+        auto morph=MorphEvaluationFrame::Evaluate(*definitions,weights.empty()?nullptr:weights.data(),uint32_t(weights.size()));
+        auto separate=MeshEvaluationFrame::Evaluate(*mesh,*morph,*geometry->Bones().ModelFrame(0),*context);
+        Check(geometry->ModelCount()==1&&geometry->ModelFrame(0)&&geometry->ModelFrame(0)->VertexCount()==model.vertexCount,"real file gives one complete private vertex frame");
+        for(uint32_t i=0;i<model.vertexCount;++i){MeshEvaluationVertex a,b;Check(geometry->ModelFrame(0)->VertexAt(i,a)&&separate->VertexAt(i,b),"read real model private vertex");
+            Check(Bits(a.position,b.position)&&Bits(a.normal,b.normal)&&Bits(a.uv,b.uv)&&Bits(a.additionalUv,b.additionalUv),"coherent source matches separately sampled frozen model inputs");frozenGeometry.push_back(a);}
+        proof.Verify();
+    }
     Check(original.materials[0].firstIndex==0&&original.materials[0].indexCount==3&&original.materials[1].firstIndex==3&&original.materials[1].indexCount==3&&
         original.triangles[0].materialIndex==0&&original.triangles[1].materialIndex==1,"material transition occurs exactly between the two triangles");
     if(pmx) {
@@ -190,6 +217,11 @@ void RunImpl(MMDApp* app) {
     app->CurrentFrame()=0;const auto project=std::filesystem::absolute(L"mesh-definition.pmm");
     Check(SaveSceneCopy(app,project.c_str()),"save real model in PMM");
     ResetAppState(app);Check(!app->ModelSlot(0),"delete original source model");Workers(*old,original,*newer,edited);
+    auto detached=scene->EvaluateAt(time,*context);scene.reset();
+    Check(detached->ModelFrame(0)->VertexCount()==frozenGeometry.size(),"frozen scene evaluates after real source deletion");
+    for(uint32_t i=0;i<frozenGeometry.size();++i){MeshEvaluationVertex vertex;Check(detached->ModelFrame(0)->VertexAt(i,vertex),"read detached real vertex");
+        Check(Bits(vertex.position,frozenGeometry[i].position)&&Bits(vertex.normal,frozenGeometry[i].normal)&&Bits(vertex.uv,frozenGeometry[i].uv)&&Bits(vertex.additionalUv,frozenGeometry[i].additionalUv),"source deletion preserves independent vertex result");}
+    geometry.reset();context.reset();
     LoadModelFile(app,path,false);Check(app->ModelSlot(0)&&!app->ModelSlot(1),"a later load reuses source slot zero");
     auto& replacement=*mdl::Mdl(app->ModelSlot(0));
     (pmx?replacement.pmxVertices[0].normal[0]:replacement.rawVertices[0].normal[0])+=1.f;
