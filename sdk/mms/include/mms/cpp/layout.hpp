@@ -34,9 +34,13 @@ public:
     LayoutSnapshotLease(LayoutSnapshotLease&& other) noexcept : api_(other.api_), handle_(other.handle_) {
         other.handle_ = 0;
     }
-    LayoutSnapshotLease& operator=(LayoutSnapshotLease&& other) noexcept {
-        if (this != &other) { Release(); api_ = other.api_; handle_ = other.handle_; other.handle_ = 0; }
-        return *this;
+    LayoutSnapshotLease& operator=(LayoutSnapshotLease&&) = delete;
+    MmsResult TransferFrom(LayoutSnapshotLease& other) noexcept {
+        if (this == &other) return MMS_OK;
+        const auto result = Release();
+        if (result != MMS_OK) return result;
+        api_ = other.api_; handle_ = other.handle_; other.handle_ = 0;
+        return MMS_OK;
     }
     ~LayoutSnapshotLease() = default; // explicit Release: no host call from a destructor
     bool valid() const noexcept { return handle_ != 0; }
@@ -91,12 +95,14 @@ public:
     }
     MmsResult AcquireSnapshot(LayoutSnapshotLease& out) const noexcept {
         if (!ready_) return MMS_E_NOT_READY;
+        if (out.valid()) return MMS_E_BUSY;
         return layout_detail::Call([&]() -> MmsResult {
             MmsUiLayoutSnapshotV1 snapshot{};
             snapshot.h = {sizeof(snapshot), MMS_ABI_MAJOR, MMS_ABI_MINOR};
             const auto result = api_.acquireSnapshot(api_.context, &snapshot);
-            if (result == MMS_OK) out = LayoutSnapshotLease(api_, snapshot.handle);
-            return result;
+            if (result != MMS_OK) return result;
+            LayoutSnapshotLease acquired(api_, snapshot.handle);
+            return out.TransferFrom(acquired);
         });
     }
 };

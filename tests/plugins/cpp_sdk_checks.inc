@@ -528,7 +528,7 @@ static void RenderChecks() {
     CHECK(usable.Acquire("example.device2", [](void*) {}, &x, moved) == MMS_OK);
     const MmsHandle raw = moved.get();
     sdk::RenderLease target;
-    target = std::move(moved);
+    CHECK(target.TransferFrom(moved) == MMS_OK);
     CHECK(!moved.valid() && target.get() == raw && target.Release() == MMS_OK && x.releaseCalls == 2);
     std::cout << "cpp render sdk PASS\n";
 }
@@ -585,6 +585,7 @@ static void LayoutSdkChecks() {
     CHECK(sdk::LayoutServices::Query(leaseHost.host, leased) == MMS_OK);
     sdk::LayoutSnapshotLease lease;
     CHECK(leased.AcquireSnapshot(lease) == MMS_OK && lease.valid() && lease.get() == 9);
+    CHECK(leased.AcquireSnapshot(lease) == MMS_E_BUSY && lease.get() == 9 && leaseHost.invokes == 0);
     sdk::LayoutSnapshotLease moved = std::move(lease);
     CHECK(!lease.valid() && moved.valid() && moved.get() == 9);
     CHECK(moved.Release() == MMS_OK && !moved.valid() && leaseHost.invokes == 1);
@@ -607,6 +608,9 @@ static void SceneSdkChecks() {
           x.lastSceneQuery.channels == (MMS_CHANNEL_BONES | MMS_CHANNEL_MESH) &&
           x.lastSceneQuery.time.numerator == 5 && x.lastSceneQuery.time.denominator == 30 &&
           x.lastSceneQuery.objects.count == 1);
+    CHECK(scene.Acquire(MMS_STAGE_BIND, MMS_SCENE_CURRENT_TIME, MMS_CHANNEL_BONES,
+                        MmsTime{5, 30}, MmsId{9, 1}, MmsSpan{&filter, 1, sizeof(filter)}, snapshot) == MMS_E_BUSY &&
+          snapshot.get() == 55 && x.sceneAcquires == 1 && x.sceneReleases == 0);
     MmsSpan objects{};
     CHECK(scene.Objects(snapshot, objects) == MMS_OK && objects.count == 2 && x.sceneObjects == 1);
     MmsSpan channel{};

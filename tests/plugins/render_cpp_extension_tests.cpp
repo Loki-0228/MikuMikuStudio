@@ -1,7 +1,12 @@
 #include <mms/cpp/render.hpp>
 #include <cstdio>
 #include <cstring>
+#include <type_traits>
 #include <utility>
+
+static_assert(!std::is_move_assignable_v<mms::sdk::RenderLease>);
+static_assert(!std::is_invocable_v<decltype(&mms::sdk::RenderLease::TransferFrom),
+    mms::sdk::RenderLease&, mms::sdk::RenderLease&&>);
 
 namespace {
 int checks = 0;
@@ -60,8 +65,9 @@ int main() {
         Check(s.Acquire("b", nullptr, nullptr, a) == MMS_E_BUSY && h.acquired == 1);
         Check(s.Acquire("b", nullptr, nullptr, b) == MMS_OK && b.get() == 2);
         h.failRelease = true; Check(a.Release() == MMS_E_BUSY && a.get() == 1);
-        a = std::move(b); Check(a.get() == 1 && b.get() == 2);
-        h.failRelease = false; a = std::move(b); Check(a.get() == 2 && !b.valid());
+        Check(a.TransferFrom(b) == MMS_E_BUSY && a.get() == 1 && b.get() == 2);
+        Check(a.TransferFrom(a) == MMS_OK && a.get() == 1);
+        h.failRelease = false; Check(a.TransferFrom(b) == MMS_OK && a.get() == 2 && !b.valid());
         Check(a.Release() == MMS_OK && !a.valid());
         Host old; old.old = true; RenderServices basic;
         Check(RenderServices::Query(old.host, basic) == MMS_OK && basic.RequirePhase() == MMS_E_VERSION);

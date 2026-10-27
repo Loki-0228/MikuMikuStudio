@@ -2,9 +2,11 @@
 
 本 SDK 为 Windows x64 C ABI 1.0。宿主将 `MmsHostV1` 传给插件，插件只通过函数表访问服务。主 EXE 改名不影响入口解析。插件无需链接宿主、MMSAdapter 或 MMHack 的导入库。
 
-[`mms.scene.evaluate` 1.4](evaluation.md) 提供已注册骨骼、表情、显示、IK 和外亲通道采样，以及完整模型集合的独立骨架场景帧。场景帧包含层级、IK、骨骼表情、外亲和尺度结果，使用与 BIND 一致的身份及共同的句柄、额度和停止规则。旧函数前缀与创建语义保持不变。蒙皮几何、物理、独立播放时钟和原始兼容配置的生产求值服务仍未开放。
+[`mms.scene.evaluate` 1.6](evaluation.md) 提供通道采样和独立场景帧，包含骨架、CPU 蒙皮网格与同源材质数值。场景帧使用与 BIND 一致的身份及共同的句柄、额度和停止规则。旧函数前缀与创建语义保持不变。物理、独立播放时钟和原始兼容配置的生产求值服务仍未开放。
 
 骨架场景的 C++17 便利封装见[求值参考](evaluation.md#c17-便利封装)。它包装相同的 C 表与句柄，并提供来源、帧的显式释放与保留操作。
+
+`SceneSnapshot` 和 `LayoutSnapshotLease` 已持有句柄时，再次获取返回 `MMS_E_BUSY`，原快照及借用数据保持有效。转移句柄时调用 `target.TransferFrom(source)` 并检查返回值；失败时两侧句柄保持不变。接口只接受具名源对象。原先使用移动赋值的插件需要改为调用 `TransferFrom`；移动构造仍可用。
 
 基础 UI 的类型化与声明式封装已提供，见 [C++17 界面注册 SDK](cpp-ui.md)。`UiServices`、`RegistrationBundle` 和 `CommandUi` 包装同一套 C ABI，复杂插件继续操作原始句柄。
 

@@ -35,11 +35,15 @@ public:
     RenderLease(RenderLease&& other) noexcept : api_(other.api_), handle_(other.handle_) {
         other.handle_ = 0;
     }
-    // If the destination release fails, both objects retain their handles.
-    // Call Release explicitly when the caller needs to observe that error.
-    RenderLease& operator=(RenderLease&& other) noexcept {
-        if (this != &other && Release() == MMS_OK) { api_ = other.api_; handle_ = other.handle_; other.handle_ = 0; }
-        return *this;
+    RenderLease& operator=(RenderLease&&) = delete;
+    // The source must outlive this call; temporaries cannot preserve their
+    // handle if releasing the destination fails.
+    MmsResult TransferFrom(RenderLease& other) noexcept {
+        if (this == &other) return MMS_OK;
+        const auto result = Release();
+        if (result != MMS_OK) return result;
+        api_ = other.api_; handle_ = other.handle_; other.handle_ = 0;
+        return MMS_OK;
     }
     ~RenderLease() = default; // explicit Release: no host call from a destructor
     bool valid() const noexcept { return handle_ != 0; }
@@ -112,7 +116,10 @@ public:
             desc.flags = MMS_RENDER_LEASE_DEVICE;
             MmsHandle handle = 0;
             const auto result = render_.acquireLease(render_.context, &desc, &handle);
-            if (result == MMS_OK) out = RenderLease(render_, handle);
+            if (result == MMS_OK) {
+                RenderLease acquired(render_, handle);
+                return out.TransferFrom(acquired);
+            }
             return result;
         });
     }

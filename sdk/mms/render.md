@@ -84,7 +84,7 @@ render.clearFrameCallback(render.context);
 
 `RenderServices::RequireFrame()` 和 `RequirePhase()` 分别查询 1.1 和 1.2。查询成功后，插件可用 `SetFrameCallback`／`ClearFrameCallback` 和 `SetPhaseCallback`／`ClearPhaseCallback` 注册或清除回调。旧宿主仍可使用 1.0 的查询和租约接口。
 
-`RenderLease::Release()` 失败时保留句柄，插件可处理错误后重试或显式 `Detach()`。向已有句柄的对象调用 `Acquire()` 返回 `MMS_E_BUSY`，不申请新租约。移动赋值需要先释放目标句柄；释放失败时两个对象保持原状，调用方应检查句柄并处理错误。设备丢失后宿主可能已移除租约，此时显式释放可能返回 `MMS_E_NOT_FOUND`。
+`RenderLease::Release()` 失败时保留句柄，插件可处理错误后重试或显式 `Detach()`。向已有句柄的对象调用 `Acquire()` 返回 `MMS_E_BUSY`，不申请新租约。`TransferFrom(source)` 接受具名源对象，先释放目标句柄；失败时返回错误并保留两个句柄。移动赋值已删除，原先使用移动赋值的插件源码需要改用 `TransferFrom` 并检查结果。设备丢失后宿主可能已移除租约，此时显式释放可能返回 `MMS_E_NOT_FOUND`。
 
 ```cpp
 #include <mms/cpp/render.hpp>

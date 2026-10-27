@@ -28,9 +28,13 @@ public:
     SceneSnapshot(const SceneSnapshot&) = delete;
     SceneSnapshot& operator=(const SceneSnapshot&) = delete;
     SceneSnapshot(SceneSnapshot&& other) noexcept : api_(other.api_), handle_(other.handle_) { other.handle_ = 0; }
-    SceneSnapshot& operator=(SceneSnapshot&& other) noexcept {
-        if (this != &other) { Release(); api_ = other.api_; handle_ = other.handle_; other.handle_ = 0; }
-        return *this;
+    SceneSnapshot& operator=(SceneSnapshot&&) = delete;
+    MmsResult TransferFrom(SceneSnapshot& other) noexcept {
+        if (this == &other) return MMS_OK;
+        const auto result = Release();
+        if (result != MMS_OK) return result;
+        api_ = other.api_; handle_ = other.handle_; other.handle_ = 0;
+        return MMS_OK;
     }
     ~SceneSnapshot() = default;
     bool valid() const noexcept { return handle_ != 0; }
@@ -75,6 +79,7 @@ public:
     MmsResult Acquire(std::uint32_t stage, std::uint32_t flags, std::uint64_t channels,
                       MmsTime time, MmsId layer, MmsSpan objectFilter, SceneSnapshot& out) const noexcept {
         if (!ready_) return MMS_E_NOT_READY;
+        if (out.valid()) return MMS_E_BUSY;
         return scene_detail::Call([&]() -> MmsResult {
             MmsSceneQueryV1 query{};
             query.h = {sizeof(query), MMS_ABI_MAJOR, MMS_ABI_MINOR};
@@ -83,8 +88,9 @@ public:
             MmsSnapshotV1 snapshot{};
             snapshot.h = {sizeof(snapshot), MMS_ABI_MAJOR, MMS_ABI_MINOR};
             const auto result = api_.acquire(api_.context, &query, &snapshot);
-            if (result == MMS_OK) out = SceneSnapshot(api_, snapshot.handle);
-            return result;
+            if (result != MMS_OK) return result;
+            SceneSnapshot acquired(api_, snapshot.handle);
+            return out.TransferFrom(acquired);
         });
     }
     MmsResult Objects(const SceneSnapshot& snapshot, MmsSpan& out) const noexcept {
