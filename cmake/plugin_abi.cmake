@@ -1,5 +1,11 @@
 # Native plugin ABI. This target has no renderer, CUDA, NVAPI or DX12 dependency.
 enable_language(C)
+add_executable(render_cpp_extension_tests EXCLUDE_FROM_ALL tests/plugins/render_cpp_extension_tests.cpp)
+target_include_directories(render_cpp_extension_tests PRIVATE sdk/mms/include)
+target_link_options(render_cpp_extension_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(render_cpp_extension_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME render_cpp_extension_contract COMMAND render_cpp_extension_tests)
+set_tests_properties(render_cpp_extension_contract PROPERTIES TIMEOUT 30)
 add_subdirectory(third_party/native_ui)
 add_library(mms_system_settings STATIC
     src/app/system_settings.cpp
