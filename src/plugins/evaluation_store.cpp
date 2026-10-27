@@ -1,6 +1,7 @@
 #include "evaluation_store.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/evaluation_time.hpp"
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -15,6 +16,9 @@ constexpr uint64_t kMaxTotalBytes = 256ull * 1024 * 1024;
 constexpr uint32_t kMaxHandlesPerClient = 128;
 constexpr uint32_t kMaxTotalHandles = 1024;
 constexpr uint32_t kMaxSources = 128;
+constexpr uint64_t kMaxWorkspaceBytes = 128ull * 1024 * 1024;
+constexpr uint64_t kMaxClientWorkspaceBytes = 256ull * 1024 * 1024;
+constexpr uint64_t kMaxTotalWorkspaceBytes = 512ull * 1024 * 1024;
 // Handles start above the 62-bit mark so small integers from other services
 // cannot alias a source. Reaching the 63-bit bound is exhaustion, not memory
 // pressure, because the sequence itself cannot allocate another handle.
@@ -48,6 +52,46 @@ bool AddBytes(uint64_t& total, uint64_t count, uint64_t stride) noexcept {
     if (stride && count > (UINT64_MAX - total) / stride) return false;
     total += count * stride;
     return true;
+}
+
+// Account the immutable identity map independently for every scene source and
+// frame. It can outlive either payload, so sharing it never discounts a charge.
+MmsResult SceneModelBytes(const EvaluationSceneModels& models, uint64_t& bytes) noexcept {
+    if (models.size() > UINT32_MAX) return MMS_E_ARGUMENT;
+    if (!AddBytes(bytes, 1, sizeof(EvaluationSceneModels)) ||
+        !AddBytes(bytes, models.capacity(), sizeof(EvaluationSceneModelData))) return MMS_E_MEMORY;
+    for (const auto& model : models) {
+        if (model.bones.size() > UINT32_MAX) return MMS_E_ARGUMENT;
+        if (!AddBytes(bytes, model.bones.capacity(), sizeof(MmsId))) return MMS_E_MEMORY;
+    }
+    return MMS_OK;
+}
+
+MmsResult ValidateSceneModels(const EvaluationSceneModels& models, uint64_t scratchLimit) {
+    // The existing identity registry assigns all object and element IDs in one
+    // namespace. Validate that namespace with one bounded temporary array,
+    // rather than allocating an unchecked tree for every model.
+    uint64_t count = models.size();
+    for (const auto& model : models)
+        if (!AddBytes(count, model.bones.size(), 1)) return MMS_E_MEMORY;
+    uint64_t bytes = sizeof(std::vector<MmsId>);
+    if (!AddBytes(bytes, count, sizeof(MmsId)) || bytes > scratchLimit || count > SIZE_MAX) return MMS_E_MEMORY;
+    std::vector<MmsId> identities;
+    identities.reserve(static_cast<size_t>(count));
+    bytes = sizeof(identities);
+    if (!AddBytes(bytes, identities.capacity(), sizeof(MmsId)) || bytes > scratchLimit) return MMS_E_MEMORY;
+    for (const auto& model : models) {
+        if (Empty(model.object.id) || !model.object.generation) return MMS_E_ARGUMENT;
+        identities.push_back(model.object.id);
+        for (const auto& bone : model.bones) {
+            if (Empty(bone)) return MMS_E_ARGUMENT;
+            identities.push_back(bone);
+        }
+    }
+    std::sort(identities.begin(), identities.end(), IdLess{});
+    for (size_t index = 1; index < identities.size(); ++index)
+        if (Same(identities[index - 1], identities[index])) return MMS_E_ARGUMENT;
+    return MMS_OK;
 }
 
 // LOCAL excludes the external-parent and derived markers, and every non-local
@@ -155,16 +199,22 @@ bool ValidParentState(const MmsParentStateV1& state, double frame) noexcept {
 // this payload adds one ID index per captured channel and the shared table
 // nodes that resolve those IDs.
 struct EvaluationStore::Payload {
+    enum class Kind { Channels, SceneSource, SceneFrame };
+    Kind kind = Kind::Channels;
     std::shared_ptr<const EvaluationData> data;
+    std::shared_ptr<const EvaluationSceneSourceData> sceneSource;
+    std::shared_ptr<const EvaluationSceneFrameData> sceneFrame;
     Index index, morphIndex;
     MmsObjectRef object{};
     uint64_t bytes = 0, captureId = 0, hostRevision = 0;
     uint32_t boneCount = 0, morphCount = 0, ikCount = 0, selectorCount = 0, flags = 0;
+    uint64_t frameId = 0;
+    MmsTime time{};
 };
 
 EvaluationStore::EvaluationStore(Capture capture) : capture_(std::move(capture)) {}
-EvaluationStore::EvaluationStore(CaptureChannels captureChannels, uint32_t supportedChannels)
-    : captureChannels_(std::move(captureChannels)), supportedChannels_(supportedChannels) {
+EvaluationStore::EvaluationStore(CaptureChannels captureChannels, uint32_t supportedChannels, CaptureScene scene)
+    : captureChannels_(std::move(captureChannels)), captureScene_(std::move(scene)), supportedChannels_(supportedChannels) {
     constexpr uint32_t known = MMS_EVALUATION_CAP_BONE_CHANNELS | MMS_EVALUATION_CAP_MORPH_WEIGHTS |
         MMS_EVALUATION_CAP_DISPLAY;
     if (!supportedChannels_ || (supportedChannels_ & ~known)) throw std::invalid_argument("invalid supported channels");
@@ -393,6 +443,112 @@ MmsEvaluationApiV1_3 EvaluationStore::Api13(Client& client) {
     return api;
 }
 
+MmsEvaluationApiV1_4 EvaluationStore::Api14(Client& client) {
+    static_assert(offsetof(MmsEvaluationApiV1_4, getSceneCapabilities) == sizeof(MmsEvaluationApiV1_3),
+        "evaluation 1.4 preserves the complete 1.3 prefix");
+    static_assert(sizeof(MmsEvaluationApiV1_4) == sizeof(MmsEvaluationApiV1_3) + 9 * sizeof(void*),
+        "evaluation 1.4 appends exactly nine functions");
+    const auto base = Api13(client);
+    MmsEvaluationApiV1_4 api{};
+    api.h = MmsHeader{sizeof(MmsEvaluationApiV1_4), 1, 4};
+#define MMS_EVALUATION_COPY_PREFIX(field) \
+    static_assert(offsetof(MmsEvaluationApiV1_4, field) == offsetof(MmsEvaluationApiV1_3, field), \
+        "evaluation prefix field moved"); api.field = base.field
+    MMS_EVALUATION_COPY_PREFIX(context);
+    MMS_EVALUATION_COPY_PREFIX(getCapabilities);
+    MMS_EVALUATION_COPY_PREFIX(createSource);
+    MMS_EVALUATION_COPY_PREFIX(describeSource);
+    MMS_EVALUATION_COPY_PREFIX(boneAt);
+    MMS_EVALUATION_COPY_PREFIX(sampleBone);
+    MMS_EVALUATION_COPY_PREFIX(retain);
+    MMS_EVALUATION_COPY_PREFIX(release);
+    MMS_EVALUATION_COPY_PREFIX(createSourceChannels);
+    MMS_EVALUATION_COPY_PREFIX(describeSourceChannels);
+    MMS_EVALUATION_COPY_PREFIX(morphAt);
+    MMS_EVALUATION_COPY_PREFIX(sampleMorph);
+    MMS_EVALUATION_COPY_PREFIX(describeSourceDisplay);
+    MMS_EVALUATION_COPY_PREFIX(ikAt);
+    MMS_EVALUATION_COPY_PREFIX(selectorAt);
+    MMS_EVALUATION_COPY_PREFIX(sampleVisibility);
+    MMS_EVALUATION_COPY_PREFIX(sampleIk);
+    MMS_EVALUATION_COPY_PREFIX(sampleParent);
+    MMS_EVALUATION_COPY_PREFIX(sampleParentState);
+#undef MMS_EVALUATION_COPY_PREFIX
+    api.getSceneCapabilities = [](void* context, MmsEvaluationSceneCapsV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->SceneCapabilities(client, out);
+        });
+    };
+    api.createSceneSource = [](void* context, const MmsEvaluationSceneQueryV1* query, MmsHandle* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->CreateScene(client, query, out);
+        });
+    };
+    api.describeSceneSource = [](void* context, MmsHandle source, MmsEvaluationSceneInfoV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->DescribeScene(client, source, out);
+        });
+    };
+    api.sceneModelAt = [](void* context, MmsHandle source, uint32_t index, MmsEvaluationSceneModelV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->SceneModelAt(client, source, index, out);
+        });
+    };
+    api.sceneBoneAt = [](void* context, MmsHandle source, uint32_t model, uint32_t bone, MmsEvaluationSceneBoneV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->SceneBoneAt(client, source, model, bone, out);
+        });
+    };
+    api.evaluateFrame = [](void* context, const MmsEvaluationFrameQueryV1* query, MmsHandle* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->EvaluateFrame(client, query, out);
+        });
+    };
+    api.describeFrame = [](void* context, MmsHandle frame, MmsEvaluationFrameInfoV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->DescribeFrame(client, frame, out);
+        });
+    };
+    api.frameModelAt = [](void* context, MmsHandle frame, uint32_t index, MmsEvaluationSceneModelV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->FrameModelAt(client, frame, index, out);
+        });
+    };
+    api.readBonePose = [](void* context, MmsHandle frame, uint32_t model, uint32_t bone, MmsEvaluationScenePoseV1* out) {
+        return Gateway([&] {
+            if (!context) return MMS_E_ARGUMENT;
+            auto& client = *static_cast<Client*>(context);
+            if (!client.owner) return MMS_E_ARGUMENT;
+            return client.owner->ReadBonePose(client, frame, model, bone, out);
+        });
+    };
+    return api;
+}
+
 void EvaluationStore::Retire(Client& client) noexcept {
     try {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -582,6 +738,11 @@ MmsResult EvaluationStore::CreateChannels(Client& client, const MmsEvaluationSou
         return MMS_OK;
     });
 
+    // A rejected callback may still have supplied a candidate. Destroy it
+    // before removing the admission pin, and outside mutex_ so host cleanup
+    // can take time or reenter without blocking lease inspection. Successful
+    // publication already cleared this reference under the publication lock.
+    data.reset();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         acquiring_ = false;
@@ -597,6 +758,7 @@ MmsResult EvaluationStore::Describe(Client& client, MmsHandle source, MmsEvaluat
     const auto found = sources_.find(source);
     if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
     const Payload& payload = *found->second.data;
+    if (payload.kind != Payload::Kind::Channels) return MMS_E_UNSUPPORTED;
     MmsEvaluationSourceInfoV1 info{};
     info.h = Header<MmsEvaluationSourceInfoV1>();
     info.object = payload.object;
@@ -616,6 +778,7 @@ MmsResult EvaluationStore::DescribeChannels(Client& client, MmsHandle source, Mm
     const auto found = sources_.find(source);
     if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
     const Payload& payload = *found->second.data;
+    if (payload.kind != Payload::Kind::Channels) return MMS_E_UNSUPPORTED;
     MmsEvaluationSourceInfoV1_1 info{};
     info.h = MmsHeader{sizeof(MmsEvaluationSourceInfoV1_1), 1, 1};
     info.object = payload.object;
@@ -637,6 +800,7 @@ MmsResult EvaluationStore::DescribeDisplay(Client& client, MmsHandle source, Mms
     const auto found = sources_.find(source);
     if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
     const Payload& payload = *found->second.data;
+    if (payload.kind != Payload::Kind::Channels) return MMS_E_UNSUPPORTED;
     // The V1.2 description keeps the V1.1 fields and appends the two display
     // counts, so one capture is described through every table version.
     MmsEvaluationSourceInfoV1_2 info{};
@@ -662,6 +826,7 @@ MmsResult EvaluationStore::BoneAt(Client& client, MmsHandle source, uint32_t ind
     const auto found = sources_.find(source);
     if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
     const Payload& payload = *found->second.data;
+    if (payload.kind != Payload::Kind::Channels) return MMS_E_UNSUPPORTED;
     if (!(payload.flags & MMS_EVALUATION_CAP_BONE_CHANNELS)) return MMS_E_UNSUPPORTED;
     if (index >= payload.boneCount) return MMS_E_NOT_FOUND;
     MmsEvaluationBoneV1 bone = payload.data->bones[index];
@@ -678,6 +843,7 @@ MmsResult EvaluationStore::MorphAt(Client& client, MmsHandle source, uint32_t in
     const auto found = sources_.find(source);
     if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
     const Payload& payload = *found->second.data;
+    if (payload.kind != Payload::Kind::Channels) return MMS_E_UNSUPPORTED;
     if (!(payload.flags & MMS_EVALUATION_CAP_MORPH_WEIGHTS)) return MMS_E_UNSUPPORTED;
     if (index >= payload.morphCount) return MMS_E_NOT_FOUND;
     MmsEvaluationMorphV1 morph = payload.data->morphs[index];
@@ -693,6 +859,7 @@ MmsResult EvaluationStore::IkAt(Client& client, MmsHandle source, uint32_t index
     const auto found = sources_.find(source);
     if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
     const Payload& payload = *found->second.data;
+    if (payload.kind != Payload::Kind::Channels) return MMS_E_UNSUPPORTED;
     if (!(payload.flags & MMS_EVALUATION_CAP_DISPLAY)) return MMS_E_UNSUPPORTED;
     if (index >= payload.ikCount) return MMS_E_NOT_FOUND;
     MmsEvaluationIkV1 ik = payload.data->ik[index];
@@ -708,6 +875,7 @@ MmsResult EvaluationStore::SelectorAt(Client& client, MmsHandle source, uint32_t
     const auto found = sources_.find(source);
     if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
     const Payload& payload = *found->second.data;
+    if (payload.kind != Payload::Kind::Channels) return MMS_E_UNSUPPORTED;
     if (!(payload.flags & MMS_EVALUATION_CAP_DISPLAY)) return MMS_E_UNSUPPORTED;
     if (index >= payload.selectorCount) return MMS_E_NOT_FOUND;
     MmsEvaluationSelectorV1 selector = payload.data->selectors[index];
@@ -730,6 +898,7 @@ MmsResult EvaluationStore::Sample(Client& client, MmsHandle source, MmsId bone, 
         const auto found = sources_.find(source);
         if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
         const auto& candidate = found->second.data;
+        if (candidate->kind != Payload::Kind::Channels) return MMS_E_UNSUPPORTED;
         if (!(candidate->flags & MMS_EVALUATION_CAP_BONE_CHANNELS)) return MMS_E_UNSUPPORTED;
         const auto located = candidate->index.find(bone);
         if (located == candidate->index.end()) return MMS_E_NOT_FOUND;
@@ -786,6 +955,7 @@ MmsResult EvaluationStore::SampleMorph(Client& client, MmsHandle source, MmsId m
         const auto found = sources_.find(source);
         if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
         const auto& candidate = found->second.data;
+        if (candidate->kind != Payload::Kind::Channels) return MMS_E_UNSUPPORTED;
         if (!(candidate->flags & MMS_EVALUATION_CAP_MORPH_WEIGHTS)) return MMS_E_UNSUPPORTED;
         const auto located = candidate->morphIndex.find(morph);
         if (located == candidate->morphIndex.end()) return MMS_E_NOT_FOUND;
@@ -854,6 +1024,7 @@ MmsResult EvaluationStore::ReadDisplay(Client& client, MmsHandle source, uint32_
         const auto found = sources_.find(source);
         if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
         const auto& candidate = found->second.data;
+        if (candidate->kind != Payload::Kind::Channels) return MMS_E_UNSUPPORTED;
         if (!(candidate->flags & MMS_EVALUATION_CAP_DISPLAY)) return MMS_E_UNSUPPORTED;
         // Visibility is one source-wide record; IK and parent selections resolve
         // by index inside the same frozen capture. Both parent kinds share the
@@ -940,6 +1111,325 @@ MmsResult EvaluationStore::ReadDisplay(Client& client, MmsHandle source, uint32_
         Settle(payload, client);
         payload.reset();
         if (client.active) --client.active;
+    }
+    return result;
+}
+
+MmsResult EvaluationStore::SceneCapabilities(Client& client, MmsEvaluationSceneCapsV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.retired) return MMS_E_NOT_READY;
+    MmsEvaluationSceneCapsV1 caps{};
+    caps.h = Header<MmsEvaluationSceneCapsV1>();
+    caps.maxSourceBytes = caps.maxFrameBytes = kMaxSourceBytes;
+    caps.maxClientBytes = kMaxClientBytes;
+    caps.maxTotalBytes = kMaxTotalBytes;
+    caps.maxWorkspaceBytes = kMaxWorkspaceBytes;
+    caps.maxClientWorkspaceBytes = kMaxClientWorkspaceBytes;
+    caps.maxTotalWorkspaceBytes = kMaxTotalWorkspaceBytes;
+    caps.flags = captureScene_ ? MMS_EVALUATION_SCENE_SKELETON : 0;
+    *out = caps;
+    return MMS_OK;
+}
+
+MmsResult EvaluationStore::CreateScene(Client& client, const MmsEvaluationSceneQueryV1* query, MmsHandle* out) {
+    if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
+    if (!out || !Valid(query)) return MMS_E_ARGUMENT;
+    const auto request = *query;
+    if (request.flags || request.reserved || request.maxRetainedBytes > kMaxSourceBytes) return MMS_E_ARGUMENT;
+    const uint64_t bound = request.maxRetainedBytes ? request.maxRetainedBytes : kMaxSourceBytes;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (client.retired) return MMS_E_NOT_READY;
+        if (!captureScene_) return MMS_E_UNSUPPORTED;
+        if (acquiring_) return MMS_E_BUSY;
+        if (client.handles >= kMaxHandlesPerClient || sources_.size() >= kMaxTotalHandles ||
+            next_ >= kHandleLimit || !captureId_) return MMS_E_BUSY;
+        acquiring_ = true;
+        ++client.active;
+    }
+
+    std::shared_ptr<const EvaluationSceneSourceData> data;
+    std::shared_ptr<Payload> payload;
+    const auto result = Gateway([&]() -> MmsResult {
+        const auto captured = captureScene_(request, bound, data);
+        if (captured != MMS_OK) return captured;
+        if (!data || !data.use_count() || !data->models || !data->models.use_count() || !data->evaluate) return MMS_E_FAILED;
+        uint64_t verified = sizeof(EvaluationSceneSourceData);
+        const auto measured = SceneModelBytes(*data->models, verified);
+        if (measured != MMS_OK) return measured;
+        if (data->retainedBytes < verified) return MMS_E_FAILED;
+        uint64_t charge = data->retainedBytes;
+        // Payload owns the two empty legacy ID trees even for scene kinds.
+        if (!AddBytes(charge, 1, sizeof(Payload)) ||
+            !AddBytes(charge, 2, kIndexNodeBytes) || charge > bound) return MMS_E_MEMORY;
+        // Reject excessive metadata before allocating duplicate-check scratch.
+        const auto valid = ValidateSceneModels(*data->models, bound);
+        if (valid != MMS_OK) return valid;
+        payload = std::make_shared<Payload>();
+        payload->kind = Payload::Kind::SceneSource;
+        payload->sceneSource = data;
+        payload->hostRevision = data->hostRevision;
+        payload->bytes = charge;
+        payload->flags = MMS_EVALUATION_SCENE_SKELETON;
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (client.retired) return MMS_E_NOT_READY;
+        if (client.handles >= kMaxHandlesPerClient || sources_.size() >= kMaxTotalHandles ||
+            next_ >= kHandleLimit || !captureId_) return MMS_E_BUSY;
+        if (charge > kMaxClientBytes || client.bytes > kMaxClientBytes - charge ||
+            charge > kMaxTotalBytes || totalBytes_ > kMaxTotalBytes - charge) return MMS_E_MEMORY;
+        const auto handle = next_;
+        payload->captureId = captureId_;
+        if (!sources_.emplace(handle, Entry{&client, payload}).second) return MMS_E_FAILED;
+        ++next_;
+        ++captureId_;
+        ++client.handles;
+        client.bytes += charge;
+        totalBytes_ += charge;
+        // Publication and dropping preparation references are indivisible to
+        // release/retain, so the last reference always settles its byte charge.
+        payload.reset();
+        data.reset();
+        *out = handle;
+        return MMS_OK;
+    });
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // On failure destroy every unpublished candidate before removing the
+        // admission pin (including host callback closures and identity maps).
+        payload.reset();
+        data.reset();
+        acquiring_ = false;
+        --client.active;
+    }
+    return result;
+}
+
+MmsResult EvaluationStore::DescribeScene(Client& client, MmsHandle source, MmsEvaluationSceneInfoV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.retired) return MMS_E_NOT_READY;
+    const auto found = sources_.find(source);
+    if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+    const auto& payload = *found->second.data;
+    if (payload.kind != Payload::Kind::SceneSource) return MMS_E_UNSUPPORTED;
+    MmsEvaluationSceneInfoV1 value{};
+    value.h = Header<MmsEvaluationSceneInfoV1>();
+    value.captureId = payload.captureId;
+    value.hostRevision = payload.hostRevision;
+    value.retainedBytes = payload.bytes;
+    value.modelCount = static_cast<uint32_t>(payload.sceneSource->models->size());
+    value.flags = MMS_EVALUATION_SCENE_SKELETON;
+    *out = value;
+    return MMS_OK;
+}
+
+MmsResult EvaluationStore::SceneModelAt(Client& client, MmsHandle source, uint32_t index, MmsEvaluationSceneModelV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.retired) return MMS_E_NOT_READY;
+    const auto found = sources_.find(source);
+    if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+    const auto& payload = *found->second.data;
+    if (payload.kind != Payload::Kind::SceneSource) return MMS_E_UNSUPPORTED;
+    const auto& models = *payload.sceneSource->models;
+    if (index >= models.size()) return MMS_E_NOT_FOUND;
+    MmsEvaluationSceneModelV1 value{};
+    value.h = Header<MmsEvaluationSceneModelV1>();
+    value.object = models[index].object;
+    value.boneCount = static_cast<uint32_t>(models[index].bones.size());
+    *out = value;
+    return MMS_OK;
+}
+
+MmsResult EvaluationStore::SceneBoneAt(Client& client, MmsHandle source, uint32_t model, uint32_t bone, MmsEvaluationSceneBoneV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.retired) return MMS_E_NOT_READY;
+    const auto found = sources_.find(source);
+    if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+    const auto& payload = *found->second.data;
+    if (payload.kind != Payload::Kind::SceneSource) return MMS_E_UNSUPPORTED;
+    const auto& models = *payload.sceneSource->models;
+    if (model >= models.size() || bone >= models[model].bones.size()) return MMS_E_NOT_FOUND;
+    MmsEvaluationSceneBoneV1 value{};
+    value.h = Header<MmsEvaluationSceneBoneV1>();
+    value.bone = models[model].bones[bone];
+    value.index = bone;
+    *out = value;
+    return MMS_OK;
+}
+
+MmsResult EvaluationStore::EvaluateFrame(Client& client, const MmsEvaluationFrameQueryV1* query, MmsHandle* out) {
+    if (!out || !Valid(query)) return MMS_E_ARGUMENT;
+    const auto request = *query;
+    if (request.flags || request.reserved || request.maxRetainedBytes > kMaxSourceBytes ||
+        request.maxWorkspaceBytes > kMaxWorkspaceBytes) return MMS_E_ARGUMENT;
+    EvaluationTime time;
+    if (!EvaluationTime::FromSeconds(request.time.numerator, request.time.denominator, time)) return MMS_E_ARGUMENT;
+    const auto normalized = Normalize(request.time);
+    const uint64_t bound = request.maxRetainedBytes ? request.maxRetainedBytes : kMaxSourceBytes;
+    const uint64_t workspace = request.maxWorkspaceBytes ? request.maxWorkspaceBytes : kMaxWorkspaceBytes;
+    std::shared_ptr<const Payload> source;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (client.retired) return MMS_E_NOT_READY;
+        const auto found = sources_.find(request.source);
+        if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+        if (found->second.data->kind != Payload::Kind::SceneSource) return MMS_E_UNSUPPORTED;
+        if (client.handles >= kMaxHandlesPerClient || sources_.size() >= kMaxTotalHandles ||
+            next_ >= kHandleLimit || !captureId_) return MMS_E_BUSY;
+        if (client.workspaceBytes > kMaxClientWorkspaceBytes - workspace ||
+            totalWorkspaceBytes_ > kMaxTotalWorkspaceBytes - workspace) return MMS_E_MEMORY;
+        source = found->second.data;
+        client.workspaceBytes += workspace;
+        totalWorkspaceBytes_ += workspace;
+        ++client.active;
+    }
+
+    std::shared_ptr<const EvaluationSceneFrameData> data;
+    std::shared_ptr<Payload> payload;
+    const auto result = Gateway([&]() -> MmsResult {
+        const auto evaluated = source->sceneSource->evaluate(time, bound, workspace, data);
+        if (evaluated != MMS_OK) return evaluated;
+        if (!data || !data.use_count() || !data->models || !data->models.use_count() || !data->sample) return MMS_E_FAILED;
+        const auto& identities = source->sceneSource->models;
+        // Matching contents alone cannot establish the same frozen capture.
+        // Check both address and shared ownership, without copying that lease.
+        if (data->models.get() != identities.get() || data->models.owner_before(identities) ||
+            identities.owner_before(data->models)) return MMS_E_FAILED;
+        if (data->visibility.size() != identities->size()) return MMS_E_FAILED;
+        uint64_t verified = sizeof(EvaluationSceneFrameData);
+        const auto measured = SceneModelBytes(*data->models, verified);
+        if (measured != MMS_OK) return measured;
+        if (!AddBytes(verified, data->visibility.capacity(), sizeof(uint8_t))) return MMS_E_MEMORY;
+        if (data->retainedBytes < verified) return MMS_E_FAILED;
+        uint64_t charge = data->retainedBytes;
+        if (!AddBytes(charge, 1, sizeof(Payload)) || !AddBytes(charge, 2, kIndexNodeBytes) ||
+            charge > bound || charge > workspace) return MMS_E_MEMORY;
+        payload = std::make_shared<Payload>();
+        payload->kind = Payload::Kind::SceneFrame;
+        payload->sceneFrame = data;
+        payload->captureId = source->captureId;
+        payload->hostRevision = source->hostRevision;
+        payload->bytes = charge;
+        payload->time = normalized;
+        payload->flags = MMS_EVALUATION_SCENE_SKELETON;
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (client.retired) return MMS_E_NOT_READY;
+        if (client.handles >= kMaxHandlesPerClient || sources_.size() >= kMaxTotalHandles ||
+            next_ >= kHandleLimit || !captureId_) return MMS_E_BUSY;
+        if (charge > kMaxClientBytes || client.bytes > kMaxClientBytes - charge ||
+            charge > kMaxTotalBytes || totalBytes_ > kMaxTotalBytes - charge) return MMS_E_MEMORY;
+        const auto handle = next_;
+        payload->frameId = captureId_;
+        if (!sources_.emplace(handle, Entry{&client, payload}).second) return MMS_E_FAILED;
+        ++next_;
+        ++captureId_;
+        ++client.handles;
+        client.bytes += charge;
+        totalBytes_ += charge;
+        payload.reset();
+        data.reset();
+        *out = handle;
+        return MMS_OK;
+    });
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // These can own identity-map references or host closures; discard them
+        // while both the source pin and workspace reservation are still held.
+        payload.reset();
+        data.reset();
+        Settle(source, client);
+        source.reset();
+        client.workspaceBytes -= workspace;
+        totalWorkspaceBytes_ -= workspace;
+        --client.active;
+    }
+    return result;
+}
+
+MmsResult EvaluationStore::DescribeFrame(Client& client, MmsHandle frame, MmsEvaluationFrameInfoV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.retired) return MMS_E_NOT_READY;
+    const auto found = sources_.find(frame);
+    if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+    const auto& payload = *found->second.data;
+    if (payload.kind != Payload::Kind::SceneFrame) return MMS_E_UNSUPPORTED;
+    MmsEvaluationFrameInfoV1 value{};
+    value.h = Header<MmsEvaluationFrameInfoV1>();
+    value.captureId = payload.captureId;
+    value.frameId = payload.frameId;
+    value.hostRevision = payload.hostRevision;
+    value.retainedBytes = payload.bytes;
+    value.time = payload.time;
+    value.modelCount = static_cast<uint32_t>(payload.sceneFrame->models->size());
+    value.flags = MMS_EVALUATION_SCENE_SKELETON;
+    *out = value;
+    return MMS_OK;
+}
+
+MmsResult EvaluationStore::FrameModelAt(Client& client, MmsHandle frame, uint32_t index, MmsEvaluationSceneModelV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client.retired) return MMS_E_NOT_READY;
+    const auto found = sources_.find(frame);
+    if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+    const auto& payload = *found->second.data;
+    if (payload.kind != Payload::Kind::SceneFrame) return MMS_E_UNSUPPORTED;
+    const auto& models = *payload.sceneFrame->models;
+    if (index >= models.size()) return MMS_E_NOT_FOUND;
+    MmsEvaluationSceneModelV1 value{};
+    value.h = Header<MmsEvaluationSceneModelV1>();
+    value.object = models[index].object;
+    value.boneCount = static_cast<uint32_t>(models[index].bones.size());
+    value.flags = MMS_EVALUATION_SCENE_VISIBILITY_VALID;
+    value.visibility = payload.sceneFrame->visibility[index];
+    *out = value;
+    return MMS_OK;
+}
+
+MmsResult EvaluationStore::ReadBonePose(Client& client, MmsHandle frame, uint32_t model, uint32_t bone,
+    MmsEvaluationScenePoseV1* out) {
+    if (!out) return MMS_E_ARGUMENT;
+    std::shared_ptr<const Payload> payload;
+    MmsId identity{};
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (client.retired) return MMS_E_NOT_READY;
+        const auto found = sources_.find(frame);
+        if (found == sources_.end() || found->second.owner != &client) return MMS_E_NOT_FOUND;
+        const auto& candidate = found->second.data;
+        if (candidate->kind != Payload::Kind::SceneFrame) return MMS_E_UNSUPPORTED;
+        const auto& models = *candidate->sceneFrame->models;
+        if (model >= models.size() || bone >= models[model].bones.size()) return MMS_E_NOT_FOUND;
+        identity = models[model].bones[bone];
+        payload = candidate;
+        ++client.active;
+    }
+    MmsEvaluationScenePoseV1 value{};
+    const auto result = Gateway([&]() -> MmsResult {
+        const auto sampled = payload->sceneFrame->sample(model, bone, value);
+        if (sampled != MMS_OK) return sampled;
+        if (value.reserved) return MMS_E_FAILED;
+        for (float n : value.rigid) if (!std::isfinite(n)) return MMS_E_FAILED;
+        for (float n : value.scaled) if (!std::isfinite(n)) return MMS_E_FAILED;
+        for (float n : value.attachmentBefore) if (!std::isfinite(n)) return MMS_E_FAILED;
+        for (float n : value.attachmentAfter) if (!std::isfinite(n)) return MMS_E_FAILED;
+        for (float n : value.jointPosition) if (!std::isfinite(n)) return MMS_E_FAILED;
+        value.h = Header<MmsEvaluationScenePoseV1>();
+        value.bone = identity;
+        return MMS_OK;
+    });
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (result == MMS_OK) *out = value;
+        Settle(payload, client);
+        payload.reset();
+        --client.active;
     }
     return result;
 }

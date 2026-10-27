@@ -749,6 +749,7 @@ void CheckShadowFilter(MMDApp* app) {
 #include "plugins/evaluation_morph_host_checks.inc"
 #include "plugins/evaluation_display_host_checks.inc"
 #include "plugins/evaluation_parent_state_host_checks.inc"
+#include "plugins/scene_evaluation_abi_host_checks.inc"
 #include "plugins/slider_hover_host_checks.inc"
 #include "plugins/layout_refresh_host_checks.inc"
 #include "plugins/object_history_host_checks.inc"
@@ -886,6 +887,9 @@ int main(int argc, char** argv) {
     }
     if(argc==2 && std::string(argv[1])=="--bone-scene-evaluation-only") {
         bone_scene_evaluation_probe::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
+    }
+    if(argc==2 && std::string(argv[1])=="--scene-evaluation-abi-only") {
+        scene_evaluation_abi_probe::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }
     if(argc==2 && std::string(argv[1])=="--morph-definition-only") {
         morph_definition_probe::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;

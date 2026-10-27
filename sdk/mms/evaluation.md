@@ -1,8 +1,8 @@
-# 冻结动作通道求值
+# 冻结动作与骨架场景求值
 
-`mms.scene.evaluate` 1.3 提供已注册骨骼动作、表情权重、显示状态、IK 开关和外部父级选择的独立采样。[C 接口表](include/mms/evaluation.h)保留 1.0、1.1 和 1.2 的全部函数，在末尾追加能区分地面与继承状态的父级采样入口。插件在 UI 线程通过 `MmsHostV1::queryService` 查询一次，随后可以缓存返回的函数表。
+`mms.scene.evaluate` 1.4 提供已注册通道采样，以及冻结完整模型集合的独立骨架场景帧。[C 接口表](include/mms/evaluation.h)保留 1.0 至 1.3 的函数，追加场景来源和帧入口。插件在 UI 线程通过 `MmsHostV1::queryService` 查询一次，随后可以缓存返回的函数表。
 
-完整配置的生产插件运行时开放此服务，当前通道能力掩码为 `7`。`MMD_ORIGINAL_PROFILE` 配置的 `CreateEvaluationStore` 工厂返回空对象，未开放此服务。插件以服务查询及 `getCapabilities` 的结果判断可用性，不能仅根据 SDK 头文件判断。
+完整配置的生产插件运行时开放此服务，当前通道能力掩码为 `7`。`MMD_ORIGINAL_PROFILE` 配置的 `CreateEvaluationStore` 工厂返回空对象，未开放此服务。插件以服务查询及对应能力函数的结果判断可用性，不能仅根据 SDK 头文件判断。
 
 ## 求值范围
 
@@ -10,7 +10,7 @@
 
 `sampleBone` 返回层级变换之前的局部通道。结果尚未叠加 IK、表情、动作层或物理。服务不提供完整场景帧，也不声明 `MMS_STAGE_ANIMATED` 支持。附件、相机、灯光和其他非模型对象不在当前捕获范围内。
 
-1.1 的 `createSourceChannels` 可选择骨骼通道、表情权重，或同时选择两者。表情结果是已注册的直接权重，包括原生关键帧与 MMS 自由曲线。结果保留负数和超过 `1` 的有限权重，不夹取到 `[0, 1]`。服务不展开 group 或 flip，不计算顶点、骨骼、UV、材质或其他表情形变。当前未注册的表情编辑值不参与采样。本次扩展不改变 VMD 格式、插值协议或标记策略。
+1.1 的 `createSourceChannels` 可选择骨骼通道、表情权重，或同时选择两者。表情结果是已注册的直接权重，包括原生关键帧与 MMS 自由曲线。结果保留负数和超过 `1` 的有限权重，不夹取到 `[0, 1]`。该表情权重采样入口不展开 group 或 flip，也不计算顶点、骨骼、UV、材质或其他表情形变；1.4 骨架场景帧会另行合成骨骼表情。当前未注册的表情编辑值不参与采样。本次扩展不改变 VMD 格式、插值协议或标记策略。
 
 快照持有采样所需的数据。源模型后续修改、删除或工程切换都不改变既有快照。获取新动作需要再次调用创建入口。
 
@@ -26,10 +26,11 @@
 | `1, 1` | `MmsEvaluationApiV1_1` | 104 | `size = 104, major = 1, minor = 1` |
 | `1, 2` | `MmsEvaluationApiV1_2` | 152 | `size = 152, major = 1, minor = 2` |
 | `1, 3` | `MmsEvaluationApiV1_3` | 160 | `size = 160, major = 1, minor = 3` |
+| `1, 4` | `MmsEvaluationApiV1_4` | 232 | `size = 232, major = 1, minor = 4` |
 
-每个新版本保留前一版本的全部函数，四个版本共用 `context` 和源句柄。返回的 `context` 属于当前插件实例，调用方原样传给表内函数。表版本不等于通道能力，插件仍须调用 `getCapabilities`。查询缓冲区小于所请求表的大小时返回 `MMS_E_ARGUMENT`，不会降级写入旧表。主版本不匹配或次版本大于 `3` 时返回 `MMS_E_VERSION`。失败保留输出缓冲区，成功只写所请求版本的表。
+每个新版本保留前一版本的全部函数，五个版本共用 `context` 和句柄。返回的 `context` 属于当前插件实例，调用方原样传给表内函数。表版本不等于通道能力；插件应分别通过 `getCapabilities` 和 `getSceneCapabilities` 查询旧通道及骨架场景能力。查询缓冲区小于所请求表的大小时返回 `MMS_E_ARGUMENT`，不会降级写入旧表。主版本不匹配或次版本大于 `4` 时返回 `MMS_E_VERSION`。失败保留输出缓冲区，成功只写所请求版本的表。
 
-在插件清单中声明 `capabilities: ["scene.evaluate"]`。若插件必须依赖此服务，在 `requiresServices` 中增加 `{"id":"mms.scene.evaluate","major":1,"minMinor":0}`。必须调用表情入口的插件将 `minMinor` 设为 `1`，必须调用显示或 IK 入口的插件设为 `2`。需要区分地面与继承父级的插件设为 `3`。其他清单字段沿用 [SDK 入门](README.md) 的约定。可选功能不应把此服务声明为必需，应在查询失败后关闭对应功能。
+在插件清单中声明 `capabilities: ["scene.evaluate"]`。若插件必须依赖此服务，在 `requiresServices` 中增加 `{"id":"mms.scene.evaluate","major":1,"minMinor":0}`。必须调用表情入口的插件将 `minMinor` 设为 `1`，必须调用显示或 IK 入口的插件设为 `2`。需要区分地面与继承父级的插件设为 `3`，需要独立骨架场景帧的插件设为 `4`。其他清单字段沿用 [SDK 入门](README.md) 的约定。可选功能不应把此服务声明为必需，应在查询失败后关闭对应功能。
 
 `MmsEvaluationSourceQueryV1` 的字段约定如下。
 
@@ -40,7 +41,7 @@
 | `maxRetainedBytes` | 此次捕获的保留字节上限。`0` 选择宿主默认值，非零值不得超过 `getCapabilities` 返回的 `maxSourceBytes` |
 | `flags`、`reserved` | 均为 `0` |
 
-两个创建入口均使用上述 V1 查询结构，`flags` 和 `reserved` 仍为 `0`，通道掩码通过 `createSourceChannels` 的独立参数传入。创建只能在 UI 线程调用。场景变更、待完成编辑事务或宿主尚未就绪时，创建会被拒绝。已创建的快照可交给后台线程采样。
+旧的两个通道创建入口均使用上述 V1 查询结构，`flags` 和 `reserved` 仍为 `0`，通道掩码通过 `createSourceChannels` 的独立参数传入。创建只能在 UI 线程调用。场景变更、待完成编辑事务或宿主尚未就绪时，创建会被拒绝。已创建的快照可交给后台线程采样。
 
 ## 1.0 保留的七个函数
 
@@ -56,7 +57,7 @@
 | `retain(context, source, outSource)` | 返回另一个独立句柄，与原句柄共享同一份冻结数据 | 任意线程 |
 | `release(context, source)` | 释放一个句柄。调用成功后，该句柄不能继续使用 | 任意线程 |
 
-除两个创建入口外，服务入口允许并发调用。调用方须保证不同写操作不共用同一输出缓冲区。创建是同步操作，较大的动作数据会占用 UI 线程时间。
+`createSource`、`createSourceChannels` 和 `createSceneSource` 必须在 UI 线程调用，其他入口允许并发调用。调用方须保证不同写操作不共用同一输出缓冲区。创建是同步操作，较大的动作数据会占用 UI 线程时间。
 
 `MmsEvaluationSourceInfoV1` 的 `object` 保留捕获时的引用。源模型删除后，该字段仍可读取，但不再代表可用于新捕获的当前对象。`flags` 表示该源实际冻结的通道，是能力掩码的非零子集。通过旧 `createSource` 创建的源始终为 `1`。旧描述结构保留 64 字节和 `1, 0` 头，不包含表情、IK 或选择器数量。
 
@@ -135,7 +136,7 @@
 
 显示捕获在同一次 UI 安全点解析所有可达显示关键帧引用的目标模型和骨骼，包括未来关键帧。有效模型引用必须对应当前场景已发布的模型身份及有效目标骨骼。继承和地面不需要目标身份，未来关键帧中的地面也可以正常捕获。只要其中一个模型引用失效，整个捕获返回 `MMS_E_STALE`，不发布源。未选择显示通道的捕获不检查这些引用。
 
-旧源中的目标身份是捕获时的不可变元数据。目标模型后续删除、重新加载或槽位复用后，旧源仍返回旧目标 ID、旧 `generation` 和旧骨骼 ID，不改为槽位中的新对象。返回 `ACTIVE` 不代表目标目前仍存活，也不代表目标动作已经冻结。插件若需操作当前目标，应通过当前场景另行解析身份。完整世界姿态求值还需要冻结并求值目标动作及依赖，此接口不提供该能力。
+旧源中的目标身份是捕获时的不可变元数据。目标模型后续删除、重新加载或槽位复用后，旧源仍返回旧目标 ID、旧 `generation` 和旧骨骼 ID，不改为槽位中的新对象。返回 `ACTIVE` 不代表目标目前仍存活，也不代表目标动作已经冻结。插件若需操作当前目标，应通过当前场景另行解析身份。目标动作与依赖可以通过下述 1.4 骨架场景帧另行冻结和求值；1.2 父级采样入口本身不提供该结果。
 
 ## 1.3 父级状态
 
@@ -150,6 +151,67 @@
 `kind` 是单个类型值，不是位掩码。`reserved` 必须为零。`windowStart` 和 `windowEnd` 沿用 1.2 的连续窗口规则，状态切换不会丢失原窗口。所有状态均使用同一精确有理数时间边界和冻结数据，失败保留整个输出结构。
 
 全局选择器的继承和地面都没有显式模型目标，但原始状态仍分开返回。局部选择器中两者有实际求值差异，因此插件不得仅依据身份为空就将其合并。该接口返回注册状态，不执行外亲变换。
+
+## 1.4 独立骨架场景帧
+
+1.4 的场景来源捕获当前全部模型及其注册骨骼、表情、显示和外亲依赖。插件不指定单个模型，捕获包括不可见模型及仅由未来外亲键引用的模型。来源只保留冻结数据，不借用主场景的模型指针。创建须在 UI 线程调用，查询、求值、读取与释放可以从后台线程调用。
+
+该阶段提供无物理模拟的骨架求值：局部动作、骨骼表情、层级、IK、外亲和尺度。模型按原生顺序执行全场物理前和物理后两轮，并从确定的加载初值开始。刚体历史、网格蒙皮、附件、相机、灯光、渲染器和多视口不属于此帧。不能把它称为完整场景渲染结果，也不能假定它与连续物理播放的历史状态相同。
+
+首先调用 `getSceneCapabilities`。`flags` 中的 `MMS_EVALUATION_SCENE_SKELETON` 表示宿主提供此功能；查询 1.4 表成功不代表该标志一定存在。原始兼容产品不开放生产求值服务。`reserved` 和所有请求的 `flags`、`reserved` 必须为零。
+
+| 函数 | 行为 |
+| --- | --- |
+| `createSceneSource(context, query, out)` | UI 安全点捕获完整模型集合；成功返回独立来源句柄 |
+| `describeSceneSource(context, source, out)` | 返回捕获 ID、宿主历史元数据、模型数量和计费量 |
+| `sceneModelAt(context, source, index, out)` | 按捕获顺序枚举模型身份及骨骼数量 |
+| `sceneBoneAt(context, source, modelIndex, boneIndex, out)` | 枚举与 BIND 快照一致的骨骼 ID |
+| `evaluateFrame(context, query, out)` | 同步求值并返回独立帧；可由插件后台任务调用 |
+| `describeFrame(context, frame, out)` | 返回来源捕获 ID、帧 ID、规范化有理时间及计费量 |
+| `frameModelAt(context, frame, index, out)` | 返回冻结模型身份、骨骼数及注册的原始可见字节 |
+| `readBonePose(context, frame, modelIndex, boneIndex, out)` | 按帧内序号复制该骨骼的计算结果 |
+
+`MmsEvaluationSceneModelV1::flags` 在来源枚举时为零；帧枚举时包含 `MMS_EVALUATION_SCENE_VISIBILITY_VALID`，`visibility` 是原始注册字节扩展为整数，不是规范化布尔值。标准 PMM 保存会将该字段写成 `0` 或 `1`；重载后的新来源读取标准值，之前的帧仍保留其捕获值。模型和骨骼序号只在对应捕获内有效。若要关联其他服务，使用返回的对象身份与骨骼 ID。
+
+`MmsEvaluationScenePoseV1` 包含刚性变形矩阵 `rigid`、含尺度变形矩阵 `scaled`、物理前和物理后两次扫描的附着矩阵 `attachmentBefore`、`attachmentAfter`，以及 `jointPosition`。矩阵采用原生行向量约定；变形矩阵作用于绑定坐标，不能直接当作骨骼世界矩阵。该结构是调用方持有的副本，不暴露内部指针。
+
+`MmsEvaluationFrameQueryV1::time` 使用非负有理数秒，帧率为 30。上限与前述采样相同。关键帧前的分数即使连续值舍入到整数，也保持前一离散状态；位置、旋转、尺度、表情和自由曲线仍连续计算。`describeFrame` 返回规范化的请求分数。请求与结果均不移动主播放头、不覆盖编辑姿态、不推进主物理世界，也不写工程或共同历史。
+
+来源和帧共用现有 `retain`、`release`。释放来源后，已发布的帧仍可读取；已获准的求值也可在来源最后一个句柄释放后完成。停止开始后，不再发布新帧，并拒绝新的读取和求值；已经接纳的读取可以完成。同步求值当前不支持调用中取消。类型不匹配返回 `MMS_E_UNSUPPORTED`，越界或其他插件的句柄返回 `MMS_E_NOT_FOUND`；所有失败保留输出。
+
+下面的 C 示例读取第一个模型的第一根骨骼。调用此函数前，插件已在 UI 线程查询 1.4 函数表；此示例本身也在 UI 线程调用，因为它创建来源。需要后台求值时，先在 UI 线程创建来源，再将来源句柄传给后台任务。
+
+```c
+MmsResult read_first_pose(const MmsEvaluationApiV1_4* api,
+                          MmsEvaluationScenePoseV1* out) {
+    if (!api || !out) return MMS_E_ARGUMENT;
+    MmsEvaluationSceneCapsV1 caps = {0};
+    MmsResult result = api->getSceneCapabilities(api->context, &caps);
+    if (result != MMS_OK) return result;
+    if (!(caps.flags & MMS_EVALUATION_SCENE_SKELETON)) return MMS_E_UNSUPPORTED;
+
+    MmsEvaluationSceneQueryV1 source_query = {{sizeof(source_query), 1, 0}, 0, 0, 0};
+    MmsHandle source = 0, frame = 0;
+    result = api->createSceneSource(api->context, &source_query, &source);
+    if (result != MMS_OK) return result;
+
+    MmsEvaluationFrameQueryV1 frame_query = {0};
+    frame_query.h = (MmsHeader){sizeof(frame_query), 1, 0};
+    frame_query.source = source;
+    frame_query.time = (MmsTime){1, 2}; /* 0.5 s, frame 15. */
+    result = api->evaluateFrame(api->context, &frame_query, &frame);
+    if (result == MMS_OK) {
+        MmsEvaluationScenePoseV1 pose = {0};
+        result = api->readBonePose(api->context, frame, 0, 0, &pose);
+        if (result == MMS_OK) *out = pose;
+        api->release(api->context, frame);
+    }
+    api->release(api->context, source);
+    return result;
+}
+```
+
+来源和帧与旧通道共享保留额度：每份上限 64 MiB，每个插件实例总计 128 MiB，服务总计 256 MiB。相同内容的独立来源或帧分别计费；`retain` 不重复计费。请求 `maxRetainedBytes = 0` 使用每份上限。场景求值的工作区上限为单次 128 MiB、单插件同时 256 MiB、服务同时 512 MiB；`maxWorkspaceBytes = 0` 使用单次上限。并发预留不足返回 `MMS_E_MEMORY`。这些额度不包括全部嵌套算法的瞬时堆分配，不能作为进程峰值内存的精确上限。
 
 ## 骨骼标志与结果
 
@@ -304,15 +366,15 @@ MmsResult SampleFrozenMorph(const MmsHostV1* host, MmsObjectRef model,
 
 ## 保留内存与句柄额度
 
-`getCapabilities` 返回当前服务的字节额度和单插件句柄额度。1.0 至 1.3 共用以下限制，通道组合不会获得额外额度。
+`getCapabilities` 返回当前服务的字节额度和单插件句柄额度。1.0 至 1.4 共用以下限制，通道组合不会获得额外额度。
 
 | 范围 | 上限 |
 | --- | --- |
 | 单份快照的保留字节 | 64 MiB |
 | 单插件实例的保留字节 | 128 MiB |
 | 同一个服务实例的全部保留字节 | 256 MiB |
-| 单插件实例的源句柄，包含 `retain` | 128，对应 `maxSources` |
-| 同一个服务实例的源句柄总数 | 1024，1.0 能力结构没有单独的全局句柄字段 |
+| 单插件实例的通道来源、场景来源及帧句柄合计，包含 `retain` | 128，对应 `maxSources` |
+| 同一个服务实例的上述三类句柄总数 | 1024，1.0 能力结构没有单独的全局句柄字段 |
 
 `retainedBytes` 是宿主计入额度的保留量，包含所选通道的动作快照、骨骼与表情记录、IK 与选择器记录、父级身份映射、宿主数据及服务索引的计费。索引节点和部分所有权开销按保守额度计入。该值不是进程精确堆占用，也不是捕获期间的峰值内存。
 
@@ -326,7 +388,7 @@ MmsResult SampleFrozenMorph(const MmsHostV1* host, MmsObjectRef model,
 
 插件进入停止阶段后，服务保留已有句柄并拒绝新的创建、描述、枚举、采样、保留及能力查询。此时只有 `release` 仍可用于清理。宿主不会代替插件自动释放这些源句柄。
 
-此规则也适用于 1.1 至 1.3 的追加入口。所有通道的执行中采样共同保留源，释放最后一个句柄不会使已接纳的采样失效。显示或父级采样尚未结束时，宿主仍保留服务上下文和插件 DLL。
+此规则也适用于 1.1 至 1.4 的追加入口。所有通道的执行中采样共同保留源，释放最后一个句柄不会使已接纳的采样失效。显示或父级采样尚未结束时，宿主仍保留服务上下文和插件 DLL。
 
 已经获准执行的采样可以完成并写回结果。停止阶段开始前已启动的捕获也可以结束内部工作，但不会再发布新句柄，创建调用返回 `MMS_E_NOT_READY`。已有句柄和执行中的捕获、采样会阻止相关宿主上下文卸载。
 
@@ -338,16 +400,16 @@ MmsResult SampleFrozenMorph(const MmsHostV1* host, MmsObjectRef model,
 
 | 结果 | 含义 |
 | --- | --- |
-| `MMS_E_ARGUMENT` | 空输出、无效输入头、非零查询 `flags` 或 `reserved`、空对象 ID、零 `generation`、零或未知位的通道掩码、超过宿主单源上限的预算参数、无效或越界时间、捕获数据无效 |
-| `MMS_E_THREAD` | 在非 UI 线程调用 `createSource` 或 `createSourceChannels`。服务查询本身也要求 UI 线程 |
+| `MMS_E_ARGUMENT` | 空输出、无效输入头、非零查询 `flags` 或 `reserved`、空对象 ID、零 `generation`、零或未知位的通道掩码、超过单份保留或单次工作区上限的预算参数、无效或越界时间、捕获数据无效 |
+| `MMS_E_THREAD` | 在非 UI 线程调用 `createSource`、`createSourceChannels` 或 `createSceneSource`。服务查询本身也要求 UI 线程 |
 | `MMS_E_NOT_FOUND` | 未知、已释放或属于其他插件的源句柄，骨骼或表情的 ID 或序号不存在，IK 或选择器序号不存在，或创建时未找到对象 |
-| `MMS_E_STALE` | 创建时源模型引用已过期，或所选显示通道的任一可达关键帧引用无效目标模型或骨骼。包括未来关键帧。不会使既有冻结快照失效 |
-| `MMS_E_UNSUPPORTED` | 创建时对象类型或所选通道不支持，读取源未捕获的通道，或采样骨骼缺少 `MMS_EVALUATION_BONE_LOCAL` |
+| `MMS_E_STALE` | 创建时源模型引用已过期，所选显示通道或场景来源的可达关键帧引用无效目标模型或骨骼，或场景骨架定义无效。包括未来关键帧。不会使既有冻结快照失效 |
+| `MMS_E_UNSUPPORTED` | 创建时对象类型或所选通道不支持，读取源未捕获的通道，采样骨骼缺少 `MMS_EVALUATION_BONE_LOCAL`、场景捕获器未配置，或句柄载荷类型与入口不匹配 |
 | `MMS_E_NOT_READY` | 插件已进入停止阶段，或宿主尚未就绪、正在变更场景 |
 | `MMS_E_BUSY` | 创建重入、编辑导航暂不可用、句柄数量或标识序列耗尽 |
-| `MMS_E_MEMORY` | 保留字节额度不足、计费运算溢出或内存分配失败 |
+| `MMS_E_MEMORY` | 保留字节或并发工作区预留额度不足、计费运算溢出或内存分配失败 |
 | `MMS_E_FAILED` | 宿主未提供有效采样实现，采样结果出现非有限值、超出字节范围的显示或 IK 值、无效父级身份、窗口或标志，或发生内部异常 |
 
-服务查询还可能因服务未开放或 ABI 版本不匹配而失败。查询的主版本不同或要求不支持的次版本时，返回 `MMS_E_VERSION`。查询失败时，调用方不能使用未取得的函数表。两个创建入口的查询结构均要求 `1, 0` 头，错误版本返回 `MMS_E_ARGUMENT`，不等同于服务查询的版本错误。
+服务查询还可能因服务未开放或 ABI 版本不匹配而失败。查询的主版本不同或要求不支持的次版本时，返回 `MMS_E_VERSION`。查询失败时，调用方不能使用未取得的函数表。三个创建入口的查询结构均要求 `1, 0` 头，错误版本返回 `MMS_E_ARGUMENT`，不等同于服务查询的版本错误。
 
 本服务只依赖 CPU 路径，不要求特定显卡厂商或新系统图形接口。Win7 SP1 x64、CPU 基础路径及 AMD 兼容要求不变。

@@ -1,6 +1,7 @@
 #pragma once
 #include "scene_store.hpp"
 #include <mms/evaluation.h>
+#include "mikumikustudio/evaluation_time.hpp"
 
 namespace mikumikustudio::plugins {
 // Built only by a trusted UI-thread host. The callback owns immutable sampling
@@ -22,6 +23,25 @@ struct EvaluationData {
     // callback. Both public sampling versions use one validation/lease path.
     std::function<MmsResult(uint32_t index, double frame, MmsParentStateV1&)> sampleParentState;
 };
+// Trusted host data. Both scene payloads hold the same immutable identity map;
+// each payload's retainedBytes accounts that map independently.
+struct EvaluationSceneModelData {
+    MmsObjectRef object{};
+    std::vector<MmsId> bones;
+};
+using EvaluationSceneModels = std::vector<EvaluationSceneModelData>;
+struct EvaluationSceneFrameData {
+    std::shared_ptr<const EvaluationSceneModels> models;
+    std::vector<uint8_t> visibility;
+    uint64_t retainedBytes = 0;
+    std::function<MmsResult(uint32_t model, uint32_t bone, MmsEvaluationScenePoseV1&)> sample;
+};
+struct EvaluationSceneSourceData {
+    std::shared_ptr<const EvaluationSceneModels> models;
+    uint64_t hostRevision = 0, retainedBytes = 0;
+    std::function<MmsResult(const EvaluationTime&, uint64_t maxFrameBytes,
+        uint64_t maxWorkspaceBytes, std::shared_ptr<const EvaluationSceneFrameData>&)> evaluate;
+};
 class EvaluationStore {
 public:
     struct Client {
@@ -29,6 +49,7 @@ public:
         bool retired = false;
         uint32_t handles = 0, active = 0;
         uint64_t bytes = 0;
+        uint64_t workspaceBytes = 0;
         Client() = default;
         Client(const Client&) = delete;
         Client& operator=(const Client&) = delete;
@@ -38,7 +59,9 @@ public:
     explicit EvaluationStore(Capture);
     using CaptureChannels = std::function<MmsResult(const MmsEvaluationSourceQueryV1&,
         uint32_t channels, uint64_t maxBytes, std::shared_ptr<const EvaluationData>&)>;
-    explicit EvaluationStore(CaptureChannels, uint32_t supportedChannels = 3);
+    using CaptureScene = std::function<MmsResult(const MmsEvaluationSceneQueryV1&,
+        uint64_t maxBytes, std::shared_ptr<const EvaluationSceneSourceData>&)>;
+    explicit EvaluationStore(CaptureChannels, uint32_t supportedChannels = 3, CaptureScene scene = {});
     ~EvaluationStore();
     EvaluationStore(const EvaluationStore&) = delete;
     EvaluationStore& operator=(const EvaluationStore&) = delete;
@@ -46,6 +69,7 @@ public:
     MmsEvaluationApiV1_1 Api11(Client&);
     MmsEvaluationApiV1_2 Api12(Client&);
     MmsEvaluationApiV1_3 Api13(Client&);
+    MmsEvaluationApiV1_4 Api14(Client&);
     // Retire rejects new operations except release. Existing source handles
     // and admitted calls pin the client until plugins drain them and join work.
     void Retire(Client&) noexcept;
@@ -55,11 +79,13 @@ private:
     struct Entry { Client* owner; std::shared_ptr<const Payload> data; };
     Capture capture_;
     CaptureChannels captureChannels_;
+    CaptureScene captureScene_;
     uint32_t supportedChannels_ = MMS_EVALUATION_CAP_BONE_CHANNELS;
     DWORD thread_ = GetCurrentThreadId();
     mutable std::mutex mutex_;
     std::map<MmsHandle, Entry> sources_;
     uint64_t next_ = (uint64_t(1) << 62) | 1u, captureId_ = 1, totalBytes_ = 0;
+    uint64_t totalWorkspaceBytes_ = 0;
     bool acquiring_ = false;
     MmsResult Capabilities(Client&, MmsEvaluationCapsV1*);
     MmsResult Create(Client&, const MmsEvaluationSourceQueryV1*, MmsHandle*);
@@ -78,6 +104,15 @@ private:
     MmsResult SampleParent(Client&, MmsHandle, uint32_t, MmsTime, MmsParentSelectionV1*);
     MmsResult SampleParentState(Client&, MmsHandle, uint32_t, MmsTime, MmsParentStateV1*);
     MmsResult ReadDisplay(Client&, MmsHandle, uint32_t kind, uint32_t index, MmsTime, void*);
+    MmsResult SceneCapabilities(Client&, MmsEvaluationSceneCapsV1*);
+    MmsResult CreateScene(Client&, const MmsEvaluationSceneQueryV1*, MmsHandle*);
+    MmsResult DescribeScene(Client&, MmsHandle, MmsEvaluationSceneInfoV1*);
+    MmsResult SceneModelAt(Client&, MmsHandle, uint32_t, MmsEvaluationSceneModelV1*);
+    MmsResult SceneBoneAt(Client&, MmsHandle, uint32_t, uint32_t, MmsEvaluationSceneBoneV1*);
+    MmsResult EvaluateFrame(Client&, const MmsEvaluationFrameQueryV1*, MmsHandle*);
+    MmsResult DescribeFrame(Client&, MmsHandle, MmsEvaluationFrameInfoV1*);
+    MmsResult FrameModelAt(Client&, MmsHandle, uint32_t, MmsEvaluationSceneModelV1*);
+    MmsResult ReadBonePose(Client&, MmsHandle, uint32_t, uint32_t, MmsEvaluationScenePoseV1*);
     MmsResult Retain(Client&, MmsHandle, MmsHandle*);
     MmsResult Release(Client&, MmsHandle);
     void Settle(const std::shared_ptr<const Payload>&, Client&) noexcept;

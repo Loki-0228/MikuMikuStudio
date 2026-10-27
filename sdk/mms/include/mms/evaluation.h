@@ -190,5 +190,87 @@ typedef struct MmsEvaluationApiV1_3 {
     MmsResult (MMS_CALL *sampleParent)(void*, MmsHandle, uint32_t, MmsTime, MmsParentSelectionV1*);
     MmsResult (MMS_CALL *sampleParentState)(void*, MmsHandle, uint32_t, MmsTime, MmsParentStateV1*);
 } MmsEvaluationApiV1_3;
+/* 1.4 skeleton scene frames: registered data, CPU, no physics simulation. */
+#define MMS_EVALUATION_SCENE_SKELETON 1u
+#define MMS_EVALUATION_SCENE_VISIBILITY_VALID 1u
+
+typedef struct MmsEvaluationSceneCapsV1 {
+    MmsHeader h;
+    uint64_t maxSourceBytes, maxFrameBytes, maxClientBytes, maxTotalBytes;
+    uint64_t maxWorkspaceBytes, maxClientWorkspaceBytes, maxTotalWorkspaceBytes;
+    uint32_t flags, reserved;
+} MmsEvaluationSceneCapsV1;
+typedef struct MmsEvaluationSceneQueryV1 {
+    MmsHeader h;
+    uint64_t maxRetainedBytes;
+    uint32_t flags, reserved;
+} MmsEvaluationSceneQueryV1;
+typedef struct MmsEvaluationSceneInfoV1 {
+    MmsHeader h;
+    uint64_t captureId, hostRevision, retainedBytes;
+    uint32_t modelCount, flags;
+} MmsEvaluationSceneInfoV1;
+typedef struct MmsEvaluationSceneModelV1 {
+    MmsHeader h;
+    MmsObjectRef object;
+    uint32_t boneCount, flags, visibility, reserved;
+} MmsEvaluationSceneModelV1;
+typedef struct MmsEvaluationSceneBoneV1 {
+    MmsHeader h;
+    MmsId bone;
+    uint32_t index, reserved;
+} MmsEvaluationSceneBoneV1;
+typedef struct MmsEvaluationFrameQueryV1 {
+    MmsHeader h;
+    MmsHandle source;
+    MmsTime time; /* Nonnegative rational seconds; 30 frames per second. */
+    uint64_t maxRetainedBytes, maxWorkspaceBytes;
+    uint32_t flags, reserved;
+} MmsEvaluationFrameQueryV1;
+typedef struct MmsEvaluationFrameInfoV1 {
+    MmsHeader h;
+    uint64_t captureId, frameId, hostRevision, retainedBytes;
+    MmsTime time;
+    uint32_t modelCount, flags;
+} MmsEvaluationFrameInfoV1;
+typedef struct MmsEvaluationScenePoseV1 {
+    MmsHeader h;
+    MmsId bone;
+    float rigid[16], scaled[16], attachmentBefore[16], attachmentAfter[16];
+    float jointPosition[3];
+    uint32_t reserved;
+} MmsEvaluationScenePoseV1;
+typedef struct MmsEvaluationApiV1_4 {
+    MmsHeader h;
+    void* context;
+    MmsResult (MMS_CALL *getCapabilities)(void*, MmsEvaluationCapsV1*);
+    MmsResult (MMS_CALL *createSource)(void*, const MmsEvaluationSourceQueryV1*, MmsHandle*);
+    MmsResult (MMS_CALL *describeSource)(void*, MmsHandle, MmsEvaluationSourceInfoV1*);
+    MmsResult (MMS_CALL *boneAt)(void*, MmsHandle, uint32_t, MmsEvaluationBoneV1*);
+    MmsResult (MMS_CALL *sampleBone)(void*, MmsHandle, MmsId, MmsTime, MmsBoneChannelsV1*);
+    MmsResult (MMS_CALL *retain)(void*, MmsHandle, MmsHandle*);
+    MmsResult (MMS_CALL *release)(void*, MmsHandle);
+    MmsResult (MMS_CALL *createSourceChannels)(void*, const MmsEvaluationSourceQueryV1*, uint32_t, MmsHandle*);
+    MmsResult (MMS_CALL *describeSourceChannels)(void*, MmsHandle, MmsEvaluationSourceInfoV1_1*);
+    MmsResult (MMS_CALL *morphAt)(void*, MmsHandle, uint32_t, MmsEvaluationMorphV1*);
+    MmsResult (MMS_CALL *sampleMorph)(void*, MmsHandle, MmsId, MmsTime, MmsMorphWeightV1*);
+    MmsResult (MMS_CALL *describeSourceDisplay)(void*, MmsHandle, MmsEvaluationSourceInfoV1_2*);
+    MmsResult (MMS_CALL *ikAt)(void*, MmsHandle, uint32_t, MmsEvaluationIkV1*);
+    MmsResult (MMS_CALL *selectorAt)(void*, MmsHandle, uint32_t, MmsEvaluationSelectorV1*);
+    MmsResult (MMS_CALL *sampleVisibility)(void*, MmsHandle, MmsTime, MmsDisplayStateV1*);
+    MmsResult (MMS_CALL *sampleIk)(void*, MmsHandle, uint32_t, MmsTime, MmsIkStateV1*);
+    MmsResult (MMS_CALL *sampleParent)(void*, MmsHandle, uint32_t, MmsTime, MmsParentSelectionV1*);
+    MmsResult (MMS_CALL *sampleParentState)(void*, MmsHandle, uint32_t, MmsTime, MmsParentStateV1*);
+    MmsResult (MMS_CALL *getSceneCapabilities)(void*, MmsEvaluationSceneCapsV1*);
+    MmsResult (MMS_CALL *createSceneSource)(void*, const MmsEvaluationSceneQueryV1*, MmsHandle*);
+    MmsResult (MMS_CALL *describeSceneSource)(void*, MmsHandle, MmsEvaluationSceneInfoV1*);
+    MmsResult (MMS_CALL *sceneModelAt)(void*, MmsHandle, uint32_t, MmsEvaluationSceneModelV1*);
+    MmsResult (MMS_CALL *sceneBoneAt)(void*, MmsHandle, uint32_t, uint32_t, MmsEvaluationSceneBoneV1*);
+    MmsResult (MMS_CALL *evaluateFrame)(void*, const MmsEvaluationFrameQueryV1*, MmsHandle*);
+    MmsResult (MMS_CALL *describeFrame)(void*, MmsHandle, MmsEvaluationFrameInfoV1*);
+    MmsResult (MMS_CALL *frameModelAt)(void*, MmsHandle, uint32_t, MmsEvaluationSceneModelV1*);
+    MmsResult (MMS_CALL *readBonePose)(void*, MmsHandle, uint32_t, uint32_t, MmsEvaluationScenePoseV1*);
+} MmsEvaluationApiV1_4;
+
 #pragma pack(pop)
 #endif

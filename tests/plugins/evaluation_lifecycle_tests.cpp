@@ -22,7 +22,7 @@ struct Gate {
     HANDLE proceed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     ~Gate() { if (entered) CloseHandle(entered); if (proceed) CloseHandle(proceed); }
 };
-enum class GateKind { Bone, Morph, Display, Parent, ParentState };
+enum class GateKind { Bone, Morph, Display, Parent, ParentState, Scene };
 static std::shared_ptr<EvaluationStore> Store(std::shared_ptr<Gate> gate = {}, GateKind kind = GateKind::Bone,
                                             bool legacy = false, uint32_t supported = 7) {
     EvaluationStore::CaptureChannels capture = [gate, kind](const MmsEvaluationSourceQueryV1& query, uint32_t channels, uint64_t budget,
@@ -102,6 +102,23 @@ static std::shared_ptr<EvaluationStore> Store(std::shared_ptr<Gate> gate = {}, G
         }
         out = std::move(data); return MMS_OK;
     };
+    if (kind == GateKind::Scene) {
+        EvaluationStore::CaptureScene scene = [gate](const MmsEvaluationSceneQueryV1&, uint64_t,
+                std::shared_ptr<const EvaluationSceneSourceData>& out) {
+            auto models=std::make_shared<EvaluationSceneModels>();
+            models->push_back({{{11,22},1},{{33,44}}});
+            auto data=std::make_shared<EvaluationSceneSourceData>();data->models=models;data->retainedBytes=8192;
+            data->evaluate=[gate,models](const mikumikustudio::EvaluationTime&,uint64_t,uint64_t,
+                    std::shared_ptr<const EvaluationSceneFrameData>& result) {
+                SetEvent(gate->entered);
+                if(WaitForSingleObject(gate->proceed,15000)!=WAIT_OBJECT_0)return MMS_E_FAILED;
+                auto frame=std::make_shared<EvaluationSceneFrameData>();frame->models=models;frame->visibility={1};frame->retainedBytes=8192;
+                frame->sample=[](uint32_t,uint32_t,MmsEvaluationScenePoseV1& pose){pose={};return MMS_OK;};
+                result=std::move(frame);return MMS_OK;
+            };out=std::move(data);return MMS_OK;
+        };
+        return std::make_shared<EvaluationStore>(std::move(capture),supported,std::move(scene));
+    }
     if (legacy) return std::make_shared<EvaluationStore>(EvaluationStore::Capture(
         [capture](const MmsEvaluationSourceQueryV1& query, uint64_t budget, std::shared_ptr<const EvaluationData>& out) {
             return capture(query, MMS_EVALUATION_CAP_BONE_CHANNELS, budget, out);
@@ -402,6 +419,7 @@ static void InFlight(const fs::path& root, const fs::path& fixture, GateKind kin
         case GateKind::Display: result = probe.api12.sampleVisibility(probe.api12.context, probe.source, {1, 2}, &visibility); break;
         case GateKind::Parent: result = probe.api12.sampleParent(probe.api12.context, probe.source, 0, {1, 2}, &parent); break;
         case GateKind::ParentState: result = probe.parentState(0, {1, 1}, &parentState); break;
+        case GateKind::Scene: break; // Separate DLL scene path below.
         }
     })};
     CHECK(WaitForSingleObject(gate->entered, 10000) == WAIT_OBJECT_0);
@@ -417,10 +435,35 @@ static void InFlight(const fs::path& root, const fs::path& fixture, GateKind kin
     case GateKind::Display: CHECK(visibility.h.size == sizeof(visibility) && visibility.h.major == 1 && visibility.h.minor == 0 && visibility.visible == 197 && visibility.reserved == 0); break;
     case GateKind::Parent: CHECK(ValidParent(parent)); break;
     case GateKind::ParentState: CHECK(ValidGround(parentState)); break;
+    case GateKind::Scene: break;
     }
     CHECK(manager.Stop()); CHECK(Count(logs, "EVALUATION_DESTROY") == 1);
     CHECK(GetModuleHandleW(dll.c_str()) == nullptr);
     std::cout << mode << " PASS\n";
+}
+static void SceneInFlight(const fs::path& root,const fs::path& fixture) {
+    const std::string mode="scene-inflight-holdok";const auto base=root/mode;const auto dll=Package(base/"PLUGINS",fixture,mode);
+    auto gate=std::make_shared<Gate>();CHECK(gate->entered&&gate->proceed);auto store=Store(gate,GateKind::Scene);std::vector<std::string> logs;
+    Manager manager(base/"data",[&](const auto& s){logs.push_back(s);},{},false,{},false,store);manager.Load(base/"PLUGINS");Probe probe(dll);
+    const auto module=GetModuleHandleW(dll.c_str());CHECK(module);
+    using Get14=MmsResult(MMS_CALL*)(MmsEvaluationApiV1_4*);
+    using Create=MmsResult(MMS_CALL*)(const MmsEvaluationSceneQueryV1*,MmsHandle*);
+    using Evaluate=MmsResult(MMS_CALL*)(const MmsEvaluationFrameQueryV1*,MmsHandle*);
+    const auto get=reinterpret_cast<Get14>(GetProcAddress(module,"MmsEvaluationTestGet14"));
+    const auto create=reinterpret_cast<Create>(GetProcAddress(module,"MmsEvaluationTestSceneCreate"));
+    const auto evaluate=reinterpret_cast<Evaluate>(GetProcAddress(module,"MmsEvaluationTestSceneEvaluate"));
+    MmsEvaluationApiV1_4 api{};MmsEvaluationSceneQueryV1 query{};query.h=Header<MmsEvaluationSceneQueryV1>();MmsHandle source=0;
+    CHECK(get&&create&&evaluate&&get(&api)==MMS_OK&&create(&query,&source)==MMS_OK);
+    MmsEvaluationFrameQueryV1 request{};request.h=Header<MmsEvaluationFrameQueryV1>();request.source=source;request.time={1,2};
+    MmsHandle frame=0x123456;MmsResult result=MMS_E_FAILED;
+    struct Join {std::shared_ptr<Gate> gate;std::thread worker;~Join(){SetEvent(gate->proceed);if(worker.joinable())worker.join();}};
+    Join join{gate,std::thread([&]{result=evaluate(&request,&frame);})};
+    CHECK(WaitForSingleObject(gate->entered,10000)==WAIT_OBJECT_0);
+    CHECK(api.release(api.context,source)==MMS_OK&&probe.release()==MMS_OK);
+    CHECK(!manager.Stop()&&GetModuleHandleW(dll.c_str())!=nullptr&&Count(logs,"EVALUATION_DESTROY")==0);
+    SetEvent(gate->proceed);join.worker.join();CHECK(result==MMS_E_NOT_READY&&frame==0x123456);
+    CHECK(manager.Stop()&&GetModuleHandleW(dll.c_str())==nullptr&&Count(logs,"EVALUATION_DESTROY")==1);
+    std::cout<<"scene-inflight-holdok PASS\n";
 }
 int wmain(int argc, wchar_t** argv) {
     if (argc != 3) { std::fprintf(stderr, "usage: evaluation_lifecycle_tests <output-parent> <fixture.dll>\n"); return 2; }
@@ -433,6 +476,7 @@ int wmain(int argc, wchar_t** argv) {
         DependencyShutdown(root, fixture); InFlight(root, fixture); InFlight(root, fixture, GateKind::Morph);
         InFlight(root, fixture, GateKind::Display); InFlight(root, fixture, GateKind::Parent);
         InFlight(root, fixture, GateKind::ParentState);
+        SceneInFlight(root, fixture);
         RunCase(root, fixture, "failinstance");
         std::cout << "Evaluation lifecycle PASS: " << checks << " checks\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL after " << checks << " checks: " << error.what() << '\n'; return 1; }
