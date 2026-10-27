@@ -3,6 +3,7 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/display_motion_snapshot.hpp"
+#include "mikumikustudio/evaluation_time.hpp"
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -82,6 +83,12 @@ public:
     // Invalid inputs: invalid_argument; nonfinite results: overflow_error;
     // budgets: length_error; allocations: bad_alloc. Failure publishes no frame.
     std::unique_ptr<BoneEvaluationFrame> Evaluate(double frame,
+        const BoneTransformContext& context,
+        const BoneEvaluationDependency* dependencies = nullptr,
+        std::uint32_t dependencyCount = 0,
+        std::uint64_t maxRetainedBytes = 64ull * 1024 * 1024,
+        std::uint64_t maxWorkspaceBytes = 128ull * 1024 * 1024) const;
+    std::unique_ptr<BoneEvaluationFrame> EvaluateAt(const EvaluationTime& time,
         const BoneTransformContext& context,
         const BoneEvaluationDependency* dependencies = nullptr,
         std::uint32_t dependencyCount = 0,

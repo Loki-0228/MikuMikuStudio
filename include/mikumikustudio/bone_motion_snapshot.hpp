@@ -2,6 +2,7 @@
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/evaluation_time.hpp"
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -52,6 +53,10 @@ public:
     // Concurrent and allocation-free; the original SampleChannels contract is
     // unchanged and still refuses selector-dependent and derived bones.
     BoneMotionStatus PrepareKinematicChannels(int bone, double frame,
+        const DisplayMotionSnapshot& display, BoneMotionSample& out) const noexcept;
+    // Exact discrete selection for rational scene time; continuous channels
+    // still use time.Frame(). The old double entry delegates to this path.
+    BoneMotionStatus PrepareKinematicChannelsAt(int bone, const EvaluationTime& time,
         const DisplayMotionSnapshot& display, BoneMotionSample& out) const noexcept;
 };
 }

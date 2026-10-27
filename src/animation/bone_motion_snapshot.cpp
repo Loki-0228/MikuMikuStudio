@@ -55,10 +55,16 @@ void CopyPose(const Key& key, BoneMotionSample& sample) noexcept {
 }
 // Shared native-key, selector-window and free-curve sampling. window is null
 // for a bone without a selector window, so only registered values apply.
+// selectionFrame is the exact discrete time that chooses the surrounding native
+// keys, physics state and selector window; frame is the continuous time used
+// only for interpolation and free curves. The legacy entry passes the same
+// value for both, so its previous fractional-frame behavior is preserved.
 BoneMotionStatus SampleChannelsOf(const Track& track,
     const bone_curve::SamplingState& curves, unsigned bone, double frame,
-    const DisplaySelectorSample* window, BoneMotionSample& out) noexcept {
-    const auto after = std::upper_bound(track.keys.begin(), track.keys.end(), frame,
+    double selectionFrame, const DisplaySelectorSample* window,
+    BoneMotionSample& out) noexcept {
+    const auto after = std::upper_bound(track.keys.begin(), track.keys.end(),
+        selectionFrame,
         [](double time, const Key& key) { return time < key.native.frame; });
     if (after == track.keys.begin()) return BoneMotionStatus::InvalidSample;
     const auto& lower = *(after - 1);
@@ -68,7 +74,8 @@ BoneMotionStatus SampleChannelsOf(const Track& track,
     if (DirectType(track.type)) {
         if (after == track.keys.end() || frame == lower.native.frame) {
             const bool zeroFill = window && after == track.keys.end() &&
-                lower.native.frame < window->windowStart && window->windowStart <= frame;
+                lower.native.frame < window->windowStart &&
+                window->windowStart <= selectionFrame;
             if (!zeroFill) CopyPose(lower, sample);
         } else {
             const auto& upper = *after;
@@ -86,7 +93,8 @@ BoneMotionStatus SampleChannelsOf(const Track& track,
                 }
             }
             if (snap) {
-                CopyPose(frame >= snapReference ? upper : lower, sample);
+                CopyPose(selectionFrame >= static_cast<double>(snapReference)
+                             ? upper : lower, sample);
             } else {
                 const float time = float(frame - lower.native.frame) /
                     float(int(upper.native.frame) - int(lower.native.frame));
@@ -188,25 +196,40 @@ BoneMotionStatus BoneMotionSnapshot::SampleChannels(int bone, double frame, Bone
     const auto& track = impl_->bones[bone];
     if (track.selector >= 0) return BoneMotionStatus::ExternalParent;
     if (!DirectType(track.type)) return BoneMotionStatus::UnsupportedBone;
-    return SampleChannelsOf(track, *impl_->curves, unsigned(bone), frame, nullptr, out);
+    return SampleChannelsOf(track, *impl_->curves, unsigned(bone), frame, frame,
+        nullptr, out);
 }
 BoneMotionStatus BoneMotionSnapshot::PrepareKinematicChannels(int bone, double frame,
     const DisplayMotionSnapshot& display, BoneMotionSample& out) const noexcept {
+    // The legacy double contract keeps its original invalid bone/time refusals
+    // before the validated discrete time is handed to the exact path.
     if (!impl_ || bone < 0 || std::size_t(bone) >= impl_->bones.size()) return BoneMotionStatus::InvalidBone;
     if (!std::isfinite(frame) || frame < 0 || frame > frame_limits::maximum) return BoneMotionStatus::InvalidTime;
+    EvaluationTime time;
+    if (!EvaluationTime::FromFrame(frame, time)) return BoneMotionStatus::InvalidTime;
+    return PrepareKinematicChannelsAt(bone, time, display, out);
+}
+BoneMotionStatus BoneMotionSnapshot::PrepareKinematicChannelsAt(int bone,
+    const EvaluationTime& time, const DisplayMotionSnapshot& display,
+    BoneMotionSample& out) const noexcept {
+    if (!impl_ || bone < 0 || std::size_t(bone) >= impl_->bones.size()) return BoneMotionStatus::InvalidBone;
     const auto& track = impl_->bones[bone];
     if (track.type > mdl::BoneType::CoRotate) return BoneMotionStatus::UnsupportedBone;
+    const double selectionFrame = static_cast<double>(time.DiscreteFrame());
     DisplaySelectorSample window{};
     const bool windowed = DirectType(track.type) && track.selector >= 0;
     if (windowed) {
         std::int32_t mapped = 0;
         if (!display.SelectorBone(unsigned(track.selector), mapped) || mapped != bone)
             return BoneMotionStatus::InvalidSample;
-        if (display.SampleSelector(track.selector, frame, window) != DisplayMotionStatus::Ok)
+        if (display.SampleSelector(track.selector, selectionFrame, window) != DisplayMotionStatus::Ok)
             return BoneMotionStatus::InvalidSample;
     }
-    return SampleChannelsOf(track, *impl_->curves, unsigned(bone), frame,
-        windowed ? &window : nullptr, out);
+    // Continuous position/rotation/scale/free curves use Frame(); every discrete
+    // track (native keys, physicsDisabled, selector window snap, zero-fill)
+    // uses DiscreteFrame().
+    return SampleChannelsOf(track, *impl_->curves, unsigned(bone), time.Frame(),
+        selectionFrame, windowed ? &window : nullptr, out);
 }
 }
 #endif

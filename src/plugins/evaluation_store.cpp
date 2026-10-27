@@ -1,5 +1,6 @@
 #include "evaluation_store.hpp"
 #include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/evaluation_time.hpp"
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -91,28 +92,9 @@ bool FrameTime(MmsTime time, double& frame) noexcept {
 // arithmetic. The bound is the one FrameTime applies; it runs before the
 // division because it also proves whole*30 cannot leave the frame range.
 bool DisplayFrame(MmsTime time, double& frame) noexcept {
-    if (!time.denominator || time.numerator < 0) return false;
-    if (RatioGreater(uint64_t(time.numerator), time.denominator, uint64_t(frame_limits::maximum), 30)) return false;
-    const uint64_t denominator = time.denominator;
-    const uint64_t numerator = uint64_t(time.numerator);
-    const uint64_t whole = numerator / denominator;
-    const uint64_t remainder = numerator % denominator;
-    uint64_t result = whole * 30;
-    uint64_t carried = 0;
-    // Thirty long-division steps: each one adds remainder, i.e. one thirtieth
-    // of the scaled fraction, and a carry increments the quotient only after
-    // the denominator is reached. carried and remainder stay below the
-    // denominator, and result stays within the checked frame bound, so no step
-    // can overflow. The final value is an integer below 2^31, exact in double.
-    for (uint32_t step = 0; step < 30; ++step) {
-        if (remainder >= denominator - carried) {
-            carried = remainder - (denominator - carried);
-            ++result;
-        } else {
-            carried += remainder;
-        }
-    }
-    frame = static_cast<double>(result);
+    EvaluationTime resolved;
+    if (!EvaluationTime::FromSeconds(time.numerator, time.denominator, resolved)) return false;
+    frame = static_cast<double>(resolved.DiscreteFrame());
     return true;
 }
 // Produce one canonical parent state from whichever host sampler is present.

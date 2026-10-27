@@ -316,6 +316,61 @@ void LifetimeAndConcurrentEvaluation(){
     }catch(...){for(auto& worker:workers)if(worker.joinable())worker.join();throw;}
     for(auto& worker:workers)worker.join();CHECK(failures==0);before.Check(model);
 }
+bool ExactTimeNear(const Frame& actual,const Frame& expected){
+    if(actual.BoneCount()!=expected.BoneCount()||actual.Visibility()!=expected.Visibility())return false;
+    const auto closeValues=[](const auto& a,const auto& b){for(std::size_t i=0;i<a.size();++i)
+        if(!std::isfinite(a[i])||!std::isfinite(b[i])||std::abs(a[i]-b[i])>5e-5f*(1.f+std::abs(b[i])))return false;return true;};
+    for(uint32_t i=0;i<actual.BoneCount();++i){Pose a,b;if(!actual.BoneAt(i,a)||!expected.BoneAt(i,b)||
+        !closeValues(a.rigid,b.rigid)||!closeValues(a.scaled,b.scaled)||!closeValues(a.attachment[0],b.attachment[0])||
+        !closeValues(a.attachment[1],b.attachment[1])||!closeValues(a.jointPosition,b.jointPosition))return false;}
+    return true;
 }
-int main(){try{const auto context=BoneTransformContext::Create();CHECK(bool(context));NativePipeline(*context);LayerAndDerivedRules(*context);ExplicitDependencies(*context);BudgetsAndFailures(*context);EmptyAndFractional(*context);LifetimeAndConcurrentEvaluation();std::printf("PASS %u bone evaluation checks\n",checks);return 0;}
+void ExactTimeSelection(const BoneTransformContext& context){
+    currentCase="exact rational discrete side with continuous single-model pose";
+    EvaluationTime beforeKey;CHECK(EvaluationTime::FromSeconds(108086391056891904LL,270215977642229761ULL,beforeKey));
+    CHECK(beforeKey.Frame()==12.0&&beforeKey.DiscreteFrame()==11);
+    const double previous=std::nextafter(12.0,0.0);
+    Model model;FreeRoot(model);model.enabled[0][0]=197;model.enabled[1][0]=0;
+    const State unchanged(model);const auto source=Source::Capture(model.raw());
+    const auto expected=source->Evaluate(previous,context),rounded=source->Evaluate(12.0,context),exact=source->EvaluateAt(beforeKey,context);
+    CHECK(exact->Frame()==12.0&&exact->Visibility()==255&&rounded->Visibility()==197&&ExactTimeNear(*exact,*expected));
+    Pose enabled,disabled;CHECK(exact->BoneAt(2,enabled)&&rounded->BoneAt(2,disabled));
+    CHECK(!Bits(enabled.rigid,disabled.rigid)); // A real CCD pose changes, not only the visibility byte.
+    EvaluationTime fractional;CHECK(EvaluationTime::FromSeconds(11,60,fractional)&&fractional.Frame()==5.5&&fractional.DiscreteFrame()==5);
+    const auto fullFraction=source->EvaluateAt(fractional,context),legacyFraction=source->Evaluate(5.5,context);
+    CHECK(fullFraction->Frame()==5.5&&ExactTimeNear(*fullFraction,*legacyFraction));unchanged.Check(model);
+
+    // All three active attachment inputs disappear exactly at key 12. The
+    // rounded continuous value must not choose the new dependency set early.
+    Model attached;auto deps=Dependencies(attached);for(auto& parent:attached.parents[1])parent={-2,77};
+    const State attachmentBefore(attached);const auto attachments=Source::Capture(attached.raw());
+    const auto attachedExpected=attachments->Evaluate(previous,context,deps.data(),3);
+    const auto attachedExact=attachments->EvaluateAt(beforeKey,context,deps.data(),3);
+    CHECK(attachedExact->Frame()==12&&ExactTimeNear(*attachedExact,*attachedExpected));
+    CHECK(Throws<std::invalid_argument>([&]{attachments->EvaluateAt(beforeKey,context);}));
+    CHECK(Throws<std::invalid_argument>([&]{attachments->Evaluate(12,context,deps.data(),3);}));
+    const auto ground=attachments->Evaluate(12,context);Pose oldParent,newGround;
+    CHECK(attachedExact->BoneAt(9,oldParent)&&ground->BoneAt(9,newGround)&&!Bits(oldParent.rigid,newGround.rigid));attachmentBefore.Check(attached);
+
+    // Independent linear translation oracle proves ordinary rational samples
+    // do not quantize continuous motion to DiscreteFrame().
+    Model linear;linear.record->boneCount=1;linear.record->morphCount=linear.record->ikChainCount=0;
+    linear.record->boneOrderCount=1;linear.record->maxBoneLayer=0;linear.record->boneMorphCount=0;bs::Forget(linear.raw());
+    linear.record->boneKeys[0].position[0]=0;linear.record->boneKeys[10].position[0]=20;
+    const State linearBefore(linear);const auto linearSource=Source::Capture(linear.raw());
+    const auto motion=linearSource->EvaluateAt(fractional,context);Pose position;CHECK(motion->BoneAt(0,position));
+    CHECK(motion->Frame()==5.5&&std::abs(position.rigid[12]-5.5f)<1e-6f);linearBefore.Check(linear);
+
+    std::shared_ptr<const Source> frozen;
+    std::unique_ptr<Frame> reference;
+    {auto temporary=std::make_unique<Model>();temporary->enabled[1][0]=0;
+        frozen=Source::Capture(temporary->raw());reference=frozen->Evaluate(previous,context);}
+    std::atomic<unsigned> failures{0};std::array<std::thread,2> readers;
+    try{for(auto& reader:readers)reader=std::thread([&,lease=frozen]{try{for(unsigned n=0;n<8;++n){const auto f=lease->EvaluateAt(beforeKey,context);
+        if(f->Frame()!=12||!ExactTimeNear(*f,*reference))++failures;}}catch(...){++failures;}});}
+    catch(...){for(auto& reader:readers)if(reader.joinable())reader.join();throw;}
+    frozen.reset();for(auto& reader:readers)reader.join();CHECK(failures==0);
+}
+}
+int main(){try{const auto context=BoneTransformContext::Create();CHECK(bool(context));NativePipeline(*context);LayerAndDerivedRules(*context);ExplicitDependencies(*context);BudgetsAndFailures(*context);EmptyAndFractional(*context);LifetimeAndConcurrentEvaluation();ExactTimeSelection(*context);std::printf("PASS %u bone evaluation checks\n",checks);return 0;}
     catch(const std::exception& error){failAfter=-1;std::fprintf(stderr,"FAIL %s unexpected exception: %s\n",currentCase,error.what());return 1;}}

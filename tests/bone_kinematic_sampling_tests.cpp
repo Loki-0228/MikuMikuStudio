@@ -394,10 +394,120 @@ void LifetimeAndConcurrentNoAllocation() {
     } catch (...) { for (auto& worker : workers) if (worker.joinable()) worker.join(); throw; }
     for (auto& worker : workers) worker.join(); CHECK(failures == 0);
 }
+EvaluationTime NearIntegerTime(int frame, int side) {
+    // Exact time is frame + side/1e17. All tested frames fit the numerator,
+    // while their before/after values round to the same continuous double.
+    EvaluationTime time;
+    CHECK(EvaluationTime::FromSeconds(std::int64_t(frame)*100000000000000000ll+side,
+                                     3000000000000000000ull,time));
+    CHECK(time.Frame()==frame&&time.DiscreteFrame()==unsigned(side<0?frame-1:frame));
+    return time;
+}
+void ExactRationalWindowSelection() {
+    currentCase="exact rational selector snap, terminal zero-fill and physics switches";
+    Model source; const SourceState before(source);
+    const auto motion=Motion::Capture(source.raw());const auto display=Display::Capture(source.raw());
+    const auto checkKey=[&](const EvaluationTime& time,int slot,bool disabled){
+        BoneMotionSample sample;failAfter=0;
+        const auto status=motion->PrepareKinematicChannelsAt(0,time,*display,sample);failAfter=-1;
+        CHECK(status==Status::Ok&&sample.physicsDisabled==disabled);
+        if(slot<0){const std::array<float,3> zero{};const std::array<float,4> identity{0,0,0,1};
+            CHECK(Bits(sample.position,zero)&&Bits(sample.rotation,identity));
+        }else{const auto& key=source.record->boneKeys[slot];CHECK(!std::memcmp(sample.position.data(),key.position,12)&&!std::memcmp(sample.rotation.data(),key.rotation,16));}
+        // Native eased scale belongs to the exact interval. CurveTime's finite
+        // iteration at t=1 may differ from directly reading the next key, so a
+        // rounded key time cannot serve as the oracle for its left-hand limit.
+        const double referenceFrame=time.Frame()==double(time.DiscreteFrame())+1?
+            std::nextafter(time.Frame(),0.0):time.Frame();
+        CHECK(sample.scale==bone_scale::Sample(source.raw(),0,referenceFrame));return sample;
+    };
+    // A new local window starts at 5: before it we retain key 0, from it we
+    // snap to key 20. Merely passing the rounded double starts the window early.
+    const auto atFive=checkKey(NearIntegerTime(5,-1),0,false);
+    checkKey(NearIntegerTime(5,0),2,false);checkKey(NearIntegerTime(5,1),2,false);
+    BoneMotionSample rounded;CHECK(motion->PrepareKinematicChannels(0,5,*display,rounded)==Status::Ok);
+    CHECK(!Bits(atFive.position,rounded.position)&&rounded.position[0]==22);
+    checkKey(NearIntegerTime(25,-1),2,true);checkKey(NearIntegerTime(25,0),3,true);checkKey(NearIntegerTime(25,1),3,true);
+    const auto beforeTerminal=checkKey(NearIntegerTime(45,-1),3,false);
+    checkKey(NearIntegerTime(45,0),-1,false);checkKey(NearIntegerTime(45,1),-1,false);
+    CHECK(motion->PrepareKinematicChannels(0,45,*display,rounded)==Status::Ok&&rounded.position[0]==0);
+    CHECK(!Bits(beforeTerminal.position,rounded.position));
+    // Window snapping does not change which registered bone key supplies the
+    // discrete physics flag. Both positions may round/snap to the same value.
+    const auto beforeTwenty=checkKey(NearIntegerTime(20,-1),2,false);
+    checkKey(NearIntegerTime(20,0),2,true);checkKey(NearIntegerTime(20,1),2,true);
+    CHECK(motion->PrepareKinematicChannels(0,20,*display,rounded)==Status::Ok&&rounded.physicsDisabled);
+    CHECK(!beforeTwenty.physicsDisabled&&Bits(beforeTwenty.position,rounded.position));
+    CHECK(!(beforeTwenty.scale==rounded.scale)); // The native left interval differs from the exact key.
+    checkKey(NearIntegerTime(40,-1),3,true);checkKey(NearIntegerTime(40,0),3,false);checkKey(NearIntegerTime(40,1),3,false);
+    // The old public sampler still refuses local selectors, even for a valid
+    // rounded frame. An internal rational overload must not widen that ABI.
+    auto denied=Sentinel();const auto original=denied;
+    CHECK(motion->SampleChannels(0,5,denied)==Status::ExternalParent&&Equal(denied,original));
+    for(int badBone:{-1,2}){denied=original;CHECK(motion->PrepareKinematicChannelsAt(badBone,NearIntegerTime(5,-1),*display,denied)==Status::InvalidBone&&Equal(denied,original));}
+    before.Check(source);
+
+    currentCase="exact upper-key priority must not apply to a rational just before that key";
+    Model ending;
+    for(unsigned i=0;i<8;++i)ending.parents[i][1]=i<4?mdl::BoneReference{-1,0}:mdl::BoneReference{-1,1};
+    const SourceState endingBefore(ending);const auto endMotion=Motion::Capture(ending.raw());const auto endDisplay=Display::Capture(ending.raw());
+    BoneMotionSample rational,exact;
+    CHECK(endMotion->PrepareKinematicChannelsAt(0,NearIntegerTime(20,-1),*endDisplay,rational)==Status::Ok);
+    CHECK(!std::memcmp(rational.position.data(),ending.record->boneKeys[0].position,12)&&!rational.physicsDisabled);
+    CHECK(endMotion->PrepareKinematicChannelsAt(0,NearIntegerTime(20,0),*endDisplay,exact)==Status::Ok&&exact.position[0]==22&&exact.physicsDisabled);
+    CHECK(endMotion->PrepareKinematicChannels(0,20,*endDisplay,rounded)==Status::Ok&&Equal(rounded,exact));
+    CHECK(!Bits(rational.position,rounded.position));endingBefore.Check(ending);
+}
+void RationalContinuousChannels() {
+    currentCase="rational discrete time does not quantize native or authored continuous channels";
+    Model source;
+    // Bone 1 has no local selector. Give it linear position, Y rotation and
+    // diagonal scale, each with an independent fractional analytic oracle.
+    source.record->boneKeys[4].rotation[1]=.70710677f;
+    source.record->boneKeys[4].rotation[3]=.70710677f;
+    bone_scale::Matrix scale;scale.v={2,0,0,0,3,0,0,0,4};
+    bone_scale::SetKey(source.raw(),4,scale);bone_scale::SetKeyCurve(source.raw(),4,{0,0,127,127});
+    auto tracks=FreeTracks(0);tracks[6].keys.back().value=4;
+    // Keep the native frame-20 registration (and its physics switch) when the
+    // authored tracks write their compatibility mirror. The added point is
+    // collinear, so the analytic continuous position remains 100 + frame.
+    auto middle=tracks[0].keys.front();middle.frame=20;middle.value=120;
+    tracks[0].keys.insert(tracks[0].keys.begin()+1,middle);
+    std::string error;CHECK(bc::Write(source.raw(),0,tracks,error));const SourceState before(source);
+    const auto motion=Motion::Capture(source.raw());const auto display=Display::Capture(source.raw());
+    for(const auto numerator:{1ll,11ll,27ll,39ll}){
+        EvaluationTime time;CHECK(EvaluationTime::FromSeconds(numerator,60,time));const double frame=double(numerator)*.5;
+        CHECK(time.Frame()==frame&&time.DiscreteFrame()==unsigned(frame));
+        BoneMotionSample direct,authored,oldDirect;
+        failAfter=0;const auto dr=motion->PrepareKinematicChannelsAt(1,time,*display,direct);
+        const auto ar=motion->PrepareKinematicChannelsAt(0,time,*display,authored);failAfter=-1;CHECK(dr==Status::Ok&&ar==Status::Ok);
+        CHECK(Near(direct.position[0],frame)&&direct.position[1]==0&&direct.position[2]==0);
+        const double nativeHalf=frame/20*3.14159265358979323846/4;
+        CHECK(Near(direct.rotation[0],0)&&Near(direct.rotation[1],std::sin(nativeHalf))&&Near(direct.rotation[2],0)&&Near(direct.rotation[3],std::cos(nativeHalf)));
+        CHECK(Near(direct.scale.v[0],1+frame/20)&&Near(direct.scale.v[4],1+2*frame/20)&&Near(direct.scale.v[8],1+3*frame/20));
+        for(unsigned index:{1u,2u,3u,5u,6u,7u})CHECK(direct.scale.v[index]==0);
+        CHECK(motion->SampleChannels(1,frame,oldDirect)==Status::Ok&&Equal(oldDirect,direct));
+        CHECK(Near(authored.position[0],100+frame)&&authored.position[1]==-8.5f);
+        const double authoredHalf=frame*(450./40.)*3.14159265358979323846/360.;
+        CHECK(Near(authored.rotation[1],std::sin(authoredHalf))&&Near(authored.rotation[3],std::cos(authoredHalf)));
+        double rowLength=0;for(unsigned column=0;column<3;++column)rowLength+=double(authored.scale.v[column])*authored.scale.v[column];
+        CHECK(Near(float(std::sqrt(rowLength)),2+frame/20));
+        BoneMotionSample integer;CHECK(motion->PrepareKinematicChannels(1,time.DiscreteFrame(),*display,integer)==Status::Ok);
+        CHECK(!Bits(direct.position,integer.position)&&!Bits(direct.rotation,integer.rotation)&&!Bits(direct.scale,integer.scale));
+    }
+    // Even where the continuous double rounds to key 20, a free override uses
+    // that continuous time while the physics switch keeps exact key ownership.
+    BoneMotionSample exactBefore,rounded;
+    CHECK(motion->PrepareKinematicChannelsAt(0,NearIntegerTime(20,-1),*display,exactBefore)==Status::Ok);
+    CHECK(motion->PrepareKinematicChannels(0,20,*display,rounded)==Status::Ok);
+    CHECK(Bits(exactBefore.position,rounded.position)&&Bits(exactBefore.rotation,rounded.rotation)&&Bits(exactBefore.scale,rounded.scale));
+    CHECK(Near(exactBefore.position[0],120)&&!exactBefore.physicsDisabled&&rounded.physicsDisabled);before.Check(source);
+}
 }
 int main() {
     try {
         NativeParityAllTypes(); FractionalWindowBoundaries(); FreeOverrideAndDerivedDefaults(); InvalidInputs(); LifetimeAndConcurrentNoAllocation();
+        ExactRationalWindowSelection(); RationalContinuousChannels();
         std::printf("PASS %u bone kinematic sampling checks\n",checks); return 0;
     } catch (const std::exception& error) {
         failAfter = -1; std::fprintf(stderr,"FAIL %s unexpected exception: %s\n",currentCase,error.what()); return 1;

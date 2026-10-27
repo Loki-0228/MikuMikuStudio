@@ -231,6 +231,14 @@ set_target_properties(mms_hello_plugin PROPERTIES OUTPUT_NAME hello_menu
 add_custom_command(TARGET mms_hello_plugin POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/sdk/mms/examples/hello_menu/plugin.json" "$<TARGET_FILE_DIR:mms_hello_plugin>/plugin.json")
 
+add_executable(evaluation_time_tests EXCLUDE_FROM_ALL tests/evaluation_time_tests.cpp)
+target_include_directories(evaluation_time_tests PRIVATE include)
+target_compile_features(evaluation_time_tests PRIVATE cxx_std_17)
+target_link_options(evaluation_time_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(evaluation_time_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME evaluation_time_exact COMMAND evaluation_time_tests)
+set_tests_properties(evaluation_time_exact PROPERTIES TIMEOUT 60)
+
 add_executable(plugin_abi_tests EXCLUDE_FROM_ALL tests/plugins/runtime_tests.cpp tests/plugins/abi_layout.cpp)
 add_test(NAME plugin_abi_panel_state COMMAND plugin_abi_tests --panel-state-only)
 set_tests_properties(plugin_abi_panel_state PROPERTIES TIMEOUT 90)

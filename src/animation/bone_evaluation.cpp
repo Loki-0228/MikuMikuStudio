@@ -283,19 +283,19 @@ struct BoneEvaluationWorkspace {
     // model record and fills every workspace-owned channel. Selector bodies and
     // morph offsets are filled by the callers because their external targets
     // differ between the single-source and scene cases.
-    void Prepare(const BoneEvaluationSource& source, double sampleFrame,
+    void Prepare(const BoneEvaluationSource& source, const EvaluationTime& time,
                  Workspace& workspace);
 
     // Selector entry mapping for a scene: the captured raw model slot and raw
     // target bone stay in place, so the native world pass reads that model's
     // private matExtra directly (including self references and cycles).
     void PrepareSelectorsRaw(const BoneEvaluationSource& source,
-                             double sampleFrame);
+                             std::uint32_t selectionFrame);
 
     // Selector entry mapping for the explicit-dependency wrapper: the caller's
     // target still becomes the compact proxy at slot zero.
     void PrepareSelectorsDependency(
-        const BoneEvaluationSource& source, double sampleFrame,
+        const BoneEvaluationSource& source, std::uint32_t selectionFrame,
         const BoneEvaluationDependency* dependencies,
         const std::int32_t* dependencyForSelector);
 
@@ -311,7 +311,8 @@ struct BoneEvaluationWorkspace {
 
     // Rigid basis, complete scale, joint position, visibility and the finite
     // checks. Runs only after every phase of every model has completed.
-    void Finalize(const BoneEvaluationSource& source, Workspace& workspace);
+    void Finalize(const BoneEvaluationSource& source, const EvaluationTime& time,
+                  Workspace& workspace);
 };
 
 std::uint64_t BoneEvaluationWorkspace::CreateFrame(
@@ -348,7 +349,7 @@ std::uint64_t BoneEvaluationWorkspace::CreateFrame(
 }
 
 void BoneEvaluationWorkspace::Prepare(
-    const BoneEvaluationSource& source, double sampleFrame,
+    const BoneEvaluationSource& source, const EvaluationTime& time,
     Workspace& workspace) {
     const BoneDefinitionSnapshot& definitions = *source.impl_->definitions;
     const BoneMotionSnapshot& motion = *source.impl_->motion;
@@ -435,9 +436,11 @@ void BoneEvaluationWorkspace::Prepare(
         }
 
         BoneMotionSample sample{};
+        // Local channels are continuous in Frame(), but native key selection,
+        // physicsDisabled and the selector window use the exact discrete frame.
         const BoneMotionStatus motionStatus =
-            motion.PrepareKinematicChannels(static_cast<int>(index),
-                                            sampleFrame, display, sample);
+            motion.PrepareKinematicChannelsAt(static_cast<int>(index), time,
+                                              display, sample);
         // With a validated capture, a legal frame and a valid bone index an
         // InvalidSample can only mean nonfinite interpolation arithmetic.
         if (motionStatus == BoneMotionStatus::InvalidSample)
@@ -472,8 +475,11 @@ void BoneEvaluationWorkspace::Prepare(
         chain.iterations = definition.iterations;
         chain.maxAngle = definition.maxAngle;
         std::uint8_t enabled = 0;
-        if (display.SampleIk(static_cast<int>(index), sampleFrame, enabled) !=
-            DisplayMotionStatus::Ok)
+        // IK enable switches are discrete tracks: never sample them with the
+        // continuous frame, which may round across the key boundary.
+        if (display.SampleIk(static_cast<int>(index),
+                             static_cast<double>(time.DiscreteFrame()),
+                             enabled) != DisplayMotionStatus::Ok)
             throw std::invalid_argument("bone evaluation IK enable sample");
         chain.enabled = enabled;
         std::vector<std::uint16_t>& links = chainLinks[index];
@@ -489,7 +495,7 @@ void BoneEvaluationWorkspace::Prepare(
 }
 
 void BoneEvaluationWorkspace::PrepareSelectorsRaw(
-    const BoneEvaluationSource& source, double sampleFrame) {
+    const BoneEvaluationSource& source, std::uint32_t selectionFrame) {
     const BoneDefinitionSnapshot& definitions = *source.impl_->definitions;
     const DisplayMotionSnapshot& display = *source.impl_->display;
     const std::uint32_t selectorCount = definitions.SelectorCount();
@@ -498,7 +504,9 @@ void BoneEvaluationWorkspace::PrepareSelectorsRaw(
     // private model workspaces into the slot table instead of a proxy.
     for (std::uint32_t index = 0; index < selectorCount; ++index) {
         DisplaySelectorSample sample{};
-        if (display.SampleSelector(static_cast<int>(index), sampleFrame,
+        // External-parent selection is discrete, so sample the exact frame.
+        if (display.SampleSelector(static_cast<int>(index),
+                                   static_cast<double>(selectionFrame),
                                    sample) != DisplayMotionStatus::Ok)
             throw std::invalid_argument("bone scene selector sample");
         std::int32_t definitionBone = 0;
@@ -514,7 +522,7 @@ void BoneEvaluationWorkspace::PrepareSelectorsRaw(
 }
 
 void BoneEvaluationWorkspace::PrepareSelectorsDependency(
-    const BoneEvaluationSource& source, double sampleFrame,
+    const BoneEvaluationSource& source, std::uint32_t selectionFrame,
     const BoneEvaluationDependency* dependencies,
     const std::int32_t* dependencyForSelector) {
     const BoneDefinitionSnapshot& definitions = *source.impl_->definitions;
@@ -523,7 +531,10 @@ void BoneEvaluationWorkspace::PrepareSelectorsDependency(
 
     for (std::uint32_t index = 0; index < selectorCount; ++index) {
         DisplaySelectorSample sample{};
-        if (display.SampleSelector(static_cast<int>(index), sampleFrame,
+        // The dependency legality comparison below reads discrete selector
+        // tracks, so it must use the exact frame and not the continuous one.
+        if (display.SampleSelector(static_cast<int>(index),
+                                   static_cast<double>(selectionFrame),
                                    sample) != DisplayMotionStatus::Ok)
             throw std::invalid_argument("bone evaluation selector sample");
         std::int32_t definitionBone = 0;
@@ -614,6 +625,7 @@ void BoneEvaluationWorkspace::RunPhase(
 }
 
 void BoneEvaluationWorkspace::Finalize(const BoneEvaluationSource& source,
+                                       const EvaluationTime& time,
                                        Workspace& workspace) {
     const DisplayMotionSnapshot& display = *source.impl_->display;
     const std::uint32_t boneCount = static_cast<std::uint32_t>(bones.size());
@@ -647,8 +659,10 @@ void BoneEvaluationWorkspace::Finalize(const BoneEvaluationSource& source,
     }
 
     std::uint8_t visible = 0;
-    if (display.SampleVisibility(frame->Frame(), visible) !=
-        DisplayMotionStatus::Ok)
+    // Visibility is a discrete display track; the frame metadata above stays
+    // continuous, but the switch itself uses the exact discrete frame.
+    if (display.SampleVisibility(static_cast<double>(time.DiscreteFrame()),
+                                 visible) != DisplayMotionStatus::Ok)
         throw std::invalid_argument("bone evaluation visibility sample");
     out.visible = visible;
 
@@ -674,15 +688,26 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
     const BoneEvaluationDependency* dependencies, std::uint32_t dependencyCount,
     std::uint64_t maxRetainedBytes,
     std::uint64_t maxWorkspaceBytes) const {
+    // The legacy double entry only validates and delegates; it shares the exact
+    // path and does not duplicate solver, budget or failure logic.
+    EvaluationTime time;
+    if (!EvaluationTime::FromFrame(frame, time))
+        throw std::invalid_argument("bone evaluation frame");
+    return EvaluateAt(time, context, dependencies, dependencyCount,
+                      maxRetainedBytes, maxWorkspaceBytes);
+}
+
+std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::EvaluateAt(
+    const EvaluationTime& time, const BoneTransformContext& context,
+    const BoneEvaluationDependency* dependencies, std::uint32_t dependencyCount,
+    std::uint64_t maxRetainedBytes,
+    std::uint64_t maxWorkspaceBytes) const {
     if (!impl_ || !impl_->definitions || !impl_->motion || !impl_->display ||
         !impl_->morphDefinitions || !impl_->morphWeights)
         throw std::invalid_argument("bone evaluation source is empty");
 
     const BoneDefinitionSnapshot& definitions = *impl_->definitions;
 
-    if (!std::isfinite(frame) || frame < 0.0 ||
-        frame > static_cast<double>(frame_limits::maximum))
-        throw std::invalid_argument("bone evaluation frame");
     if (dependencyCount != 0 && dependencies == nullptr)
         throw std::invalid_argument("bone evaluation dependencies");
     const std::uint32_t selectorCount = definitions.SelectorCount();
@@ -698,9 +723,9 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
     workspace.Charge(1, sizeof(detail::BoneEvaluationWorkspace) +
                             ScaleNodeBytes());
     detail::BoneEvaluationWorkspace evaluation;
-    evaluation.CreateFrame(frame, definitions.BoneCount(), maxRetainedBytes,
-                           workspace);
-    evaluation.Prepare(*this, frame, workspace);
+    evaluation.CreateFrame(time.Frame(), definitions.BoneCount(),
+                           maxRetainedBytes, workspace);
+    evaluation.Prepare(*this, time, workspace);
 
     // ---- selector windows and the explicit dependency remap -----------------
     // dependencyForSelector is private working scratch; it keeps the mapping
@@ -762,7 +787,8 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
                 "bone evaluation dependency target mismatch");
     }
 
-    evaluation.PrepareSelectorsDependency(*this, frame, dependencies,
+    evaluation.PrepareSelectorsDependency(*this, time.DiscreteFrame(),
+                                          dependencies,
                                           dependencyForSelector.data());
 
     // ---- one heap proxy model carries every explicit external target ------
@@ -786,7 +812,7 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
         slots[0] = reinterpret_cast<unsigned char*>(proxy.get());
     }
 
-    evaluation.PrepareMorphs(*this, frame, workspace);
+    evaluation.PrepareMorphs(*this, time.Frame(), workspace);
 
     // ---- two native sweeps, one prepare per phase --------------------------
     for (int phase = 0; phase < 2; ++phase) {
@@ -798,7 +824,7 @@ std::unique_ptr<BoneEvaluationFrame> BoneEvaluationSource::Evaluate(
         evaluation.RunPhase(phase, slots.data(), context);
     }
 
-    evaluation.Finalize(*this, workspace);
+    evaluation.Finalize(*this, time, workspace);
     return std::move(evaluation.frame);
 }
 
@@ -983,10 +1009,19 @@ std::unique_ptr<BoneSceneFrame> BoneSceneSource::Evaluate(
     double frame, const BoneTransformContext& context,
     std::uint64_t maxRetainedBytes,
     std::uint64_t maxWorkspaceBytes) const {
-    if (!impl_) throw std::invalid_argument("bone scene source is empty");
-    if (!std::isfinite(frame) || frame < 0.0 ||
-        frame > static_cast<double>(frame_limits::maximum))
+    // The legacy double entry only validates and delegates; the scene sweep,
+    // budget accounting and failure paths remain in the exact-time overload.
+    EvaluationTime time;
+    if (!EvaluationTime::FromFrame(frame, time))
         throw std::invalid_argument("bone scene frame");
+    return EvaluateAt(time, context, maxRetainedBytes, maxWorkspaceBytes);
+}
+
+std::unique_ptr<BoneSceneFrame> BoneSceneSource::EvaluateAt(
+    const EvaluationTime& time, const BoneTransformContext& context,
+    std::uint64_t maxRetainedBytes,
+    std::uint64_t maxWorkspaceBytes) const {
+    if (!impl_) throw std::invalid_argument("bone scene source is empty");
 
     const std::uint32_t count =
         static_cast<std::uint32_t>(impl_->models.size());
@@ -1005,7 +1040,8 @@ std::unique_ptr<BoneSceneFrame> BoneSceneSource::Evaluate(
     auto result = std::unique_ptr<BoneSceneFrame>(new BoneSceneFrame);
     result->impl_ = std::make_unique<BoneSceneFrame::Impl>();
     BoneSceneFrame::Impl& out = *result->impl_;
-    out.frame = frame;
+    // Frame metadata stays continuous; only discrete tracks use DiscreteFrame.
+    out.frame = time.Frame();
 
     Charge(retained, count, sizeof(BoneSceneFrame::Impl::Entry),
            maxRetainedBytes);
@@ -1037,12 +1073,13 @@ std::unique_ptr<BoneSceneFrame> BoneSceneSource::Evaluate(
     for (std::uint32_t index = 0; index < count; ++index) {
         const Impl::Entry& entry = impl_->models[index];
         const std::uint64_t frameBytes = workspaces[index].CreateFrame(
-            frame, entry.info.boneCount, maxRetainedBytes - retained,
+            time.Frame(), entry.info.boneCount, maxRetainedBytes - retained,
             workspace);
         Charge(retained, 1, frameBytes, maxRetainedBytes);
-        workspaces[index].Prepare(*entry.source, frame, workspace);
-        workspaces[index].PrepareSelectorsRaw(*entry.source, frame);
-        workspaces[index].PrepareMorphs(*entry.source, frame, workspace);
+        workspaces[index].Prepare(*entry.source, time, workspace);
+        workspaces[index].PrepareSelectorsRaw(*entry.source,
+                                              time.DiscreteFrame());
+        workspaces[index].PrepareMorphs(*entry.source, time.Frame(), workspace);
         slots[entry.info.slot] =
             reinterpret_cast<unsigned char*>(workspaces[index].model.get());
     }
@@ -1074,7 +1111,8 @@ std::unique_ptr<BoneSceneFrame> BoneSceneSource::Evaluate(
     // Scale, joint position and visibility are finalized only after both
     // complete scene sweeps.
     for (std::uint32_t index = 0; index < count; ++index)
-        workspaces[index].Finalize(*impl_->models[index].source, workspace);
+        workspaces[index].Finalize(*impl_->models[index].source, time,
+                                   workspace);
 
     // Publish only fully completed child frames.
     for (std::uint32_t index = 0; index < count; ++index) {

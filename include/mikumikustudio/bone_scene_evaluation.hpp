@@ -72,6 +72,10 @@ public:
     std::unique_ptr<BoneSceneFrame> Evaluate(double frame, const BoneTransformContext&,
         std::uint64_t maxRetainedBytes = 256ull * 1024 * 1024,
         std::uint64_t maxWorkspaceBytes = 512ull * 1024 * 1024) const;
+    // Keeps exact discrete key selection separate from continuous interpolation.
+    std::unique_ptr<BoneSceneFrame> EvaluateAt(const EvaluationTime& time, const BoneTransformContext&,
+        std::uint64_t maxRetainedBytes = 256ull * 1024 * 1024,
+        std::uint64_t maxWorkspaceBytes = 512ull * 1024 * 1024) const;
 };
 }
 #endif

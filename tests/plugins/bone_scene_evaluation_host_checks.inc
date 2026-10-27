@@ -76,6 +76,21 @@ bool Matches(const BoneSceneSource& source,const BoneTransformContext& context,c
     for(unsigned t=0;t<6;++t) {auto frame=source.Evaluate(kFrames[t],context);if(!frame||!FrameMatches(*frame,wanted[t],info,kFrames[t]))return false;}
     return true;
 }
+void ExactBeforeParentKey(const BoneSceneSource& source,const BoneTransformContext& context,const Infos& info) {
+    EvaluationTime time;
+    Check(EvaluationTime::FromSeconds(36028797018963968LL,270215977642229761ULL,time)&&time.Frame()==4&&time.DiscreteFrame()==3,
+        "rational time before parent key retains exact side despite rounding to frame four");
+    const auto before=source.Evaluate(std::nextafter(4.0,0.0),context),exact=source.EvaluateAt(time,context),rounded=source.Evaluate(4,context);
+    ScenePoses expected,after;
+    for(unsigned i=0;i<3;++i){
+        const auto* a=before->ModelFrame(i);const auto* b=rounded->ModelFrame(i);Check(a&&b,"real parent boundary frames own all models");
+        expected[i].resize(a->BoneCount());after[i].resize(b->BoneCount());
+        for(unsigned bone=0;bone<a->BoneCount();++bone)Check(a->BoneAt(bone,expected[i][bone])&&b->BoneAt(bone,after[i][bone]),"read boundary comparison poses");
+        Check(exact->ModelFrame(i)->Visibility()==a->Visibility(),"exact scene time keeps pre-key visibility");
+    }
+    Check(FrameMatches(*exact,expected,info,4),"exact time keeps all pre-key transforms without quantizing continuous pose time");
+    Check(bone_evaluation_probe::Different(expected[1],after[1]),"real consumer detects erroneous early external-parent switch");
+}
 void Workers(const BoneSceneSource& old,const BoneSceneSource& newer,const BoneTransformContext& context,
     const Oracle& before,const Oracle& after,const Infos& info) {
     bool a=true,b=true;const auto read=[&](bool& ok){try {for(unsigned n=0;n<4;++n)ok=Matches(old,context,before,info)&&Matches(newer,context,after,info)&&ok;}catch(...){ok=false;}};
@@ -130,14 +145,14 @@ void Run(MMDApp* app) {
         {const Proof proof(app);try{auto unused=BoneSceneSource::Capture(inputs.data(),3);}catch(const std::invalid_argument&){rejected=true;}proof.Verify();}
         Check(rejected,"future missing slot or invalid target bone rejects scene capture atomically");}future=futureSaved;
     std::unique_ptr<BoneSceneSource> old,newer;
-    {const Proof proof(app);old=BoneSceneSource::Capture(inputs.data(),3);Check(old&&Matches(*old,*context,original,info),"captured scene matches real native phase and model order");proof.Verify();}
+    {const Proof proof(app);old=BoneSceneSource::Capture(inputs.data(),3);Check(old&&Matches(*old,*context,original,info),"captured scene matches real native phase and model order");ExactBeforeParentKey(*old,*context,info);proof.Verify();}
     targetModel.boneKeys[key].position[0]+=1.75f;
     {const Proof proof(app);newer=BoneSceneSource::Capture(inputs.data(),3);Workers(*old,*newer,*context,original,edited,info);proof.Verify();}
     targetModel.boneKeys[key]=saved;
     auto retainedOld=old->Evaluate(10,*context),retainedNew=newer->Evaluate(10,*context);
     NativeAt(app,0);for(unsigned slot=0;slot<3;++slot)bone_scale::RestoreTransforms(app->ModelSlot(slot));app->CurrentFrame()=0;
     const auto project=std::filesystem::absolute(L"bone-scene-evaluation.pmm");Check(SaveSceneCopy(app,project.c_str()),"save real three-model PMM with registered external-parent windows");
-    ResetAppState(app);Workers(*old,*newer,*context,original,edited,info);
+    ResetAppState(app);Workers(*old,*newer,*context,original,edited,info);ExactBeforeParentKey(*old,*context,info);
     load();auto replacementInputs=PublishInputs(app);const auto replacementInfo=Describe(replacementInputs);
     Check(!SameId(info[2].identity,replacementInfo[2].identity),"reused target slot receives a different real host identity");
     {const Proof proof(app);auto replacement=BoneSceneSource::Capture(replacementInputs.data(),3);Check(replacement&&Matches(*replacement,*context,original,replacementInfo),"new scene capture uses replacement identities");Workers(*old,*newer,*context,original,edited,info);proof.Verify();}

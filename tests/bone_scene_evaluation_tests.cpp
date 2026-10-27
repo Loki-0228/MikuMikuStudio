@@ -408,7 +408,56 @@ void Empty(const BoneTransformContext& context){
         BoneSceneModelInfo out;std::memset(&out,0x7c,sizeof(out));const auto before=out;CHECK(!source->ModelAt(0,out)&&Bits(before,out));CHECK(!frame->ModelAt(0,out)&&Bits(before,out));}
     CHECK(Throws<std::invalid_argument>([&]{source->Evaluate(-.5,context);}));
 }
+bool ExactSceneNear(const SceneFrame& actual,const SceneFrame& expected){
+    if(actual.ModelCount()!=expected.ModelCount())return false;
+    const auto closeValues=[](const auto& a,const auto& b){for(std::size_t i=0;i<a.size();++i)
+        if(!std::isfinite(a[i])||!std::isfinite(b[i])||std::abs(a[i]-b[i])>5e-5f*(1.f+std::abs(b[i])))return false;return true;};
+    for(uint32_t m=0;m<actual.ModelCount();++m){BoneSceneModelInfo aInfo{},bInfo{};
+        if(!actual.ModelAt(m,aInfo)||!expected.ModelAt(m,bInfo)||!SameInfo(aInfo,bInfo))return false;
+        const auto* a=actual.ModelFrame(m);const auto* b=expected.ModelFrame(m);
+        if(!a||!b||a->BoneCount()!=b->BoneCount()||a->Visibility()!=b->Visibility())return false;
+        for(uint32_t i=0;i<a->BoneCount();++i){Pose p,q;if(!a->BoneAt(i,p)||!b->BoneAt(i,q)||
+            !closeValues(p.rigid,q.rigid)||!closeValues(p.scaled,q.scaled)||!closeValues(p.attachment[0],q.attachment[0])||
+            !closeValues(p.attachment[1],q.attachment[1])||!closeValues(p.jointPosition,q.jointPosition))return false;}}
+    return true;
 }
-int main(){try{const auto context=BoneTransformContext::Create();CHECK(bool(context));SceneSweeps(*context);CyclesAndFutureKeys(*context);GroundSelectors(*context);SelfLocalDependency(*context);InvalidInputs(*context);BudgetsAndAllocation(*context);LifetimeAndConcurrency();Empty(*context);
+void ExactSceneTime(const BoneTransformContext& context){
+    currentCase="scene exact rational selector ground IK and visibility boundaries";
+    EvaluationTime beforeKey;CHECK(EvaluationTime::FromSeconds(108086391056891904LL,270215977642229761ULL,beforeKey));
+    CHECK(beforeKey.Frame()==12&&beforeKey.DiscreteFrame()==11);const double previous=std::nextafter(12.0,0.0);
+    EvaluationTime ordinary;CHECK(EvaluationTime::FromSeconds(11,60,ordinary)&&ordinary.Frame()==5.5&&ordinary.DiscreteFrame()==5);
+    // Isolate each discrete cause. Otherwise a working IK switch could hide a
+    // broken parent switch behind the same visible matrix difference.
+    for(unsigned scenario=0;scenario<3;++scenario){Scene scene;
+        if(scenario==0)scene.models[0]->parents[1][0]={-2,91}; // global MODEL -> GROUND
+        if(scenario==1){scene.models[0]->parents[0][1]={int(scene.slots[2]),0};scene.models[0]->parents[1][1]={-2,92};}
+        if(scenario==2)scene.models[2]->enabled[1][0]=0;
+        const State a(*scene.models[0]),b(*scene.models[1]),c(*scene.models[2]);
+        const auto source=SceneSource::Capture(scene.inputs.data(),3);
+        const auto expected=source->Evaluate(previous,context),exact=source->EvaluateAt(beforeKey,context),rounded=source->Evaluate(12,context);
+        CHECK(exact->Frame()==12&&ExactSceneNear(*exact,*expected));
+        for(uint32_t i=0;i<3;++i)CHECK(exact->ModelFrame(i)->Frame()==12&&exact->ModelFrame(i)->Visibility()==255&&rounded->ModelFrame(i)->Visibility()==197);
+        const unsigned row=scenario==2?1:0,bone=scenario==2?2:9;Pose before,after;
+        CHECK(exact->ModelFrame(row)->BoneAt(bone,before)&&rounded->ModelFrame(row)->BoneAt(bone,after));
+        CHECK(!Bits(before.rigid,after.rigid)); // Nondegenerate parent/CCD output, independently of visibility.
+        const auto fractional=source->EvaluateAt(ordinary,context),legacy=source->Evaluate(5.5,context),quantized=source->Evaluate(5,context);
+        CHECK(fractional->Frame()==5.5&&ExactSceneNear(*fractional,*legacy));
+        Pose moving,integer;CHECK(fractional->ModelFrame(0)->BoneAt(0,moving)&&quantized->ModelFrame(0)->BoneAt(0,integer));
+        CHECK(!Bits(moving.rigid,integer.rigid)); // Continuous free/native motion remains at 5.5, not floor 5.
+        a.Check(*scene.models[0]);b.Check(*scene.models[1]);c.Check(*scene.models[2]);
+    }
+    std::shared_ptr<const SceneSource> frozen;std::unique_ptr<SceneFrame> expected,retained;
+    auto math=BoneTransformContext::Create();CHECK(bool(math));
+    {Scene scene;scene.models[0]->parents[1][1]={-2,0};scene.models[2]->enabled[1][0]=0;
+        frozen=SceneSource::Capture(scene.inputs.data(),3);expected=frozen->Evaluate(previous,*math);retained=frozen->EvaluateAt(beforeKey,*math);}
+    std::atomic<unsigned> failures{0};std::array<std::thread,2> readers;
+    try{for(auto& reader:readers)reader=std::thread([&,source=frozen,lease=math]{try{for(unsigned n=0;n<6;++n){const auto f=source->EvaluateAt(beforeKey,*lease);
+        if(f->Frame()!=12||!ExactSceneNear(*f,*expected))++failures;}}catch(...){++failures;}});}
+    catch(...){for(auto& reader:readers)if(reader.joinable())reader.join();throw;}
+    frozen.reset();math.reset();for(auto& reader:readers)reader.join();CHECK(failures==0);
+    CHECK(retained->Frame()==12&&ExactSceneNear(*retained,*expected));
+}
+}
+int main(){try{const auto context=BoneTransformContext::Create();CHECK(bool(context));SceneSweeps(*context);CyclesAndFutureKeys(*context);GroundSelectors(*context);SelfLocalDependency(*context);InvalidInputs(*context);BudgetsAndAllocation(*context);LifetimeAndConcurrency();Empty(*context);ExactSceneTime(*context);
     std::printf("PASS %u bone scene evaluation checks\n",checks);return 0;
 }catch(const std::exception& error){failAfter=-1;std::fprintf(stderr,"FAIL %s unexpected exception: %s\n",currentCase,error.what());return 1;}}
