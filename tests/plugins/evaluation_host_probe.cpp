@@ -1,4 +1,5 @@
 #include <mms/evaluation.h>
+#include <mms/cpp/evaluation.hpp>
 #include <cstring>
 #pragma comment(linker, "/EXPORT:MMSPluginGetApi")
 namespace {
@@ -7,6 +8,7 @@ MmsEvaluationApiV1_1 api11{};
 MmsEvaluationApiV1_2 api12{};
 MmsEvaluationApiV1_3 api13{};
 MmsEvaluationApiV1_4 api14{};
+mms::sdk::EvaluationServices sdkServices;
 MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1*, void** out) {
     if (!host || !out) return MMS_E_ARGUMENT;
     constexpr char service[] = "mms.scene.evaluate";
@@ -19,13 +21,15 @@ MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1*, void** 
     const auto parent = host->queryService(host->context, {service, sizeof(service)-1}, 1, 3, sizeof(api13), &api13);
     if (parent != MMS_OK) return parent;
     const auto scene = host->queryService(host->context, {service, sizeof(service)-1}, 1, 4, sizeof(api14), &api14);
-    if (scene == MMS_OK) *out = &api;
-    return scene;
+    if (scene != MMS_OK) return scene;
+    const auto sdk = mms::sdk::EvaluationServices::Query(*host, sdkServices);
+    if (sdk == MMS_OK) *out = &api;
+    return sdk;
 }
 MmsResult MMS_CALL Start(void*) { return MMS_OK; }
 void MMS_CALL Event(void*, const MmsEventV1*) {}
 MmsResult MMS_CALL Stop(void*) { return MMS_OK; }
-void MMS_CALL Destroy(void*) { api = {}; api11 = {}; api12 = {}; api13 = {}; api14 = {}; }
+void MMS_CALL Destroy(void*) { api = {}; api11 = {}; api12 = {}; api13 = {}; api14 = {}; sdkServices = {}; }
 }
 extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostGetApi(MmsEvaluationApiV1* out) {
     if (!out || !api.context) return MMS_E_NOT_READY;
@@ -46,6 +50,20 @@ extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostGetApi13(Mm
 extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostGetApi14(MmsEvaluationApiV1_4* out) {
     if (!out || !api14.context) return MMS_E_NOT_READY;
     *out = api14; return MMS_OK;
+}
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostSdkFrame(MmsEvaluationSceneModelV1* model, MmsEvaluationScenePoseV1* pose) {
+    if (!model || !pose) return MMS_E_ARGUMENT;
+    mms::sdk::EvaluationSceneSource source;
+    mms::sdk::EvaluationSceneFrame frame;
+    MmsEvaluationSceneModelV1 modelCopy{};MmsEvaluationScenePoseV1 poseCopy{};
+    auto result=sdkServices.Capture(source);
+    if(result==MMS_OK)result=source.Evaluate({1,3},frame);
+    if(result==MMS_OK)result=source.Release();
+    if(result==MMS_OK)result=frame.ModelAt(0,modelCopy);
+    if(result==MMS_OK)result=frame.ReadBonePose(0,0,poseCopy);
+    if(result==MMS_OK)result=frame.Release();
+    if(result==MMS_OK){*model=modelCopy;*pose=poseCopy;}
+    return result;
 }
 extern "C" MmsResult MMS_CALL MMSPluginGetApi(uint32_t major, uint32_t minor,
     uint32_t bytes, MmsPluginApiV1* out) {

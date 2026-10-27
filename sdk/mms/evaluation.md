@@ -158,6 +158,8 @@
 
 该阶段提供无物理模拟的骨架求值：局部动作、骨骼表情、层级、IK、外亲和尺度。模型按原生顺序执行全场物理前和物理后两轮，并从确定的加载初值开始。刚体历史、网格蒙皮、附件、相机、灯光、渲染器和多视口不属于此帧。不能把它称为完整场景渲染结果，也不能假定它与连续物理播放的历史状态相同。
 
+当前骨架来源不支持 PMX 翻转表情、冲量表情或其他类型大于 8 的表情，也不读取未知冲量载荷。模型中存在这些数据时，`createSceneSource` 返回 `MMS_E_UNSUPPORTED`，不会发布来源，即使该表情的当前权重为零。MMS 本体的 PMX 加载器当前只接受 2.0 版本，原生加载及蒙皮路径尚未完整支持 QDEF；骨架帧接口不能作为 PMX 2.1 或 QDEF 支持的证明。
+
 首先调用 `getSceneCapabilities`。`flags` 中的 `MMS_EVALUATION_SCENE_SKELETON` 表示宿主提供此功能；查询 1.4 表成功不代表该标志一定存在。原始兼容产品不开放生产求值服务。`reserved` 和所有请求的 `flags`、`reserved` 必须为零。
 
 | 函数 | 行为 |
@@ -212,6 +214,46 @@ MmsResult read_first_pose(const MmsEvaluationApiV1_4* api,
 ```
 
 来源和帧与旧通道共享保留额度：每份上限 64 MiB，每个插件实例总计 128 MiB，服务总计 256 MiB。相同内容的独立来源或帧分别计费；`retain` 不重复计费。请求 `maxRetainedBytes = 0` 使用每份上限。场景求值的工作区上限为单次 128 MiB、单插件同时 256 MiB、服务同时 512 MiB；`maxWorkspaceBytes = 0` 使用单次上限。并发预留不足返回 `MMS_E_MEMORY`。这些额度不包括全部嵌套算法的瞬时堆分配，不能作为进程峰值内存的精确上限。
+
+## C++17 便利封装
+
+`<mms/cpp/evaluation.hpp>` 提供 `mms::sdk::EvaluationServices`、`EvaluationSceneSource` 和 `EvaluationSceneFrame`。它们调用上面的同一张 C 函数表，持有原始句柄与对象身份，不创建另一套缓存或注册表。查询成功后仍须检查 `Capabilities` 中的骨架标志。
+
+下面的函数与前述 C 示例读取同一个结果，并须在 UI 线程调用。`Evaluate` 和帧读取可以移到后台线程；线程独立清理时可使用 `Retain` 获取单独的所有者。
+
+```cpp
+#include <mms/cpp/evaluation.hpp>
+
+MmsResult read_first_pose_cpp(const MmsHostV1& host,
+                              MmsEvaluationScenePoseV1& out) {
+    mms::sdk::EvaluationServices services;
+    MmsResult result = mms::sdk::EvaluationServices::Query(host, services);
+    if (result != MMS_OK) return result;
+    MmsEvaluationSceneCapsV1 caps{};
+    result = services.Capabilities(caps);
+    if (result != MMS_OK) return result;
+    if (!(caps.flags & MMS_EVALUATION_SCENE_SKELETON)) return MMS_E_UNSUPPORTED;
+
+    mms::sdk::EvaluationSceneSource source;
+    result = services.Capture(source);
+    if (result != MMS_OK) return result;
+    mms::sdk::EvaluationSceneFrame frame;
+    result = source.Evaluate({1, 2}, frame);
+    if (result != MMS_OK) return result;
+    result = source.Release();
+    if (result != MMS_OK) return result;
+
+    MmsEvaluationScenePoseV1 pose{};
+    result = frame.ReadBonePose(0, 0, pose);
+    if (result != MMS_OK) return result;
+    result = frame.Release();
+    if (result != MMS_OK) return result;
+    out = pose;
+    return MMS_OK;
+}
+```
+
+来源和帧可以移动构造，但不能复制或移动赋值。向已持有句柄的输出对象创建、求值或保留会返回 `MMS_E_BUSY`。显式 `Release` 失败时保留句柄，调用方可以重试；析构只能尽力释放一次，不能代替插件停止时的显式清理。插件停止前应结束后台线程并释放所有来源和帧。宿主上下文须始终长于封装对象；同一个对象的移动或释放不能与对它的并发调用竞争。
 
 ## 骨骼标志与结果
 

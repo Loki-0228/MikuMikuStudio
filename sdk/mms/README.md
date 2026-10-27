@@ -4,6 +4,8 @@
 
 [`mms.scene.evaluate` 1.4](evaluation.md) 提供已注册骨骼、表情、显示、IK 和外亲通道采样，以及完整模型集合的独立骨架场景帧。场景帧包含层级、IK、骨骼表情、外亲和尺度结果，使用与 BIND 一致的身份及共同的句柄、额度和停止规则。旧函数前缀与创建语义保持不变。蒙皮几何、物理、独立播放时钟和原始兼容配置的生产求值服务仍未开放。
 
+骨架场景的 C++17 便利封装见[求值参考](evaluation.md#c17-便利封装)。它包装相同的 C 表与句柄，并提供来源、帧的显式释放与保留操作。
+
 基础 UI 的类型化与声明式封装已提供，见 [C++17 界面注册 SDK](cpp-ui.md)。`UiServices`、`RegistrationBundle` 和 `CommandUi` 包装同一套 C ABI，复杂插件继续操作原始句柄。
 
 [自动刷新订阅](refresh-subscriptions.md)为已有 DATA binding 安排来源发布后的刷新，复用原对象、队列和阶段。C++17 `RefreshSubscriptionServices` 包装同一 C 服务。[原创计数示例](examples/auto_refresh/plugin.cpp)展示延迟绑定、数据发布与按钮状态更新。

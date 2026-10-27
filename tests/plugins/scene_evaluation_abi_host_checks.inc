@@ -69,6 +69,10 @@ void Run(MMDApp* app) {
     {const Proof proof(app);Check(create(source)==MMS_OK,"capture complete public scene");proof.Verify();}
     const auto ids=Identities(app,api,source);MmsEvaluationSceneInfoV1 info{};
     Check(api.describeSceneSource(api.context,source,&info)==MMS_OK&&info.modelCount==3&&info.captureId,"describe public scene source");
+    {const Proof proof(app);using SdkFrame=MmsResult(MMS_CALL*)(MmsEvaluationSceneModelV1*,MmsEvaluationScenePoseV1*);
+        const auto sdkFrame=reinterpret_cast<SdkFrame>(GetProcAddress(module,"MmsEvaluationHostSdkFrame"));MmsEvaluationSceneModelV1 model{};MmsEvaluationScenePoseV1 pose{};
+        Check(sdkFrame&&sdkFrame(&model,&pose)==MMS_OK&&Same(model.object,ids[0].object)&&Same(pose.bone,ids[0].bones[0])&&
+            SameFloat(pose.rigid,expected[1][0].rigid.data(),16)&&SameFloat(pose.scaled,expected[1][0].scaled.data(),16),"C++ SDK uses real source and frame handles with original identities");proof.Verify();}
     MmsEvaluationFrameQueryV1 request{};request.h=Header<MmsEvaluationFrameQueryV1>();request.source=source;request.time={10,30};
     {const Proof proof(app);Check(api.evaluateFrame(api.context,&request,&frame)==MMS_OK&&FrameMatches(api,frame,ids,expected),"public frame matches native full-scene two-phase results");proof.Verify();}
     {const Proof proof(app);bool firstOk=true,secondOk=true;

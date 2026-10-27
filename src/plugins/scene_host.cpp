@@ -16,6 +16,7 @@
 #include "evaluation_store.hpp"
 #include "mikumikustudio/bone_motion_snapshot.hpp"
 #include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/morph_definition_snapshot.hpp"
 #include "mikumikustudio/display_motion_snapshot.hpp"
 #include "mikumikustudio/bone_scene_evaluation.hpp"
 #include "mikumikustudio/bone_transform_context.hpp"
@@ -177,6 +178,7 @@ MmsResult CaptureEvaluationScene(MMDApp* app, uint64_t limit,
     ChargeSceneEvaluation(bytes, 1, sourceOverhead, limit);
     uint64_t identityBytes = sizeof(EvaluationSceneModels) + 256;
     ChargeSceneEvaluation(bytes, 1, identityBytes, limit);
+    uint64_t morphDefinitionMinimum = 0;
     uint32_t count = 0;
     // Preflight all public metadata before allocating model or bone vectors.
     // Slot scans include invisible models and future-only dependency targets.
@@ -186,8 +188,18 @@ MmsResult CaptureEvaluationScene(MMDApp* app, uint64_t limit,
         if (known && (!known->present || !known->published)) return MMS_E_STALE;
         const auto& model = *mdl::Mdl(raw);
         if (model.boneCount && !model.boneTable) return MMS_E_NOT_READY;
+        if (model.morphCount > INT32_MAX || (model.morphCount && !model.morphs)) return MMS_E_STALE;
         ChargeSceneEvaluation(bytes, 1, sizeof(EvaluationSceneModelData), limit);
         ChargeSceneEvaluation(bytes, model.boneCount, sizeof(MmsId), limit);
+        // Check a retained-data lower bound before scanning headers. The
+        // actual snapshot later owns and charges these records, so this
+        // temporary bound must not also enter the wrapper's retained bytes.
+        ChargeSceneEvaluation(morphDefinitionMinimum, model.morphCount, sizeof(MorphDefinition), limit - bytes);
+        for (uint32_t morph = 0; morph < model.morphCount; ++morph) {
+            const auto& definition = model.morphs[morph];
+            if ((model.physicsMode == 2 && definition.type > 8) ||
+                definition.impulseEntries || definition.impulse2Entries) return MMS_E_UNSUPPORTED;
+        }
         ++count;
     }
     auto models = std::make_shared<EvaluationSceneModels>();
