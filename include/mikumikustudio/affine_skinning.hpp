@@ -828,10 +828,11 @@ inline void SkinBdef4(const BoneRef bones[4], const float weight[4],
 // with or without scaling. The rotation branch is the only change: the legacy
 // path runs D3DX through ops and stays untouched for rigid bones, the affine
 // path uses the polar rotation and the blended stretch.
-inline void SkinSdef(const BoneRef& bone0, const BoneRef& bone1, float weight0,
+template<class Ops>
+inline void SkinSdefWithOps(const BoneRef& bone0, const BoneRef& bone1, float weight0,
                      const float position[3], const float normal[3],
                      const float center[3], const float r0Offset[3],
-                     const float r1Offset[3], const RotationOps& ops,
+                     const float r1Offset[3], const Ops& ops,
                      Skinned& out) {
     const float* matrix0 = bone0.matrix;
     const float* matrix1 = bone1.matrix;
@@ -898,6 +899,15 @@ inline void SkinSdef(const BoneRef& bone0, const BoneRef& bone1, float weight0,
     SymmetricAdjugateMul(inverseTransposed, normal, stretch);
     RotateByQuaternion(out.normal, inverseTransposed, quaternion);
     Normalize3(out.normal);
+}
+
+inline void SkinSdef(const BoneRef& bone0, const BoneRef& bone1, float weight0,
+                     const float position[3], const float normal[3],
+                     const float center[3], const float r0Offset[3],
+                     const float r1Offset[3], const RotationOps& ops,
+                     Skinned& out) {
+    SkinSdefWithOps(bone0, bone1, weight0, position, normal, center,
+                    r0Offset, r1Offset, ops, out);
 }
 
 }  // namespace mikumikustudio::affine

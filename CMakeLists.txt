@@ -859,7 +859,7 @@ set_target_properties(bone_root_inheritance_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME bone_root_inheritance COMMAND bone_root_inheritance_tests)
 
-foreach(context_test bone_transform_context_tests bone_transform_context_lifecycle_tests bone_pose_preparation_tests)
+foreach(context_test bone_transform_context_tests bone_transform_context_lifecycle_tests bone_pose_preparation_tests affine_skinning_context_tests)
     add_executable(${context_test} EXCLUDE_FROM_ALL tests/${context_test}.cpp)
     target_link_libraries(${context_test} PRIVATE mikumikustudio_core winmm dsound)
     set_target_properties(${context_test} PROPERTIES

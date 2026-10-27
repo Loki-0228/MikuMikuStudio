@@ -1462,6 +1462,16 @@ BoneTransformContext::BoneTransformContext(std::unique_ptr<Impl> impl)
 
 BoneTransformContext::~BoneTransformContext() = default;
 
+void BoneTransformContext::QuaternionFromMatrix(float out[4], const float matrix[16]) const noexcept {
+    static_assert(sizeof(d3dx::D3DXMATRIXF) == 16 * sizeof(float) &&
+        alignof(d3dx::D3DXMATRIXF) == alignof(float), "CPU matrix array ABI");
+    impl_->api.quatFromMatrix(out, reinterpret_cast<const d3dx::D3DXMATRIXF*>(matrix));
+}
+
+void BoneTransformContext::MatrixFromQuaternion(float out[16], const float quaternion[4]) const noexcept {
+    impl_->api.matrixRotationQuaternion(reinterpret_cast<d3dx::D3DXMATRIXF*>(out), quaternion);
+}
+
 void ArmBoneTransformIkProbe() {
 #ifdef MIKUMIKUSTUDIO_DIAG
     InterlockedExchange(&gIkProbeArmed, 1);

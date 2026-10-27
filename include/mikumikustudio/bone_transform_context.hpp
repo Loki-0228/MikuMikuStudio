@@ -18,6 +18,13 @@ public:
     BoneTransformContext(const BoneTransformContext&) = delete;
     BoneTransformContext& operator=(const BoneTransformContext&) = delete;
 
+    // Direct calls through this context's retained CPU exports. The caller
+    // supplies nonnull, nonoverlapping arrays and keeps the context alive.
+    // No global math lookup, scratch storage or allocation; concurrent calls
+    // may share a const context with independent output buffers.
+    void QuaternionFromMatrix(float out[4], const float matrix[16]) const noexcept;
+    void MatrixFromQuaternion(float out[16], const float quaternion[4]) const noexcept;
+
 private:
     struct Impl;
     explicit BoneTransformContext(std::unique_ptr<Impl> impl);
