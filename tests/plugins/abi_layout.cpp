@@ -398,3 +398,68 @@ static_assert(std::is_standard_layout<MmsEvaluationMeshInfoV1>::value && std::is
 static_assert(std::is_standard_layout<MmsEvaluationMeshMaterialV1>::value && std::is_trivially_copyable<MmsEvaluationMeshMaterialV1>::value, "mesh material POD");
 static_assert(std::is_standard_layout<MmsEvaluationMeshVertexV1>::value && std::is_trivially_copyable<MmsEvaluationMeshVertexV1>::value, "mesh vertex POD");
 static_assert(std::is_standard_layout<MmsEvaluationApiV1_5>::value && std::is_trivially_copyable<MmsEvaluationApiV1_5>::value, "evaluation 1.5 POD");
+
+static_assert(sizeof(MmsEvaluationMaterialCapsV1)==24, "material capabilities layout");
+static_assert(sizeof(MmsEvaluationMaterialIdV1)==32, "material identity layout");
+static_assert(sizeof(MmsEvaluationMaterialV1)==216, "evaluated material layout");
+static_assert(offsetof(MmsEvaluationMaterialIdV1,material)==8 && offsetof(MmsEvaluationMaterialIdV1,index)==24, "material identity offsets");
+static_assert(offsetof(MmsEvaluationMaterialV1,material)==8 && offsetof(MmsEvaluationMaterialV1,index)==24 && offsetof(MmsEvaluationMaterialV1,flags)==28, "material identity and flags offsets");
+static_assert(offsetof(MmsEvaluationMaterialV1,nativeDiffuse)==32 && offsetof(MmsEvaluationMaterialV1,diffuseMirrorAndAlpha)==44, "material diffuse offsets");
+static_assert(offsetof(MmsEvaluationMaterialV1,specular)==60 && offsetof(MmsEvaluationMaterialV1,ambient)==72 && offsetof(MmsEvaluationMaterialV1,specularPower)==84, "material lighting offsets");
+static_assert(offsetof(MmsEvaluationMaterialV1,edgeColor)==88 && offsetof(MmsEvaluationMaterialV1,edgeSize)==104, "material edge offsets");
+static_assert(offsetof(MmsEvaluationMaterialV1,textureAdd)==108 && offsetof(MmsEvaluationMaterialV1,textureMultiply)==124, "texture tint offsets");
+static_assert(offsetof(MmsEvaluationMaterialV1,sphereAdd)==140 && offsetof(MmsEvaluationMaterialV1,sphereMultiply)==156, "sphere tint offsets");
+static_assert(offsetof(MmsEvaluationMaterialV1,toonAdd)==172 && offsetof(MmsEvaluationMaterialV1,toonMultiply)==188 && offsetof(MmsEvaluationMaterialV1,reserved)==204, "toon tint offsets");
+static_assert(sizeof(MmsEvaluationApiV1_6)==320, "MmsEvaluationApiV1_6 layout");
+#define MMS_EVALUATION_16_PREFIX(member) \
+    static_assert(offsetof(MmsEvaluationApiV1_6, member)==offsetof(MmsEvaluationApiV1_5, member), "evaluation1.6 " #member " offset"); \
+    static_assert(std::is_same<decltype(MmsEvaluationApiV1_6::member),decltype(MmsEvaluationApiV1_5::member)>::value, "evaluation1.6 " #member " type")
+MMS_EVALUATION_16_PREFIX(h);
+MMS_EVALUATION_16_PREFIX(context);
+MMS_EVALUATION_16_PREFIX(getCapabilities);
+MMS_EVALUATION_16_PREFIX(createSource);
+MMS_EVALUATION_16_PREFIX(describeSource);
+MMS_EVALUATION_16_PREFIX(boneAt);
+MMS_EVALUATION_16_PREFIX(sampleBone);
+MMS_EVALUATION_16_PREFIX(retain);
+MMS_EVALUATION_16_PREFIX(release);
+MMS_EVALUATION_16_PREFIX(createSourceChannels);
+MMS_EVALUATION_16_PREFIX(describeSourceChannels);
+MMS_EVALUATION_16_PREFIX(morphAt);
+MMS_EVALUATION_16_PREFIX(sampleMorph);
+MMS_EVALUATION_16_PREFIX(describeSourceDisplay);
+MMS_EVALUATION_16_PREFIX(ikAt);
+MMS_EVALUATION_16_PREFIX(selectorAt);
+MMS_EVALUATION_16_PREFIX(sampleVisibility);
+MMS_EVALUATION_16_PREFIX(sampleIk);
+MMS_EVALUATION_16_PREFIX(sampleParent);
+MMS_EVALUATION_16_PREFIX(sampleParentState);
+MMS_EVALUATION_16_PREFIX(getSceneCapabilities);
+MMS_EVALUATION_16_PREFIX(createSceneSource);
+MMS_EVALUATION_16_PREFIX(describeSceneSource);
+MMS_EVALUATION_16_PREFIX(sceneModelAt);
+MMS_EVALUATION_16_PREFIX(sceneBoneAt);
+MMS_EVALUATION_16_PREFIX(evaluateFrame);
+MMS_EVALUATION_16_PREFIX(describeFrame);
+MMS_EVALUATION_16_PREFIX(frameModelAt);
+MMS_EVALUATION_16_PREFIX(readBonePose);
+MMS_EVALUATION_16_PREFIX(getMeshCapabilities);
+MMS_EVALUATION_16_PREFIX(createMeshSceneSource);
+MMS_EVALUATION_16_PREFIX(describeMesh);
+MMS_EVALUATION_16_PREFIX(readMeshIndices);
+MMS_EVALUATION_16_PREFIX(readMeshMaterials);
+MMS_EVALUATION_16_PREFIX(readMeshBindVertices);
+MMS_EVALUATION_16_PREFIX(readMeshVertices);
+#undef MMS_EVALUATION_16_PREFIX
+static_assert(offsetof(MmsEvaluationApiV1_6,getMaterialCapabilities)==sizeof(MmsEvaluationApiV1_5), "material capabilities extension offset");
+static_assert(offsetof(MmsEvaluationApiV1_6,createMaterialSceneSource)==296, "material source offset");
+static_assert(offsetof(MmsEvaluationApiV1_6,materialAt)==304, "material identity function offset");
+static_assert(offsetof(MmsEvaluationApiV1_6,readFrameMaterials)==312, "material frame reader offset");
+static_assert(std::is_same<decltype(MmsEvaluationApiV1_6::getMaterialCapabilities),MmsResult (MMS_CALL *)(void*,MmsEvaluationMaterialCapsV1*)>::value, "material caps signature");
+static_assert(std::is_same<decltype(MmsEvaluationApiV1_6::createMaterialSceneSource),MmsResult (MMS_CALL *)(void*,const MmsEvaluationSceneQueryV1*,MmsHandle*)>::value, "material source signature");
+static_assert(std::is_same<decltype(MmsEvaluationApiV1_6::materialAt),MmsResult (MMS_CALL *)(void*,MmsHandle,uint32_t,uint32_t,MmsEvaluationMaterialIdV1*)>::value, "material identity signature");
+static_assert(std::is_same<decltype(MmsEvaluationApiV1_6::readFrameMaterials),MmsResult (MMS_CALL *)(void*,MmsHandle,uint32_t,uint32_t,uint32_t,MmsEvaluationMaterialV1*)>::value, "material reader signature");
+static_assert(std::is_standard_layout<MmsEvaluationMaterialCapsV1>::value && std::is_trivially_copyable<MmsEvaluationMaterialCapsV1>::value, "material capabilities POD");
+static_assert(std::is_standard_layout<MmsEvaluationMaterialIdV1>::value && std::is_trivially_copyable<MmsEvaluationMaterialIdV1>::value, "material identity POD");
+static_assert(std::is_standard_layout<MmsEvaluationMaterialV1>::value && std::is_trivially_copyable<MmsEvaluationMaterialV1>::value, "evaluated material POD");
+static_assert(std::is_standard_layout<MmsEvaluationApiV1_6>::value && std::is_trivially_copyable<MmsEvaluationApiV1_6>::value, "evaluation 1.6 POD");

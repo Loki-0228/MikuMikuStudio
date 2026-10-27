@@ -312,7 +312,7 @@ MmsEvaluationMeshVertexV1 PublicMeshVertex(const Vertex& input) {
 }
 
 MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
-    std::shared_ptr<const EvaluationSceneSourceData>& out) {
+    std::shared_ptr<const EvaluationSceneSourceData>& out, bool includeMaterials = false) {
     if (!app || app->SceneMutationInProgress() || !app->WindowLayoutReady()) return MMS_E_NOT_READY;
     uint64_t hostRevision = 0;
     if (auto* history = BoundNativePoseHistory(app)) {
@@ -327,6 +327,10 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
     ChargeSceneEvaluation(bytes, 1, sourceOverhead, limit);
     uint64_t identityBytes = sizeof(EvaluationSceneModels) + 256;
     ChargeSceneEvaluation(bytes, 1, identityBytes, limit);
+    // A separate immutable material identity map is allocated only for the
+    // explicit 1.6 source. Frames charge their own full share of this map.
+    if (includeMaterials)
+        ChargeSceneEvaluation(bytes, 1, sizeof(EvaluationMaterialIds) + 256, limit);
     uint64_t morphDefinitionMinimum = 0;
     uint32_t count = 0;
     // Preflight all public metadata before allocating model or bone vectors.
@@ -340,6 +344,10 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
         if (model.morphCount > INT32_MAX || (model.morphCount && !model.morphs)) return MMS_E_STALE;
         ChargeSceneEvaluation(bytes, 1, sizeof(EvaluationSceneModelData), limit);
         ChargeSceneEvaluation(bytes, model.boneCount, sizeof(MmsId), limit);
+        if (includeMaterials) {
+            ChargeSceneEvaluation(bytes, 1, sizeof(std::vector<MmsId>), limit);
+            ChargeSceneEvaluation(bytes, model.materialCount, sizeof(MmsId), limit);
+        }
         // Check a retained-data lower bound before scanning headers. The
         // actual snapshot later owns and charges these records, so this
         // temporary bound must not also enter the wrapper's retained bytes.
@@ -354,6 +362,12 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
     auto models = std::make_shared<EvaluationSceneModels>();
     models->resize(count);
     ChargeSceneEvaluation(bytes, models->capacity() - count, sizeof(EvaluationSceneModelData), limit);
+    std::shared_ptr<EvaluationMaterialIds> materialIds;
+    if (includeMaterials) {
+        materialIds = std::make_shared<EvaluationMaterialIds>();
+        materialIds->resize(count);
+        ChargeSceneEvaluation(bytes, materialIds->capacity() - count, sizeof(std::vector<MmsId>), limit);
+    }
     // The input list is temporary, bounded by the host's fixed slot table;
     // neither it nor its live pointers enter a published source or callback.
     std::array<BoneSceneModelInput, kModelSlotCount> inputs{};
@@ -367,6 +381,13 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
         ChargeSceneEvaluation(bytes, record.bones.capacity() - model.boneCount, sizeof(MmsId), limit);
         for (uint32_t bone = 0; bone < model.boneCount; ++bone)
             record.bones[bone] = identities.Element(raw, MMS_CHANNEL_BONES, bone);
+        if (materialIds) {
+            auto& ids = (*materialIds)[index];
+            ids.resize(model.materialCount);
+            ChargeSceneEvaluation(bytes, ids.capacity() - model.materialCount, sizeof(MmsId), limit);
+            for (uint32_t material = 0; material < model.materialCount; ++material)
+                ids[material] = identities.Element(raw, MMS_CHANNEL_MATERIALS, material);
+        }
         inputs[index++] = {slot, {record.object.id.lo, record.object.id.hi, record.object.generation}, raw};
     }
     // Everything charged so far except the source wrapper belongs to the
@@ -376,7 +397,8 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
     if (!math) return MMS_E_NOT_READY;
     std::shared_ptr<const MeshSceneSource> source;
     try {
-        source = MeshSceneSource::Capture(inputs.data(), count, limit - bytes);
+        source = includeMaterials ? MeshSceneSource::CaptureWithMaterials(inputs.data(), count, limit - bytes)
+                                  : MeshSceneSource::Capture(inputs.data(), count, limit - bytes);
     } catch (const MeshDefinitionUnsupported&) {
         return MMS_E_UNSUPPORTED;
     } catch (const std::invalid_argument&) {
@@ -384,18 +406,20 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
         // or parent targets describe stale host data, not malformed arguments.
         return MMS_E_STALE;
     }
-    if (!source || source->ModelCount() != count) return MMS_E_FAILED;
+    if (!source || source->ModelCount() != count || source->HasMaterials() != includeMaterials) return MMS_E_FAILED;
     ChargeSceneEvaluation(bytes, 1, source->RetainedBytes(), limit);
     for (uint32_t i = 0; i < count; ++i) {
         BoneSceneModelInfo info{};
         if (!source->ModelAt(i, info) || info.slot != inputs[i].slot ||
             !SameSceneIdentity(info.identity, (*models)[i].object) ||
             info.boneCount != (*models)[i].bones.size()) return MMS_E_FAILED;
+        if (materialIds && (!source->MeshAt(i) || source->MeshAt(i)->MaterialCount() != (*materialIds)[i].size())) return MMS_E_FAILED;
     }
     auto data = std::make_shared<EvaluationSceneSourceData>();
     data->models = std::move(models);
     data->hostRevision = hostRevision;
     data->retainedBytes = bytes;
+    data->materialIds = std::move(materialIds);
     // Each topology callback owns only this frozen source. No live model,
     // host pointer, math context or evaluated frame is retained here.
     data->meshInfo = [source, models = data->models](uint32_t model,
@@ -430,7 +454,7 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
         out = PublicMeshVertex(vertex); return MMS_OK;
     };
     data->evaluate = [source = std::move(source), math = std::move(math),
-        models = data->models, identityBytes](const EvaluationTime& time, uint64_t frameLimit,
+        models = data->models, materialIds = data->materialIds, identityBytes](const EvaluationTime& time, uint64_t frameLimit,
         uint64_t workspaceLimit, std::shared_ptr<const EvaluationSceneFrameData>& result) -> MmsResult {
         // Candidate frame metadata and shared identity storage stay covered
         // while the internal evaluator uses the remainder of the reservation.
@@ -442,6 +466,7 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
         ChargeSceneEvaluation(wrapperBytes, models->size(), sizeof(uint8_t), bound);
         auto candidate = std::make_shared<EvaluationSceneFrameData>();
         candidate->models = models;
+        candidate->materialIds = materialIds;
         candidate->visibility.resize(models->size());
         ChargeSceneEvaluation(wrapperBytes, candidate->visibility.capacity() - models->size(), sizeof(uint8_t), bound);
         ChargeSceneEvaluation(wrapperBytes, models->size(), sizeof(uint32_t), bound);
@@ -453,7 +478,8 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
         ChargeSceneEvaluation(wrapperBytes, candidate->meshAdditionalUvCounts.capacity() - models->size(), sizeof(uint32_t), bound);
         std::shared_ptr<const MeshSceneFrame> frame = source->EvaluateAt(time, *math,
             frameLimit - wrapperBytes, workspaceLimit - wrapperBytes);
-        if (!frame || frame->ModelCount() != models->size() || frame->Time().Frame() != time.Frame() || frame->Time().DiscreteFrame() != time.DiscreteFrame()) return MMS_E_FAILED;
+        if (!frame || frame->ModelCount() != models->size() || frame->HasMaterials() != bool(materialIds) ||
+            frame->Time().Frame() != time.Frame() || frame->Time().DiscreteFrame() != time.DiscreteFrame()) return MMS_E_FAILED;
         uint64_t frameBytes = wrapperBytes;
         ChargeSceneEvaluation(frameBytes, 1, frame->RetainedBytes(), frameLimit);
         for (uint32_t model = 0; model < frame->ModelCount(); ++model) {
@@ -466,6 +492,7 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
                 child->BoneCount() != info.boneCount || child->Frame() != time.Frame() ||
                 !mesh || !bind || mesh->VertexCount() != bind->VertexCount() ||
                 mesh->AdditionalUvCount() != bind->AdditionalUvCount()) return MMS_E_FAILED;
+            if (materialIds && frame->MaterialCount(model) != (*materialIds)[model].size()) return MMS_E_FAILED;
             candidate->visibility[model] = child->Visibility();
             candidate->meshVertexCounts[model] = mesh->VertexCount();
             candidate->meshAdditionalUvCounts[model] = mesh->AdditionalUvCount();
@@ -487,12 +514,38 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
             // The store fills the public bone ID from the same frozen map.
             out = value; return MMS_OK;
         };
-        candidate->meshVertex = [frame = std::move(frame)](uint32_t model, uint32_t index,
+        candidate->meshVertex = [frame](uint32_t model, uint32_t index,
             MmsEvaluationMeshVertexV1& out) -> MmsResult {
             const auto* mesh = frame->ModelFrame(model); MeshEvaluationVertex vertex;
             if (!mesh || !mesh->VertexAt(index, vertex)) return MMS_E_NOT_FOUND;
             out = PublicMeshVertex(vertex); return MMS_OK;
         };
+        if (materialIds) {
+            candidate->material = [frame = std::move(frame)](uint32_t model, uint32_t index,
+                MmsEvaluationMaterialV1& out) -> MmsResult {
+                if (model >= frame->ModelCount() || index >= frame->MaterialCount(model)) return MMS_E_NOT_FOUND;
+                MeshSceneMaterial material{};
+                // The internal getter distinguishes valid bounds before
+                // testing finiteness. Nonfinite material data is not missing.
+                if (!frame->MaterialAt(model, index, material)) return MMS_E_FAILED;
+                MmsEvaluationMaterialV1 value{}; value.h = Header<MmsEvaluationMaterialV1>();
+                value.flags = material.physicsMode == 2 ? MMS_EVALUATION_MATERIAL_FORMAT_PMX : MMS_EVALUATION_MATERIAL_FORMAT_PMD;
+                std::copy(material.nativeDiffuse.begin(), material.nativeDiffuse.end(), value.nativeDiffuse);
+                std::copy(material.diffuseMirrorAndAlpha.begin(), material.diffuseMirrorAndAlpha.end(), value.diffuseMirrorAndAlpha);
+                std::copy(material.specular.begin(), material.specular.end(), value.specular);
+                std::copy(material.ambient.begin(), material.ambient.end(), value.ambient);
+                value.specularPower = material.specularPower;
+                std::copy(material.edgeColor.begin(), material.edgeColor.end(), value.edgeColor);
+                value.edgeSize = material.edgeSize;
+                std::copy(material.textureAdd.begin(), material.textureAdd.end(), value.textureAdd);
+                std::copy(material.textureMultiply.begin(), material.textureMultiply.end(), value.textureMultiply);
+                std::copy(material.sphereAdd.begin(), material.sphereAdd.end(), value.sphereAdd);
+                std::copy(material.sphereMultiply.begin(), material.sphereMultiply.end(), value.sphereMultiply);
+                std::copy(material.toonAdd.begin(), material.toonAdd.end(), value.toonAdd);
+                std::copy(material.toonMultiply.begin(), material.toonMultiply.end(), value.toonMultiply);
+                out = value; return MMS_OK;
+            };
+        }
         result = std::move(candidate); return MMS_OK;
     };
     out = std::move(data); return MMS_OK;
@@ -699,6 +752,9 @@ std::shared_ptr<EvaluationStore> CreateEvaluationStore(MMDApp* app) {
     }, [app](const MmsEvaluationSceneQueryV1&, uint64_t limit,
         std::shared_ptr<const EvaluationSceneSourceData>& out) {
         return CaptureEvaluationMeshScene(app, limit, out);
+    }, [app](const MmsEvaluationSceneQueryV1&, uint64_t limit,
+        std::shared_ptr<const EvaluationSceneSourceData>& out) {
+        return CaptureEvaluationMeshScene(app, limit, out, true);
     });
 #endif
 }

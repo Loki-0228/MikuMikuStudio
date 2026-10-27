@@ -392,9 +392,91 @@ void MeshSdk(){
     CHECK(sdk::EvaluationMeshServices::Query(fake.MeshHost(),preserved)==MMS_E_UNSUPPORTED&&preserved.ready()&&preserved.api().context==service.api().context);
     Fake oldHost;sdk::EvaluationMeshServices missing;CHECK(sdk::EvaluationMeshServices::Query(oldHost.Host(),missing)==MMS_E_VERSION&&!missing.ready());
 }
+
+struct MaterialFake : MeshFake {
+    MmsEvaluationApiV1_6 material{};
+    MmsResult capsResult=MMS_OK,idResult=MMS_OK,readResult=MMS_OK;
+    int materialFault=0;unsigned materialCapsCalls=0,materialIdCalls=0,materialReadCalls=0;
+    MaterialFake(){
+        std::memcpy(&material,&mesh,sizeof(mesh));material.h={sizeof(material),1,6};
+        material.getMaterialCapabilities=Caps16;material.createMaterialSceneSource=Create;
+        material.materialAt=At16;material.readFrameMaterials=Read16;
+    }
+    MmsHostV1 MaterialHost(){auto host=Host();host.queryService=Query16;return host;}
+    static MaterialFake& Self16(void* context){return *static_cast<MaterialFake*>(context);}
+    static MmsResult MMS_CALL Query16(void* context,MmsString name,uint32_t major,uint32_t minor,uint32_t bytes,void* out){auto& f=Self16(context);
+        f.queryMajor=major;f.queryMinor=minor;f.queryBytes=bytes;f.queriedName=name.bytes==18&&!std::memcmp(name.data,"mms.scene.evaluate",18);
+        if(!out||bytes<sizeof(f.material))return MMS_E_ARGUMENT;std::memcpy(out,&f.material,sizeof(f.material));return f.queryResult;
+    }
+    static MmsResult MMS_CALL Caps16(void* context,MmsEvaluationMaterialCapsV1* out){auto& f=Self16(context);++f.materialCapsCalls;
+        *out={H<MmsEvaluationMaterialCapsV1>(),MMS_EVALUATION_MATERIAL_CAP_CPU_VALUES|MMS_EVALUATION_MATERIAL_CAP_PMD|MMS_EVALUATION_MATERIAL_CAP_PMX,4,{0,0}};
+        if(f.materialFault==1)out->h.major=2;if(f.materialFault==2)out->maxItemsPerRead=0;if(f.materialFault==3)out->reserved[1]=1;
+        return f.capsResult;
+    }
+    static MmsResult MMS_CALL At16(void* context,MmsHandle h,uint32_t model,uint32_t index,MmsEvaluationMaterialIdV1* out){auto& f=Self16(context);++f.materialIdCalls;
+        if(!Range(f,h,model,index,1,2,false))return MMS_E_NOT_FOUND;
+        *out={H<MmsEvaluationMaterialIdV1>(),{100+model,200+index},index,0};
+        if(f.materialFault==4)out->h.major=2;if(f.materialFault==5)out->material={};if(f.materialFault==6)out->index++;if(f.materialFault==7)out->reserved=1;
+        return f.idResult;
+    }
+    static MmsResult MMS_CALL Read16(void* context,MmsHandle h,uint32_t model,uint32_t first,uint32_t count,MmsEvaluationMaterialV1* out){auto& f=Self16(context);++f.materialReadCalls;
+        if(!Range(f,h,model,first,count,2,true)||(count&&!out))return MMS_E_ARGUMENT;
+        for(uint32_t i=0;i<count;++i){auto& value=out[i];value={};value.h=H<MmsEvaluationMaterialV1>();value.material={100+model,200+first+i};value.index=first+i;
+            value.flags=model?MMS_EVALUATION_MATERIAL_FORMAT_PMD:MMS_EVALUATION_MATERIAL_FORMAT_PMX;
+            value.nativeDiffuse[0]=float(first+i)+.5f;value.diffuseMirrorAndAlpha[3]=.75f;value.textureMultiply[0]=1;value.toonAdd[2]=.25f;
+            if(f.materialFault==8)value.h.major=2;if(f.materialFault==9)value.material={};if(f.materialFault==10)++value.index;
+            if(f.materialFault==11)value.flags=0;if(f.materialFault==12)value.specular[0]=std::numeric_limits<float>::quiet_NaN();if(f.materialFault==13)value.reserved[0]=1;
+        }
+        return f.readResult;
+    }
+};
+static_assert(!std::is_copy_constructible_v<sdk::EvaluationMaterialSource> && std::is_nothrow_move_constructible_v<sdk::EvaluationMaterialSource>);
+static_assert(!std::is_copy_constructible_v<sdk::EvaluationMaterialFrame> && std::is_nothrow_move_constructible_v<sdk::EvaluationMaterialFrame>);
+static_assert(!std::is_move_assignable_v<sdk::EvaluationMaterialSource> && !std::is_move_assignable_v<sdk::EvaluationMaterialFrame>);
+
+void MaterialSdk(){
+    stage="material sdk";MaterialFake fake;sdk::EvaluationMaterialServices service;
+    CHECK(sdk::EvaluationMaterialServices::Query(fake.MaterialHost(),service)==MMS_OK&&service.ready());
+    CHECK(fake.queryMajor==1&&fake.queryMinor==6&&fake.queryBytes==sizeof(MmsEvaluationApiV1_6)&&fake.queriedName);
+    MmsEvaluationMaterialCapsV1 caps{};CHECK(service.Capabilities(caps)==MMS_OK&&caps.flags==7&&caps.maxItemsPerRead==4);
+    sdk::EvaluationMaterialSource source;CHECK(service.Capture(source,1234)==MMS_OK&&source.get());
+    CHECK(fake.captureQuery.maxRetainedBytes==1234&&source.Mesh().get()==source.get());
+    MmsEvaluationMaterialIdV1 id{};CHECK(source.MaterialAt(0,1,id)==MMS_OK&&id.index==1&&id.material.lo==100&&id.material.hi==201);
+    MmsEvaluationMeshInfoV1 info{};CHECK(source.Mesh().MeshInfo(0,info)==MMS_OK&&info.materialCount==2);
+    std::vector<uint32_t> indices;CHECK(source.Mesh().ReadIndices(0,0,3,indices)==MMS_OK&&indices==std::vector<uint32_t>({0,1,2}));
+    sdk::EvaluationMaterialFrame frame;CHECK(source.Evaluate({1,2},frame)==MMS_OK&&frame.Mesh().get()==frame.get());
+    MmsEvaluationScenePoseV1 pose{};CHECK(frame.Mesh().ReadBonePose(0,0,pose)==MMS_OK);
+    std::vector<MmsEvaluationMaterialV1> values;CHECK(frame.ReadMaterials(0,0,2,values)==MMS_OK&&values.size()==2);
+    CHECK(values[1].index==1&&values[1].material.hi==201&&values[1].flags==MMS_EVALUATION_MATERIAL_FORMAT_PMX&&values[1].nativeDiffuse[0]==1.5f);
+    MmsEvaluationMaterialIdV1 poisoned=Poison<MmsEvaluationMaterialIdV1>();const auto idBefore=poisoned;
+    for(int fault:{4,5,6,7}){fake.materialFault=fault;CHECK(source.MaterialAt(0,1,poisoned)==(fault==4?MMS_E_VERSION:MMS_E_FAILED)&&Same(poisoned,idBefore));}
+    fake.materialFault=0;fake.idResult=MMS_E_CANCELLED;CHECK(source.MaterialAt(0,1,poisoned)==MMS_E_CANCELLED&&Same(poisoned,idBefore));fake.idResult=MMS_OK;
+    const auto prior=values;
+    for(int fault:{8,9,10,11,12,13}){fake.materialFault=fault;CHECK(frame.ReadMaterials(0,0,2,values)==(fault==8?MMS_E_VERSION:MMS_E_FAILED));
+        CHECK(values.size()==prior.size()&&!std::memcmp(values.data(),prior.data(),values.size()*sizeof(values[0])));}
+    fake.materialFault=0;fake.readResult=MMS_E_CANCELLED;
+    CHECK(frame.ReadMaterials(0,0,2,values)==MMS_E_CANCELLED&&values.size()==prior.size()&&!std::memcmp(values.data(),prior.data(),values.size()*sizeof(values[0])));fake.readResult=MMS_OK;
+    failAfter=0;const auto allocation=frame.ReadMaterials(0,0,2,values);failAfter=-1;
+    CHECK(allocation==MMS_E_MEMORY&&values.size()==prior.size()&&!std::memcmp(values.data(),prior.data(),values.size()*sizeof(values[0])));
+    CHECK(frame.ReadMaterials(0,2,0,values)==MMS_OK&&values.empty());values=prior;
+    CHECK(frame.ReadMaterials(0,3,0,values)==MMS_E_ARGUMENT&&values.size()==prior.size());
+    CHECK(frame.ReadMaterials(0,UINT32_MAX,2,values)==MMS_E_ARGUMENT&&values.size()==prior.size());
+    CHECK(frame.ReadMaterials(0,0,5,values)==MMS_E_ARGUMENT&&values.size()==prior.size());
+    sdk::EvaluationMaterialSource held; sdk::EvaluationMaterialFrame heldFrame;
+    CHECK(source.Retain(held)==MMS_OK&&frame.Retain(heldFrame)==MMS_OK);
+    const auto sourceHandle=source.get(),frameHandle=frame.get();sdk::EvaluationMaterialSource moved(std::move(source));sdk::EvaluationMaterialFrame movedFrame(std::move(frame));
+    CHECK(!source&&!frame&&moved.get()==sourceHandle&&movedFrame.get()==frameHandle);
+    fake.results[Release]=MMS_E_BUSY;CHECK(moved.Release()==MMS_E_BUSY&&moved.get()==sourceHandle);fake.results[Release]=MMS_OK;
+    CHECK(moved.Release()==MMS_OK&&held.Release()==MMS_OK&&movedFrame.ReadMaterials(0,0,1,values)==MMS_OK);
+    CHECK(movedFrame.Release()==MMS_OK&&heldFrame.Release()==MMS_OK&&fake.Live()==0);
+    sdk::EvaluationMaterialServices preserved=service;fake.queryResult=MMS_E_VERSION;
+    CHECK(sdk::EvaluationMaterialServices::Query(fake.MaterialHost(),preserved)==MMS_E_VERSION&&preserved.ready()&&preserved.api().context==service.api().context);
+    fake.queryResult=MMS_OK;sdk::EvaluationMeshServices fallback;CHECK(sdk::EvaluationMeshServices::Query(fake.MeshHost(),fallback)==MMS_OK&&fallback.ready());
+    Fake oldHost;sdk::EvaluationMaterialServices absent;CHECK(sdk::EvaluationMaterialServices::Query(oldHost.Host(),absent)==MMS_E_VERSION&&!absent.ready());
+}
 } // namespace
 int main(){
-    try{Negotiation();Ownership();FailedReads();FailedOwnership();ReleaseAndTransfer();ThreadAuthority();MeshSdk();}
+    try{Negotiation();Ownership();FailedReads();FailedOwnership();ReleaseAndTransfer();ThreadAuthority();MeshSdk();MaterialSdk();}
     catch(const std::exception& error){failAfter=-1;std::fprintf(stderr,"EXCEPTION %s: %s\n",stage,error.what());return 1;}
     catch(...){failAfter=-1;std::fprintf(stderr,"EXCEPTION %s\n",stage);return 1;}
     std::printf("evaluation_cpp_sdk_tests: %u checks passed\n",checks);return 0;

@@ -1,6 +1,6 @@
 # 冻结动作与骨架场景求值
 
-`mms.scene.evaluate` 1.5 提供已注册通道采样、独立骨架场景帧及同源网格读取。[C 接口表](include/mms/evaluation.h)保留 1.0 至 1.4 的函数。插件在 UI 线程通过 `MmsHostV1::queryService` 查询，随后可以缓存返回的函数表。
+`mms.scene.evaluate` 1.6 提供已注册通道采样、独立骨架场景帧、同源网格及材质数值读取。[C 接口表](include/mms/evaluation.h)保留 1.0 至 1.5 的函数。插件在 UI 线程通过 `MmsHostV1::queryService` 查询，随后可以缓存返回的函数表。
 
 完整配置的生产插件运行时开放此服务，当前通道能力掩码为 `7`。`MMD_ORIGINAL_PROFILE` 配置的 `CreateEvaluationStore` 工厂返回空对象，未开放此服务。插件以服务查询及对应能力函数的结果判断可用性，不能仅根据 SDK 头文件判断。
 
@@ -28,8 +28,9 @@
 | `1, 3` | `MmsEvaluationApiV1_3` | 160 | `size = 160, major = 1, minor = 3` |
 | `1, 4` | `MmsEvaluationApiV1_4` | 232 | `size = 232, major = 1, minor = 4` |
 | `1, 5` | `MmsEvaluationApiV1_5` | 288 | `size = 288, major = 1, minor = 5` |
+| `1, 6` | `MmsEvaluationApiV1_6` | 320 | `size = 320, major = 1, minor = 6` |
 
-每个新版本保留前一版本的全部函数，所有版本共用 `context` 和句柄。返回的 `context` 属于当前插件实例，调用方原样传给表内函数。表版本不等于通道能力；插件应分别通过 `getCapabilities`、`getSceneCapabilities` 和 `getMeshCapabilities` 查询能力。查询缓冲区小于所请求表的大小时返回 `MMS_E_ARGUMENT`，不会降级写入旧表。主版本不匹配或次版本大于 `5` 时返回 `MMS_E_VERSION`。失败保留输出缓冲区，成功只写所请求版本的表。
+每个新版本保留前一版本的全部函数，所有版本共用 `context` 和句柄。返回的 `context` 属于当前插件实例，调用方原样传给表内函数。表版本不等于通道能力；插件应分别通过 `getCapabilities`、`getSceneCapabilities`、`getMeshCapabilities` 和 `getMaterialCapabilities` 查询能力。查询缓冲区小于所请求表的大小时返回 `MMS_E_ARGUMENT`，不会降级写入旧表。主版本不匹配或次版本大于 `6` 时返回 `MMS_E_VERSION`。失败保留输出缓冲区，成功只写所请求版本的表。
 
 在插件清单中声明 `capabilities: ["scene.evaluate"]`。若插件必须依赖此服务，在 `requiresServices` 中增加 `{"id":"mms.scene.evaluate","major":1,"minMinor":0}`。必须调用表情入口的插件将 `minMinor` 设为 `1`，必须调用显示或 IK 入口的插件设为 `2`。需要区分地面与继承父级的插件设为 `3`，需要独立骨架场景帧的插件设为 `4`。其他清单字段沿用 [SDK 入门](README.md) 的约定。可选功能不应把此服务声明为必需，应在查询失败后关闭对应功能。
 
@@ -46,6 +47,16 @@
 当前结果不包含材质表情后的最终材质、纹理、相机、物理模拟或最终渲染图像，也不构成 PMX 2.1 支持。额度为保留数据和受控工作区的限制，不是进程峰值内存的硬上限。
 
 C++17 插件可通过 `mms/cpp/evaluation.hpp` 使用同一组 C 句柄：`EvaluationMeshServices::Query` 显式查询 1.5，`Capture` 创建 `EvaluationMeshSource`，再调用 `MeshInfo`、`ReadIndices`、`ReadMaterials`、`ReadBindVertices` 或 `Evaluate`。`EvaluationMeshFrame::ReadVertices` 读取帧顶点。批量方法使用 `std::vector`，失败保留原有内容；来源和帧支持 `Retain`、显式 `Release` 和移动构造。不要让服务上下文先于仍存活的包装对象销毁，也不要让同一包装对象的释放与读取并发。
+
+## 1.6 同源材质数值
+
+需要材质结果时，查询 1.6 并通过 `getMaterialCapabilities` 确认 CPU 数值及 PMD、PMX 能力。使用 `createMaterialSceneSource` 在 UI 安全点显式捕获；该来源也支持 1.5 网格接口及原有骨架求值。1.5 的 `createMeshSceneSource` 仍不会启用材质结果。材质来源、网格和帧共用同一捕获身份、模型顺序、句柄和额度规则。
+
+`materialAt` 取得来源内某个材质的稳定 ID，与 `mms.scene` 的 BIND 材质 ID 对应。对来源使用 `evaluateFrame` 后，`readFrameMaterials` 批量读取该帧的材质 ID 和数值。读取范围及零长度规则与网格批量读取相同；单次不得超过能力返回的 `maxItemsPerRead`。失败保持整个输出数组，释放来源或删除原模型后，帧仍可读取其材质。
+
+`nativeDiffuse` 是原生材质记录的原始 diffuse RGB；`diffuseMirrorAndAlpha` 的 RGB 是材质表情合成后的 diffuseMirror，第四项是 diffuse alpha。镜面、环境、边缘、纹理、球面及 Toon 字段也保留原生数值；纹理、球面和 Toon 的加法与乘法分别返回。PMD 为静态材质，三个 tint 的加法为零、乘法为一。结果不包含采样纹理、灯光、Toon 解析、物理或最终像素。非有限材质数据读取失败，不写入调用方数组。
+
+C++17 的 `EvaluationMaterialServices`、`EvaluationMaterialSource` 和 `EvaluationMaterialFrame` 使用同一套 C 句柄。调用 `Query` 和 `Capture` 创建来源，`MaterialAt` 查询 ID，`Evaluate` 后用 `ReadMaterials` 读取结果；来源或帧的 `Mesh()` 返回该对象拥有的 1.5 网格包装的借用视图，不创建新句柄。必须的清单服务将 `minMinor` 设为 `6`；可选能力应在查询失败时降级。
 
 `MmsEvaluationSourceQueryV1` 的字段约定如下。
 

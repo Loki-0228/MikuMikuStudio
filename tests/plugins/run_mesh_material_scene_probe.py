@@ -96,7 +96,67 @@ def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def public_cases(binary, plugin, output):
+    from run_mesh_definition_probe import pmd
+    output.mkdir(exist_ok=False)
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from pmd_selection_fixtures import make_fixture
+    report = dict(binary=str(binary), plugin=str(plugin), cases=[])
+    failed = False
+    for kind, make_model in (("pmx", pmx), ("pmd", pmd)):
+        root = output / kind
+        make_fixture(root, 255, [""] * 10)
+        for directory in ("data", "temp", "local"):
+            (root / directory).mkdir()
+        model = root / ("mesh-material-scene." + kind)
+        model.write_bytes(make_model())
+        package = root / "PLUGINS" / "evaluation"
+        package.mkdir(parents=True)
+        copied_plugin = package / "mms_evaluation_host_probe.dll"
+        shutil.copy2(plugin, copied_plugin)
+        manifest = dict(schemaVersion=1, id="org.example.evaluation-material-host", name="Material frame probe",
+            version="1.0.0", kind="native", abi=dict(major=1, minMinor=0), entry=copied_plugin.name,
+            architecture="x64", minWindows="6.1.7601", capabilities=["scene.evaluate"],
+            requiresServices=[dict(id="mms.scene.evaluate", major=1, minMinor=6)],
+            dependencies=[], nativeDependencies=[], reloadPolicy="restart")
+        (package / "plugin.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        exe = root / "probe.exe"
+        shutil.copy2(binary, exe)
+        env = dict(os.environ, MMS_SCENE_TEST_MODEL=str(model), MMS_PLUGIN_TEST_DIR=str(root / "PLUGINS"),
+                   TEMP=str(root / "temp"), TMP=str(root / "temp"), LOCALAPPDATA=str(root / "local"))
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = 0
+        command = [str(exe), "--mesh-material-scene-only"]
+        case = dict(kind=kind, command=command, inputs={str(x):sha256(x) for x in (exe,copied_plugin,model)})
+        log_path = root / "result.log"
+        with log_path.open("w", encoding="utf-8") as log:
+            try:
+                result = subprocess.run(command, cwd=root, env=env, startupinfo=startup,
+                    creationflags=subprocess.CREATE_NO_WINDOW, stdin=subprocess.DEVNULL,
+                    stdout=log, stderr=subprocess.STDOUT, timeout=180)
+                case["exitCode"] = result.returncode
+            except subprocess.TimeoutExpired:
+                case.update(exitCode=124,error="Host probe exceeded 180 seconds")
+                log.write("\nFAIL: Host probe exceeded 180 seconds\n")
+            except OSError as error:
+                case.update(exitCode=125,error=str(error))
+                log.write("\nFAIL: " + str(error) + "\n")
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        case["completionMarker"] = "Frozen mesh material scene:" in log_text
+        case["publicNegotiation"] = "real plugin negotiates material 1.6 through manager" in log_text
+        case["logSha256"] = sha256(log_path)
+        report["cases"].append(case)
+        print(kind, log_text[-8000:], flush=True)
+        failed = bool(case["exitCode"]) or not case["completionMarker"] or not case["publicNegotiation"] or failed
+    (output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    raise SystemExit(1 if failed else 0)
+
+
 def main():
+    if len(sys.argv)==4:
+        public_cases(*(Path(value).resolve() for value in sys.argv[1:]))
+        return
     binary, output = [Path(value).resolve() for value in sys.argv[1:]]
     # Never reuse or overwrite evidence from another run.
     output.mkdir(exist_ok=False)

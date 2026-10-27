@@ -30,6 +30,7 @@ struct EvaluationSceneModelData {
     std::vector<MmsId> bones;
 };
 using EvaluationSceneModels = std::vector<EvaluationSceneModelData>;
+using EvaluationMaterialIds = std::vector<std::vector<MmsId>>;
 struct EvaluationSceneFrameData {
     std::shared_ptr<const EvaluationSceneModels> models;
     std::vector<uint8_t> visibility;
@@ -38,6 +39,8 @@ struct EvaluationSceneFrameData {
     std::vector<uint32_t> meshVertexCounts;
     std::vector<uint32_t> meshAdditionalUvCounts;
     std::function<MmsResult(uint32_t model, uint32_t vertex, MmsEvaluationMeshVertexV1&)> meshVertex;
+    std::shared_ptr<const EvaluationMaterialIds> materialIds;
+    std::function<MmsResult(uint32_t model, uint32_t material, MmsEvaluationMaterialV1&)> material;
 };
 struct EvaluationSceneSourceData {
     std::shared_ptr<const EvaluationSceneModels> models;
@@ -46,6 +49,7 @@ struct EvaluationSceneSourceData {
     std::function<MmsResult(uint32_t model, uint32_t index, uint32_t&)> meshIndex;
     std::function<MmsResult(uint32_t model, uint32_t material, MmsEvaluationMeshMaterialV1&)> meshMaterial;
     std::function<MmsResult(uint32_t model, uint32_t vertex, MmsEvaluationMeshVertexV1&)> meshBindVertex;
+    std::shared_ptr<const EvaluationMaterialIds> materialIds;
     std::function<MmsResult(const EvaluationTime&, uint64_t maxFrameBytes,
         uint64_t maxWorkspaceBytes, std::shared_ptr<const EvaluationSceneFrameData>&)> evaluate;
 };
@@ -68,7 +72,7 @@ public:
         uint32_t channels, uint64_t maxBytes, std::shared_ptr<const EvaluationData>&)>;
     using CaptureScene = std::function<MmsResult(const MmsEvaluationSceneQueryV1&,
         uint64_t maxBytes, std::shared_ptr<const EvaluationSceneSourceData>&)>;
-    explicit EvaluationStore(CaptureChannels, uint32_t supportedChannels = 3, CaptureScene scene = {}, CaptureScene meshScene = {});
+    explicit EvaluationStore(CaptureChannels, uint32_t supportedChannels = 3, CaptureScene scene = {}, CaptureScene meshScene = {}, CaptureScene materialScene = {});
     ~EvaluationStore();
     EvaluationStore(const EvaluationStore&) = delete;
     EvaluationStore& operator=(const EvaluationStore&) = delete;
@@ -78,6 +82,7 @@ public:
     MmsEvaluationApiV1_3 Api13(Client&);
     MmsEvaluationApiV1_4 Api14(Client&);
     MmsEvaluationApiV1_5 Api15(Client&);
+    MmsEvaluationApiV1_6 Api16(Client&);
     // Retire rejects new operations except release. Existing source handles
     // and admitted calls pin the client until plugins drain them and join work.
     void Retire(Client&) noexcept;
@@ -89,6 +94,7 @@ private:
     CaptureChannels captureChannels_;
     CaptureScene captureScene_;
     CaptureScene captureMeshScene_;
+    CaptureScene captureMaterialScene_;
     uint32_t supportedChannels_ = MMS_EVALUATION_CAP_BONE_CHANNELS;
     DWORD thread_ = GetCurrentThreadId();
     mutable std::mutex mutex_;
@@ -114,10 +120,12 @@ private:
     MmsResult SampleParentState(Client&, MmsHandle, uint32_t, MmsTime, MmsParentStateV1*);
     MmsResult ReadDisplay(Client&, MmsHandle, uint32_t kind, uint32_t index, MmsTime, void*);
     MmsResult SceneCapabilities(Client&, MmsEvaluationSceneCapsV1*);
-    MmsResult CreateScene(Client&, const MmsEvaluationSceneQueryV1*, MmsHandle*, bool mesh = false);
+    MmsResult CreateScene(Client&, const MmsEvaluationSceneQueryV1*, MmsHandle*, uint32_t kind = 0);
     MmsResult MeshCapabilities(Client&, MmsEvaluationMeshCapsV1*);
     MmsResult DescribeMesh(Client&, MmsHandle, uint32_t, MmsEvaluationMeshInfoV1*);
     MmsResult ReadMesh(Client&, MmsHandle, uint32_t, uint32_t, uint32_t, void*, uint32_t);
+    MmsResult MaterialCapabilities(Client&, MmsEvaluationMaterialCapsV1*);
+    MmsResult MaterialAt(Client&, MmsHandle, uint32_t, uint32_t, MmsEvaluationMaterialIdV1*);
     void FinishMeshRead(std::shared_ptr<const Payload>&, Client&, uint64_t workspace) noexcept;
     MmsResult DescribeScene(Client&, MmsHandle, MmsEvaluationSceneInfoV1*);
     MmsResult SceneModelAt(Client&, MmsHandle, uint32_t, MmsEvaluationSceneModelV1*);

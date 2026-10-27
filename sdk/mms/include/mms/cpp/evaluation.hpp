@@ -337,6 +337,7 @@ class EvaluationMeshSource {
     evaluation_detail::Lease lease_;
     MmsEvaluationApiV1_5 api_{};
     friend class EvaluationMeshServices;
+    friend class EvaluationMaterialServices;
 public:
     EvaluationMeshSource() noexcept=default;
     EvaluationMeshSource(const EvaluationMeshSource&)=delete;
@@ -422,6 +423,147 @@ public:
         const auto result=evaluation_detail::Call([&]{return api_.createMeshSceneSource(api_.context,&query,&candidate);});
         if(result!=MMS_OK)return result;if(!candidate)return MMS_E_FAILED;
         out.lease_.Adopt(evaluation_detail::Prefix(api_),candidate);out.api_=api_;return MMS_OK;
+    }
+};
+
+// Material wrappers negotiate 1.6 explicitly. Query failure preserves the
+// output service; callers may separately query EvaluationMeshServices for a
+// 1.5 fallback. All objects operate on the same underlying C handles.
+namespace evaluation_detail {
+inline MmsEvaluationApiV1_5 MeshPrefix(const MmsEvaluationApiV1_6& api) noexcept {
+    MmsEvaluationApiV1_5 result{};
+    static_assert(offsetof(MmsEvaluationApiV1_6,getMaterialCapabilities)==sizeof(result),"evaluation material prefix");
+    std::memcpy(&result,&api,sizeof(result));return result;
+}
+inline bool CompleteMaterial(const MmsEvaluationApiV1_6& api) noexcept {
+    return CompleteMesh(MeshPrefix(api)) && api.getMaterialCapabilities && api.createMaterialSceneSource && api.materialAt && api.readFrameMaterials;
+}
+inline bool MaterialCaps(const MmsEvaluationMaterialCapsV1& value) noexcept {
+    constexpr std::uint32_t known=MMS_EVALUATION_MATERIAL_CAP_CPU_VALUES|MMS_EVALUATION_MATERIAL_CAP_PMD|MMS_EVALUATION_MATERIAL_CAP_PMX;
+    return !(value.flags&~known) && value.maxItemsPerRead && !value.reserved[0] && !value.reserved[1];
+}
+inline bool MaterialResult(const MmsEvaluationMaterialV1& value,std::uint32_t index) noexcept {
+    if(!Id(value.material) || value.index!=index || value.reserved[0] || value.reserved[1] ||
+       (value.flags!=MMS_EVALUATION_MATERIAL_FORMAT_PMD && value.flags!=MMS_EVALUATION_MATERIAL_FORMAT_PMX)) return false;
+    for(float v:value.nativeDiffuse)if(!std::isfinite(v))return false;
+    for(float v:value.diffuseMirrorAndAlpha)if(!std::isfinite(v))return false;
+    for(float v:value.specular)if(!std::isfinite(v))return false;
+    for(float v:value.ambient)if(!std::isfinite(v))return false;
+    if(!std::isfinite(value.specularPower)||!std::isfinite(value.edgeSize))return false;
+    for(float v:value.edgeColor)if(!std::isfinite(v))return false;
+    for(float v:value.textureAdd)if(!std::isfinite(v))return false;
+    for(float v:value.textureMultiply)if(!std::isfinite(v))return false;
+    for(float v:value.sphereAdd)if(!std::isfinite(v))return false;
+    for(float v:value.sphereMultiply)if(!std::isfinite(v))return false;
+    for(float v:value.toonAdd)if(!std::isfinite(v))return false;
+    for(float v:value.toonMultiply)if(!std::isfinite(v))return false;
+    return true;
+}
+inline MmsResult MaterialCapabilities(const MmsEvaluationApiV1_6& api,MmsEvaluationMaterialCapsV1& out) noexcept {
+    return Read(out,[&](auto& value){return api.getMaterialCapabilities(api.context,&value);},MaterialCaps);
+}
+}
+
+class EvaluationMaterialSource;
+class EvaluationMaterialFrame {
+    EvaluationMeshFrame mesh_;
+    MmsEvaluationApiV1_6 api_{};
+    friend class EvaluationMaterialSource;
+public:
+    EvaluationMaterialFrame() noexcept=default;
+    EvaluationMaterialFrame(const EvaluationMaterialFrame&)=delete;
+    EvaluationMaterialFrame& operator=(const EvaluationMaterialFrame&)=delete;
+    EvaluationMaterialFrame(EvaluationMaterialFrame&&) noexcept=default;
+    EvaluationMaterialFrame& operator=(EvaluationMaterialFrame&&)=delete;
+    explicit operator bool() const noexcept {return bool(mesh_);}
+    MmsHandle get() const noexcept {return mesh_.get();}
+    // The borrowed view is the very same handle, valid only as long as this owner.
+    const EvaluationMeshFrame& Mesh() const noexcept {return mesh_;}
+    const MmsEvaluationApiV1_6& api() const noexcept {return api_;}
+    MmsResult ReadMaterials(std::uint32_t model,std::uint32_t first,std::uint32_t count,
+        std::vector<MmsEvaluationMaterialV1>& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::Call([&]() -> MmsResult {
+            MmsEvaluationMaterialCapsV1 caps{};const auto status=evaluation_detail::MaterialCapabilities(api_,caps);
+            if(status!=MMS_OK)return status;
+            if(count>caps.maxItemsPerRead || count>UINT32_MAX-first)return MMS_E_ARGUMENT;
+            std::vector<MmsEvaluationMaterialV1> values(count);
+            const auto result=api_.readFrameMaterials(api_.context,get(),model,first,count,count?values.data():nullptr);
+            if(result!=MMS_OK)return result;
+            for(std::uint32_t i=0;i<count;++i){
+                if(!evaluation_detail::ValueHeader(values[i]))return MMS_E_VERSION;
+                if(!evaluation_detail::MaterialResult(values[i],first+i))return MMS_E_FAILED;
+            }
+            out.swap(values);return MMS_OK;
+        });
+    }
+    MmsResult Retain(EvaluationMaterialFrame& out) const noexcept {
+        const auto result=mesh_.Retain(out.mesh_);if(result==MMS_OK)out.api_=api_;return result;
+    }
+    MmsResult Release() noexcept {const auto result=mesh_.Release();if(result==MMS_OK)api_={};return result;}
+    MmsHandle detach() noexcept {api_={};return mesh_.detach();}
+};
+
+class EvaluationMaterialServices;
+class EvaluationMaterialSource {
+    EvaluationMeshSource mesh_;
+    MmsEvaluationApiV1_6 api_{};
+    friend class EvaluationMaterialServices;
+public:
+    EvaluationMaterialSource() noexcept=default;
+    EvaluationMaterialSource(const EvaluationMaterialSource&)=delete;
+    EvaluationMaterialSource& operator=(const EvaluationMaterialSource&)=delete;
+    EvaluationMaterialSource(EvaluationMaterialSource&&) noexcept=default;
+    EvaluationMaterialSource& operator=(EvaluationMaterialSource&&)=delete;
+    explicit operator bool() const noexcept {return bool(mesh_);}
+    MmsHandle get() const noexcept {return mesh_.get();}
+    const EvaluationMeshSource& Mesh() const noexcept {return mesh_;}
+    const MmsEvaluationApiV1_6& api() const noexcept {return api_;}
+    MmsResult MaterialAt(std::uint32_t model,std::uint32_t index,MmsEvaluationMaterialIdV1& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::Read(out,[&](auto& value){return api_.materialAt(api_.context,get(),model,index,&value);},
+            [index](const auto& value){return evaluation_detail::Id(value.material)&&value.index==index&&!value.reserved;});
+    }
+    MmsResult Evaluate(MmsTime time,EvaluationMaterialFrame& out,EvaluationFrameOptions options={}) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;if(out)return MMS_E_BUSY;
+        const auto result=mesh_.Evaluate(time,out.mesh_,options);if(result==MMS_OK)out.api_=api_;return result;
+    }
+    MmsResult Retain(EvaluationMaterialSource& out) const noexcept {
+        const auto result=mesh_.Retain(out.mesh_);if(result==MMS_OK)out.api_=api_;return result;
+    }
+    MmsResult Release() noexcept {const auto result=mesh_.Release();if(result==MMS_OK)api_={};return result;}
+    MmsHandle detach() noexcept {api_={};return mesh_.detach();}
+};
+
+class EvaluationMaterialServices {
+    MmsEvaluationApiV1_6 api_{};
+    bool ready_=false;
+public:
+    EvaluationMaterialServices() noexcept=default;
+    static MmsResult Query(const MmsHostV1& host,EvaluationMaterialServices& out) noexcept {
+        if(host.h.size<sizeof(host)||host.h.major!=1)return MMS_E_VERSION;
+        if(!host.queryService)return MMS_E_ARGUMENT;
+        return evaluation_detail::Call([&]() -> MmsResult {
+            MmsEvaluationApiV1_6 table{};
+            const auto result=host.queryService(host.context,{"mms.scene.evaluate",18},1,6,static_cast<std::uint32_t>(sizeof(table)),&table);
+            if(result!=MMS_OK)return result;
+            if(table.h.size<sizeof(table)||table.h.major!=1||table.h.minor<6)return MMS_E_VERSION;
+            if(!evaluation_detail::CompleteMaterial(table))return MMS_E_UNSUPPORTED;
+            EvaluationMaterialServices candidate;candidate.api_=table;candidate.ready_=true;out=candidate;return MMS_OK;
+        });
+    }
+    bool ready() const noexcept {return ready_;}
+    const MmsEvaluationApiV1_6& api() const noexcept {return api_;}
+    MmsResult Capabilities(MmsEvaluationMaterialCapsV1& out) const noexcept {
+        if(!ready_)return MMS_E_NOT_READY;return evaluation_detail::MaterialCapabilities(api_,out);
+    }
+    MmsResult Capture(EvaluationMaterialSource& out,std::uint64_t maxRetainedBytes=0) const noexcept {
+        if(!ready_)return MMS_E_NOT_READY;if(out)return MMS_E_BUSY;
+        const MmsEvaluationSceneQueryV1 query{evaluation_detail::Header<MmsEvaluationSceneQueryV1>(),maxRetainedBytes,0,0};
+        MmsHandle candidate=0;const auto result=evaluation_detail::Call([&]{return api_.createMaterialSceneSource(api_.context,&query,&candidate);});
+        if(result!=MMS_OK)return result;if(!candidate)return MMS_E_FAILED;
+        const auto prefix=evaluation_detail::MeshPrefix(api_);
+        out.mesh_.lease_.Adopt(evaluation_detail::Prefix(prefix),candidate);out.mesh_.api_=prefix;out.api_=api_;return MMS_OK;
     }
 };
 } // namespace mms::sdk

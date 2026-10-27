@@ -73,6 +73,32 @@ MmsResult SceneModelBytes(const EvaluationSceneModels& models, uint64_t& bytes) 
     }
     return MMS_OK;
 }
+MmsResult SceneMaterialBytes(const EvaluationMaterialIds& materials, uint64_t& bytes) noexcept {
+    if (materials.size()>UINT32_MAX || !AddBytes(bytes,1,sizeof(EvaluationMaterialIds)) ||
+        !AddBytes(bytes,materials.capacity(),sizeof(std::vector<MmsId>))) return MMS_E_MEMORY;
+    for (const auto& ids:materials)
+        if (ids.size()>UINT32_MAX || !AddBytes(bytes,ids.capacity(),sizeof(MmsId))) return MMS_E_MEMORY;
+    return MMS_OK;
+}
+MmsResult ValidateMaterialIds(const EvaluationSceneModels& models, const EvaluationMaterialIds& materials, uint64_t limit) {
+    if (models.size()!=materials.size()) return MMS_E_FAILED;
+    uint64_t count=models.size();
+    for (size_t i=0;i<models.size();++i) {
+        if (!AddBytes(count,models[i].bones.size(),1) || !AddBytes(count,materials[i].size(),1)) return MMS_E_MEMORY;
+    }
+    uint64_t bytes=sizeof(std::vector<MmsId>);
+    if (!AddBytes(bytes,count,sizeof(MmsId)) || bytes>limit || count>SIZE_MAX) return MMS_E_MEMORY;
+    std::vector<MmsId> ids;ids.reserve(static_cast<size_t>(count));
+    bytes=sizeof(ids);if (!AddBytes(bytes,ids.capacity(),sizeof(MmsId)) || bytes>limit) return MMS_E_MEMORY;
+    for (size_t i=0;i<models.size();++i) {
+        ids.push_back(models[i].object.id);
+        ids.insert(ids.end(),models[i].bones.begin(),models[i].bones.end());
+        for (const auto& id:materials[i]) {if (Empty(id)) return MMS_E_FAILED;ids.push_back(id);}
+    }
+    std::sort(ids.begin(),ids.end(),IdLess{});
+    for(size_t i=1;i<ids.size();++i) if(Same(ids[i-1],ids[i])) return MMS_E_FAILED;
+    return MMS_OK;
+}
 
 MmsResult ValidateSceneModels(const EvaluationSceneModels& models, uint64_t scratchLimit) {
     // The existing identity registry assigns all object and element IDs in one
@@ -220,8 +246,8 @@ struct EvaluationStore::Payload {
 };
 
 EvaluationStore::EvaluationStore(Capture capture) : capture_(std::move(capture)) {}
-EvaluationStore::EvaluationStore(CaptureChannels captureChannels, uint32_t supportedChannels, CaptureScene scene, CaptureScene meshScene)
-    : captureChannels_(std::move(captureChannels)), captureScene_(std::move(scene)), captureMeshScene_(std::move(meshScene)), supportedChannels_(supportedChannels) {
+EvaluationStore::EvaluationStore(CaptureChannels captureChannels, uint32_t supportedChannels, CaptureScene scene, CaptureScene meshScene, CaptureScene materialScene)
+    : captureChannels_(std::move(captureChannels)), captureScene_(std::move(scene)), captureMeshScene_(std::move(meshScene)), captureMaterialScene_(std::move(materialScene)), supportedChannels_(supportedChannels) {
     constexpr uint32_t known = MMS_EVALUATION_CAP_BONE_CHANNELS | MMS_EVALUATION_CAP_MORPH_WEIGHTS |
         MMS_EVALUATION_CAP_DISPLAY;
     if (!supportedChannels_ || (supportedChannels_ & ~known)) throw std::invalid_argument("invalid supported channels");
@@ -582,6 +608,25 @@ MmsEvaluationApiV1_5 EvaluationStore::Api15(Client& client) {
     };
     api.readMeshVertices = [](void* ctx,MmsHandle h,uint32_t m,uint32_t first,uint32_t count,MmsEvaluationMeshVertexV1* out) {
         return Gateway([&] { if (!ctx) return MMS_E_ARGUMENT; auto& c=*static_cast<Client*>(ctx); return c.owner ? c.owner->ReadMesh(c,h,m,first,count,out,3) : MMS_E_ARGUMENT; });
+    };
+    return api;
+}
+
+MmsEvaluationApiV1_6 EvaluationStore::Api16(Client& client) {
+    const auto base=Api15(client); MmsEvaluationApiV1_6 api{};
+    static_assert(offsetof(MmsEvaluationApiV1_6,getMaterialCapabilities)==sizeof(base), "evaluation 1.5 prefix");
+    std::memcpy(&api,&base,sizeof(base)); api.h=MmsHeader{sizeof(api),1,6};
+    api.getMaterialCapabilities=[](void* ctx,MmsEvaluationMaterialCapsV1* out) {
+        return Gateway([&] {if(!ctx)return MMS_E_ARGUMENT;auto& c=*static_cast<Client*>(ctx);return c.owner?c.owner->MaterialCapabilities(c,out):MMS_E_ARGUMENT;});
+    };
+    api.createMaterialSceneSource=[](void* ctx,const MmsEvaluationSceneQueryV1* q,MmsHandle* out) {
+        return Gateway([&] {if(!ctx)return MMS_E_ARGUMENT;auto& c=*static_cast<Client*>(ctx);return c.owner?c.owner->CreateScene(c,q,out,2):MMS_E_ARGUMENT;});
+    };
+    api.materialAt=[](void* ctx,MmsHandle h,uint32_t model,uint32_t index,MmsEvaluationMaterialIdV1* out) {
+        return Gateway([&] {if(!ctx)return MMS_E_ARGUMENT;auto& c=*static_cast<Client*>(ctx);return c.owner?c.owner->MaterialAt(c,h,model,index,out):MMS_E_ARGUMENT;});
+    };
+    api.readFrameMaterials=[](void* ctx,MmsHandle h,uint32_t model,uint32_t first,uint32_t count,MmsEvaluationMaterialV1* out) {
+        return Gateway([&] {if(!ctx)return MMS_E_ARGUMENT;auto& c=*static_cast<Client*>(ctx);return c.owner?c.owner->ReadMesh(c,h,model,first,count,out,4):MMS_E_ARGUMENT;});
     };
     return api;
 }
@@ -1166,6 +1211,27 @@ MmsResult EvaluationStore::MeshCapabilities(Client& client, MmsEvaluationMeshCap
     value.maxItemsPerRead = kMaxMeshBatch; *out = value; return MMS_OK;
 }
 
+MmsResult EvaluationStore::MaterialCapabilities(Client& client, MmsEvaluationMaterialCapsV1* out) {
+    if(!out)return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);if(client.retired)return MMS_E_NOT_READY;
+    MmsEvaluationMaterialCapsV1 value{};value.h=Header<MmsEvaluationMaterialCapsV1>();
+    value.flags=captureMaterialScene_ ? MMS_EVALUATION_MATERIAL_CAP_CPU_VALUES|MMS_EVALUATION_MATERIAL_CAP_PMD|MMS_EVALUATION_MATERIAL_CAP_PMX : 0;
+    value.maxItemsPerRead=kMaxMeshBatch;*out=value;return MMS_OK;
+}
+
+MmsResult EvaluationStore::MaterialAt(Client& client,MmsHandle source,uint32_t model,uint32_t index,MmsEvaluationMaterialIdV1* out) {
+    if(!out)return MMS_E_ARGUMENT;
+    std::lock_guard<std::mutex> lock(mutex_);if(client.retired)return MMS_E_NOT_READY;
+    const auto found=sources_.find(source);
+    if(found==sources_.end()||found->second.owner!=&client)return MMS_E_NOT_FOUND;
+    const auto& payload=*found->second.data;
+    if(payload.kind!=Payload::Kind::SceneSource || !payload.sceneSource->materialIds)return MMS_E_UNSUPPORTED;
+    const auto& materials=*payload.sceneSource->materialIds;
+    if(model>=materials.size()||index>=materials[model].size())return MMS_E_NOT_FOUND;
+    MmsEvaluationMaterialIdV1 value{};value.h=Header<MmsEvaluationMaterialIdV1>();value.material=materials[model][index];value.index=index;
+    *out=value;return MMS_OK;
+}
+
 MmsResult EvaluationStore::DescribeMesh(Client& client, MmsHandle source, uint32_t model, MmsEvaluationMeshInfoV1* out) {
     if (!out) return MMS_E_ARGUMENT;
     std::shared_ptr<const Payload> payload;
@@ -1195,7 +1261,7 @@ MmsResult EvaluationStore::DescribeMesh(Client& client, MmsHandle source, uint32
 
 MmsResult EvaluationStore::ReadMesh(Client& client, MmsHandle handle, uint32_t model,
     uint32_t first, uint32_t count, void* out, uint32_t kind) {
-    if (kind>3 || count>kMaxMeshBatch || (count && !out)) return MMS_E_ARGUMENT;
+    if (kind>4 || count>kMaxMeshBatch || (count && !out)) return MMS_E_ARGUMENT;
     std::shared_ptr<const Payload> payload;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1203,7 +1269,10 @@ MmsResult EvaluationStore::ReadMesh(Client& client, MmsHandle handle, uint32_t m
         const auto found=sources_.find(handle);
         if (found==sources_.end() || found->second.owner!=&client) return MMS_E_NOT_FOUND;
         const auto& p=found->second.data;
-        if (kind==3) {
+        if (kind==4) {
+            if(p->kind!=Payload::Kind::SceneFrame || !p->sceneFrame->material || !p->sceneFrame->materialIds)return MMS_E_UNSUPPORTED;
+            if(model>=p->sceneFrame->models->size() || model>=p->sceneFrame->materialIds->size())return MMS_E_NOT_FOUND;
+        } else if (kind==3) {
             if (p->kind!=Payload::Kind::SceneFrame || !p->sceneFrame->meshVertex) return MMS_E_UNSUPPORTED;
             if (model>=p->sceneFrame->models->size()) return MMS_E_NOT_FOUND;
             if (model>=p->sceneFrame->meshVertexCounts.size() || model>=p->sceneFrame->meshAdditionalUvCounts.size()) return MMS_E_FAILED;
@@ -1216,7 +1285,8 @@ MmsResult EvaluationStore::ReadMesh(Client& client, MmsHandle handle, uint32_t m
     uint64_t workspace=0;
     const auto result=Gateway([&]() -> MmsResult {
         MmsEvaluationMeshInfoV1 info{};uint32_t extent=0,uvCount=0;
-        if (kind==3) { extent=payload->sceneFrame->meshVertexCounts[model]; uvCount=payload->sceneFrame->meshAdditionalUvCounts[model]; }
+        if (kind==4) extent=static_cast<uint32_t>((*payload->sceneFrame->materialIds)[model].size());
+        else if (kind==3) { extent=payload->sceneFrame->meshVertexCounts[model]; uvCount=payload->sceneFrame->meshAdditionalUvCounts[model]; }
         else {
             auto status=payload->sceneSource->meshInfo(model,info);
             if (status!=MMS_OK) return status;
@@ -1226,7 +1296,7 @@ MmsResult EvaluationStore::ReadMesh(Client& client, MmsHandle handle, uint32_t m
         }
         if (first>extent || count>extent-first) return MMS_E_ARGUMENT;
         if (!count) return MMS_OK;
-        const uint64_t stride=kind==0 ? sizeof(uint32_t) : kind==1 ? sizeof(MmsEvaluationMeshMaterialV1) : sizeof(MmsEvaluationMeshVertexV1);
+        const uint64_t stride=kind==0 ? sizeof(uint32_t) : kind==1 ? sizeof(MmsEvaluationMeshMaterialV1) : kind==4 ? sizeof(MmsEvaluationMaterialV1) : sizeof(MmsEvaluationMeshVertexV1);
         workspace=64;
         if (!AddBytes(workspace,count,stride)) return MMS_E_MEMORY;
         {
@@ -1249,6 +1319,24 @@ MmsResult EvaluationStore::ReadMesh(Client& client, MmsHandle handle, uint32_t m
                         if (value.reserved[0] || value.reserved[1] || value.firstIndex>info.indexCount || value.indexCount>info.indexCount-value.firstIndex || value.firstIndex%3 || value.indexCount%3) return MMS_E_FAILED;
                         value.h=Header<MmsEvaluationMeshMaterialV1>();
                     }
+                } else if constexpr (std::is_same<T,MmsEvaluationMaterialV1>::value) {
+                    auto& value=values[i];status=payload->sceneFrame->material(model,first+i,value);
+                    if(status==MMS_OK) {
+                        if(value.reserved[0]||value.reserved[1] || (value.flags!=MMS_EVALUATION_MATERIAL_FORMAT_PMD && value.flags!=MMS_EVALUATION_MATERIAL_FORMAT_PMX))return MMS_E_FAILED;
+                        for(float n:value.nativeDiffuse)if(!std::isfinite(n))return MMS_E_FAILED;
+                        for(float n:value.diffuseMirrorAndAlpha)if(!std::isfinite(n))return MMS_E_FAILED;
+                        for(float n:value.specular)if(!std::isfinite(n))return MMS_E_FAILED;
+                        for(float n:value.ambient)if(!std::isfinite(n))return MMS_E_FAILED;
+                        if(!std::isfinite(value.specularPower)||!std::isfinite(value.edgeSize))return MMS_E_FAILED;
+                        for(float n:value.edgeColor)if(!std::isfinite(n))return MMS_E_FAILED;
+                        for(float n:value.textureAdd)if(!std::isfinite(n))return MMS_E_FAILED;
+                        for(float n:value.textureMultiply)if(!std::isfinite(n))return MMS_E_FAILED;
+                        for(float n:value.sphereAdd)if(!std::isfinite(n))return MMS_E_FAILED;
+                        for(float n:value.sphereMultiply)if(!std::isfinite(n))return MMS_E_FAILED;
+                        for(float n:value.toonAdd)if(!std::isfinite(n))return MMS_E_FAILED;
+                        for(float n:value.toonMultiply)if(!std::isfinite(n))return MMS_E_FAILED;
+                        value.h=Header<MmsEvaluationMaterialV1>();value.index=first+i;value.material=(*payload->sceneFrame->materialIds)[model][first+i];
+                    }
                 } else {
                     auto& value=values[i];status=kind==2 ? payload->sceneSource->meshBindVertex(model,first+i,value) : payload->sceneFrame->meshVertex(model,first+i,value);
                     if (status==MMS_OK) {
@@ -1267,6 +1355,7 @@ MmsResult EvaluationStore::ReadMesh(Client& client, MmsHandle handle, uint32_t m
         };
         if (kind==0) return copy(uint32_t{});
         if (kind==1) return copy(MmsEvaluationMeshMaterialV1{});
+        if (kind==4) return copy(MmsEvaluationMaterialV1{});
         return copy(MmsEvaluationMeshVertexV1{});
     });
     FinishMeshRead(payload,client,workspace);
@@ -1299,16 +1388,16 @@ void EvaluationStore::FinishMeshRead(std::shared_ptr<const Payload>& payload,
     }
 }
 
-MmsResult EvaluationStore::CreateScene(Client& client, const MmsEvaluationSceneQueryV1* query, MmsHandle* out, bool mesh) {
+MmsResult EvaluationStore::CreateScene(Client& client, const MmsEvaluationSceneQueryV1* query, MmsHandle* out, uint32_t kind) {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
-    if (!out || !Valid(query)) return MMS_E_ARGUMENT;
+    if (!out || !Valid(query) || kind>2) return MMS_E_ARGUMENT;
     const auto request = *query;
     if (request.flags || request.reserved || request.maxRetainedBytes > kMaxSourceBytes) return MMS_E_ARGUMENT;
     const uint64_t bound = request.maxRetainedBytes ? request.maxRetainedBytes : kMaxSourceBytes;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (client.retired) return MMS_E_NOT_READY;
-        if (!(mesh ? captureMeshScene_ : captureScene_)) return MMS_E_UNSUPPORTED;
+        if (!(kind==2 ? captureMaterialScene_ : kind==1 ? captureMeshScene_ : captureScene_)) return MMS_E_UNSUPPORTED;
         if (acquiring_) return MMS_E_BUSY;
         if (client.handles >= kMaxHandlesPerClient || sources_.size() >= kMaxTotalHandles ||
             next_ >= kHandleLimit || !captureId_) return MMS_E_BUSY;
@@ -1319,13 +1408,25 @@ MmsResult EvaluationStore::CreateScene(Client& client, const MmsEvaluationSceneQ
     std::shared_ptr<const EvaluationSceneSourceData> data;
     std::shared_ptr<Payload> payload;
     const auto result = Gateway([&]() -> MmsResult {
-        const auto captured = (mesh ? captureMeshScene_ : captureScene_)(request, bound, data);
+        const auto captured = (kind==2 ? captureMaterialScene_ : kind==1 ? captureMeshScene_ : captureScene_)(request, bound, data);
         if (captured != MMS_OK) return captured;
         if (!data || !data.use_count() || !data->models || !data->models.use_count() || !data->evaluate) return MMS_E_FAILED;
-        if (mesh && (!data->meshInfo || !data->meshIndex || !data->meshMaterial || !data->meshBindVertex)) return MMS_E_FAILED;
+        if (kind && (!data->meshInfo || !data->meshIndex || !data->meshMaterial || !data->meshBindVertex)) return MMS_E_FAILED;
+        if ((kind==2) != bool(data->materialIds)) return MMS_E_FAILED;
         uint64_t verified = sizeof(EvaluationSceneSourceData);
         const auto measured = SceneModelBytes(*data->models, verified);
         if (measured != MMS_OK) return measured;
+        if (data->materialIds) {
+            const auto size=SceneMaterialBytes(*data->materialIds,verified);
+            if(size!=MMS_OK)return size;
+            const auto valid=ValidateMaterialIds(*data->models,*data->materialIds,bound);
+            if(valid!=MMS_OK)return valid;
+            for(uint32_t i=0;i<data->models->size();++i) {
+                MmsEvaluationMeshInfoV1 info{};const auto status=data->meshInfo(i,info);
+                if(status!=MMS_OK)return status;
+                if(!ValidMeshInfo(info,(*data->models)[i].object)||info.materialCount!=(*data->materialIds)[i].size())return MMS_E_FAILED;
+            }
+        }
         if (data->retainedBytes < verified) return MMS_E_FAILED;
         uint64_t charge = data->retainedBytes;
         // Payload owns the two empty legacy ID trees even for scene kinds.
@@ -1464,6 +1565,11 @@ MmsResult EvaluationStore::EvaluateFrame(Client& client, const MmsEvaluationFram
         if (!data || !data.use_count() || !data->models || !data->models.use_count() || !data->sample) return MMS_E_FAILED;
         if (source->sceneSource->meshInfo && (!data->meshVertex || data->meshVertexCounts.size() != data->models->size() || data->meshAdditionalUvCounts.size() != data->models->size())) return MMS_E_FAILED;
         if (!source->sceneSource->meshInfo && (data->meshVertex || !data->meshVertexCounts.empty() || !data->meshAdditionalUvCounts.empty())) return MMS_E_FAILED;
+        const auto& materialIds=source->sceneSource->materialIds;
+        if(materialIds) {
+            if(!data->material || !data->materialIds || data->materialIds.get()!=materialIds.get() ||
+               data->materialIds.owner_before(materialIds) || materialIds.owner_before(data->materialIds))return MMS_E_FAILED;
+        } else if(data->material || data->materialIds) return MMS_E_FAILED;
         const auto& identities = source->sceneSource->models;
         // Matching contents alone cannot establish the same frozen capture.
         // Check both address and shared ownership, without copying that lease.
@@ -1484,6 +1590,9 @@ MmsResult EvaluationStore::EvaluateFrame(Client& client, const MmsEvaluationFram
         if (!AddBytes(verified, data->visibility.capacity(), sizeof(uint8_t))) return MMS_E_MEMORY;
         if (!AddBytes(verified, data->meshVertexCounts.capacity(), sizeof(uint32_t))) return MMS_E_MEMORY;
         if (!AddBytes(verified, data->meshAdditionalUvCounts.capacity(), sizeof(uint32_t))) return MMS_E_MEMORY;
+        if (data->materialIds) {
+            const auto size=SceneMaterialBytes(*data->materialIds,verified);if(size!=MMS_OK)return size;
+        }
         if (data->retainedBytes < verified) return MMS_E_FAILED;
         uint64_t charge = data->retainedBytes;
         if (!AddBytes(charge, 1, sizeof(Payload)) || !AddBytes(charge, 2, kIndexNodeBytes) ||

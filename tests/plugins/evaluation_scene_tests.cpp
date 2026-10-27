@@ -43,6 +43,8 @@ struct Control{
     std::atomic<uint64_t> sourceBytes{4096},frameBytes{8192},generation{3};std::atomic<double> continuous{-1};std::atomic<uint32_t> discrete{UINT32_MAX};
     std::shared_ptr<Gate> evaluateGate,poseGate,meshGate;std::weak_ptr<const EvaluationSceneModels> models;
     std::atomic<int> meshMode{0};
+    std::shared_ptr<Gate> materialGate;
+    std::atomic<int> materialMode{0};
     bool empty=false;
 };
 static MmsEvaluationScenePoseV1 Pose(double frame,uint64_t generation,unsigned model,unsigned boneIndex){
@@ -149,6 +151,62 @@ static EvaluationStore::CaptureScene MeshSceneCapture(const std::shared_ptr<Cont
                 if(control->meshMode==12)out.additionalUv[4]=7;
                 if(control->meshMode==2&&index==1)out.reserved[0]=1;return maybe(index);
             };
+            result=frame;return MMS_OK;
+        };
+        out=source;return MMS_OK;
+    };
+}
+static MmsEvaluationMaterialV1 MaterialValue(uint32_t model,uint32_t index) {
+    MmsEvaluationMaterialV1 value{};
+    value.h={1,77,88};value.material={777,888};value.index=999;
+    value.flags=MMS_EVALUATION_MATERIAL_FORMAT_PMX;
+    for(unsigned i=0;i<3;++i){value.nativeDiffuse[i]=float(10*model+index+i);value.specular[i]=float(i)+.25f;value.ambient[i]=float(i)-.75f;}
+    for(unsigned i=0;i<4;++i){value.diffuseMirrorAndAlpha[i]=float(index)+i*.25f;value.edgeColor[i]=i*.125f;
+        value.textureAdd[i]=i*.0625f;value.textureMultiply[i]=1+i*.125f;value.sphereAdd[i]=i*.25f;
+        value.sphereMultiply[i]=1+i*.25f;value.toonAdd[i]=-float(i)*.125f;value.toonMultiply[i]=1+i*.375f;}
+    value.specularPower=3.5f;value.edgeSize=.75f;return value;
+}
+static EvaluationStore::CaptureScene MaterialSceneCapture(const std::shared_ptr<Control>& control) {
+    return [control](const auto& query,uint64_t budget,std::shared_ptr<const EvaluationSceneSourceData>& out)->MmsResult {
+        std::shared_ptr<const EvaluationSceneSourceData> original;
+        const auto status=MeshSceneCapture(control)(query,budget,original);
+        if(status!=MMS_OK||!original)return status;
+        auto source=std::make_shared<EvaluationSceneSourceData>(*original);
+        auto ids=std::make_shared<EvaluationMaterialIds>();
+        if(!control->empty)*ids={{{101,102},{103,104}}, {}};
+        if(!ids->empty())switch(control->materialMode.load()){
+            case 20:(*ids)[0][0]={};break;
+            case 21:(*ids)[0][1]=(*ids)[0][0];break;
+            case 22:(*ids)[0][0]=original->models->at(0).object.id;break;
+            case 23:(*ids)[0].pop_back();break;
+            case 24:(*ids)[0][0]=original->models->at(0).bones[0];break;
+        }
+        source->materialIds=ids;
+        auto evaluate=source->evaluate;
+        source->evaluate=[evaluate,ids,control](const EvaluationTime& time,uint64_t retained,uint64_t workspace,
+            std::shared_ptr<const EvaluationSceneFrameData>& result)->MmsResult {
+            std::shared_ptr<const EvaluationSceneFrameData> originalFrame;
+            const auto status=evaluate(time,retained,workspace,originalFrame);
+            if(status!=MMS_OK||!originalFrame)return status;
+            auto frame=std::make_shared<EvaluationSceneFrameData>(*originalFrame);frame->materialIds=ids;
+            frame->material=[control](uint32_t model,uint32_t index,MmsEvaluationMaterialV1& value)->MmsResult {
+                if(control->materialGate&&!control->materialGate->Wait())return MMS_E_FAILED;
+                value=MaterialValue(model,index);
+                if(index==1)switch(control->materialMode.load()) {
+                    case 1:value.nativeDiffuse[0]=std::numeric_limits<float>::quiet_NaN();break;
+                    case 2:value.reserved[0]=1;break;
+                    case 3:return MMS_E_CANCELLED;
+                    case 4:throw std::bad_alloc();
+                    case 5:throw std::runtime_error("material");
+                    case 6:value.flags=0;break;
+                    case 7:value.textureMultiply[2]=std::numeric_limits<float>::infinity();break;
+                    case 8:value.flags=MMS_EVALUATION_MATERIAL_FORMAT_PMD;break;
+                }
+                return MMS_OK;
+            };
+            if(control->materialMode==30)frame->materialIds=std::make_shared<EvaluationMaterialIds>(*ids);
+            if(control->materialMode==31)frame->materialIds.reset();
+            if(control->materialMode==32)frame->material={};
             result=frame;return MMS_OK;
         };
         out=source;return MMS_OK;
@@ -476,6 +534,100 @@ static void MeshPublicContracts(){
     vertices={};CHECK(api.readMeshVertices(api.context,alias,0,0,4,vertices.data())==MMS_OK&&vertices[3].position[0]==5);
     CHECK(api.release(api.context,alias)==MMS_OK&&api.release(api.context,legacy)==MMS_OK&&api.release(api.context,legacyFrame)==MMS_OK&&!store.HasLeases(client));
 }
+static void MaterialPublicContracts(){
+    section="1.6 material source, identities and atomic batch reads";
+    auto control=std::make_shared<Control>();
+    EvaluationStore store(ChannelCapture(),1,SceneCapture(control),MeshSceneCapture(control),MaterialSceneCapture(control));
+    EvaluationStore::Client client,foreign;client.owner=foreign.owner=&store;
+    const auto api=store.Api16(client),other=store.Api16(foreign);const auto old=store.Api15(client);
+    CHECK(api.h.major==1&&api.h.minor==6&&api.h.size==sizeof(api));
+    CHECK(!std::memcmp(reinterpret_cast<const char*>(&api)+sizeof(MmsHeader),reinterpret_cast<const char*>(&old)+sizeof(MmsHeader),sizeof(old)-sizeof(MmsHeader)));
+    MmsEvaluationMaterialCapsV1 caps{};CHECK(api.getMaterialCapabilities(api.context,&caps)==MMS_OK&&HeaderOk(caps));
+    CHECK((caps.flags&(MMS_EVALUATION_MATERIAL_CAP_CPU_VALUES|MMS_EVALUATION_MATERIAL_CAP_PMD|MMS_EVALUATION_MATERIAL_CAP_PMX))==
+          (MMS_EVALUATION_MATERIAL_CAP_CPU_VALUES|MMS_EVALUATION_MATERIAL_CAP_PMD|MMS_EVALUATION_MATERIAL_CAP_PMX));
+    CHECK(caps.maxItemsPerRead>=2&&!caps.reserved[0]&&!caps.reserved[1]);
+    const auto query=SceneQuery();MmsHandle source=sentinel;
+    CHECK(api.createMaterialSceneSource(api.context,&query,&source)==MMS_OK&&source!=sentinel);
+    MmsEvaluationSceneInfoV1 sourceInfo{};CHECK(api.describeSceneSource(api.context,source,&sourceInfo)==MMS_OK);
+    MmsHandle exact=sentinel;auto limited=SceneQuery(sourceInfo.retainedBytes-1);
+    CHECK(api.createMaterialSceneSource(api.context,&limited,&exact)==MMS_E_MEMORY&&exact==sentinel);
+    limited=SceneQuery(sourceInfo.retainedBytes);CHECK(api.createMaterialSceneSource(api.context,&limited,&exact)==MMS_OK&&api.release(api.context,exact)==MMS_OK);
+    for(int mode:{20,21,22,23,24}){control->materialMode=mode;MmsHandle rejected=sentinel;const auto charged=client.bytes;
+        CHECK(api.createMaterialSceneSource(api.context,&query,&rejected)==MMS_E_FAILED&&rejected==sentinel&&client.bytes==charged);}
+    control->materialMode=0;
+    MmsEvaluationMaterialIdV1 id0{},id1{};
+    CHECK(api.materialAt(api.context,source,0,0,&id0)==MMS_OK&&HeaderOk(id0));
+    CHECK(api.materialAt(api.context,source,0,1,&id1)==MMS_OK&&HeaderOk(id1));
+    CHECK(Same(id0.material,MmsId{101,102})&&Same(id1.material,MmsId{103,104})&&id0.index==0&&id1.index==1&&!id0.reserved&&!id1.reserved);
+    const auto sourceBytes=client.bytes;MmsHandle alias=sentinel;
+    CHECK(api.retain(api.context,source,&alias)==MMS_OK&&client.bytes==sourceBytes);
+    auto frameQuery=FrameQuery(source);MmsHandle frame=sentinel;
+    CHECK(api.evaluateFrame(api.context,&frameQuery,&frame)==MMS_OK&&frame!=sentinel);
+    MmsEvaluationFrameInfoV1 frameInfo{};CHECK(api.describeFrame(api.context,frame,&frameInfo)==MMS_OK);
+    auto limitedFrame=FrameQuery(source,{1,4},frameInfo.retainedBytes-1);MmsHandle rejectedFrame=sentinel;
+    CHECK(api.evaluateFrame(api.context,&limitedFrame,&rejectedFrame)==MMS_E_MEMORY&&rejectedFrame==sentinel);
+    limitedFrame=FrameQuery(source,{1,4},frameInfo.retainedBytes);CHECK(api.evaluateFrame(api.context,&limitedFrame,&rejectedFrame)==MMS_OK&&api.release(api.context,rejectedFrame)==MMS_OK);
+    for(int mode:{30,31,32}){control->materialMode=mode;rejectedFrame=sentinel;const auto charged=client.bytes;
+        CHECK(api.evaluateFrame(api.context,&frameQuery,&rejectedFrame)==MMS_E_FAILED&&rejectedFrame==sentinel&&client.bytes==charged&&client.workspaceBytes==0);}
+    control->materialMode=0;
+    std::array<MmsEvaluationMaterialV1,2> values{};
+    CHECK(api.readFrameMaterials(api.context,frame,0,0,2,values.data())==MMS_OK);
+    for(uint32_t i=0;i<2;++i){auto expected=MaterialValue(0,i);expected.h=Header<MmsEvaluationMaterialV1>();expected.material=i?MmsId{103,104}:MmsId{101,102};expected.index=i;CHECK(Bits(values[i],expected));}
+    control->materialMode=8;
+    CHECK(api.readFrameMaterials(api.context,frame,0,1,1,values.data())==MMS_OK&&values[0].flags==MMS_EVALUATION_MATERIAL_FORMAT_PMD);
+    control->materialMode=0;
+    CHECK(api.readFrameMaterials(api.context,frame,0,2,0,nullptr)==MMS_OK);
+    CHECK(api.readFrameMaterials(api.context,frame,1,0,0,nullptr)==MMS_OK);
+    auto poison=Poison<std::array<MmsEvaluationMaterialV1,2>>();const auto before=poison;
+    auto badId=Poison<MmsEvaluationMaterialIdV1>();
+    CHECK(api.materialAt(api.context,source,0,2,&badId)==MMS_E_NOT_FOUND&&Unchanged(badId));
+    CHECK(api.materialAt(api.context,source,2,0,&badId)==MMS_E_NOT_FOUND&&Unchanged(badId));
+    CHECK(api.readFrameMaterials(api.context,frame,0,3,0,nullptr)==MMS_E_ARGUMENT);
+    CHECK(api.readFrameMaterials(api.context,frame,0,UINT32_MAX,2,poison.data())==MMS_E_ARGUMENT&&Bits(poison,before));
+    CHECK(api.readFrameMaterials(api.context,frame,0,0,caps.maxItemsPerRead+1,poison.data())==MMS_E_ARGUMENT&&Bits(poison,before));
+    CHECK(api.readFrameMaterials(api.context,frame,0,0,1,nullptr)==MMS_E_ARGUMENT);
+    CHECK(other.materialAt(other.context,source,0,0,&badId)==MMS_E_NOT_FOUND&&Unchanged(badId));
+    CHECK(other.readFrameMaterials(other.context,frame,0,0,2,poison.data())==MMS_E_NOT_FOUND&&Bits(poison,before));
+    CHECK(api.materialAt(api.context,frame,0,0,&badId)==MMS_E_UNSUPPORTED&&Unchanged(badId));
+    CHECK(api.readFrameMaterials(api.context,source,0,0,2,poison.data())==MMS_E_UNSUPPORTED&&Bits(poison,before));
+    MmsHandle legacy=sentinel,legacyFrame=sentinel;
+    CHECK(api.createMeshSceneSource(api.context,&query,&legacy)==MMS_OK);
+    auto legacyQuery=FrameQuery(legacy);CHECK(api.evaluateFrame(api.context,&legacyQuery,&legacyFrame)==MMS_OK);
+    CHECK(api.materialAt(api.context,legacy,0,0,&badId)==MMS_E_UNSUPPORTED&&Unchanged(badId));
+    CHECK(api.readFrameMaterials(api.context,legacyFrame,0,0,2,poison.data())==MMS_E_UNSUPPORTED&&Bits(poison,before));
+    for(int mode:{1,2,3,4,5,6,7}){
+        control->materialMode=mode;const auto expected=mode==4?MMS_E_MEMORY:mode==3?MMS_E_CANCELLED:MMS_E_FAILED;
+        CHECK(api.readFrameMaterials(api.context,frame,0,0,2,poison.data())==expected&&Bits(poison,before));
+    }
+    control->materialMode=0;
+    auto allocationOutput=before;failAfter=0;
+    const auto allocationResult=api.readFrameMaterials(api.context,frame,0,0,2,allocationOutput.data());failAfter=-1;
+    CHECK((allocationResult==MMS_E_MEMORY&&Bits(allocationOutput,before))||
+          (allocationResult==MMS_OK&&Same(allocationOutput[1].material,MmsId{103,104})));
+    MmsHandle frameAlias=sentinel;const auto bytes=client.bytes;
+    CHECK(api.retain(api.context,frame,&frameAlias)==MMS_OK&&client.bytes==bytes);
+    CHECK(api.release(api.context,frame)==MMS_OK&&api.release(api.context,source)==MMS_OK&&api.release(api.context,alias)==MMS_OK);
+    values={};CHECK(api.readFrameMaterials(api.context,frameAlias,0,0,2,values.data())==MMS_OK&&Same(values[1].material,MmsId{103,104}));
+    CHECK(api.release(api.context,frameAlias)==MMS_OK&&api.release(api.context,legacy)==MMS_OK&&api.release(api.context,legacyFrame)==MMS_OK&&!store.HasLeases(client));
+}
+static void MaterialReadInFlight(){
+    section="1.6 admitted material batch survives release and retirement";
+    auto control=std::make_shared<Control>();control->materialGate=std::make_shared<Gate>();const auto gate=control->materialGate;
+    CHECK(gate->ready&&gate->proceed);
+    EvaluationStore store(ChannelCapture(),1,SceneCapture(control),MeshSceneCapture(control),MaterialSceneCapture(control));
+    EvaluationStore::Client client;client.owner=&store;const auto api=store.Api16(client);const auto query=SceneQuery();
+    MmsHandle source=0,frame=0;CHECK(api.createMaterialSceneSource(api.context,&query,&source)==MMS_OK);
+    auto frameQuery=FrameQuery(source);CHECK(api.evaluateFrame(api.context,&frameQuery,&frame)==MMS_OK);
+    CHECK(api.release(api.context,source)==MMS_OK);const auto bytes=client.bytes;
+    std::array<MmsEvaluationMaterialV1,2> values{};MmsResult result=MMS_E_FAILED;Workers workers{gate,{}};
+    workers.threads[0]=std::thread([&]{result=api.readFrameMaterials(api.context,frame,0,0,2,values.data());});
+    CHECK(WaitForSingleObject(gate->ready,10000)==WAIT_OBJECT_0);
+    store.Retire(client);CHECK(api.release(api.context,frame)==MMS_OK&&client.handles==0&&client.active==1&&client.bytes==bytes&&store.HasLeases(client));
+    auto untouched=Poison<MmsEvaluationMaterialV1>();
+    CHECK(api.readFrameMaterials(api.context,frame,0,0,1,&untouched)==MMS_E_NOT_READY&&Unchanged(untouched));
+    SetEvent(gate->proceed);workers.threads[0].join();
+    CHECK(result==MMS_OK&&Same(values[1].material,MmsId{103,104})&&client.active==0&&client.bytes==0&&client.workspaceBytes==0&&!store.HasLeases(client));
+}
 static void MeshReadInFlight(){
     section="1.5 admitted source and frame reads survive release and retirement";
     for(bool frameRead:{false,true}){
@@ -657,6 +809,6 @@ static void FailedMeshCaptureDestroyOutsideMutex(){
     CHECK(state->nested==MMS_E_BUSY&&state->nestedHandle==sentinel&&control->captures==1);
     CHECK(status==MMS_E_CANCELLED&&out==sentinel&&client.handles==0&&client.active==0&&client.bytes==0&&!store.HasLeases(client));
 }
-int main(){try{TablesAndCapabilities();EnumerationTimeAndLifetime();AdmissionAndKinds();BadHostPayloads();SharedBudgetsAndFaults();SourceAndFrameInFlight();ParallelWorkspaceBudgets();FailedLegacyCaptureKeepsLeaseDuringDestruction();MeshPublicContracts();MeshReadInFlight();MeshDestroyOutsideMutex();LegacySceneDestroyOutsideMutex();FailedMeshCaptureDestroyOutsideMutex();
+int main(){try{TablesAndCapabilities();EnumerationTimeAndLifetime();AdmissionAndKinds();BadHostPayloads();SharedBudgetsAndFaults();SourceAndFrameInFlight();ParallelWorkspaceBudgets();FailedLegacyCaptureKeepsLeaseDuringDestruction();MeshPublicContracts();MeshReadInFlight();MeshDestroyOutsideMutex();LegacySceneDestroyOutsideMutex();FailedMeshCaptureDestroyOutsideMutex();MaterialPublicContracts();MaterialReadInFlight();
     std::printf("PASS %u mock evaluation scene checks\n",checks);return 0;
 }catch(const std::exception& error){failAfter=-1;std::fprintf(stderr,"FAIL %s unexpected exception: %s\n",section,error.what());return 1;}}

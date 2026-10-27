@@ -13,6 +13,7 @@ struct State {
     MmsEvaluationApiV1_3 api13{};
     MmsEvaluationApiV1_4 api14{};
     MmsEvaluationApiV1_5 api15{};
+    MmsEvaluationApiV1_6 api16{};
     MmsHandle source = 0;
     uint32_t stops = 0;
     bool holdOk = false;
@@ -20,13 +21,15 @@ struct State {
 void Log(const char* text) { state.host.log(state.host.context, 1, Text(text)); }
 bool Negotiate() {
     static_assert(sizeof(MmsEvaluationApiV1) == 72 && sizeof(MmsEvaluationApiV1_1) == 104 && sizeof(MmsEvaluationApiV1_2) == 152 && sizeof(MmsEvaluationApiV1_3) == 160 && sizeof(MmsEvaluationApiV1_4) == 232);
-    struct Buffer { MmsEvaluationApiV1_5 table; uint64_t guard; } buffer;
+    struct Buffer { MmsEvaluationApiV1_6 table; uint64_t guard; } buffer;
     std::memset(&buffer, 0x5a, sizeof(buffer)); const auto before = buffer;
     const auto query = [&](uint32_t major, uint32_t minor, uint32_t bytes) {
         return state.host.queryService(state.host.context, Text("mms.scene.evaluate"), major, minor, bytes, &buffer.table);
     };
     if (query(2, 0, 152) != MMS_E_VERSION || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
-    if (query(1, 6, sizeof(buffer.table)) != MMS_E_VERSION || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
+    if (query(1, 7, sizeof(buffer.table)) != MMS_E_VERSION || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
+    if (query(1, 6, sizeof(MmsEvaluationApiV1_5)) != MMS_E_ARGUMENT || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
+    if (query(1, 6, sizeof(MmsEvaluationApiV1_6)-1) != MMS_E_ARGUMENT || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
     if (query(1, 5, 232) != MMS_E_ARGUMENT || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
     if (query(1, 4, 160) != MMS_E_ARGUMENT || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
     if (query(1, 4, 231) != MMS_E_ARGUMENT || std::memcmp(&buffer, &before, sizeof(buffer))) return false;
@@ -94,12 +97,20 @@ bool Negotiate() {
         !scene.frameModelAt || !scene.readBonePose) return false;
     state.api14 = scene;
     buffer=before;
-    if(query(1,5,sizeof(MmsEvaluationApiV1_5))!=MMS_OK||buffer.guard!=before.guard)return false;
-    const auto mesh=buffer.table;
+    if(query(1,5,sizeof(MmsEvaluationApiV1_5))!=MMS_OK||
+        std::memcmp(reinterpret_cast<const char*>(&buffer)+sizeof(MmsEvaluationApiV1_5),reinterpret_cast<const char*>(&before)+sizeof(MmsEvaluationApiV1_5),sizeof(buffer)-sizeof(MmsEvaluationApiV1_5)))return false;
+    MmsEvaluationApiV1_5 mesh{};std::memcpy(&mesh,&buffer.table,sizeof(mesh));
     if(mesh.h.size!=sizeof(mesh)||mesh.h.major!=1||mesh.h.minor!=5||
         std::memcmp(reinterpret_cast<const char*>(&mesh)+sizeof(MmsHeader),reinterpret_cast<const char*>(&scene)+sizeof(MmsHeader),sizeof(scene)-sizeof(MmsHeader))||
         !mesh.getMeshCapabilities||!mesh.createMeshSceneSource||!mesh.describeMesh||!mesh.readMeshIndices||!mesh.readMeshMaterials||!mesh.readMeshBindVertices||!mesh.readMeshVertices)return false;
     state.api15=mesh;
+    buffer=before;
+    if(query(1,6,sizeof(MmsEvaluationApiV1_6))!=MMS_OK||buffer.guard!=before.guard)return false;
+    const auto material=buffer.table;
+    if(material.h.size!=sizeof(material)||material.h.major!=1||material.h.minor!=6||
+        std::memcmp(reinterpret_cast<const char*>(&material)+sizeof(MmsHeader),reinterpret_cast<const char*>(&mesh)+sizeof(MmsHeader),sizeof(mesh)-sizeof(MmsHeader))||
+        !material.getMaterialCapabilities||!material.createMaterialSceneSource||!material.materialAt||!material.readFrameMaterials)return false;
+    state.api16=material;
     Log("EVALUATION_NEGOTIATION_PASS"); return true;
 }
 MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1* info, void** out) {
@@ -175,6 +186,15 @@ extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestMeshIndices
 }
 extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestMeshVertices(MmsHandle frame,MmsEvaluationMeshVertexV1* out) {
     return state.api15.readMeshVertices(state.api15.context,frame,0,0,2,out);
+}
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestGet16(MmsEvaluationApiV1_6* out) {
+    if(!out)return MMS_E_ARGUMENT;*out=state.api16;return MMS_OK;
+}
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestMaterialCreate(const MmsEvaluationSceneQueryV1* query,MmsHandle* out) {
+    return state.api16.createMaterialSceneSource(state.api16.context,query,out);
+}
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestMaterialRead(MmsHandle frame,MmsEvaluationMaterialV1* out) {
+    return state.api16.readFrameMaterials(state.api16.context,frame,0,0,1,out);
 }
 extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationTestQuery13(MmsEvaluationApiV1_3* out) {
     return state.host.queryService(state.host.context, Text("mms.scene.evaluate"), 1, 3, sizeof(*out), out);
