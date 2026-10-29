@@ -141,9 +141,12 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
         s.AviRenderResolutionOverridden() = false;
     }
     EnableWindow(GetDlgItem(static_cast<HWND>(s.Hwnd()), panel::kPlayButton), 1);  // 0x464B3E
+    RefreshAfterFrameApply(app);                            // 0x464B4D
+    s.RestoreRecordingEditorView();
+    // Rebuild projection after restoring the editor's FOV/perspective, so the
+    // first visible frame cannot retain the export camera's projection.
     if (!device_lost_wait::Pending(app))
         RefreshMainWindowViewport(app);                         // 0x464B46
-    RefreshAfterFrameApply(app);                            // 0x464B4D
     PostViewRefresh(app);                                   // 0x464B54
     if (IDirect3DSurface9* com = s.CaptureRenderTarget()) {        // 0x464B69
         com->Release();

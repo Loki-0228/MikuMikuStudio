@@ -109,6 +109,33 @@ bool EncodeExact(const wchar_t* text, UINT codePage, std::string& result) {
 }
 
 namespace {
+bool PmxSjis(const wchar_t* text, std::string& bytes) {
+    const int count=WideCharToMultiByte(932,0,text,-1,nullptr,0,nullptr,nullptr);
+    if(!count)return false;
+    bytes.resize(count); BOOL replaced=FALSE;
+    if(!WideCharToMultiByte(932,0,text,-1,bytes.data(),count,nullptr,&replaced)||replaced)return false;
+    bytes.resize(count-1);return true;
+}
+}
+void EncodePmxName(char* dst, std::size_t capacity, const wchar_t* text) {
+    if(!dst||!capacity)return;
+    dst[0]=0;if(!text||!*text)return;
+    std::string bytes;
+    if(!PmxSjis(text,bytes) && !EncodeExact(text,CP_ACP,bytes) && !EncodeExact(text,CP_UTF8,bytes))return;
+    strncpy_s(dst,capacity,bytes.c_str(),_TRUNCATE);
+}
+bool MatchesOldPmxName(const char* saved, const wchar_t* text, std::size_t capacity) {
+    if(!saved||!text||!*text||!capacity)return false;
+    std::string bytes;std::vector<char> old(capacity,0);
+    if(PmxSjis(text,bytes))strncpy_s(old.data(),capacity,bytes.c_str(),_TRUNCATE);
+    else {
+        size_t converted=0;
+        if(wcstombs_s(&converted,old.data(),capacity,text,_TRUNCATE)!=0)old[0]=0;
+    }
+    return strcmp(saved,old.data())==0;
+}
+
+namespace {
 bool Store(char* dst, std::size_t capacity, const std::string& value) {
     if (!dst || !capacity) return false;
     std::memset(dst, 0, capacity);

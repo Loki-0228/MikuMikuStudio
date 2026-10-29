@@ -18,6 +18,10 @@
 
 覆盖新增附件时保持绘制分界数值（含 0 和原最大值）、确认与重排后保留当前附件及登记范围、取消编辑与删除、删除后选中显示列表最后一项、复用空槽、删除全部后重新导入，以及 PMM 保存重开。检查下拉框、时间轴高亮和位置输入框指向同一附件。完整包与最小包共用此回归；移除对应附件编辑功能后再评估删除。
 
+## 操作轴定位回归
+
+操作轴定位可单独运行 `scene_lifecycle_tests <模型.pmx、模型.pmd 或工程.pmm> 1 --bone-gizmo`。隐藏窗口先执行正常首帧骨骼求值，再观察生产绘制提交的黄色原点，核对其与选中骨骼标记一致；完整档覆盖三种轴向操作、三坐标系、两个相机角度、偏移视口及 50%/100%/150% 预览比例。`scene_lifecycle_mme_tests` 支持相同参数，并断言实际 MME 模块已加载。该模式不修改输入素材；合成场景通过不能代替报告者工程的复现验证。
+
 ## 工程打开时的追踪镜头回归
 
 `scene_lifecycle_tests <工程.pmm> 1 --pmm-camera-load [新建的输出目录]` 在隐藏窗口加载工程，检查首次镜头、当前镜头关键帧重算、关闭后重新开启追踪，以及当前帧的播放初始化是否产生相同的世界、视图和投影矩阵。夹具须开启相机追踪。无父骨骼绑定的镜头还检查三个预览帧后的矩阵；父骨骼的比较在同一姿势下完成，避免把首帧模型或物理更新误判为镜头偏移。不能只比较两次 `ReloadModels`，否则两侧都残留编辑视角偏移时也会通过。
@@ -48,7 +52,7 @@
 | `d3dx_import_tests.cpp` | D3DX 导入与 ABI；需要本机 DirectX 运行库。 |
 | `effect_api_tests.cpp` | 效果接口、对象导出及材质名称双向回退；无 MME 时安全跳过。 |
 | `bone_projection_tests.cpp` | 骨骼投影与命中坐标。 |
-| `bone_overlay_tests.cpp` | 骨骼显示/覆盖绘制。 |
+| `bone_overlay_tests.cpp` | 骨骼显示/覆盖绘制；issue #37 的操作轴原点回归通过真实 GPU 回读核对黄色原点与骨骼投影重合，覆盖 PMD/PMX、透视/正交、三坐标系及轴向旋转/移动/缩放的悬停与拖动。 |
 | `coordinate_axis_tests.cpp` | 视口操作轴与坐标系标识：读取内嵌 `axis.x`，校验 X 轴为红色、Z 轴为蓝色、Y 轴为绿色、原点为黄色；针对三种语言 × 模型/相机两个面板 × 三种坐标系状态，渲染共 18 组标识，并校验标识居中、白字黑描边、措辞首字母大写，以及各面板第三状态的格位；校验中英日字体映射（英文与日文共用 Times New Roman，中文使用 Microsoft YaHei UI）；校验标识描边在 HUD 缩放为 2.0 时仍为 1 设备像素（八个描边四边形加一张白字面，共 9 个）；校验标识按 HUD 缩放取用 30 或 60 像素两档图集副本，且两档绘制的宽度一致；校验在没有配件时选择器上限为 2、标识回落为 Local；并校验视图轴随相机偏航变化。 |
 | `background_overlay_tests.cpp` | 实际载入图片及 AVI 后的 GPU 像素回读，覆盖完整背景、纹理坐标、移动缩放及视频换帧；素材临时生成并自动清理。 |
 | `media_render_tests.cpp` | H.264 背景、透明导出和播放集成回归。`<输出目录> --video-playback <视频> [<模型> <动作>]` 单独检查空起止帧的按钮/P 键/循环播放、非法帧号拒绝，以及拖入视频前后的动画与物理推进，保存实际后备缓冲区截图。可在隔离目录放入 MME 三个 DLL；须核对日志 `PLAYBACK_HOST mme=1 mmhack=1`。移除对应媒体或播放功能后再评估删除。 |
@@ -198,6 +202,10 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 
 在命令末尾加 `selectors` 可单独运行模型选择框测试。使用 `python tests/windows_locale_runner.py <menu_language_tests.exe> <新输出目录> menu` 验证真实菜单资源，检查翻译项从灰色恢复可用且不改变勾选值。
 
+`menu_language_tests --first-paint` 在独立非活动桌面检查首次展开的完整菜单。`--first-paint-late` 在首次绘制后注入空白，`--first-paint-no-idle` 屏蔽菜单空闲通知，`--first-paint-slow` 同时模拟较慢的初始化与延后空白。这些用例不移动真实鼠标，不发送 `WM_PRINT`，检查补画结束后不会持续刷新。像素检查关闭菜单动画，非活动桌面的动画回读不计入有效画面。保留这些回归，删除展开补画逻辑时再评估移除。背景见[菜单展开补画记录](../docs/records/interface/controls.md#record-popup-opening-repaint-20261021)。
+
+`effect_compile_cache_tests --small-stack` 在栈预留仅 128 KiB 的线程上执行生产缓存冷、热路径，覆盖深层 MME 回调进入路径解析时的栈占用。CTest 名称为 `effect_compile_cache_small_stack`。该探针不加载 GPU 或真实 D3DX，真实 DLL 验证仍使用 `--integration`。保留此回归，移除编译缓存时再评估删除。背景见[缓存栈溢出修复记录](../docs/records/performance/startup.md#record-mme-cache-stack-fix-20261021)。
+
 ## PMD 贴图选择模式回归
 
 构建 `pmd_selection_render_tests` 目标。测试程序位于 `<build>/tests/pmd-selection/Release/MikuMikuDance.exe`，支持完整包与最小包。通过 `python tests/pmd_selection_fixtures.py <样例目录>` 生成原创 PMD。
@@ -214,12 +222,65 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 
 `python tests/mme_emd_runner.py <mme_display_tests 的 MikuMikuDance.exe> <MME目录> <输出目录> --file-watch` 在四种语言路径下保存测试 FX，验证原生自动重载开关、实际重新编译和屏幕输出颜色。完整包与最小包均运行该模式。`viewport_scale_performance_runner.py --trace-targets --project-settings` 记录实际 StageNoRay、ray 在 100%、25%、25%、100% 预览下的绘制目标，检查 MME 固定阴影保持原尺寸、默认阴影随比例调整。`--no-file-watch` 仅用于关闭通知缓存的对照。实施范围和验证记录见 [MME 预览与自动重载](../docs/records/performance/preview.md#record-mme-preview-optimization)。
 
-`display_compatibility_tests` 与 `display_compatibility_runner.py` 保留为回归测试。它们使用隐藏生产窗口和真实 MOV 录制，验证动态精度滑条不改变光源或阴影范围、菜单开关可双向操作、预览拖动和尺寸切换，以及导出分辨率和 PNG 帧内容。各轮写入新的输出目录。
+`display_compatibility_tests` 与 `display_compatibility_runner.py` 保留为回归测试。它们使用隐藏生产窗口和真实 MOV 录制，验证阴影精度滑条与数值同步、旧动态精度设置不再启用独立开关、菜单开关可双向操作、预览拖动和尺寸切换，以及导出分辨率和 PNG 帧内容。各轮写入新的输出目录。
 
 `mme_display_tests` 是需本地 MME DLL 的隐藏集成测试，输出名为 `MikuMikuDance.exe`。将它和同一版本的 `d3d9.dll`、`MMEffect.dll`、`MMHack.dll` 放入独立测试目录。先运行 `python tests/mme_display_fixtures.py <输出目录>` 生成原创小模型，再分别传入 `bilingual.pmx --bilingual` 和 `alpha-order.pmx --alpha-order` 的绝对路径。前者验证实际列表像素、翻译开关和未改变的绑定文本；后者观测真正的 D3D 材质绘制顺序。测试不会保存输入模型，也不显示或激活窗口。保留这组测试；移除相应兼容行为时再评估删除。
 
 `frame_benchmark` 和 `frame_benchmark_mme` 新增 `--adaptive-shadow 0|1` 与 `--dynamic-precision 0..9999`，JSON 记录实际贴图尺寸、精度值和阴影投影矩阵。后者通过真实滑条消息输入，检查面板刷新不会复位精度，也不会改变光源或阴影范围。验收数据与限制见 [阴影、预览与 MME 修复](../docs/records/rendering/shadows.md#record-shadow-preview-mme)。
 
-动态精度与固定阴影范围的方向一致：数值越小，精度越高。`native_shadow_cycle` 通过 `native_shadow_cycle.py` 生成无描边的双面 PMX 投影者和接收面，运行隐藏生产渲染。它验证实际遮挡、两个模式下转动相机时阴影贴图一致、动态精度改变贴图分辨率，以及取消动态缩放后贴图逐位恢复。此回归使用独立程序副本，不修改用户配置。
+阴影覆盖与细节层由模型和配件共享。`native_shadow_tests --bounds-only` 检查最终相机六面裁剪、偏移投影、方形覆盖盒、画外投影物深度、真实近平面覆盖、连续中景层、5 万次密度分配顺序和宽正交视图的预算限制。旧范围盒和迟滞函数的检查只保留为历史参考函数回归，不代表当前生产策略。
 
+`native_shadow_tests <production shader> --detail-only` 检查两种阴影模式的细节采样、近层与中层混合、配件局部变换和斜面假阴影。`--coverage-only` 检查离开覆盖区不改变材质光照。`frame_benchmark` 的 JSON 包含 `coverage_width`、`detail_coverage_width`、`near_coverage_width`、实际分辨率和每单位采样数；`near_density_floor_met` 同时要求近层有效且实际密度达到下限。`--adaptive-shadow 0|1` 仅调整屏幕需求，不切换覆盖盒。实现边界见[可见画面统一覆盖记录](../docs/records/rendering/shadows.md#record-visible-near-density-20261024)。
+
+`frame_benchmark --camera <起点七值> --shadow-camera-sweep <终点七值> --sweep-frames 121` 固定模型与物理状态，逐帧插值相机。七值依次为位置 XYZ、距离、偏航角、俯仰角、滚转角，角度单位为度。需要同时指定 `--throughput`、`--viewport` 和绝对 PNG 输出路径。测试在图片同目录输出 `.sweep-0000.png` 和对应 JSON，记录覆盖层、近层、中层、过渡层的实际尺寸、密度、范围及混合起点。它可对照两种操作得到的等价视图，并检查推进过程是否发生分辨率跳档。`--detail-only` 另包含第三细节层的 72 组 GPU 混合与负控检查。
 `frame_benchmark --verify-shadow-cycle` 可用于指定的 PMX 模型，需同时提供 `--throughput`、`--viewport`、`--self-shadow 1|2` 和 PNG 输出路径。它保存固定、禁用投影、动态低精度、动态高精度及恢复后的画面和深度贴图；禁用投影仅临时修改内存中的材质标志，不写入模型。真实模型验证记录见 [自阴影修复](../docs/records/rendering/shadows.md#record-native-shadow-coverage)。
+
+`native_shadow_tests <production shader> --modes-only <输出目录>` 使用真实覆盖矩阵的逆变换和生产模式校准，比较相同物理遮挡距离下的模式 1、模式 2；原版着色器须位于生产着色器同目录的 `original/skin_effect_sm3.fx`。测试覆盖原版中心分段、不同场景大小和覆盖拟合，避免仅给两个模式分别运行同一测试却漏掉差异消失。
+
+`frame_benchmark <工程> --throughput --viewport 1024x768 --verify-shadow-modes <绝对PNG路径>` 在同一加载场景内冻结姿态，保存 `1→1→2→1` 的四张截图与 `.shadow-modes.json`。首张 `.mode-1-control-start.png` 用于估计不切换模式时的重复渲染波动。schema `/3` 允许两模式按原版标尺改变 XY 采样范围，检查共享深度、细节区域、计划密度与实际分配容量，以及切回后的矩阵和交接起点复原。动态开启时允许密度超过原版基准，交接起点可随实际粗层密度变化；动态关闭仍检查固定基准。不自动宣称截图逐像素相同。此项与相机扫掠、其他阴影循环验证互斥。
+
+统一精度检查覆盖原版中心 XY 数值导数、全部滑条数值、动态深度分配、不同物体大小、拆分/合并格网、最低资源尺寸和分配回退。物体不参与目标密度计算，最低贴图尺寸只增加外围覆盖。普通回读、模式回读与扫掠 JSON 提供 `reference_density`、`actual_density` 和 `reference_ratio`；覆盖图按实际采样纹理计算，包含滤波路径。实现与实测见[统一采样精度](../docs/records/rendering/shadows.md#record-uniform-shadow-precision-20261024)。
+
+## 原生自阴影的大场景覆盖回归
+
+动态密度检查覆盖滑条单调、近景额外采样保留 80%、容量受限时的实际削减、远景不超过固定与屏幕两项预算、最终投影等价、正交视图不受深度影响，以及物体包围盒不改变目标密度。交接检查覆盖实际粗层容量、正交缩放连续性和有效混合宽度。模式 JSON 使用 `frame_benchmark/shadow-modes/6`，记录 `close_layer`、`fixed_capacity_density`、`far_density_within_fixed_capacity` 和 `fade_matches_geometry`，并用 `allocation_box_width`、`budget_resolution`、`allocation_within_unchanged_budget` 检查平移覆盖盒没有扩大分配预算。预算从原始名义盒独立重建，不用扩展后的视锥包围球反推。动态桥接层属于中近景，其远端之外只允许覆盖图贡献；覆盖图预算从原始范围独立推导。达到设备上限后，计划密度增加不能视作实际提升。
+
+`CheckExpandedBridgeSampling` 检查两种模式、四种屏幕需求、全部 10,000 个档位和 212 个深度的混合贡献，验证滑条全序与远端贡献归零。集成对照以关闭滤波的真实工程为主，包含四组固定模式像素对照、两模式共 242 帧连续缩放，以及从实际相机和光照矩阵推导的朝向相机平面采样跨度。该平面探针不等同于模型实际三角形。参见[中近景接管记录](../docs/records/rendering/shadows.md#record-shadow-takeover-20261025)。
+
+覆盖盒平移检查包含透视、正交、偏轴投影、多种相机与光照方向及远裁剪。每个角点须落在光空间 XY 的 0.8 留边范围内，矩阵仅允许 XY 平移变化；公共深度、贴图分配和实际密度须保持不变，无效输入须回退。实景边缘另以同镜头无阴影图消除墙纸纹理干扰，测量明暗过渡宽度，不能只凭图层元数据宣称粗细双轮廓消失。参见[覆盖盒利用率记录](../docs/records/rendering/shadows.md#record-shadow-packed-box-20261025)。
+
+加强滤波检查同样位于 `--detail-only`。原生接收端与独立的双精度逐点遮挡比较公式对照，覆盖背景深度不变性、窄阴影、同密度不同贴图尺寸、图层交接、斜平面和亚像素移动。共享 `DepthPrefilter` 的深度卷积另行验证，不能用它代替原生遮挡比较的预期结果。距离渐变检查同时运行滤波开、关两组。真实场景须另留重复渲染对照，避免把少量边缘像素的运行间波动判为滤波变化。参见[远近景采样与遮挡滤波记录](../docs/records/rendering/shadows.md#record-shadow-far-filter-20261025)。
+
+`--direction-only` 单独检查轮廓重建，完整 `--detail-only` 也覆盖它。旧核的严格公式对照显式关闭内部开关；重建检查先验证生产默认值开启，再比较解析直线的 50% 轮廓位置、沿边起伏和 10%–90% 法向宽度。建筑的 16 个关键浅角组逐组要求起伏至少下降 30%，法向宽度增长不超过 25%，且优于将旧结果柔化至同宽的对照。人物部分阴影保持原浓度，法向宽度增长不超过 15%；细条面积至少保留 95%，并限制拐角变化。连续移动以扣除真实位移后的轮廓和细条面积为依据，灰度最大步长仅作诊断，避免把变锐后的正常亮度变化误判为闪烁。缩小回退、斜面、背景、等密度交接及 `s0/s6` 隔离另行检查。不能放宽旧核像素误差门限代替几何验收。见[轮廓重建记录](../docs/records/rendering/shadows.md#record-shadow-contour-filter-20261025)。
+
+低精度动态交接检查位于 `native_shadow_tests <当前正式着色器> --detail-only`。除原有图层排序检查外，它用各层独立分辨率的斜边和窄条深度纹理，连续扫描真实相机深度混合参数，对照旧 35% 区间，并检查两种模式、端点、亮度范围和默认参数复位。屏幕精度规则另生成 2620 帧 GPU 检查，使用新的交接起点，覆盖完整权重区、精确端点和远层回退；日志分别记录公式误差与逐步变化，不能把公式正确等同于视觉上无变化。CPU 检查覆盖完整区间、对数比例及共同设备上限下的实际密度顺序。真实工程验证继续用 `--shadow-camera-sweep`，同时对照位移与距离缩放产生的等价视图；静止截图不能代替连续交接验证。证据见[低精度动态交接](../docs/records/rendering/shadows.md#record-shadow-smooth-20261024)与[屏幕精度交接](../docs/records/rendering/shadows.md#record-shadow-screen-density-20261025)。
+
+`--progressive-only` 单独检查三个相邻图层之间的虚拟网格重建，完整 `--detail-only` 也包含这些检查。测试用独立 CPU 纹理重采样对照 GPU 输出，覆盖非整数密度比、全部级别边界、真实粗图端点、部分阴影、窄条、两种模式、仿射映射和无效矩阵回退。D3D9 线性采样的权重量化与几何映射分开验证，不能通过放宽误差门限掩盖矩阵问题。
+
+回归程序请求高性能显卡，并打印实际适配器名称和像素着色器上限。它对内置技术逐个执行设备验证，然后检查像素着色器是否绑定。驱动仍可能根据系统策略选择其他设备，验收时须核对日志中的设备名称，不能用另一块显卡的结果代替程序实际设备的结果。
+
+真实工程还需关闭「滤波加强」，先扫描整段镜头移动，再细扫实际最差交界。以同一世界表面及同镜头无阴影图排除缩放和材质纹理，检查轮廓位移、宽度、双轮廓和整个窗口的分布。修改后必须重新寻找最差位置，不能仅重复旧截图距离。最近层须调整相机朝向或位置，保证接收面仍在画面内。测试输出保存在正式程序目录下的 `Cache/ShadowTransitionSweep-20261026/`。
+
+`native_shadow_tests` 增加聚焦覆盖检查，验证大型场景不会稀释近景阴影精度、小场景保留原投影、缩放视野会调整覆盖范围，以及沿同一光线的远处投影物仍处于深度范围内。`adaptive_shadow_density_runner.py` 检查近景采样密度和实际远景缩图，不以固定贴图尺寸替代画质判断。
+
+`frame_benchmark --extra-model <PMX/PMD> --ground-shadow 0` 可组合人物与简单场景，关闭平面地面阴影以观察场景表面接收的自阴影。JSON 的 `self_shadow` 包含 `ground_shadow_enabled`、`mme_loaded`，用于核验隔离条件。带 `--extra-model` 且没有布局变换时，`--save-scene` 保存测试副本，保留物理模型与原位置。
+
+修复前后图像和限制见[大场景自阴影修复记录](../docs/records/rendering/shadows.md#record-focused-self-shadow-20261022)。
+
+`negative_frame_tests` 验证带符号帧解析、范围解释、负帧与原生无符号关键帧池隔离、插值、复制粘贴，以及 `MMSXPMM2` 记录往返和损坏数据拒绝。`panel_key_tests --bone-translation-reset` 检查主窗口与分离窗口的 XYZ 重置、物理模式读数及撤销重做。`mme_display_tests <模型绝对路径> --model-edit-controls <输出目录>` 使用真实 MME 与隐藏生产窗口，验证骨骼重置、0 帧左移复位、负帧登记、PMM 保存重载、正负帧双向粘贴及播放下限。集成测试输出写入独立目录，不改写输入模型。
+
+`native_shadow_tests <着色器> --bands-only` 检查放大的低精度斜平面：不启用滤波，不添加投影物，解析预期为全亮，避免硬件插值量化制造假阴影。`--detail-only` 同样包含此检查。`native_shadow_cycle.py` 还检查动态开关关→开→关时固定模式无细节图、动态模式有细节图、关闭后阴影数据恢复一致。
+
+2026-10-29 扩展 `--bands-only`：加强滤波增加两种模式、大覆盖盒、不同深度平移、正负斜率及轮廓开关的 48 组无遮挡斜平面检查，不能用扩大阴影偏置或放宽颜色误差掩盖假阴影。
+
+- `bone_registration_tests --auxiliary-undo`：issue #40 的表情和显示／IK／外亲登记撤销。覆盖四个面板按钮、全部表情单次历史、已有键覆盖、0 帧、负数表情独立历史、混合骨骼历史、重做分支截断，以及表情／显示池扩展后正确恢复链接与负载；默认完整测试也包含这些检查。修改撤销记录或登记入口时保留。
+
+### 大场景中的人物固定阴影
+
+`native_shadow_tests <着色器> --bands-only` 另包含最低精度的曲面保护回归：同一粗网格分别使用平面和弯曲法线场，验证曲面不再跨大范围外推切平面，同时平面仍使用补偿。旧版着色器在曲面用例失败，新版通过；`--detail-only` 自动包含它。实际人物与墙面对照见[曲面块斑修复](../docs/records/rendering/shadows.md#record-curved-shadow-filter-20261029)。
+
+`native_shadow_tests --bounds-only` 包含 `CheckFixedModelProjection`，覆盖两种模式、2048/4096 原生标尺、五个精度位置和三种场景大小，检查人物完整落在固定图的全权重区域、保持参考密度和全场景 Z 覆盖，并检查扩大场景不改变人物 XY 投影。
+
+`frame_benchmark --fixed-model-shadows 0|1` 用于关闭/开启固定人物图的对照，默认开启；这不是用户设置。普通截图和相机扫掠 JSON 的 `self_shadow.fixed_model_shadows` 按模型槽记录有效性、尺寸、密度和矩阵。动态模式仍只使用原有相机分层。
+
+`shadow_filter_tests` 的隐藏宿主支持在原参数后加 `--fixed-model-only`，单独检查固定图的分配复用、当前帧有效性、接收模型隔离、动态开关与阴影关闭释放、卸载清理、设备资源释放、分配失败回退及恢复。输出目录必须全新；示例：`MikuMikuDance.exe <无FX模型.pmx> <新输出目录> --mme 0 --fixed-model-only`。它用进程内失败注入测试，不修改模型文件。实际工程对照保存在 `build/Release/Cache/FixedModelShadow-20261029/`。

@@ -529,9 +529,9 @@ void WritePmmModelBlocks(int fd, unsigned char** const slots,
                               record.pmxTextBuffers[language], 255);
 #else
             const char* name = language ? mdl::Mdl(model)->nameEn : mdl::Mdl(model)->name;
-            std::string exact;
+            char exact[256]{};
             const auto wide = text_encoding::ModelName(*mdl::Mdl(model), language != 0);
-            if(text_encoding::EncodeExact(wide.c_str(),932,exact)&&exact.size()<=255) name=exact.c_str();
+            if(text_encoding::EncodeDisplay(exact,sizeof exact,wide.c_str())) name=exact;
             const auto len = static_cast<unsigned char>(std::strlen(name));
             W(fd, &len, 1);
             W(fd, name, len);
@@ -925,8 +925,10 @@ void WritePmmAccessoryBlocks(
 // 7. config block (0x41DB42..0x41DF7C)
 void WritePmmConfigBlock(int fd, MMDApp* s, HWND main, char* text) {
     // ---- 7. config block (0x41DB42..0x41DF7C) ---------------------------
-    W(fd, &s->state.currentFrame, 4);
-    W(fd, &s->state.timelineStartFrame, 4);
+    const auto standardFrame=(std::max)(0,s->CurrentFrame());
+    const auto standardScroll=(std::max)(0,s->state.timelineStartFrame);
+    W(fd, &standardFrame, 4);
+    W(fd, &standardScroll, 4);
     W(fd, &s->state.lastRegisteredFrame, 4);
     const std::int32_t savedEditMode = static_cast<std::int32_t>(s->EditMode());
     W(fd, &savedEditMode, 4);
@@ -952,8 +954,10 @@ void WritePmmConfigBlock(int fd, MMDApp* s, HWND main, char* text) {
         GetWindowTextA(GetDlgItem(main, panel::kPlayStopFrameEdit), text, 256);
         std::int32_t playStopFrame = 0;
         if (!frame_limits::ParsePlaybackBound(text, playStopFrame)) throw std::runtime_error("Invalid playback stop frame");
-        W(fd, &playStartFrame, 4);
-        W(fd, &playStopFrame, 4);
+        std::int32_t standardStart=0,standardStop=0;
+        frame_limits::ResolveRange(playStartFrame,playStopFrame,s->LastRegisteredFrame(),standardStart,standardStop,true);
+        W(fd, &standardStart, 4);
+        W(fd, &standardStop, 4);
     }
     {
         const unsigned char b = s->state.waveEnabled != 0;
@@ -1117,6 +1121,7 @@ struct SceneSnapshot {
     std::wstring target;
     bool backup = false;
     bool keepPrevious = false;
+    bool numberedManualVersions = false;
     std::vector<unsigned char> bytes;
     pmm_extension::Document extensions;
     mesh_bake_cache::SaveSnapshot meshCache;
@@ -1259,10 +1264,33 @@ static bool CaptureScene(MMDApp* app, const wchar_t* target, bool backup, SceneS
         return false;
     }
 #endif
+    // Persist the original naming stem only for the generated file it belongs to.
+    // Save As to a different name starts a fresh series; reopening an increment
+    // continues the same series without nesting suffixes.
+    std::wstring incrementalTarget;
+    snapshot.numberedManualVersions = !backup && pmm_paths::IsProject(target) && autosave::Current().numberedManualVersions;
+    if(snapshot.numberedManualVersions) {
+        const std::filesystem::path requested=std::filesystem::absolute(target);
+        const auto base=save_naming::ProjectStem(requested,extensions);
+        const auto next=save_naming::Next(requested.parent_path(),autosave::Current().incrementPattern,base);
+        if(next.empty()){SetLastError(ERROR_INVALID_NAME);return false;}
+        incrementalTarget=next.wstring();target=incrementalTarget.c_str();
+        const auto baseBytes=std::filesystem::path(base).u8string(),fileBytes=next.filename().u8string();
+        pmm_extension::Set(extensions,save_naming::BaseKey,{baseBytes.begin(),baseBytes.end()});
+        pmm_extension::Set(extensions,save_naming::FileKey,{fileBytes.begin(),fileBytes.end()});
+    } else if(!backup) {
+        pmm_extension::Erase(extensions,save_naming::BaseKey);
+        pmm_extension::Erase(extensions,save_naming::FileKey);
+    }
     // Bind ownership to this exact filename; Save/Save As strips the marker.
     pmm_extension::Erase(extensions, autosave::kOwnershipKey);
     if (backup) {
+        auto base=save_naming::ProjectStem(app->EnvFileName(),app->PmmProjectSettings().document);
+        if(base.empty())base=autosave::Text(app,L"未命名",L"Untitled",L"無題");
+        const auto baseBytes=std::filesystem::path(base).u8string();
         const auto name = std::filesystem::path(target).filename().u8string();
+        pmm_extension::Set(extensions,save_naming::BaseKey,{baseBytes.begin(),baseBytes.end()});
+        pmm_extension::Set(extensions,save_naming::FileKey,{name.begin(),name.end()});
         pmm_extension::Set(extensions, autosave::kOwnershipKey, {name.begin(), name.end()});
     }
     pmmWriteFailed = false;
@@ -1332,10 +1360,12 @@ static bool WriteSnapshot(SceneSnapshot& snapshot) {
         _commit(fd) == 0;
     const bool closed = _close(fd) == 0; fd = -1;
     if (!written || !closed) return false;
-    if (snapshot.keepPrevious) {
+    if(snapshot.numberedManualVersions && GetFileAttributesW(pmm_paths::Effect(destination).c_str())!=INVALID_FILE_ATTRIBUTES)
+        return false;
+    if (snapshot.keepPrevious && !snapshot.numberedManualVersions) {
         if (!pmm_versions::Publish(temporary, destination)) return false;
     } else if (!MoveFileExW(temporary, destination,
-        (backup ? 0 : MOVEFILE_REPLACE_EXISTING) | MOVEFILE_WRITE_THROUGH)) return false;
+        ((backup || snapshot.numberedManualVersions) ? 0 : MOVEFILE_REPLACE_EXISTING) | MOVEFILE_WRITE_THROUGH)) return false;
 #if !MMD_ORIGINAL_PROFILE
     if (!backup && snapshot.compatibility.namesNeedExtension && snapshot.compatibility.canCopyLegacy) {
         try { save_compatibility::CopyPrefix(target, standardBytes, snapshot.compatibleCopy); }

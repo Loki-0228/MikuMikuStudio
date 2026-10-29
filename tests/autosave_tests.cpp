@@ -202,6 +202,7 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         CheckDlgButton(dialog, as::Overwrite, BST_CHECKED);
         CheckDlgButton(dialog, as::Enabled, BST_CHECKED);
         CheckDlgButton(dialog, as::KeepPrevious, BST_CHECKED);
+        CheckDlgButton(dialog, as::NumberedManual, BST_CHECKED);
         as::DialogProc(dialog, WM_COMMAND, IDOK, 0);
     }
     return TRUE;
@@ -225,8 +226,8 @@ void DialogTests(MMDApp* app) {
             const auto result = UiDialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(as::kDialog),
                 app->MainWindow(), Probe, reinterpret_cast<LPARAM>(&c));
             Check(result == (dialogAction ? IDOK : IDCANCEL), "settings dialog commits or cancels correctly");
-            Check(dialogAction ? as::Current().intervalMinutes == 2 && as::Current().maxBackups == 3 && as::Current().overwriteOldest && as::Current().keepPrevious :
-                as::Current().enabled == before.enabled && as::Current().intervalMinutes == before.intervalMinutes && as::Current().keepPrevious == before.keepPrevious,
+            Check(dialogAction ? as::Current().intervalMinutes == 2 && as::Current().maxBackups == 3 && as::Current().overwriteOldest && as::Current().keepPrevious && as::Current().numberedManualVersions :
+                as::Current().enabled == before.enabled && as::Current().intervalMinutes == before.intervalMinutes && as::Current().keepPrevious == before.keepPrevious && as::Current().numberedManualVersions == before.numberedManualVersions,
                 "canceled edits leave settings unchanged");
         }
     }
@@ -399,6 +400,7 @@ int wmain(int argc, wchar_t** argv) {
     app->SceneModified() = 1; SaveSceneFile(app);
     Check(!pmm_extension::Find(Extension(backups.back(), true), as::kOwnershipKey), "manual save removes rotation ownership");
     Check(as::Backups(crashDirectory).empty(), "manually saved recovered file is excluded from automatic rotation");
+    NamingTests(app);
     DialogTests(app);
     Check(warnings == 3, "invalid settings rejected in each language");
     value = as::Current(); value.enabled = false; Configure(app, value);
@@ -426,6 +428,25 @@ int wmain(int argc, wchar_t** argv) {
     auto invalid = value; invalid.intervalMinutes = 0; std::wstring error;
     Check(!as::Configure(app, invalid, error), "zero minutes cannot be saved");
     invalid = value; invalid.maxBackups = 0; Check(!as::Configure(app, invalid, error), "zero capacity cannot be saved");
+    wcscpy_s(app->EnvFileName(),256,manual.c_str());LoadSceneFile();
+    value.directory=(root/L"custom-names").wstring();value.backupPattern=L"自定义_[/NAME]_[/YYYY]_[/N]";
+    value.maxBackups=1;value.overwriteOldest=true;value.enabled=true;Configure(app,value);
+    Check(as::BackupNow(app)==as::Result::Saved,"custom naming writes a real backup");
+    auto custom=as::Backups(value.directory);
+    Check(custom.size()==1 && custom[0].filename().wstring().find(L"自定义_")==0 &&
+        custom[0].filename().wstring().find(L"_autosave_")==std::wstring::npos,"ownership recognizes custom names without the old autosave substring");
+    const auto foreign=fs::path(value.directory)/L"自定义_user_001.pmm";
+    std::ofstream(foreign)<<"user file";
+    Check(as::QueueBackup(app),"custom named periodic save queues successfully");background_save::Wait(app);
+    Check(as::Backups(value.directory).size()==1 && !fs::exists(custom[0]) && Bytes(foreign)=="user file",
+        "custom named rotation only removes owned backups");
+    const auto recovered=as::Backups(value.directory).front();
+    wcscpy_s(app->EnvFileName(),256,recovered.c_str());LoadSceneFile();
+    Check(as::BackupNow(app)==as::Result::Full,"active recovery file stays protected when it is the only backup");
+    value.maxBackups=2;Configure(app,value);
+    Check(as::BackupNow(app)==as::Result::Saved,"recovered custom backup can be backed up again");
+    Check(as::Backups(value.directory).front().filename().wstring().find(L"自定义_自定义_")==std::wstring::npos,
+        "recovery retains original stem without nesting the custom pattern");
     Check(!IsWindowVisible(app->MainWindow()), "production test stayed hidden throughout");
     as::Shutdown(); ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hook);
     std::printf("PASS autosave checks=%u\n", checks);

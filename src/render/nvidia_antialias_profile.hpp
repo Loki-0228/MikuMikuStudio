@@ -173,7 +173,8 @@ inline bool Execute(Api& api, const std::wstring& path, const bool* enabled, Sta
     state.enabled = status == 0 && setting.type == 0 && setting.location == 0 &&
         !setting.currentPredefined && setting.current.value == 0;
     if (!enabled) return true;
-    if (*enabled && state.enabled) return true;
+    // The same command installs and reinstalls. An enabled setting is written
+    // again so the explicit reinstall action persists and verifies it.
     if (*enabled) {
         Setting value; value.current.value = 0; // NVIDIA AA fix: 0 = On, 1 = Off.
         if (!check(api.set(session.value, profile, &value), L"SetSetting")) return false;

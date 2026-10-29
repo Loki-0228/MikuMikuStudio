@@ -312,18 +312,20 @@ void HandleHScroll(LPARAM lParam, WPARAM wParam) {
             nextFrame +=
                 app->state.timelineScrollNPage;
             break;
-        case 5:  // SB_THUMBPOSITION
+        case 4:  // SB_THUMBPOSITION
+        case 5: { // SB_THUMBTRACK
             // x64 0x7FF7CB45EF76：读的是内嵌 SCROLLINFO 的 nPos（app+0x1444）
             // 而非 nMin——按住滑块拖动时按增量 abs 新位置 - 上次位置移动。
-            nextFrame +=
-                static_cast<std::int32_t>(HIWORD(wParam)) -
-                app->state.timelineScrollNPos;  // timeline SCROLLINFO nPos
+            SCROLLINFO info{};info.cbSize=sizeof(info);info.fMask=SIF_TRACKPOS;
+            if(GetScrollInfo(ctrl,SB_CTL,&info))nextFrame=info.nTrackPos;
+            else nextFrame=static_cast<std::int16_t>(HIWORD(wParam));
             break;
+        }
         default:
             break;
         }
         const auto page = (std::max)(std::int64_t(1), std::int64_t(app->state.timelineScrollNPage));
-        app->state.timelineStartFrame = static_cast<int>((std::clamp)(nextFrame, std::int64_t(0), std::int64_t(frame_limits::maximum) - page));
+        app->state.timelineStartFrame = static_cast<int>((std::clamp)(nextFrame, std::int64_t(frame_limits::minimum), std::int64_t(frame_limits::maximum) - page));
         PanelPaint(app);                                        // 0x414610
         if (app->state.waveEnabled != 0) {
             TimelineDrawTicks(app->state.timelineStartFrame,

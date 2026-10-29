@@ -326,6 +326,64 @@ void ScopeTests(sf::FineDepthTarget* fine) {
     expected.Restore();original.Restore();
 }
 
+void FixedModelTests() {
+    auto* renderer=host->Renderer();
+    host->ShadowFilterEnhanced()=false;host->ShadowMode()=1;
+    host->AdaptiveShadowResolution()=false;
+    CoarseFixture fixture(512);
+    probeSize=1024;
+    unsigned char owner{},other{}; // Opaque identities; the API must not dereference them.
+    std::array<float,16> coverage{},projection{},result{};
+    coverage[0]=coverage[5]=coverage[10]=coverage[15]=1;
+    projection=coverage;projection[0]=projection[5]=2;
+    const auto plan=[&]{sf::PlanModel(host,&owner,projection,coverage,1024,1024);};
+    const auto binding=[&](unsigned char* model,bool receives) {
+        sf::ConfigureDetailReceiver(host,renderer->effect,receives,model);
+        ComPtr<IDirect3DBaseTexture9> texture;
+        Hr(ownedDevice->GetTexture(3,&texture),"read fixed receiver binding");
+        return texture;
+    };
+    sf::Invalidate(host);plan();
+    Check(!sf::PrepareModel(host,&owner,false,result),"failed coverage pass cannot allocate a model map");
+    auto* target=sf::PrepareModel(host,&owner,true,result);
+    Check(target&&target->Size()==1024&&result==projection,"fixed model allocates requested projection");
+    auto died=Life(target->Texture());
+    Check(!binding(&owner,true),"unrendered fixed map cannot be sampled");
+    sf::MarkModelRendered(host,&owner,true);
+    Check(SameObject(binding(&owner,true).Get(),target->Texture()),"owning receiver uses its fixed map");
+    Check(!binding(&other,true)&&!binding(nullptr,true)&&!binding(&owner,false),
+        "other models, accessories and unshadowed materials do not inherit the map");
+    const auto attempts=allocationAttempts;
+    sf::Invalidate(host);plan();
+    Check(!sf::ReadModelInfo(host,&owner).valid,"next frame invalidates fixed contents");
+    target=sf::PrepareModel(host,&owner,true,result);
+    Check(target&&allocationAttempts==attempts,"next frame reuses fixed allocation");
+    sf::MarkModelRendered(host,&owner,false);
+    Check(!binding(&owner,true),"failed model caster pass falls back to coverage");
+    sf::MarkModelRendered(host,&owner,true);binding(&owner,true);
+    host->AdaptiveShadowResolution()=true;sf::Invalidate(host);
+    Check(died->load()&&!sf::ReadModelInfo(host,&owner).valid,"dynamic mode releases fixed maps and bindings");
+    plan();Check(!sf::PrepareModel(host,&owner,true,result),"dynamic mode rejects fixed map planning");
+    host->AdaptiveShadowResolution()=false;sf::Invalidate(host);plan();
+    target=sf::PrepareModel(host,&owner,true,result);Check(target!=nullptr,"fixed mode restores allocation");
+    died=Life(target->Texture());sf::Invalidate(host);
+    Check(sf::PlannedModels(host).empty()&&died->load(),"unloaded or no longer needed models release their maps");
+    plan();target=sf::PrepareModel(host,&owner,true,result);Check(target!=nullptr,"replan after removal");
+    died=Life(target->Texture());sf::MarkModelRendered(host,&owner,true);binding(&owner,true);
+    sf::ReleaseRenderer(renderer);
+    Check(died->load()&&!sf::ReadModelInfo(host,&owner).valid,"device reset releases bound fixed resources");
+    plan();failOneAllocation=true;const auto before=allocationAttempts;
+    Check(!sf::PrepareModel(host,&owner,true,result)&&!failOneAllocation,"fixed allocation failure falls back");
+    sf::Invalidate(host);plan();
+    Check(!sf::PrepareModel(host,&owner,true,result)&&allocationAttempts==before+1,"failure does not retry every frame");
+    sf::ReleaseRenderer(renderer);plan();
+    target=sf::PrepareModel(host,&owner,true,result);Check(target!=nullptr,"device recovery clears failed request");
+    died=Life(target->Texture());host->ShadowMode()=0;sf::Invalidate(host);
+    Check(died->load(),"shadow off releases fixed maps");
+    host->ShadowMode()=1;
+    summary<<"fixed-model,lifecycle-and-receiver-isolation,passed\n";
+}
+
 void ApiTests() {
     auto* renderer=host->Renderer();const UINT cap=HardwareLimit(ownedDevice);
     Check(cap>=8192, "acceptance device supports all requested 512..8192 size cases");
@@ -606,7 +664,8 @@ void SharedSizeChecks() {
 int wmain(int argc,wchar_t** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
     SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
-    if(argc!=5||std::wcscmp(argv[3],L"--mme")!=0||
+    const bool fixedOnly=argc==6&&std::wcscmp(argv[5],L"--fixed-model-only")==0;
+    if((argc!=5&&!fixedOnly)||std::wcscmp(argv[3],L"--mme")!=0||
        (std::wcscmp(argv[4],L"0")!=0&&std::wcscmp(argv[4],L"1")!=0)) {
         std::fwprintf(stderr,L"Usage: MikuMikuDance.exe model-without-FX.pmx new-output-directory --mme 0|1\n");return 64;
     }
@@ -660,6 +719,12 @@ MeshMaterialList { 1;2;0,0;; Material {0.6;0.6;0.6;1.0;;5.0;0.0;0.0;0.0;;0.1;0.1
         Check(MH_CreateHook(createEntry,&CreateTextureProbe,reinterpret_cast<void**>(&realCreateTexture))==MH_OK&&
               MH_EnableHook(createEntry)==MH_OK, "observe and selectively fail only owned-device fine allocations");
 
+        if(fixedOnly) {
+            ConfigureFrame(false,2);FrameDriver(host);
+            Check(host->Renderer()->effect!=nullptr,"deferred host effect initialized");
+            Hr(FxSetInt(host->Renderer()->effect,"MdsDetailEnabled",0),"production effect supports fixed model sampling");
+            FixedModelTests();
+        } else {
         wchar_t system[MAX_PATH]{};GetSystemDirectoryW(system,MAX_PATH);
         systemD3d=LoadLibraryW((std::filesystem::path(system)/L"d3d9.dll").c_str());Check(systemD3d!=nullptr, "load actual system D3D9");
         auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(systemD3d,"Direct3DCreate9"));Check(create!=nullptr, "resolve actual D3D9 factory");
@@ -682,6 +747,7 @@ MeshMaterialList { 1;2;0,0;; Material {0.6;0.6;0.6;1.0;;5.0;0.0;0.0;0.0;;0.1;0.1
         Check(sf::VisibleTexture(host)==host->Renderer()->hdrTexture, "reset invalidates prior fine image");
         Frame(true,2,"enhanced-after-reset");
         Frame(false,2,"disabled-after");
+        }
         summary<<"checks,"<<checks<<",passed\n";summary.flush();exitCode=0;
     } catch(const std::exception& error) {
         std::fprintf(stderr,"FAIL shadow filter acceptance: %s\n",error.what());

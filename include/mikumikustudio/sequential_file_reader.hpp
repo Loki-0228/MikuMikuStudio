@@ -53,6 +53,16 @@ public:
         return static_cast<int>(copied);
     }
     std::int64_t Tell()const{return position_;}
+    // Cached parsed sections may skip their source bytes. Reset read-ahead only
+    // after a successful seek, so a failed seek leaves the reader usable.
+    bool SeekAbsolute(std::int64_t position) {
+        if(descriptor_<0){errno=EBADF;return false;}
+        if(position<0){errno=EINVAL;return false;}
+        const auto result=_lseeki64(descriptor_,position,SEEK_SET);
+        if(result<0)return false;
+        position_=result;cursor_=available_=0;
+        return true;
+    }
     int Close() {
         if(descriptor_<0)return 0;
         const int descriptor=descriptor_;descriptor_=-1;

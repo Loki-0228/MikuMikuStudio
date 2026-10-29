@@ -15,7 +15,13 @@
 #include "mikumikustudio/effect_api.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/texture_prepare_cache.hpp"
+#include "../src/model/model_geometry_cache.hpp"
 #include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include <MinHook.h>
 #include <commctrl.h>
 #include <cstdio>
 #include <cstdlib>
@@ -53,6 +59,8 @@ namespace {
 void Check(bool ok, const char* what) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", what); std::exit(7); }
 }
+
+#include "bone_gizmo_scene_checks.hpp"
 
 void CheckCoordinateReset(MMDApp* app, const std::filesystem::path& output) {
     const HWND main = app->MainWindow();
@@ -1817,6 +1825,15 @@ int wmain(int argc, wchar_t** argv) {
     if (cameraStartup) wcscpy_s(app->EnvFileName(), 256, scenePath);
     if (!InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE)) return 3;
     ShowWindow(app->MainWindow(), SW_HIDE);
+    if (argc > 3 && std::wcscmp(argv[3], L"--bone-gizmo") == 0) {
+        if (_wcsicmp(std::filesystem::path(scenePath).extension().c_str(), L".pmm") == 0) {
+            wcscpy_s(app->EnvFileName(), 256, scenePath); LoadSceneFile();
+        } else {
+            LoadModelFile(app, scenePath, false);
+        }
+        CheckBoneGizmoScene(app);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; return 0;
+    }
     if(argc>3&&std::wcscmp(argv[3],L"--curve-transport")==0){
         CheckCurveTransportFeedback(app,scenePath);
         ShutdownCleanup(app);delete app;g_Block=nullptr;return 0;
@@ -2061,6 +2078,25 @@ int wmain(int argc, wchar_t** argv) {
             CheckEffectMaterialNames(app);
 #endif
         else if (argc > 3&&!skipMissingModels) CheckEditorCommands(app);
+        wchar_t captureDirectory[32768]{};
+        const DWORD captureLength = GetEnvironmentVariableW(L"MMS_TEST_CAPTURE_DIR", captureDirectory, 32768);
+        if (captureLength > 0 && captureLength < 32768) {
+            RenderFrameScene(app);
+            Microsoft::WRL::ComPtr<IDirect3DSurface9> surface;
+            Check(SUCCEEDED(app->Renderer()->device->GetRenderTarget(0, &surface)), "capture lifecycle surface");
+            const auto output = std::filesystem::path(captureDirectory) /
+                (L"cycle-" + std::to_wstring(cycle) + L".png");
+            auto& api = d3dx::Get();
+            Check(api.Load() && api.saveSurfaceToFileW &&
+                SUCCEEDED(api.saveSurfaceToFileW(output.c_str(), 3, surface.Get(), nullptr, nullptr)),
+                "save lifecycle verification frame");
+            const auto geometryStats = model_geometry_cache::GetProcessStatistics();
+            const auto textureStats = texture_prepare_cache::GetStatistics();
+            std::printf("MODEL_REUSE hits=%llu stores=%llu bytes=%zu pending=%zu\n",
+                geometryStats.hits, geometryStats.stores, geometryStats.bytes, geometryStats.pendingBytes);
+            std::printf("TEXTURE_REUSE hits=%llu native=%llu stores=%llu\n",
+                textureStats.hits, textureStats.nativeCalls, textureStats.stores);
+        }
         std::puts("cycle passed");
     }
     if(loadHook)UnhookWindowsHookEx(loadHook);

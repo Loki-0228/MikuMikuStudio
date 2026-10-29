@@ -2298,6 +2298,11 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
         if (app->state.optflag[0] != 0) {  // 0x2F8
             break;
         }
+        auto* const active = ActiveModel(app);
+        if (!active || !mdl::Mdl(active)->morphs ||
+            mdl::Mdl(active)->morphCount <= (mdl::Mdl(active)->physicsMode == 2 ? 0u : 1u)) break;
+        if (app->CurrentFrame() >= 0)
+            BeginModelFramePasteUndo(active, app->CurrentFrame(), 0, true, false);
         app->SceneModified() = 1;
         {
             unsigned char* m = ActiveModel(app);

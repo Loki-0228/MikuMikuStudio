@@ -13,6 +13,7 @@
 // Pose-history storage is shared with the saved PMM state block on both ABIs.
 // =========================================================================//
 #include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/frame_clipboard.hpp"
 #include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/morph_curve.hpp"
 #include <cstdint>
@@ -26,6 +27,7 @@ namespace mikumikustudio {
 void ModelInitMorphSlots(unsigned char* m);                  // 0x4A89B0
 
 void ModelInitDefaults(unsigned char* m) {                   // 0x4A8DC0
+    frame_clipboard::ForgetModel(m);
     model_vertex_cache::Forget(m);
     bone_scale::Forget(m);
     morph_curve::Forget(m);

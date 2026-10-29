@@ -3,6 +3,8 @@
 #include <Windows.h>
 #include <vector>
 #include <utility>
+#include <set>
+#include <algorithm>
 
 namespace mikumikustudio::pmm_versions {
 namespace fs = std::filesystem;
@@ -23,6 +25,7 @@ inline bool Publish(const fs::path& temporary, const fs::path& target) {
     if (!Exists(target, exists)) return false;
     if (!exists) return MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
     std::vector<std::vector<fs::path>> levels{Pair(target)};
+    std::vector<std::pair<fs::path,fs::path>> history;
     for (;;) {
         const fs::path next(levels.back().front().wstring() + L"1");
         // Keep within the host's path field and leave room for MME's alias.
@@ -36,6 +39,8 @@ inline bool Publish(const fs::path& temporary, const fs::path& target) {
         levels.push_back(std::move(pair));
         if (!occupied) break;
     }
+    for(std::size_t i=levels.size()-1;i>1;--i)
+        for(std::size_t j=0;j<levels[i].size();++j)history.emplace_back(levels[i-1][j],levels[i][j]);
     struct Rollback {
         std::vector<std::pair<fs::path, fs::path>> moved;
         std::vector<fs::path> copied;
@@ -55,17 +60,15 @@ inline bool Publish(const fs::path& temporary, const fs::path& target) {
         }
     } rollback;
     // Allocate all journal storage before touching files.
-    rollback.moved.reserve(levels.size() * 2);
+    rollback.moved.reserve(history.size());
     rollback.copied.reserve(2);
-    for (std::size_t i = levels.size() - 1; i > 1; --i) {
-        for (std::size_t j = 0; j < levels[i].size(); ++j) {
-            if (!Exists(levels[i-1][j], exists)) return false;
+    for (const auto& move:history) {
+            if (!Exists(move.first, exists)) return false;
             if (!exists) continue;
-            rollback.moved.emplace_back(levels[i-1][j], levels[i][j]);
-            if (!MoveFileExW(levels[i-1][j].c_str(), levels[i][j].c_str(), MOVEFILE_WRITE_THROUGH)) {
+            rollback.moved.push_back(move);
+            if (!MoveFileExW(move.first.c_str(), move.second.c_str(), MOVEFILE_WRITE_THROUGH)) {
                 rollback.moved.pop_back(); return false;
             }
-        }
     }
     for (std::size_t j = 0; j < levels[0].size(); ++j) {
         if (!Exists(levels[0][j], exists)) return false;

@@ -30,8 +30,20 @@ void BackupDialogChecks(HWND dialog,const as::DialogContext& context) {
     SendMessageW(context.tooltip,TTM_GETTEXTW,1024,reinterpret_cast<LPARAM>(&tool));
     Check(wcsstr(hint,L".pmm1") && wcsstr(hint,L"MME") && wcsstr(hint,L".emm"),
         "hover text explains old versions and MME's conditional effect saving in all languages");
+    Check(Title(GetDlgItem(dialog,as::Explanation)).find(L".emm")!=std::wstring::npos &&
+        Title(GetDlgItem(dialog,as::Explanation)).find(L'\n')==std::wstring::npos,
+        "footer contains only the one-line actual EMM save status");
+    Check((IsDlgButtonChecked(dialog,as::NumberedManual)==BST_CHECKED)==context.value.numberedManualVersions,
+        "independent manual history checkbox reflects the saved setting");
+    for(int id:{as::Explanation,as::NumberedManual}) {
+        HWND control=GetDlgItem(dialog,id);RECT available{};GetClientRect(control,&available);
+        HDC dc=GetDC(control);auto old=SelectObject(dc,reinterpret_cast<HFONT>(SendMessageW(control,WM_GETFONT,0,0)));
+        const auto text=Title(control);SIZE measured{};GetTextExtentPoint32W(dc,text.c_str(),int(text.size()),&measured);
+        SelectObject(dc,old);ReleaseDC(control,dc);
+        Check(measured.cx+(id==as::NumberedManual?24:0)<=available.right,"new footer labels fit in every language");
+    }
     RECT bounds{};GetClientRect(dialog,&bounds);
-    RECT units{0,0,300,195};MapDialogRect(dialog,&units);
+    RECT units{0,0,300,183};MapDialogRect(dialog,&units);
     Check(bounds.right<=units.right && bounds.bottom<=units.bottom,"backup settings use the compact dialog size");
 }
 void BackupDirectoryChecks(MMDApp* app,const fs::path& config) {
@@ -68,4 +80,44 @@ void BackupDirectoryChecks(MMDApp* app,const fs::path& config) {
     const auto sibling=executable.parent_path()/(executable.filename().wstring()+L"-other")/L"backups";
     Check(as::DisplayDirectory(sibling.wstring())==sibling.wstring(),"a sibling with the same prefix retains its absolute path");
     Check(as::Configure(app,before,error),"restore backup settings after relative-path checks");
+}
+
+INT_PTR CALLBACK NamingProbe(HWND dialog,UINT msg,WPARAM wp,LPARAM lp) {
+    if(msg!=WM_INITDIALOG)return as::NamingProc(dialog,msg,wp,lp);
+    as::NamingProc(dialog,msg,wp,lp);
+    auto* c=reinterpret_cast<as::NamingContext*>(lp);
+    Check(Title(GetDlgItem(dialog,as::Preview)).find(L".pmm")!=std::wstring::npos,"naming preview includes automatic extension");
+    const auto preview=GetDlgItem(dialog,as::Preview);
+    Check((GetWindowLongW(preview,GWL_STYLE)&ES_READONLY)!=0,"naming preview is a read-only field");
+    HDC previewDc=GetDC(dialog);
+    Check(reinterpret_cast<HBRUSH>(SendMessageW(dialog,WM_CTLCOLORSTATIC,reinterpret_cast<WPARAM>(previewDc),
+        reinterpret_cast<LPARAM>(preview)))==GetSysColorBrush(COLOR_3DFACE),"naming preview paints a grey read-only background");
+    ReleaseDC(dialog,previewDc);
+    SetDlgItemTextW(dialog,as::Pattern,L"start_end");
+    SendDlgItemMessageW(dialog,as::Pattern,EM_SETSEL,5,5);
+    as::NamingProc(dialog,WM_COMMAND,as::TokenFirst+3,0);
+    Check(Title(GetDlgItem(dialog,as::Pattern))==L"start[/YYYY]_end","four-digit year button inserts at caret");
+    SYSTEMTIME now{};GetLocalTime(&now);
+    Check(Title(GetDlgItem(dialog,as::Preview))==L"start"+save_naming::Number(now.wYear,4)+L"_end.pmm","preview expands four-digit year");
+    SetDlgItemTextW(dialog,as::Pattern,L"[/unknown]");
+    Check(!IsWindowEnabled(GetDlgItem(dialog,IDOK)),"unknown token disables confirmation");
+    SetDlgItemTextW(dialog,as::Pattern,L"[/NAME]_[/YY][/MM][/DD]_[/N]");
+    CaptureBackupDialog(dialog,10+c->app->EnglishUI());
+    as::NamingProc(dialog,WM_COMMAND,IDOK,0);
+    Check(c->pattern==L"[/NAME]_[/YY][/MM][/DD]_[/N]","naming editor accepts ASCII tokens verbatim");
+    return TRUE;
+}
+void NamingTests(MMDApp* app) {
+    SYSTEMTIME time{};time.wYear=2026;time.wMonth=10;time.wDay=23;time.wHour=4;time.wMinute=5;time.wSecond=6;time.wMilliseconds=7;
+    std::wstring result,error;
+    Check(save_naming::Expand(L"[/NAME]_[/YYYY]_[/YY][/MM][/DD]_[/hh][/mm][/ss]_[/fff]_[/N]",L"工程",time,L"012",result,error) &&
+        result==L"工程_2026_261023_040506_007_012","all ASCII tokens expand with correct padding and month/minute case");
+    for(const auto* invalid:{L"",L"../bad",L"[/yy]",L"[/YYYY",L"CON",L"LPT1",L"bad.",L"bad ",L"bad\nline"})
+        Check(!save_naming::Validate(invalid,error),"invalid filenames and tokens are rejected");
+    for(int language:{0,1,2}) {
+        app->EnglishUI()=language;as::NamingContext context{app,save_naming::IncrementDefault,L"工程",false};
+        Check(UiDialogBoxParamW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(as::kNamingDialog),app->MainWindow(),NamingProbe,
+            reinterpret_cast<LPARAM>(&context))==IDOK,"naming dialog works in every UI language");
+    }
+    app->EnglishUI()=2;
 }

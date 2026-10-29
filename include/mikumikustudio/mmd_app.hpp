@@ -223,6 +223,9 @@ public:
     bool& AdaptiveShadowResolution() { return m_adaptiveShadowResolution; }
     bool& ShadowFilterEnhanced() { return m_shadowFilterEnhanced; }
     unsigned& ShadowResolutionLimit() { return m_shadowResolutionLimit; }
+    // Last quality tier chosen by dynamic precision. Only the hysteresis of
+    // the allocation policy reads it; it is not part of the saved state.
+    unsigned& DynamicShadowQuality() { return m_dynamicShadowQuality; }
 
     pmm_settings::State& PmmProjectSettings() { return m_pmmProjectSettings; }
     const pmm_settings::State& PmmProjectSettings() const { return m_pmmProjectSettings; }
@@ -239,6 +242,8 @@ public:
     TransparentSortPrecision TransparentMaterialSortPrecision() const { return m_transparentMaterialSortPrecision; }
 #endif
     bool& TransparentMaterialIndexOrderDirty() { return m_transparentMaterialIndexOrderDirty; }
+    bool& TransparentSortCrossObjects() { return m_transparentSortCrossObjects; }
+    bool TransparentSortCrossObjects() const { return !MMD_ORIGINAL_PROFILE && m_transparentSortCrossObjects; }
 
     LetterHotkeyState& LetterHotkeys() { return m_letterHotkeys; }
 
@@ -1144,6 +1149,8 @@ public:
     }
     std::int32_t& AviSavedRenderWidth() { return m_aviSavedRenderWidth; }
     std::int32_t& AviSavedRenderHeight() { return m_aviSavedRenderHeight; }
+    void CaptureRecordingEditorView();
+    void RestoreRecordingEditorView();
     std::uint8_t& AviStereoOutput() {
         return state.aviStereoOutput;
     }
@@ -1560,7 +1567,9 @@ private:
     bool m_adaptiveShadowResolution = false;
     bool m_shadowFilterEnhanced = false;
     unsigned m_shadowResolutionLimit = 4096;
+    unsigned m_dynamicShadowQuality = 0;
     TransparentSortPrecision m_transparentMaterialSortPrecision = kDefaultTransparentSortPrecision;
+    bool m_transparentSortCrossObjects = false;
 
     LetterHotkeyState m_letterHotkeys;
 
@@ -1639,6 +1648,17 @@ private:
     bool m_aviRenderResolutionOverridden = false;
     std::int32_t m_aviSavedRenderWidth = 0;
     std::int32_t m_aviSavedRenderHeight = 0;
+    // Runtime-only state. Camera playback shares these fields with the free
+    // model viewport; do not add the snapshot to the legacy/PMM state layout.
+    struct RecordingEditorView {
+        bool active = false;
+        float position[3]{}, rotation[3]{}, offset[2]{};
+        float distance = 0, fov = 0;
+        std::uint8_t perspective = 0, suppressed = 0;
+        std::int32_t parentModel = -1, parentBone = 0;
+        CameraAttachmentReference reference = CameraAttachmentReference::None;
+        D3DMATRIX basis{};
+    } m_recordingEditorView;
     HWND m_gravitySettingDialog = nullptr;
     HWND m_frameRangeDialog = nullptr;
     HWND m_groundShadowColorDialog = nullptr;

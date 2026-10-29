@@ -1,3 +1,4 @@
+#include "mikumikustudio/cache_manager.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/mmv4mms.hpp"
 #include "mikumikustudio/native_media.hpp"
@@ -92,6 +93,7 @@ static void ReplaceEditText(HWND parent, int id, const char* text) {
 }
 
 void ResetAppState(MMDApp* app) {
+    cache_manager::ResetScene();
     app->AdvanceSceneGeneration();
     app->PlaybackStartSeconds() = app->PlaybackCursorSeconds() = app->PlaybackEndSeconds() = 0;
     app->SyncPlaybackTimeCompatibility();

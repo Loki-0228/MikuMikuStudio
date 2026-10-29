@@ -1,3 +1,4 @@
+#include "mikumikustudio/cache_manager.hpp"
 #include "mikumikustudio/build_profile.hpp"
 // ===========================================================================
 // VA 0x00408870 - PathToProjectDir  (original: sub_408870, 0xEF bytes)
@@ -171,6 +172,8 @@ void LoadSceneFile(const wchar_t* candidate) {
     // An unreadable or unsupported file must not change the current scene's
     // dirty state, path base or MME assignments.
     accepted = true;
+    cache_manager::BeginProject(app->EnvFileName());
+    struct CacheLoadEnd {~CacheLoadEnd(){cache_manager::EndProjectLoad();}} cacheLoadEnd;
     app->AdvanceSceneGeneration();
     NotifyEffectFileOpen(app->EnvFileName());
     app->SceneModified() = 0;

@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/original_import.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/native_mesh.hpp"
@@ -968,7 +969,8 @@ void LoadAccessoryFile(const wchar_t* path) {                   // 0x460B30
 // one frame into its 10000-record key list (visible/shadow/parent fields +
 // pos/rot/scale/opacity), the same walk/overwrite/splice insert as the
 // other registrars.
-void RegisterAccessoryKey(MMDApp* app, int frameArg, int slot) {  // 0x413CB0
+void RegisterAccessoryKey(MMDApp* app, int frameArg, int slot) {
+    if(frameArg<0){negative_frames::RegisterAccessory(app,slot,frameArg);return;}  // 0x413CB0
     if (app == nullptr || slot < 0 || slot >= 255)
         return;
     auto* object = reinterpret_cast<unsigned char*>(app->AccessorySlot(slot));
@@ -1203,6 +1205,10 @@ void RenderAccessoriesEffectRange(MMDApp* app, int firstOrder,
     void* effect = sub->effect;
     if (device == nullptr || effect == nullptr || !d3dx::Get().Load())
         return;
+#if !MMD_ORIGINAL_PROFILE
+    // Reset between render paths; enable shared layers for each shadow receiver.
+    shadow_filter::ConfigureDetailReceiver(app, effect, false);
+#endif
     const float* light = reinterpret_cast<const float*>(&app->SceneLight());
     // 0x4C593B..0x4C594F: the effect accessory renderer does not feed the
     // raw ambient/emissive sum to EgColor.  Its RGB channels are attenuated
@@ -1221,6 +1227,9 @@ void RenderAccessoriesEffectRange(MMDApp* app, int firstOrder,
             continue;
         app->ActiveRenderObject() = accessory;
         if (mdl::Accessory(accessory)->shadowEnabled == 0) {
+#if !MMD_ORIGINAL_PROFILE
+            shadow_filter::ConfigureDetailReceiver(app, effect, false);
+#endif
             app->ActiveRenderPass() =
                 AccessoryRenderPass::FixedFunction;
             RenderAccessoryFixedOne(app, accessory, false);
@@ -1231,6 +1240,10 @@ void RenderAccessoriesEffectRange(MMDApp* app, int firstOrder,
             mdl::Accessory(accessory)->order,
             static_cast<void*>(sub->hdrTexture));
         app->ActiveRenderPass() = AccessoryRenderPass::Effect;
+#if !MMD_ORIGINAL_PROFILE
+        // local*world*coverage is already in the same coverage space as models.
+        shadow_filter::ConfigureDetailReceiver(app, effect, true);
+#endif
         device->SetTexture(0, shadow_filter::VisibleTexture(app));
         device->SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 1);
         Matrix world;

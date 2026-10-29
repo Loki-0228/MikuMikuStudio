@@ -49,6 +49,7 @@
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/ui_language.hpp"
 #include "ui_controls.inc"
+#include "transform_edit_layout.hpp"
 
 namespace mikumikustudio {
 
@@ -67,14 +68,16 @@ HWND CreateUiPanelControl(const ui::ControlSpec& c, HWND hwnd,
     // Legacy combo captions are empty; their contents are populated later.
     // Even SendMessageW loses names if the receiving combo is an ANSI window.
     const bool ansiCombo = c.acls && std::strcmp(c.acls, "COMBOBOX") == 0;
+    const DWORD style=ui::TransformEditShowsPrefix(c.id)
+        ? c.style & ~(ES_CENTER|ES_RIGHT) : c.style;
     return (c.wide || ansiCombo)
         ? CreateWindowExW(c.ex, ansiCombo ? L"COMBOBOX" : c.wcls,
-                          ansiCombo ? L"" : c.wtext, c.style,
+                          ansiCombo ? L"" : c.wtext, style,
                           EvalPos(c.x, sidebar), EvalPos(c.y, sidebar),
                           c.w, c.h, hwnd,
                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(c.id)),
                           hInst, nullptr)
-        : CreateWindowExA(c.ex, c.acls, c.atext, c.style,
+        : CreateWindowExA(c.ex, c.acls, c.atext, style,
                           EvalPos(c.x, sidebar), EvalPos(c.y, sidebar),
                           c.w, c.h, hwnd,
                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(c.id)),
@@ -523,6 +526,7 @@ bool CreateUIControls(MMDApp* app, HWND hwnd) {
         InstallPanelCheckboxPaint(control);
     }
 
+    SetWindowTextA(GetDlgItem(hwnd,panel::kPlayStopFrameEdit),"-1");
     curve_host::CreateControls(app, hwnd);
     // 0x46A8ED..0x46A8F7: the current-frame edit is initialized only
     // after its numeric-edit subclass has been installed.  Leaving the
@@ -539,7 +543,7 @@ bool CreateUIControls(MMDApp* app, HWND hwnd) {
     SetWindowPos(forcePaste, GetDlgItem(hwnd, 423), 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     HWND adaptiveShadow = CreateWindowExW(0, L"BUTTON", L"動的精度",
-        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 0, 0, 176, 20, hwnd,
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 0, 0, 84, 18, hwnd,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kAdaptiveShadowCheckbox)), hInst, nullptr);
     if (!adaptiveShadow) return false;
     LoadShadowResolutionPreference(app);

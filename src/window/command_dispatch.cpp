@@ -1,3 +1,4 @@
+#include "cache_manager_dialog.hpp"
 #include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/autosave.hpp"
@@ -420,6 +421,7 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
     // one corner on each ordinary menu click.
     if (ctrl == nullptr && notification == 0 && viewport_corner_menu::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification == 0 && autosave::HandleCommand(app, id)) return;
+    if (ctrl == nullptr && notification == 0 && cache_manager_ui::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification == 0 && viewport_render_scale::HandleCommand(app, id)) return;
 
     switch (id) {
@@ -559,10 +561,10 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
         // ported above (control 0x1B4 = id 436 stays in the 400 family);
         // everything else funnels into the per-family TUs by id range (each
         // family switches on its own cases; unlisted ids and the remaining
-        // 309..399 are no-ops, matching def_47E903 - except the port-added view
-        // ids 304..308 (the transparent sort limit submenu: the command id
+        // unlisted ids are no-ops, except the port-added view
+        // ids 304..309 (transparent sorting: the strength command id
         // minus 304 is the stored enum value, so 304..307 are Low..Maximum and
-        // 308 is Off).  Id 303 keeps a compatibility command that swaps Off and
+        // 308 is Off, 309 toggles scope). Id 303 swaps Off and
         // Standard and has no menu item any more; it stays inside the view
         // range as well.
         if (notification == 1 /*CBN_SELCHANGE*/ &&

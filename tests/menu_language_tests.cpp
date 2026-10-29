@@ -22,6 +22,7 @@
 #include <cstring>
 #include <string>
 #include <memory>
+#include "menu_first_paint_checks.hpp"
 
 using namespace mikumikustudio;
 
@@ -301,7 +302,12 @@ int RunResource(const wchar_t* resourceName) {
     return failures == 0 ? 0 : 1;
 }
 
-int main() {
+int main(int argc,char** argv) {
+    if(argc==2 && !std::strcmp(argv[1],"--editor-first-paint"))return menu_first_paint::Run(true,false,false,true);
+    if(argc==2 && !std::strcmp(argv[1],"--first-paint-late"))return menu_first_paint::Run(true,false);
+    if(argc==2 && !std::strcmp(argv[1],"--first-paint-no-idle"))return menu_first_paint::Run(false,true);
+    if(argc==2 && !std::strcmp(argv[1],"--first-paint-slow"))return menu_first_paint::Run(true,false,true);
+    if(argc==2 && !std::strcmp(argv[1],"--first-paint"))return menu_first_paint::Run();
     std::printf("Menu regression: ACP=%u\n", GetACP());
     RunResource(L"SAMPLE02E");
     RunResource(L"SAMPLE02");

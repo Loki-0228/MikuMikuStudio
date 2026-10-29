@@ -6,6 +6,7 @@
 #include <d3d9.h>
 #include <wrl/client.h>
 #include <array>
+#include <vector>
 
 namespace mikumikustudio {
 class MMDApp;
@@ -74,7 +75,42 @@ struct SamplingState {
     float mapSize[4]{1.0f, 1.0f, 0.0f, 0.0f};
 };
 SamplingState ReadSamplingState(MMDApp* app);
+// Native enhanced receivers use raw coverage on their private sampler 6;
+// sampler 0 keeps the shared prefiltered texture inherited by MME.
+SamplingState ReadNativeSamplingState(MMDApp* app);
 void ConfigureEffect(MMDApp* app, void* effect);
+
+// Camera-depth layers are dynamic precision only, independent of filtering.
+// Fixed mode may use the separate per-model maps below, never these layers.
+void PlanDetail(MMDApp* app, const std::array<float,16>& projection,
+                const std::array<float,16>& coverage, const float view[16],
+                float farDepth, UINT size, unsigned layer = 0, float densityFloor = 0,
+                float nearDepth = 0, float blendFraction = .2f,
+                float screenDemand = 0, bool orthographic = false);
+FineDepthTarget* PrepareDetail(MMDApp* app, bool nativeSucceeded,
+                              std::array<float,16>& projection, unsigned layer = 0);
+void MarkDetailRendered(MMDApp* app, bool succeeded, unsigned layer = 0);
+void ConfigureDetailReceiver(MMDApp* app, void* effect, bool receivesShadow,
+                             unsigned char* model = nullptr);
+struct DetailInfo {
+    bool valid = false;
+    UINT size = 0;
+    std::array<float,16> projection{};
+    float densityFloor = 0;
+    float nearDepth = 0, farDepth = 0, blendStart = 0;
+};
+DetailInfo ReadDetailInfo(MMDApp* app, unsigned layer = 0);
+
+// Fixed per-model maps use native slider density, never camera depth tiers.
+// Each pass renders all scene casters; only its owning model receives the map.
+void PlanModel(MMDApp*, unsigned char* model, const std::array<float,16>& projection,
+               const std::array<float,16>& coverage, UINT size, float density);
+std::vector<unsigned char*> PlannedModels(MMDApp*);
+FineDepthTarget* PrepareModel(MMDApp*, unsigned char* model, bool nativeSucceeded,
+                             std::array<float,16>& projection);
+void MarkModelRendered(MMDApp*, unsigned char* model, bool succeeded);
+DetailInfo ReadModelInfo(MMDApp*, unsigned char* model);
+void SetModelShadowsEnabledForTests(bool enabled);
 
 // Before device Reset, release without forgetting; at renderer shutdown forget.
 // Both forms clear failed-attempt state so a recovered device can try again.

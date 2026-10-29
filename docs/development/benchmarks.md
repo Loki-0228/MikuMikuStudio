@@ -1,6 +1,10 @@
 # 多模型帧基准
 
-`frame_benchmark` 是 `EXCLUDE_FROM_ALL` 的本机验证工具，使用实际 `FrameDriver`。它测强制编辑器帧，不能替代播放、物理角色或交互窗口 FPS 测试。
+`frame_benchmark` 是 `EXCLUDE_FROM_ALL` 的本机验证工具，使用实际 `FrameDriver`。默认测强制编辑器帧；`--playback-seconds N --json <文件>` 则执行实际播放、物理和 Present。两者都使用隐藏窗口，不能直接等同于交互窗口的 FPS。
+
+`frame_benchmark_profile` 只给帧驱动及现有计时阶段编译 `MIKUMIKUSTUDIO_PERF`，将对应直接对象链接到测量宿主；普通核心库和正式 EXE 不增加计时。该目标沿用 MME 导出和程序名，输出到 `tests/mme-frame-profile/<配置>/MikuMikuDance.exe`。逐项计时包含嵌套子项，不能相加。正式帧率对照使用无计时的 `frame_benchmark_mme`。
+
+`MMS_SHADOW_BOUNDS_CACHE_DISABLE=1` 可关闭新增的模型阴影边界缓存做对照。播放测量记录每帧绘制量、成功 Present、场景时间推进及实际视口；缓存本身只省去未改变顶点的边界扫描，不省略绘制或效果更新。
 
 2026-09-24 用户更新约定：停止当前测试，后续采用不占用桌面的后台测评，以修复前后两个 build 的同条件结果验收。DirectX/GPU 计时、PresentMon/ETW 等采集方法需先确认在当前路径上有效；后台不能省略正常渲染工作量或把最小化节流算作修复收益。下面的窗口对照流程保留为历史方法，未经用户后续明确要求，不再启动。后台播放 FPS 的采集链路尚未验证完成；已有 GPU 排空吞吐率不改名为播放 FPS。
 

@@ -373,12 +373,13 @@ LRESULT CALLBACK Parent(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR,DWORD_PT
     if(msg==WM_COMMAND){for(int lane=0;lane<kMorphLaneCount;++lane)
         if(LOWORD(wp)==kMorphCurveLane[lane]){OpenMorph(app,lane);return 0;}}
     if(msg==WM_COMMAND&&LOWORD(wp)==curve_editor::kAccessoryMotionMenu){
+        if(app->CameraMode()==0)return 0;
         std::wstring error;const int slot=app->SelectedAccessorySlot();
         if(app->AccessorySlot(slot))Motion(*app,Kind::Accessory,slot,hwnd,false,nullptr,error);
         else error=Text(app->EnglishUI(),L"アクセサリを選択してください。",L"Select an accessory first.",L"请先选择附件。");
         if(!error.empty())MessageBoxW(hwnd,error.c_str(),L"VMD",MB_OK|MB_ICONWARNING);return 0;
     }
-    if(msg==WM_INITMENUPOPUP){Localize(app);EnableMenuItem(GetMenu(hwnd),curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND|(app->AccessorySlot(app->SelectedAccessorySlot())?MF_ENABLED:MF_GRAYED));}
+    if(msg==WM_INITMENUPOPUP)Localize(app);
     if(msg==WM_DRAWITEM){auto*d=reinterpret_cast<DRAWITEMSTRUCT*>(lp);
         if(d){bool launcher=d->CtlID==curve_editor::kAccessoryCurve||d->CtlID==curve_editor::kInterpolationCurve;
             for(int lane=0;lane<kMorphLaneCount&&!launcher;++lane)launcher=d->CtlID==kMorphCurveLane[lane];
@@ -1109,9 +1110,10 @@ void Localize(MMDApp*app){
     SetWindowTextW(GetDlgItem(hwnd,472),Text(lang,L"追加",L"Load",L"载入"));
     SetWindowTextW(GetDlgItem(hwnd,487),Text(lang,L"登録",L"Key",L"登记"));
     HMENU menu=GetMenu(hwnd),file=menu?GetSubMenu(menu,0):nullptr;
-    if(file){const wchar_t*caption=Text(lang,L"選択中のアクセサリのモーション読込（VMD）…",L"Read selected accessory motion (VMD)…",L"读取当前附件动作（VMD）…");
-        if(GetMenuState(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND)==UINT(-1))AppendMenuW(file,MF_STRING,curve_editor::kAccessoryMotionMenu,caption);
-        else ModifyMenuW(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND|MF_STRING,curve_editor::kAccessoryMotionMenu,caption);
+    if(file){const wchar_t*caption=Text(lang,L"選択中のアクセサリのモーション読込（VMD）…",L"Load selected accessory motion (VMD)…",L"载入当前附件动作（VMD）…");
+        const UINT flags=MF_STRING|((app->CameraMode()!=0&&app->AccessorySlot(app->SelectedAccessorySlot()))?MF_ENABLED:MF_GRAYED);
+        if(GetMenuState(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND)==UINT(-1))AppendMenuW(file,flags,curve_editor::kAccessoryMotionMenu,caption);
+        else ModifyMenuW(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND|flags,curve_editor::kAccessoryMotionMenu,caption);
     }
     curve_editor::SetLanguage(hwnd,lang);
 }

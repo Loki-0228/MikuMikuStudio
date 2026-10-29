@@ -57,13 +57,18 @@ int Classify(const Triangle& t, const Plane& plane, double epsilon) {
     }
     return positive && negative ? 2 : positive ? 1 : negative ? -1 : 0;
 }
-// Depth key shared by the High order and the two bucket passes: the sum of
-// the three projected Z values.  Larger values are farther from the viewer.
+// Maximum's whole-face fallback uses projected depth. Bucket tiers use the
+// original face's linear camera depth, avoiding perspective compression.
 double Depth(const Triangle& t) {
     return t.v[0].p[2]+t.v[1].p[2]+t.v[2].p[2];
 }
-void Approximate(std::vector<Triangle>& triangles) {
-    std::stable_sort(triangles.begin(), triangles.end(), [](const Triangle& a, const Triangle& b) {
+double BucketDepth(const Triangle& t) {
+    return std::isfinite(t.linearDepth) ? t.linearDepth : Depth(t);
+}
+void Approximate(std::vector<Triangle>& triangles,std::size_t first=0,
+                 std::size_t last=std::numeric_limits<std::size_t>::max()) {
+    last=std::min(last,triangles.size());
+    std::stable_sort(triangles.begin()+first, triangles.begin()+last, [](const Triangle& a, const Triangle& b) {
         const double za = Depth(a), zb = Depth(b);
         return za == zb ? a.ordinal < b.ordinal : za > zb;
     });
@@ -75,12 +80,15 @@ void Approximate(std::vector<Triangle>& triangles) {
 // depth leaves the order untouched; both are safe, not errors.  Returns how
 // many buckets the pass filled.
 template<std::size_t kBuckets>
-std::size_t BucketOrder(std::vector<Triangle>& triangles) {
-    if (triangles.empty()) return 0;
+std::size_t BucketOrder(std::vector<Triangle>& triangles, std::size_t first = 0,
+                        std::size_t last = std::numeric_limits<std::size_t>::max()) {
+    last=std::min(last,triangles.size());
+    if (first>=last) return 0;
     double nearDepth = std::numeric_limits<double>::infinity();
     double farDepth = -std::numeric_limits<double>::infinity();
-    for (const auto& t : triangles) {
-        const double depth = Depth(t);
+    for (std::size_t i=first;i<last;++i) {
+        const auto& t=triangles[i];
+        const double depth = BucketDepth(t);
         if (!std::isfinite(depth)) return 0;
         nearDepth = std::min(nearDepth, depth);
         farDepth = std::max(farDepth, depth);
@@ -92,12 +100,13 @@ std::size_t BucketOrder(std::vector<Triangle>& triangles) {
         if (!spread) return std::size_t{0};
         // Clamp before the conversion: a degenerate span can leave a NaN or an
         // infinite step, and converting either to an integer is undefined.
-        const double forward = (Depth(t)-nearDepth)*scale;
+        const double forward = (BucketDepth(t)-nearDepth)*scale;
         const std::size_t step = forward > 0 ? std::size_t(std::min(forward, double(kBuckets))) : 0;
         return kBuckets - 1 - std::min(kBuckets - 1, step);
     };
     std::array<std::size_t, kBuckets> counts{};
-    for (const auto& t : triangles) ++counts[bucketOf(t)];
+    for (std::size_t i=first;i<last;++i)
+        if (!(triangles[i].flags & kOutsideFrustum)) ++counts[bucketOf(triangles[i])];
     std::array<std::size_t, kBuckets> write{};
     std::size_t running = 0, used = 0;
     for (std::size_t b = 0; b < kBuckets; ++b) {
@@ -106,9 +115,14 @@ std::size_t BucketOrder(std::vector<Triangle>& triangles) {
         if (counts[b]) ++used;
     }
     // Writing the input in its own order is what keeps each bucket stable.
-    std::vector<Triangle> ordered(triangles.size());
-    for (const auto& t : triangles) ordered[write[bucketOf(t)]++] = t;
-    triangles.swap(ordered);
+    std::vector<Triangle> ordered(running);
+    for (std::size_t i=first;i<last;++i)
+        if (!(triangles[i].flags & kOutsideFrustum)) ordered[write[bucketOf(triangles[i])]++] = triangles[i];
+    // Leave offscreen faces in their source slots. Native callers subsequently
+    // compact them away; MME keeps the unmodified submissions and vertex IDs.
+    std::size_t at=0;
+    for (std::size_t i=first;i<last;++i)
+        if (!(triangles[i].flags & kOutsideFrustum)) triangles[i]=std::move(ordered[at++]);
     return used;
 }
 Plane ChoosePlane(const std::vector<Triangle>& triangles, double epsilon) {
@@ -159,7 +173,7 @@ void EmitPolygon(const std::array<Vertex, 5>& polygon, unsigned count, const Tri
                  std::vector<Triangle>& destination) {
     for (unsigned i = 1; i + 1 < count; ++i) {
         Triangle t{}; t.v[0] = polygon[0]; t.v[1] = polygon[i]; t.v[2] = polygon[i+1];
-        t.draw = original.draw; t.ordinal = original.ordinal;
+        t.draw = original.draw; t.ordinal = original.ordinal; t.object=original.object;
         if (VisibleArea(t)) destination.push_back(t);
     }
 }
@@ -185,23 +199,72 @@ void Split(const Triangle& triangle, const Plane& plane,
 struct Work { std::vector<Triangle> triangles; unsigned depth = 0; bool emit = false; };
 } // namespace
 
+unsigned FrustumOutsidePlanes(const double clip[4]) noexcept {
+    double scale=1;
+    for(int i=0;i<4;++i) {
+        if(!std::isfinite(clip[i]))return 0;
+        scale=std::max(scale,std::abs(clip[i]));
+    }
+    const double epsilon=scale*1e-9;
+    const double distances[]={clip[3]+clip[0],clip[3]-clip[0],clip[3]+clip[1],
+        clip[3]-clip[1],clip[2],clip[3]-clip[2]};
+    unsigned mask=0;
+    for(unsigned i=0;i<6;++i)if(distances[i]<-epsilon)mask|=1u<<i;
+    return mask;
+}
+
 std::vector<Triangle> Order(const std::vector<Triangle>& input,
-                           TransparentSortPrecision precision, Statistics& stats) {
+                           TransparentSortPrecision precision, Statistics& stats, bool crossObjects,
+                           bool splitIntersections, bool retainOutside) {
     stats = {}; stats.inputTriangles = input.size();
+    if (precision == TransparentSortPrecision::Off) {
+        stats.outputTriangles = input.size();return input;
+    }
+    if (!crossObjects && precision == TransparentSortPrecision::Maximum) {
+        std::vector<Triangle> output;output.reserve(input.size());
+        for(std::size_t first=0;first<input.size();) {
+            std::size_t end=first+1;
+            while(end<input.size() && input[end].object==input[first].object)++end;
+            Statistics part;
+            auto ordered=Order(std::vector<Triangle>(input.begin()+first,input.begin()+end),precision,part,true,splitIntersections,retainOutside);
+            output.insert(output.end(),ordered.begin(),ordered.end());
+            stats.splitCount+=part.splitCount;stats.limited|=part.limited;first=end;
+        }
+        stats.outputTriangles=output.size();return output;
+    }
     std::vector<Triangle> filtered; filtered.reserve(input.size());
     for (const auto& t : input) {
         if (!Valid(t)) { stats.limited = true; continue; }
         if (VisibleArea(t)) filtered.push_back(t);
     }
-    // High now uses the former Standard whole-triangle depth order.
-    if (precision == TransparentSortPrecision::High) {
-        Approximate(filtered); stats.outputTriangles = filtered.size(); return filtered;
+    // Vertex-history MME effects cannot accept generated vertex identities.
+    // Maximum's whole-face fallback stays more precise than High's 256 buckets.
+    if (precision == TransparentSortPrecision::Maximum && !splitIntersections) {
+        for(std::size_t first=0;first<filtered.size();) {
+            std::size_t end=first+1;
+            while(end<filtered.size() && (crossObjects || filtered[end].object==filtered[first].object))++end;
+            Approximate(filtered,first,end);first=end;
+        }
+        stats.outputTriangles = filtered.size(); return filtered;
     }
-    // Standard inherits the former Low's 64 buckets; Low reduces this to 16.
-    // Both keep input order inside a bucket and never split or repeat a face.
-    if (precision == TransparentSortPrecision::Low || precision == TransparentSortPrecision::Standard) {
-        stats.bucketCount = precision == TransparentSortPrecision::Low
-            ? BucketOrder<16>(filtered) : BucketOrder<64>(filtered);
+    // Bucket tiers keep source order inside a bucket, with no face-count cap.
+    if (precision == TransparentSortPrecision::Low || precision == TransparentSortPrecision::Standard ||
+        precision == TransparentSortPrecision::High) {
+        stats.offscreenTriangles=std::count_if(filtered.begin(),filtered.end(),[](const Triangle& t) {
+            return (t.flags & kOutsideFrustum)!=0;
+        });
+        for(std::size_t first=0;first<filtered.size();) {
+                std::size_t end=first+1;
+                while(end<filtered.size() && (crossObjects || filtered[end].object==filtered[first].object))++end;
+                const auto used=precision==TransparentSortPrecision::Low ?
+                    BucketOrder<16>(filtered,first,end) : precision==TransparentSortPrecision::Standard ?
+                    BucketOrder<64>(filtered,first,end) : BucketOrder<256>(filtered,first,end);
+                stats.bucketCount=std::max(stats.bucketCount,used);
+                first=end;
+        }
+        if(!retainOutside)filtered.erase(std::remove_if(filtered.begin(),filtered.end(),[](const Triangle& t) {
+            return (t.flags & kOutsideFrustum)!=0;
+        }),filtered.end());
         stats.outputTriangles = filtered.size(); return filtered;
     }
     const auto limit = Budget(precision);

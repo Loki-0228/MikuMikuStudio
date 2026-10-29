@@ -30,10 +30,17 @@ int main(){
             }
             char byte;Check(reader.Read(&byte,1)==0&&reader.Read(&byte,1)==0,"repeated EOF");
             Check(reader.Read(nullptr,0)==0,"empty read");
+            Check(reader.SeekAbsolute(2)&&reader.Tell()==2,"seek backwards resets read ahead");
+            Check(reader.Read(&byte,1)==1&&static_cast<unsigned char>(byte)==data[2],"read after backwards seek");
+            Check(!reader.SeekAbsolute(-1)&&reader.Tell()==3,"failed seek preserves position");
+            Check(reader.Read(&byte,1)==1&&static_cast<unsigned char>(byte)==data[3],"failed seek preserves buffered bytes");
+            Check(reader.SeekAbsolute(data.size()-1),"seek to final byte");
+            Check(reader.Read(&byte,1)==1&&static_cast<unsigned char>(byte)==data.back(),"read after forwards seek");
             Check(reader.Close()==0&&reader.Close()==0,"idempotent close");
             Check(reader.Read(&byte,1)==-1&&errno==EBADF,"read after close");
+            Check(!reader.SeekAbsolute(0)&&errno==EBADF,"seek after close");
         }
-        Check(readStatistics.bytes==data.size()-3,"byte accounting");
+        Check(readStatistics.bytes==data.size(),"byte accounting");
         if(buffered)Check(readStatistics.systemReads<readStatistics.requests,"refills reduce system reads");
     }
     fclose(file);std::puts("PASS buffered binary reads, offsets, boundaries and EOF");

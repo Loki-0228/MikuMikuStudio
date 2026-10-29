@@ -7,6 +7,8 @@
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/pmm_paths.hpp"
+#include "mikumikustudio/local_data_path.hpp"
+#include "effect_compile_cache.hpp"
 #include <atomic>
 #include <cstring>
 #include <string>
@@ -43,9 +45,7 @@ bool RegularFile(const fs::path& path) {
     return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
 }
 fs::path ExecutableDirectory() {
-    wchar_t path[32768]{};
-    const DWORD count = GetModuleFileNameW(nullptr, path, 32768);
-    return count && count < 32768 ? fs::path(path).parent_path() : fs::path{};
+    return local_data::ExecutableDirectory();
 }
 std::string Trim(std::string text) {
     const auto first = text.find_first_not_of(" \t\r");
@@ -121,10 +121,10 @@ HANDLE TrackAssignmentRead(HANDLE file, bool readOnly) noexcept {
     try {
         // Also cover EMM files opened directly through MME's own Load menu.
         // The handle names the exact file chosen by Windows, independent of ACP.
-        wchar_t filename[32768]{};
-        const DWORD size = GetFinalPathNameByHandleW(file, filename, 32768, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        std::vector<wchar_t> filename(32768);
+        const DWORD size = GetFinalPathNameByHandleW(file, filename.data(), static_cast<DWORD>(filename.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
         if (size && size < 32768) {
-            std::wstring path(filename, size);
+            std::wstring path(filename.data(), size);
             if (path.compare(0, 8, L"\\\\?\\UNC\\") == 0) path = L"\\\\" + path.substr(8);
             else if (path.compare(0, 4, L"\\\\?\\") == 0) path.erase(0, 4);
             if (_wcsicmp(fs::path(path).extension().c_str(), L".emm") == 0) ReadAssignments(path);
@@ -253,6 +253,13 @@ int WINAPI DecodeEffectPath(UINT codePage, DWORD flags, LPCCH bytes, int byteCou
 using CreateEffectFile = HRESULT(WINAPI*)(IDirect3DDevice9*, LPCWSTR, const void*, const void*,
     DWORD, void*, void**, void**);
 std::atomic<CreateEffectFile> originalEffectFile{nullptr};
+// Cumulative per-process counters for the acceptance log. They count every
+// intercepted D3DXCreateEffectFromFileW call, cached or not, so the last
+// MME_EFFECT_RESULT line proves the launch total (e.g. 45/45, 90/90 after a
+// reopen) even when the short per-call cache lines are overwritten in the
+// bounded log ring.
+std::atomic<unsigned long long> effectFileCalls{0};
+std::atomic<unsigned long long> effectFileSucceeded{0};
 
 // Read COM dispatch addresses without calling the object. A non-null device or
 // pool alone does not establish that its vtable is still valid at FX creation.
@@ -296,11 +303,25 @@ HRESULT WINAPI TraceEffectFile(IDirect3DDevice9* device, LPCWSTR filename, const
     TraceEffectDispatch("device", device, true);
     TraceEffectDispatch("pool", pool, false);
     SetLastError(incomingError);
-    const auto result = create ? create(device, filename, macros, include, flags, pool, effect, errors)
-                               : E_NOINTERFACE;
+    HRESULT result = E_NOINTERFACE;
+    if (create) {
+        // The bytecode cache only replaces the compile/create work for the
+        // default include handler.  Every bypass or failure falls through to
+        // the original entry point, which keeps the HRESULT, diagnostics and
+        // output ownership of the native call.
+        if (!effect_compile_cache::TryCreateEffect(
+                reinterpret_cast<void*>(create), device, filename, macros, include,
+                flags, pool, effect, errors, result))
+            result = create(device, filename, macros, include, flags, pool, effect, errors);
+    }
     const auto error = GetLastError();
-    runtime_log::Write("MME_EFFECT_RESULT hr=0x%08lX effect=%p", static_cast<unsigned long>(result),
-        effect ? *effect : nullptr);
+    const unsigned long long calls =
+        effectFileCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+    const unsigned long long succeeded = SUCCEEDED(result)
+        ? effectFileSucceeded.fetch_add(1, std::memory_order_relaxed) + 1
+        : effectFileSucceeded.load(std::memory_order_relaxed);
+    runtime_log::Write("MME_EFFECT_RESULT hr=0x%08lX effect=%p calls=%llu succeeded=%llu",
+        static_cast<unsigned long>(result), effect ? *effect : nullptr, calls, succeeded);
     SetLastError(error);
     return result;
 }

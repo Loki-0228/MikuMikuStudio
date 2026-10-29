@@ -65,6 +65,66 @@ void ShowSettings(MMDApp* app) {
         app->MainWindow(), DialogProc, reinterpret_cast<LPARAM>(&context));
 }
 }
+namespace {
+const wchar_t* const tokens[]{L"[/NAME]",L"[/N]",L"[/YY]",L"[/YYYY]",L"[/MM]",L"[/DD]",L"[/hh]",L"[/mm]",L"[/ss]"};
+void UpdateNaming(HWND dialog,NamingContext& context) {
+    wchar_t buffer[512]{};GetDlgItemTextW(dialog,Pattern,buffer,512);
+    SYSTEMTIME now{};GetLocalTime(&now);std::wstring result,error;
+    const bool valid=save_naming::Expand(buffer,context.name,now,L"001",result,error);
+    SetDlgItemTextW(dialog,Preview,(valid?result+L".pmm":error).c_str());
+    EnableWindow(GetDlgItem(dialog,IDOK),valid);
+}
+}
+INT_PTR CALLBACK NamingProc(HWND dialog,UINT msg,WPARAM wp,LPARAM lp) {
+    auto* c=reinterpret_cast<NamingContext*>(GetWindowLongPtrW(dialog,DWLP_USER));
+    if(msg==WM_INITDIALOG) {
+        c=reinterpret_cast<NamingContext*>(lp);SetWindowLongPtrW(dialog,DWLP_USER,lp);
+        SetWindowTextW(dialog,c->backup?Text(c->app,L"备份命名",L"Backup naming",L"バックアップ名"):
+            Text(c->app,L"增量命名",L"Increment naming",L"増分名"));
+        SetDlgItemTextW(dialog,PatternLabel,Text(c->app,L"文件名规则",L"Filename pattern",L"ファイル名の規則"));
+        SetDlgItemTextW(dialog,PreviewLabel,Text(c->app,L"预览",L"Preview",L"プレビュー"));
+        const wchar_t* zh[]{L"工程名",L"序号",L"年（YY）",L"年（YYYY）",L"月",L"日",L"时",L"分",L"秒"};
+        const wchar_t* en[]{L"Project",L"Sequence",L"Year (YY)",L"Year (YYYY)",L"Month",L"Day",L"Hour",L"Minute",L"Second"};
+        const wchar_t* ja[]{L"工程名",L"連番",L"年（YY）",L"年（YYYY）",L"月",L"日",L"時",L"分",L"秒"};
+        for(int i=0;i<int(std::size(tokens));++i)SetDlgItemTextW(dialog,TokenFirst+i,Text(c->app,zh[i],en[i],ja[i]));
+        LOGFONTW font{};
+        const auto inputFont=reinterpret_cast<HFONT>(SendDlgItemMessageW(dialog,Pattern,WM_GETFONT,0,0));
+        if(inputFont && GetObjectW(inputFont,sizeof(font),&font)) {
+            font.lfHeight=MulDiv(font.lfHeight,6,5);
+            c->previewFont=CreateFontIndirectW(&font);
+            if(c->previewFont)SendDlgItemMessageW(dialog,Preview,WM_SETFONT,reinterpret_cast<WPARAM>(c->previewFont),TRUE);
+        }
+        SetDlgItemTextW(dialog,IDOK,Text(c->app,L"确定",L"OK",L"OK"));
+        SetDlgItemTextW(dialog,IDCANCEL,Text(c->app,L"取消",L"Cancel",L"キャンセル"));
+        SendDlgItemMessageW(dialog,Pattern,EM_SETLIMITTEXT,240,0);
+        SetDlgItemTextW(dialog,Pattern,c->pattern.c_str());UpdateNaming(dialog,*c);
+        SetFocus(GetDlgItem(dialog,Pattern));SendDlgItemMessageW(dialog,Pattern,EM_SETSEL,-1,-1);
+        SetTimer(dialog,1,1000,nullptr);return FALSE;
+    }
+    if(!c)return FALSE;
+    if(msg==WM_CTLCOLORSTATIC && reinterpret_cast<HWND>(lp)==GetDlgItem(dialog,Preview)) {
+        SetTextColor(reinterpret_cast<HDC>(wp),GetSysColor(COLOR_WINDOWTEXT));
+        SetBkColor(reinterpret_cast<HDC>(wp),GetSysColor(COLOR_3DFACE));
+        return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_3DFACE));
+    }
+    if(msg==WM_TIMER){UpdateNaming(dialog,*c);return TRUE;}
+    if(msg==WM_DESTROY){KillTimer(dialog,1);if(c->previewFont){DeleteObject(c->previewFont);c->previewFont=nullptr;}return TRUE;}
+    if(msg==WM_CLOSE){EndDialog(dialog,IDCANCEL);return TRUE;}
+    if(msg!=WM_COMMAND)return FALSE;
+    const auto id=LOWORD(wp);
+    if(id==Pattern && HIWORD(wp)==EN_CHANGE){UpdateNaming(dialog,*c);return TRUE;}
+    if(id>=TokenFirst && id<TokenFirst+std::size(tokens)) {
+        SendDlgItemMessageW(dialog,Pattern,EM_REPLACESEL,TRUE,reinterpret_cast<LPARAM>(tokens[id-TokenFirst]));
+        SetFocus(GetDlgItem(dialog,Pattern));return TRUE;
+    }
+    if(id==IDCANCEL){EndDialog(dialog,IDCANCEL);return TRUE;}
+    if(id==IDOK) {
+        wchar_t buffer[512]{};GetDlgItemTextW(dialog,Pattern,buffer,512);std::wstring error;
+        if(!save_naming::Validate(buffer,error)){UpdateNaming(dialog,*c);return TRUE;}
+        c->pattern=buffer;EndDialog(dialog,IDOK);return TRUE;
+    }
+    return FALSE;
+}
 INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
     auto* c = reinterpret_cast<DialogContext*>(GetWindowLongPtrW(dialog, DWLP_USER));
     if (msg == WM_INITDIALOG) {
@@ -79,11 +139,16 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         label(Browse, L"选择…", L"Browse…", L"参照…");
         label(IntervalLabel, L"备份间隔（分钟）", L"Interval (minutes)", L"バックアップ間隔（分）");
         label(LimitLabel, L".pmm 备份上限（份）", L".pmm backup limit", L".pmm バックアップ上限（件）");
-        label(Overwrite, L"达到上限时覆盖最旧的备份", L"Replace oldest backups when the limit is reached", L"上限に達したら最も古いバックアップを置き換える");
+        label(Overwrite, L"达到上限时覆盖最旧的备份", L"Replace oldest at limit", L"上限時に古いバックアップを上書き");
         label(KeepPrevious, L"同时保存 .pmm1", L"Also keep .pmm1", L".pmm1 も保存する");
-        label(Explanation, L"备份保留工程名和时间戳。\r\nMME 启用随 .pmm 保存时，同时保存 .emm。",
-            L"Backups include the project name and timestamp.\r\nThe .emm file follows MME's Save with .pmm setting.",
-            L"元の名前と日時を付けてバックアップします。\r\n.emm は MME の .pmm 同時保存設定に従います。");
+        const UINT effectSave=GetMenuState(GetMenu(c->app->MainWindow()),40022,MF_BYCOMMAND);
+        const bool effectEnabled=effectSave!=UINT(-1) && (effectSave&MF_CHECKED);
+        label(Explanation,effectEnabled?L"当前 .emm 保存已开启。":L"当前 .emm 保存未开启。",
+            effectEnabled?L".emm saving is on.":L".emm saving is off.",
+            effectEnabled?L".emm の同時保存：有効":L".emm の同時保存：無効");
+        label(NumberedManual,L"增量保存",L"Incremental saving",L"増分保存");
+        label(BackupNaming,L"备份命名",L"Backup name",L"バックアップ名");
+        label(IncrementNaming,L"增量命名",L"Increment name",L"増分名");
         label(IDOK, L"确定", L"OK", L"OK"); label(IDCANCEL, L"取消", L"Cancel", L"キャンセル");
         SetDlgItemTextW(dialog, Folder, DisplayDirectory(c->value.directory).c_str());
         SetDlgItemInt(dialog, Interval, c->value.intervalMinutes, FALSE);
@@ -93,6 +158,7 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         CheckDlgButton(dialog, Overwrite, c->value.overwriteOldest ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, Enabled, c->value.enabled ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, KeepPrevious, c->value.keepPrevious ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(dialog, NumberedManual, c->value.numberedManualVersions ? BST_CHECKED : BST_UNCHECKED);
         c->tooltip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
             WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
             CW_USEDEFAULT, CW_USEDEFAULT, dialog, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -118,6 +184,17 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_CLOSE) { EndDialog(dialog, IDCANCEL); return TRUE; }
     if (msg != WM_COMMAND) return FALSE;
     switch (LOWORD(wp)) {
+    case BackupNaming:
+    case IncrementNaming: {
+        const bool backup=LOWORD(wp)==BackupNaming;
+        auto& pattern=backup?c->value.backupPattern:c->value.incrementPattern;
+        auto name=save_naming::ProjectStem(c->app->EnvFileName(),c->app->PmmProjectSettings().document);
+        if(name.empty())name=Text(c->app,L"未命名",L"Untitled",L"無題");
+        NamingContext naming{c->app,pattern,name,backup};
+        if(UiDialogBoxParamW(static_cast<HINSTANCE>(c->app->HInstance()),MAKEINTRESOURCEW(kNamingDialog),
+            dialog,NamingProc,reinterpret_cast<LPARAM>(&naming))==IDOK)pattern=naming.pattern;
+        return TRUE;
+    }
     case Browse: PickFolder(dialog, *c); return TRUE;
     case IDCANCEL: EndDialog(dialog, IDCANCEL); return TRUE;
     case IDOK: {
@@ -128,6 +205,7 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
         value.overwriteOldest = IsDlgButtonChecked(dialog, Overwrite) == BST_CHECKED;
         value.enabled = IsDlgButtonChecked(dialog, Enabled) == BST_CHECKED;
         value.keepPrevious = IsDlgButtonChecked(dialog, KeepPrevious) == BST_CHECKED;
+        value.numberedManualVersions = IsDlgButtonChecked(dialog, NumberedManual) == BST_CHECKED;
         std::wstring error;
         if (!a || !b) error = Text(c->app, L"请填写有效的备份间隔和数量上限。", L"Enter a valid interval and backup limit.", L"有効なバックアップ間隔と上限を入力してください。");
         if (!error.empty() || !Configure(c->app, value, error)) { Error(dialog, c->app, error); return TRUE; }

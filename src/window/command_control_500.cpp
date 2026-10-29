@@ -315,6 +315,7 @@ void BonePosEdit(MMDApp* app, std::size_t axis) {
         mikumikustudio::mdl::Bones(m)[sel].trans[axis] = 0.0f;
         m = ActiveModel(app);
         mdl::Mdl(m)->bonePhysicsState[sel] = 1;
+        app->SceneModified()=1;
     }
     PostViewRefresh(app);
 }
@@ -328,6 +329,8 @@ void BonePosEdit(MMDApp* app, std::size_t axis) {
 // stores the rotation quaternion into the bone record (+0x14C) via
 // D3DXQuaternionRotationMatrix, marking the bone flag 0x2D98.
 void BoneRotEdit(MMDApp* app, float* vec, int axis) {
+    const HWND owner=app->FloatingWindow() ? app->FloatingWindow() : app->MainWindow();
+    SendDlgItemMessageA(owner,panel::kReadoutRotXEdit+axis,EM_SETMODIFY,FALSE,0);
     if (app->state.optflag[0] != 0) {
         vec[axis] = 0.0f;
         RefreshRequest(-1);
@@ -383,6 +386,7 @@ void BoneRotEdit(MMDApp* app, float* vec, int axis) {
     }
     unsigned char* model = ActiveModel(app);
     mdl::Mdl(model)->bonePhysicsState[sel] = 1;
+    app->SceneModified()=1;
     PostViewRefresh(app);
 }
 
@@ -534,6 +538,15 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
         case 527: lane = 2; break;
         default: break;
         }
+        unsigned char* const active = ActiveModel(app);
+        if (!active) break;
+        const auto& record = *mdl::Mdl(active);
+        const int morph = record.selectedMorphs[lane];
+        if (!record.morphs || morph < 0 || morph >= int(record.morphCount) ||
+            (record.physicsMode != 2 && morph == 0)) break;
+        // Negative keys have their own history in negative_frames::RegisterMorph.
+        if (app->CurrentFrame() >= 0)
+            BeginModelFramePasteUndo(active, app->CurrentFrame(), 0, true, false);
         app->SceneModified() = 1;
         {
             unsigned char* m = ActiveModel(app);
@@ -781,6 +794,7 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
         PostViewRefresh(app);
         break;
     }
+
 #endif
     case 556: {  // 0x48DF5D
         // The checked state of 0x22C is probed by HandleNotify (ui_notify.cpp

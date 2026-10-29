@@ -30,13 +30,17 @@
 #include <fstream>
 #include <limits>
 #include <vector>
+#include <array>
 #include <cstdio>
 #include <cmath>
 #include <cstring>
 #include <memory>
 
 extern "C" float ExpGetFrameTime();
-namespace mikumikustudio { void RegisterCameraState(MMDApp*, int); }
+namespace mikumikustudio {
+void RegisterCameraState(MMDApp*, int);
+void RegisterSelfShadowState(MMDApp*, int);
+}
 
 using namespace mikumikustudio;
 namespace seq = mikumikustudio::image_sequence;

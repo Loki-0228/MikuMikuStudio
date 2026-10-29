@@ -118,6 +118,35 @@ int main() {
     IDirect3DDevice9* device=nullptr;
     Check(SUCCEEDED(d3d->CreateDevice(D3DADAPTER_DEFAULT,D3DDEVTYPE_HAL,window,
         D3DCREATE_SOFTWARE_VERTEXPROCESSING,&pp,&device)), "create real render device");
+    // Classification must inspect actual pixels, not the existence of alpha
+    // storage or a conservative fallback after an unsupported-format lock.
+    for(auto format:{D3DFMT_X8R8G8B8,D3DFMT_A8R8G8B8,D3DFMT_DXT1,D3DFMT_DXT3,D3DFMT_DXT5}) {
+        IDirect3DTexture9* probe=nullptr;
+        Check(SUCCEEDED(device->CreateTexture(4,4,1,0,format,D3DPOOL_MANAGED,&probe,nullptr)),"create alpha metadata format fixture");
+        D3DLOCKED_RECT memory{};Check(SUCCEEDED(probe->LockRect(0,&memory,nullptr,0)),"lock alpha metadata fixture");
+        auto* bytes=static_cast<unsigned char*>(memory.pBits);
+        if(format==D3DFMT_X8R8G8B8 || format==D3DFMT_A8R8G8B8)
+            for(unsigned y=0;y<4;++y)std::memset(bytes+y*memory.Pitch,255,16);
+        else {
+            std::memset(bytes,0,format==D3DFMT_DXT1?8:16);
+            if(format==D3DFMT_DXT3)std::memset(bytes,255,8);
+            if(format==D3DFMT_DXT5){bytes[0]=255;bytes[1]=255;}
+        }
+        probe->UnlockRect(0);unsigned char metadata[4]{};
+        mikumikustudio::CacheTextureColorAndAlpha(probe,metadata);
+        Check(metadata[3]==mikumikustudio::kTextureAlphaKnown,"opaque RGB RGBA and compressed DDS never enter alpha sorting");
+        if(format!=D3DFMT_X8R8G8B8) {
+            Check(SUCCEEDED(probe->LockRect(0,&memory,nullptr,0)),"edit alpha metadata fixture");bytes=static_cast<unsigned char*>(memory.pBits);
+            if(format==D3DFMT_A8R8G8B8)bytes[3]=0;
+            else if(format==D3DFMT_DXT1)bytes[4]=3;
+            else bytes[0]=0;
+            probe->UnlockRect(0);mikumikustudio::CacheTextureColorAndAlpha(probe,metadata);
+            Check((metadata[3]&mikumikustudio::kTextureUsesAlpha)!=0,"actual RGBA or DXT transparency remains a sorting candidate");
+        }
+        probe->Release();
+    }
+    unsigned char unknown[4]{};mikumikustudio::CacheTextureColorAndAlpha(nullptr,unknown);
+    Check(unknown[3]==0,"unknown texture metadata is not misreported as known transparency");
     device->SetRenderState(D3DRS_LIGHTING,FALSE);
     device->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE);
     device->SetRenderState(D3DRS_ALPHABLENDENABLE,TRUE);

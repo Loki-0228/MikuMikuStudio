@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/extended_names.hpp"
 #include "mikumikustudio/bone_curve.hpp"
 #include "mikumikustudio/ui_translation.hpp"
@@ -6,6 +7,7 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <io.h>
+#include "pmm_read_buffer.hpp"
 #include "mikumikustudio/pmm_project_settings.hpp"
 #include "mikumikustudio/bone_scale_io.hpp"
 #include "mikumikustudio/animation_curve_host.hpp"
@@ -20,17 +22,8 @@
 
 namespace mikumikustudio::pmm_settings {
 namespace {
-// Wire contract of org.mikudancestudio.view.transparent_sort_precision: one byte
-// holding the tier the user picked, Off included, and the byte is the
-// TransparentSortPrecision value itself (Low = 0 .. Off = 4).  The earlier
-// six-tier test format is not recognized at all: this reader has no branch for
-// it, so a byte that both formats can produce keeps its numeric value and
-// therefore takes the five-tier meaning (3 is Maximum here, not the earlier
-// extra tier, and 4 is Off, not the earlier maximum).  A byte outside 0..4 runs
-// the default and its raw bytes are written back unchanged.  Standard stays the
-// default.  Everything a tier produces at runtime (peeled layer count, triangle
-// budget, BSP tree depth) is recomputed per frame and is never part of the
-// record.
+// Precision is one stable byte: Low=0 .. Off=4. Scope is a separate boolean
+// record. Unknown bytes stay untouched until that setting is explicitly edited.
 static_assert(static_cast<std::uint8_t>(TransparentSortPrecision::Low) == 0 &&
                   static_cast<std::uint8_t>(TransparentSortPrecision::Standard) == 1 &&
                   static_cast<std::uint8_t>(TransparentSortPrecision::High) == 2 &&
@@ -42,7 +35,7 @@ constexpr std::uint8_t kHighestTransparentSortTier =
 
 // A tier record is usable when it is one byte inside the enum range.  Anything
 // else is a value from another writer or a damaged record: the running state
-// falls back to Standard and the raw bytes are kept for the next save.
+// falls back to Off and the raw bytes are kept for the next save.
 bool KnownTier(const pmm_extension::Record* record) {
     return record != nullptr && record->value.size() == 1 &&
            record->value[0] <= kHighestTransparentSortTier;
@@ -62,8 +55,7 @@ std::vector<std::uint8_t> AntialiasBytes(const MMDApp& app) {
 
 void Refresh(MMDApp& app) {
     if (!app.MainWindow()) return;
-    // The single precision submenu owns the sorting state, Off included.  Menu
-    // id 303 no longer has an item of its own, so nothing is checked for it.
+    // Refresh both the nested strength selection and the independent scope.
     RefreshTransparentSortPrecisionMenu(&app);
     RefreshSkinningMenu(&app);
     antialias::RefreshMenu(&app);
@@ -96,6 +88,7 @@ skinning::Preference ResolveProcessor(Processor processor, const std::vector<gpu
 }
 
 void Reset(MMDApp& app) {
+    negative_frames::Reset(&app);
 #if !MMD_ORIGINAL_PROFILE
     curve_host::Reset(&app);
     morph_curve::Reset(&app);
@@ -103,6 +96,7 @@ void Reset(MMDApp& app) {
 #endif
     app.PmmProjectSettings() = {};
     app.TransparentMaterialSortPrecision() = kDefaultTransparentSortPrecision;
+    app.TransparentSortCrossObjects() = false;
     // Processor settings are per machine user, not per project: creating a new
     // scene never resets them (docs/records/performance/devices.md).
 #if !MMD_ORIGINAL_PROFILE
@@ -112,13 +106,15 @@ void Reset(MMDApp& app) {
     Refresh(app);
 }
 
-void Load(MMDApp& app, int fd) {
+void Load(MMDApp& app, int fd, const std::vector<int>& adaptedModelSlots) {
+    negative_frames::Reset(&app);
 #if MMD_ORIGINAL_PROFILE
     // Original MMD stops at the standard body. Do not parse, retain or apply
     // even unknown extension records from a full-profile project.
     (void)fd;
     app.PmmProjectSettings() = {};
     app.TransparentMaterialSortPrecision() = kDefaultTransparentSortPrecision;
+    app.TransparentSortCrossObjects() = false;
 #else
     curve_host::Reset(&app);
     morph_curve::Reset(&app);
@@ -128,7 +124,17 @@ void Load(MMDApp& app, int fd) {
     bone_scale_io::ResetPmm();
     pmm_extension::Document document;
     std::uint64_t standardSize = 0;
-    const auto consumed = _telli64(fd);
+    // The standard body is read through the bounded read-ahead window, so the
+    // CRT descriptor sits past the consumed byte.  Flush it to the logical
+    // position and drop the window before the trailer reader seeks the file
+    // end and back: its standard-data boundary must be the consumed position,
+    // not the read-ahead position.  A failed sync refuses the handoff instead
+    // of letting the trailer reader work from the read-ahead position.
+    if (!pmm_io::SyncExternalPosition(fd)) {
+        runtime_log::Write("PMM extension ignored: standard-body position cannot be synchronised");
+        return;
+    }
+    const auto consumed = pmm_io::Position(fd);
     const auto result = pmm_extension::Read(fd, document, standardSize);
     if (result != pmm_extension::ReadResult::Loaded || consumed < 0 ||
         standardSize != static_cast<std::uint64_t>(consumed)) {
@@ -147,7 +153,7 @@ void Load(MMDApp& app, int fd) {
     // choice lives in the per-user processor.ini and opening a project must
     // not change it.  An old record stays untouched in the document until the
     // next save removes it.
-    // The tier field is the single persistent statement, Off included.  A file
+    // The tier field stores strength, Off included; scope has its own record.  A file
     // without the field runs Off; a file whose byte this reader does not
     // know also runs Off, and that raw byte stays in the document.  The
     // retired toggle key is never looked up: it is an ordinary unknown record
@@ -156,10 +162,12 @@ void Load(MMDApp& app, int fd) {
     app.TransparentMaterialSortPrecision() = KnownTier(tier)
         ? static_cast<TransparentSortPrecision>(tier->value[0])
         : kDefaultTransparentSortPrecision;
+    const auto* cross = pmm_extension::Find(loaded, kSortingCrossObjectsKey);
+    app.TransparentSortCrossObjects() = cross && cross->value == std::vector<std::uint8_t>{1};
     // Bone scaling rides the same document
     // ("org.mikudancestudio.model.<slot>.boneScale.v1"); it is applied after
     // the document itself, on the models already loaded.
-    extended_names::LoadPmm(app, loaded);
+    extended_names::LoadPmm(app, loaded, adaptedModelSlots);
     bone_scale_io::LoadPmm(app, loaded);
     curve_host::Load(app, loaded);
     // Model morph curves ride the same document
@@ -168,6 +176,7 @@ void Load(MMDApp& app, int fd) {
     // linear interpolation from the next frame seek on.
     morph_curve::LoadPmm(app, loaded);
     bone_curve::LoadPmm(app, loaded);
+    negative_frames::Load(app, loaded);
     std::string meshError;
     if(!mesh_bake_cache::Load(app,app.EnvFileName(),loaded,meshError)){
         runtime_log::Write("Mesh cache load failed: %s",meshError.c_str());
@@ -205,7 +214,7 @@ pmm_extension::Document Capture(const MMDApp& app) {
         pmm_extension::Set(document, kSortingPrecisionKey, {selected});
     } else if (tier == nullptr) {
         // Project without the field: start it at the running tier, which Load
-        // left at Standard.  A retired toggle record elsewhere in the document
+        // left at Off.  A retired toggle record elsewhere in the document
         // is not a tier statement and is left alone.
         pmm_extension::Set(document, kSortingPrecisionKey, {selected});
     } else if (KnownTier(tier) && tier->value[0] != selected) {
@@ -215,10 +224,15 @@ pmm_extension::Document Capture(const MMDApp& app) {
     // next to the retired toggle record, until the user picks a tier.
     // Per-model bone scaling is appended last so the slot walk below sees the
     // final state of every model slot.
+    const auto* cross = pmm_extension::Find(document, kSortingCrossObjectsKey);
+    if (state.sortingCrossObjectsEdited || !cross ||
+        (cross->value.size() == 1 && cross->value[0] <= 1))
+        pmm_extension::Set(document, kSortingCrossObjectsKey, {std::uint8_t(app.TransparentSortCrossObjects())});
     extended_names::CapturePmm(app, document);
     bone_scale_io::CapturePmm(app, document);
     morph_curve::CapturePmm(app, document);
     bone_curve::CapturePmm(app, document);
+    negative_frames::Capture(app, document);
     curve_host::Capture(const_cast<MMDApp&>(app), document);
     return document;
 #endif
@@ -230,6 +244,10 @@ void ProcessorChanged(MMDApp& app) {
 }
 void SortingPrecisionChanged(MMDApp& app) {
     app.PmmProjectSettings().sortingPrecisionEdited = true;
+    app.SceneModified() = 1;
+}
+void SortingCrossObjectsChanged(MMDApp& app) {
+    app.PmmProjectSettings().sortingCrossObjectsEdited = true;
     app.SceneModified() = 1;
 }
 void AntialiasChanged(MMDApp& app) {

@@ -64,6 +64,7 @@ Changes since `v2026.10.19.1`.
 
 Choose the full package for extended editing, antialiasing, and modern media features. The minimal package retains the original MMD feature range and output limits. Extract the packages into separate folders and run `MikuMikuDance.exe`. Models, personal settings, MME, MMV, FFmpeg, and the separate curve-repair launcher are not included.
 
+<a id="optional-nvidia-fix"></a>
 #### Optional NVIDIA fix
 
 Neither application package includes the NVIDIA fix. If needed, place the separate `MMSNvidiaAAFix.dll` beside the full build's EXE, install it from Help, and restart MMS. Use Help to uninstall it. Deleting the DLL does not remove an installed setting.
@@ -96,6 +97,7 @@ Neither application package includes the NVIDIA fix. If needed, place the separa
 
 完整包包含扩展编辑、抗锯齿及现代媒体功能，最小包保留原版 MMD 的功能范围和输出限制。两个包分别解压后运行 `MikuMikuDance.exe`。包内不包含模型、个人设置、MME、MMV、FFmpeg 或独立曲线修复启动器。
 
+<a id="nvidia-修复安装可选"></a>
 #### 可选 NVIDIA 修复
 
 两个主程序包均不包含 NVIDIA 修复插件。需要时将独立的 `MMSNvidiaAAFix.dll` 放在完整包 EXE 旁，在「帮助」菜单安装后重启 MMS。卸载也在「帮助」菜单操作，直接删除 DLL 不会移除已安装的设置。
@@ -128,6 +130,7 @@ Neither application package includes the NVIDIA fix. If needed, place the separa
 
 拡張編集、アンチエイリアス、新しいメディア機能を使う場合は完全版を選択してください。最小版は元の MMD の機能範囲と出力制限を保持します。各パッケージを別々のフォルダーに展開し、`MikuMikuDance.exe` を実行します。モデル、個人設定、MME、MMV、FFmpeg、単体のカーブ修復ランチャーは含まれません。
 
+<a id="nvidia-修正の導入任意"></a>
 #### 任意の NVIDIA 修正
 
 両パッケージに NVIDIA 修正 DLL は含まれません。必要な場合は、別添の `MMSNvidiaAAFix.dll` を完全版の EXE と同じ場所に配置し、ヘルプからインストールして MMS を再起動してください。アンインストールもヘルプから行います。DLL の削除だけでは設定を解除できません。

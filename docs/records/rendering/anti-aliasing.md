@@ -5,6 +5,7 @@
 ## 记录索引
 - [TAA 与 SMAA T2x 的 GPU 运动历史优化](#record-temporal-aa-gpu)
 - [原生阴影近景抗锯齿验证](#record-native-shadow-aa)
+- [NVIDIA 双面绘制修复的绑定范围与重新安装](#record-nvidia-fix-binding)
 
 <a id="record-temporal-aa-gpu"></a>
 ## TAA 与 SMAA T2x 的 GPU 运动历史优化
@@ -130,3 +131,49 @@ GPU 捕获回归运行于 Intel UHD Graphics；未取得 AMD 实机或其他显�
 - `build/Release/MikuMikuDance.exe`：本次构建的程序。
 
 早期 `xia-die-initial` 是二次权重候选，且尚未修正基准程序的边框覆盖，不用于最终验收。`before/` 是扩展基准参数前的预备快照；正式对照使用上述 `.local/releases/` 中的两侧程序。
+
+<a id="record-nvidia-fix-binding"></a>
+## NVIDIA 双面绘制修复的绑定范围与重新安装
+
+2026-10-23。本次没有修改渲染路径，只核对 `MMSNvidiaAAFix.dll` 的安装对象，补上已安装状态下的重新安装入口，并记录用户再次遇到白边的条件。
+
+<a id="record-nvidia-fix-binding-绑定对象"></a>
+### 绑定对象
+
+- 安装时由管理员权限的 `regsvr32` 调用 DLL。DLL 从自身路径推出同目录的 `MikuMikuDance.exe`，把规范化后的完整路径转成小写、统一斜杠，再计算 FNV-1a 64 位哈希，创建名为 `MikuMikuStudio AA fix <哈希>` 的 NVIDIA 驱动配置文件。该配置只挂一个应用条目，内容是 EXE 的完整路径。旧版本创建的名字是 `MikuDanceStudio AA fix <哈希>`，读取时兼容。
+- 设置项为 `0x000858F7`，值 0 表示启用。配置文件数据库属于本机驱动，但条目按 EXE 路径区分。它不是按硬件或电脑锁定，同一台电脑可以为多个路径分别安装。
+- 卸载只删除配置文件里的这一项设置，配置文件和路径条目保留，之后可以再次启用。删除 DLL 只隐藏菜单入口，不撤销设置。
+
+<a id="record-nvidia-fix-binding-只读核对"></a>
+### 只读核对
+
+NVIDIA 的 DRS 文档说明，`NvAPI_DRS_FindApplicationByName` 收到完整路径时返回驱动对该路径实际会应用的配置文件。用 NVAPI 只读探针（CreateSession、LoadSettings、读取，不保存）在驱动 616.56 上核对：
+
+| 检查 | 结果 |
+| --- | --- |
+| `D:\MMD-Next\MMS\build\Release\MikuMikuDance.exe` | 找到 `MikuMikuStudio AA fix 6f21392c10a32087`，应用条目为该完整路径，设置值 0 |
+| `C:\Users\lq\Desktop\新建文件夹 (2)\MikuMikuDance.exe` | 找到旧名配置 `MikuDanceStudio AA fix d8c5455eb029312e`，设置值 0 |
+| 完整包新解压目录里的 `MikuMikuDance.exe` | `NVAPI_EXECUTABLE_NOT_FOUND (-166)`，该路径未安装 |
+| 只提交文件名 `MikuMikuDance.exe` | 返回 `-166`，路径查询需要完整路径 |
+| 新目录放入 DLL 后调用 `MMSNvidiaAAFixQueryInstalled` | `installed=0`，帮助菜单会显示安装 |
+
+两条配置的哈希都能由路径按上述规则复算，和驱动库中的名字一致。表里的第二个路径是把本机驱动库中的应用条目按 UTF-8 读出后核对的结果。
+
+<a id="record-nvidia-fix-binding-看起来像电脑绑定"></a>
+### 看起来像电脑绑定的原因
+
+- 已经安装时，帮助菜单原先只有卸载项，没有重新安装；要重新应用只能先卸载。
+- 主程序包不附带 DLL。删除 DLL 或换用新解压目录后，帮助菜单没有入口，界面看起来像「这台电脑已经装过」。
+- 安装状态在驱动的机器级数据库里，不会随程序文件夹复制或移动，也不会跟到另一台电脑。
+
+用户使用新 EXE 后再次看到白边，与以下条件一致：新程序在另一个目录，或改名了目录，或换了一台电脑，或重装驱动后 NVIDIA 配置被重置。用新 EXE 覆盖同一目录的原文件时路径不变，设置继续生效。另一种情况是抗锯齿没有使用 MMD 原始（MSAA）：这条驱动设置只处理 MSAA 下双面材质的白边和接缝，FXAA、TAA、SMAA 的边缘质量由 MMS 自身实现决定。
+
+<a id="record-nvidia-fix-binding-改动与验证"></a>
+### 改动与验证
+
+- 已安装时「帮助」菜单同时显示「重新安装 NVIDIA 双面绘制补丁…」和「卸载 NVIDIA 双面绘制补丁…」。重新安装调用同一注册流程，不需要先卸载。
+- `Execute()` 在设置已启用时也执行写入和保存，重新安装是一次真实写入；读取路径仍然不写驱动。
+- 安装成功提示改为提醒保留 DLL，并说明设置只作用于当前目录的 EXE。画面设置指南补充了移动目录、换新版本、换电脑和抗锯齿档位的排查顺序。
+- `nvidia_antialias_fix_tests` 更新了重复启用的写入次数期望，其余共享配置、预定义配置、路径不匹配、保存失败和读取失败的断言保留。Release 构建通过，应用和辅助 DLL 均重新生成。
+- 测试运行到私有桌面检查处，之前的断言（包括本轮改动的写入次数）全部通过。该检查在本机命令行环境返回 `SetThreadDesktop` 的 `ERROR_BUSY (170)`，后面的三语对话框审计没有执行，因此对话框部分没有取得本轮的通过结果。
+- 诊断阶段的 NVAPI 查询没有调用保存或修改设置，本机已有的两条配置未被改动。未在本机执行需要管理员权限的真实安装和卸载，也没有对白线画面做前后对照；换目录或换电脑后的实际效果仍需复测。

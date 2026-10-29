@@ -322,12 +322,19 @@ void InitializeSelectionSet() {
     fixture.selection[1] = 0;  // not selected
     fixture.selection[2] = 1;  // selected
     fixture.bones[0].trans[1] = 5.0f;
+    fixture.bones[0].trans[0] = 3.0f;
+    fixture.bones[0].trans[2] = -7.0f;
     fixture.bones[1].trans[1] = 5.0f;
     fixture.bones[2].trans[1] = 5.0f;
     fixture.bones[2].rotQuat[0] = 0.25f;
     fixture.bones[2].rotQuat[1] = 0.25f;
     fixture.bones[2].rotQuat[2] = 0.25f;
     fixture.bones[2].rotQuat[3] = 0.5f;
+    fixture.bones[3].parent=-1;
+    fixture.selection[3]=1;
+    fixture.bones[3].trans[0]=8.f;
+    fixture.bones[3].rotQuat[2]=.5f;
+    fixture.bones[3].rotQuat[3]=.5f;
 
     auto app = std::make_unique<MMDApp>();
     std::memset(&app->state, 0, sizeof(app->state));
@@ -352,6 +359,10 @@ void InitializeSelectionSet() {
           "初期化: selected bone quaternion reset (all four components)");
     Check(fixture.flags[2] != 0,
           "初期化: the reset bone is marked as edited");
+    Check(fixture.bones[0].trans[0]==0 && fixture.bones[0].trans[2]==0,
+          "reset clears every root translation axis");
+    Check(fixture.bones[3].trans[0]==0 && fixture.bones[3].rotQuat[2]==0 && fixture.bones[3].rotQuat[3]==1,
+          "reset restores parentless bone identity rather than baking a transform");
 
     // A model whose per-bone arrays are not allocated yet must be refused
     // instead of walking a null selection/flag array.
@@ -425,6 +436,7 @@ void BoneTranslationReset() {
     using namespace mikumikustudio;
     for (bool separate : {false, true})
     for (bool pmx : {false, true})
+    for (bool physicalReadout : {false,true})
     for (auto type : {mdl::BoneType::RotateMove, mdl::BoneType::Move,
                       mdl::BoneType::FixedAxis}) {
         Fixture f(3);
@@ -455,6 +467,8 @@ void BoneTranslationReset() {
         app->state = MMDAppState{};
         app->ModelSlot(0) = f.bytes;
         app->CurrentFrame() = 10;
+        app->PlaybackPhysicsMode()=physicalReadout ? 3 : 0;
+        f.bones[1].hasRigidBody=physicalReadout ? 1 : 0;
         auto* previousApp = g_Block;
         g_Block = app.get();
         std::printf("RESET-BEGIN format=%s panel=%s type=%u\n",
@@ -504,6 +518,7 @@ void BoneTranslationReset() {
                           "rotation-only bone accepts manual displacement on focus loss");
                 }
                 const int beforeReset = f.record->undoState[0];
+                if(physicalReadout)f.bones[1].ikBackup[axis]=999.f;
                 if (commitMode == 3)
                     SendMessageW(window, WM_COMMAND, MAKEWPARAM(537 + axis, BN_CLICKED),
                                  reinterpret_cast<LPARAM>(button));

@@ -22,6 +22,7 @@
 #include <string>
 #include <thread>
 #include <chrono>
+#include <array>
 using namespace mikumikustudio;
 namespace mikumikustudio { void LayoutViewportPanels(MMDApp* app); }
 using Microsoft::WRL::ComPtr;
@@ -148,6 +149,47 @@ void CameraModeExports(MMDApp* app) {
  MH_DisableHook(reinterpret_cast<void*>(&WriteBuiltInH264Frame));
  MH_RemoveHook(reinterpret_cast<void*>(&WriteBuiltInH264Frame));
 }
+void ModelViewRestoreExports(MMDApp* app) {
+ LoadModelFile(app,(output/L"model"/L"fixture.pmd").c_str(),false);
+ Need(app->SelectedModel()!=nullptr,"load model for editor-view restoration");
+ const auto viewState=[&] {
+   return std::array<float,10>{app->CameraPositionX(),app->CameraPositionY(),app->CameraPositionZ(),
+     app->CameraPitch(),app->CameraYaw(),app->CameraRoll(),app->ViewOffsetX(),app->ViewOffsetY(),
+     app->CameraDistance(),app->CameraFov()};
+ };
+ unsigned scenario=0;
+ for(int codec:{-1,kBuiltInH264Codec})for(bool cancel:{false,true})for(int reference=0;reference<3;++reference){
+   app->CameraMode()=0;app->state.followCameraEnabled=0;app->CurrentFrame()=0;
+   app->CameraReferenceMode()=static_cast<CameraAttachmentReference>(reference);
+   app->CameraParentModel()=reference?0:-1;app->CameraParentBone()=0;
+   app->CameraPositionX()=3;app->CameraPositionY()=19;app->CameraPositionZ()=-4;
+   app->CameraPitch()=-.15f;app->CameraYaw()=.21f;app->CameraRoll()=.03f;
+   app->ViewOffsetX()=2.5f;app->ViewOffsetY()=11;app->CameraDistance()=-53;app->CameraFov()=44;
+   app->CameraPerspective()=scenario%2;
+   RefreshMainWindowViewport(app);Render(app);
+   const auto before=viewState();const int parent=app->CameraParentModel(),bone=app->CameraParentBone();
+   const auto perspective=app->CameraPerspective();
+   const auto label=std::string("model-view-")+std::to_string(scenario++);
+   const auto beforePixels=Pixels(app,(label+"-before").c_str());
+   const auto path=output/(label+(codec==-1?".avi":".mp4"));
+   wcscpy_s(app->AviOutputPath(),256,path.c_str());app->Recorder()->selectedCodec=codec;
+   app->AviOutputWidth()=640;app->AviOutputHeight()=360;
+   app->AviRecordStartFrame()=0;app->AviRecordEndFrame()=cancel?30:2;app->AviRecordFps()=30;
+   app->AviIncludeWave()=0;app->AviCloseAfterExport()=0;
+   StartAviRecordWindow(app);Need(app->RecordingWindow()!=nullptr,"start export from an untracked model view");
+   if(cancel){Frame(app);FinishAviRecord(app);}
+   else for(int step=0;step<60&&app->RecordingWindow();++step)Frame(app);
+   Need(!app->RecordingWindow(),"model-view export finishes or cancels");
+   Check(viewState()==before&&app->CameraPerspective()==perspective,
+       "export restores the untracked model view's pan, target, rotation, distance and projection");
+   Check(app->CameraParentModel()==parent&&app->CameraParentBone()==bone&&
+       int(app->CameraReferenceMode())==reference&&app->CameraMode()==0&&!app->state.followCameraEnabled,
+       "export preserves the model view's reference without enabling tracking");
+   Render(app);const auto afterPixels=Pixels(app,(label+"-after").c_str());
+   Check(beforePixels==afterPixels,"completed and cancelled exports restore identical model-view pixels");
+   Frame(app);Check(viewState()==before,"the next idle frame retains the restored editing viewpoint");
+ }
+}
 void SettleTemporal(MMDApp* app) {
  const char* aa=std::getenv("PROBE_AA");
  if(!aa||std::strcmp(aa,"taa")!=0)return;
@@ -206,6 +248,10 @@ int wmain(int argc,wchar_t**argv){
  for(int i=5;i<argc;++i){LoadAccessoryFile(argv[i]);Need(a->AccessorySlot(i-4)!=nullptr,"load real effect accessory");}
  if(std::getenv("PROBE_CAMERA_MODES")){
    CameraModeExports(a);ShutdownCleanup(a);g_Block=nullptr;delete a;UnhookWindowsHookEx(cbt);
+   return failures?1:0;
+ }
+ if(std::getenv("PROBE_MODEL_VIEW_RESTORE")){
+   ModelViewRestoreExports(a);ShutdownCleanup(a);g_Block=nullptr;delete a;UnhookWindowsHookEx(cbt);
    return failures?1:0;
  }
  if(const char*aa=std::getenv("PROBE_AA")){

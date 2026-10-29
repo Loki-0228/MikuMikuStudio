@@ -219,7 +219,9 @@ void PostViewRefresh(MMDApp* app) {
         &mikumikustudio::mdl::Bones(model)[boneIdx];
     const float* display;
     const float* quat;
-    if (((app->PlaybackPhysicsMode() == 3) &                 // 0x40D417
+    const auto* edited=mdl::Mdl(model)->bonePhysicsState;
+    if ((!edited || edited[boneIdx]==0) &&
+        ((app->PlaybackPhysicsMode() == 3) &                 // 0x40D417
          (*reinterpret_cast<unsigned char*>(&bone->hasRigidBody) != 0)) != 0) {
         // rotation-mode layout
         display = reinterpret_cast<const float*>(bone->ikBackup);  // +0x18C/+0x190

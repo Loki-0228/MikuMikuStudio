@@ -732,183 +732,27 @@ void CmdControl450(MMDApp* app, HWND hwnd, std::uint16_t id,
     }
 
     // ------------------------------------------------------------------
-    // 495 (0x0047F3FA): insert keyframes at the current frame for all
-    // selected bones.  Bone 0 seeds identity; a selected bone without
-    // parent bakes its current transform via D3DXMatrixRotationQuaternion
-    // of its stored quaternion (rotation applied to the bone's own
-    // position, frame-0 position added, minus the position offset); a
-    // parented bone gets identity written.  Values are only written when
-    // they differ from the stored frame (fucompp change detection), and
-    // the frame-flag array model+0x2D98 marks inserted frames.  Float
-    // math follows the original x87 shape (double intermediates).
+    // Reset selected poses without registering or replacing their keyframes.
     // ------------------------------------------------------------------
     case 495: {
-        // Same guard the 494/501 siblings carry: a model whose per-bone arrays
-        // are not allocated yet (boneCount already set, arrays still null) must
-        // not be walked - the reset loop reads boneSelection[0] immediately and
-        // writes bonePhysicsState[i] for every selected bone.  Guard before the
-        // undo push or any UI side effect, like the family prologue above
-        // (defect 6: the "part of the selection is not reset" report must not
-        // be able to degenerate into a fault on a partially loaded model).
-        {
-            auto* const guard = mikumikustudio::mdl::Mdl(ActiveModel(app));
-            // boneCount == 0 slips past the guard above, and the reset path
-            // below then reads boneSel[0]: on a slot that never loaded a model
-            // (model_init leaves boneCount 0 with boneSelection null), that read
-            // faults, and on a zero-bone PMD/PMX the one-byte array still leads
-            // to a write of modelRecord->boneTable[0].  The original reads the
-            // same byte inside the fixed model blob (0x47F3FA), where the array
-            // is never null, so an empty model has no bone to key.
-            // Defect B2-04.
-            if (guard->boneCount <= 0 ||
-                guard->boneTable == nullptr ||
-                guard->boneSelection == nullptr ||
-                guard->bonePhysicsState == nullptr) {
-                break;
-            }
+        auto* model=ActiveModel(app);
+        auto* record=mdl::Mdl(model);
+        if(!record || record->boneCount<=0 || !record->boneTable ||
+           !record->boneSelection || !record->bonePhysicsState)break;
+        const HWND owner=app->FloatingWindow() ? app->FloatingWindow() : app->MainWindow();
+        for(int id=panel::kReadoutPosXEdit;id<=panel::kReadoutRotZEdit;++id)
+            SendDlgItemMessageA(owner,id,EM_SETMODIFY,FALSE,0);
+        PushBoneEditUndo(app);
+        for(int i=0;i<record->boneCount;++i) {
+            if(!record->boneSelection[i])continue;
+            auto& bone=record->boneTable[i];
+            for(float& value:bone.trans)value=0;
+            for(int axis=0;axis<3;++axis)bone.rotQuat[axis]=0;
+            bone.rotQuat[3]=1;
+            bone_scale::SetPose(model,i,{});
+            record->bonePhysicsState[i]=1;
         }
-        PushBoneEditUndo(app);  // prep (thiscall)
-        unsigned char* model = ActiveModel(app);
-        auto* modelRecord = mikumikustudio::mdl::Mdl(model);
-        unsigned char* boneSel = modelRecord->boneSelection;
-        for (int i=0; i<int(modelRecord->boneCount); ++i) {
-            if (boneSel[i] && !bone_scale::Identity(bone_scale::Pose(model, i))) {
-                bone_scale::SetPose(model, i, {});
-                modelRecord->bonePhysicsState[i]=1;
-            }
-        }
-        if (boneSel[0] != 0) {
-            // bone-0 seed: pos/rot identity (0x144, 0x14C..0x154 = 0,
-            // 0x158 = 1); the x87 0.0/1.0 pair is kept live across the
-            // stores in the original
-            auto& root = modelRecord->boneTable[0];
-            root.trans[1] = 0.0f;
-            root.rotQuat[0] = 0.0f;
-            root.rotQuat[1] = 0.0f;
-            root.rotQuat[2] = 0.0f;
-            root.rotQuat[3] = 1.0f;
-        }
-        const std::int32_t boneCount = modelRecord->boneCount;
-        unsigned char* frameFlag = modelRecord->bonePhysicsState;
-        for (std::int32_t i = 1; i < boneCount; ++i) {
-            model = ActiveModel(app);
-            modelRecord = mikumikustudio::mdl::Mdl(model);
-            boneSel = modelRecord->boneSelection;
-            frameFlag = modelRecord->bonePhysicsState;
-            if (boneSel[i] == 0) {
-                continue;
-            }
-            mikumikustudio::mdl::BoneRecord* const bones = modelRecord->boneTable;
-            mikumikustudio::mdl::BoneRecord* bone = &bones[i];
-            if (bone->parent == -1) {
-                // ---- no parent: bake via own quaternion ----------------
-                d3dx::D3DXMATRIXF mat{};
-                auto* d3dx = &d3dx::Get();
-                if (d3dx->Load()) {
-                    d3dx->matrixRotationQuaternion(
-                        &mat, reinterpret_cast<const float*>(bone->rotQuat));
-                }
-                const double posX =
-                    *reinterpret_cast<float*>(bone->position);
-                const double posY =
-                    bone->position[1];
-                const double posZ =
-                    bone->position[2];
-                // var_9CC = _11*x + _21*y + _31*z + _41 - x + frame0.x
-                double nX = posY * mat.m[1][0];
-                nX += posX * mat.m[0][0];
-                nX += posZ * mat.m[2][0];
-                nX += mat.m[3][0];
-                nX -= posX;
-                nX += bones[0].trans[0];
-                // var_9C8 = _12*x + _22*y + _32*z + _42 - y + frame0.y
-                double nY = posY * mat.m[1][1];
-                nY += posX * mat.m[0][1];
-                nY += posZ * mat.m[2][1];
-                nY += mat.m[3][1];
-                nY -= posY;
-                nY += bones[0].trans[1];
-                // var_9C4 = _13*x + _23*y + _33*z + _43 - z + frame0.z
-                double nZ = posY * mat.m[1][2];
-                nZ += posX * mat.m[0][2];
-                nZ += posZ * mat.m[2][2];
-                nZ += mat.m[3][2];
-                nZ -= posZ;
-                nZ += bones[0].trans[2];
-                // change detection vs stored keyframe
-                const int f0 =
-                    (*reinterpret_cast<float*>(bone->trans) != nX) ? 1 : 0;
-                const int f1 =
-                    (bone->trans[1] != nY) ? 1 : 0;
-                const int f2 =
-                    (bone->trans[2] != nZ) ? 1 : 0;
-                const int f3 = (*reinterpret_cast<float*>(bone->rotQuat) !=
-                                bones[0].rotQuat[0])
-                                   ? 1
-                                   : 0;
-                const int f4 = (bone->rotQuat[1] !=
-                                bones[0].rotQuat[1])
-                                   ? 1
-                                   : 0;
-                const int f5 = (bone->rotQuat[2] !=
-                                bones[0].rotQuat[2])
-                                   ? 1
-                                   : 0;
-                const int f6 = (bone->rotQuat[3] !=
-                                bones[0].rotQuat[3])
-                                   ? 1
-                                   : 0;
-                if ((f0 | f1 | f2 | f3 | f4 | f5 | f6) != 0) {
-                    *reinterpret_cast<float*>(bone->trans) =
-                        static_cast<float>(nX);
-                    bone->trans[1] =
-                        static_cast<float>(nY);
-                    bone->trans[2] =
-                        static_cast<float>(nZ);
-                    // frame-0 quaternion copied into this bone's frame
-                    memcpy(bone->rotQuat, bones[0].rotQuat,
-                           sizeof bone->rotQuat);
-                    frameFlag[i] = 1;
-                }
-            } else {
-                // ---- has parent: identity written ----------------------
-                // comparisons are made against 0.0 for pos + quat x/y/z and
-                // 1.0 for quat w (the x87 keeps a live [1.0, 0.0] pair)
-                const int g0 =
-                    (*reinterpret_cast<float*>(bone->trans) != 0.0) ? 1 : 0;
-                const int g1 =
-                    (bone->trans[1] != 0.0) ? 1 : 0;
-                const int g2 =
-                    (bone->trans[2] != 0.0) ? 1 : 0;
-                const int g3 =
-                    (*reinterpret_cast<float*>(bone->rotQuat) != 0.0) ? 1 : 0;
-                const int g4 =
-                    (bone->rotQuat[1] != 0.0) ? 1 : 0;
-                const int g5 =
-                    (bone->rotQuat[2] != 0.0) ? 1 : 0;
-                const int g6 =
-                    (bone->rotQuat[3] != 1.0) ? 1 : 0;
-                if ((g0 | g1 | g2 | g3 | g4 | g5 | g6) != 0) {
-                    float* b = reinterpret_cast<float*>(bone->trans);
-                    b[0] = 0.0f;  // 0x140
-                    b[1] = 0.0f;  // 0x144
-                    b[2] = 0.0f;  // 0x148
-                    b[3] = 0.0f;  // 0x14C
-                    b[4] = 0.0f;  // 0x150
-                    // 0x154 (quat z) must be cleared as well: the change
-                    // detection above (g5) already compares it against 0.0,
-                    // so skipping the store left every Z-rotated bone with a
-                    // residual rotation after 初期化 - the reported "some
-                    // bones are not reset".  An earlier port revision carried
-                    // the store over as "untouched by the original", which is
-                    // inconsistent with g5 and with the identity this branch
-                    // is meant to write.
-                    b[5] = 0.0f;  // 0x154
-                    b[6] = 1.0f;  // 0x158
-                    frameFlag[i] = 1;
-                }
-            }
-        }
+        app->SceneModified()=1;
         PostViewRefresh(app);
         break;
     }

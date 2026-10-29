@@ -4,10 +4,9 @@
 // Contract under test (include/mikumikustudio/transparent_geometry.hpp and
 // TransparentSortPrecision from view_options.hpp):
 //
-//   * High orders whole faces by their centre depth, far to near, and
-//     breaks an equal depth by ordinal.
-//   * Standard orders the same depth key with 64 counting buckets; Low uses 16.
-//     Both process far-to-near buckets in one
+//   * High uses 256 counting buckets, Standard 64, Low 16, using the original
+//     face's linear camera depth when supplied by the renderer.
+//     All three process far-to-near buckets in one
 //     pass. A deeper face can never follow a shallower one that sits in another
 //     bucket, but faces sharing a bucket keep the input order, so a nearer face
 //     may well precede a farther one.
@@ -250,7 +249,7 @@ void TestIntersectingFaces() {
     std::vector<Triangle> input{a, b};
     Statistics stats;
     const std::vector<Triangle> out =
-        Order(input, TransparentSortPrecision::Maximum, stats);
+        Order(input, TransparentSortPrecision::Maximum, stats, true);
 
     Check(stats.inputTriangles == 2, "intersecting: stats.inputTriangles");
     Check(stats.outputTriangles == out.size(), "intersecting: stats.outputTriangles");
@@ -304,7 +303,7 @@ void TestCoplanarStableOrder() {
     }
     Statistics stats;
     const std::vector<Triangle> out =
-        Order(input, TransparentSortPrecision::Maximum, stats);
+        Order(input, TransparentSortPrecision::Maximum, stats, true);
 
     Check(out.size() == input.size(), "coplanar: one fragment per coplanar face");
     for (std::size_t i = 0; i < out.size() && i < input.size(); ++i) {
@@ -331,7 +330,7 @@ void TestDrawNumbersPreserved() {
     std::vector<Triangle> input{a, b, c};
     Statistics stats;
     const std::vector<Triangle> out =
-        Order(input, TransparentSortPrecision::Maximum, stats);
+        Order(input, TransparentSortPrecision::Maximum, stats, true);
 
     Check(out.size() >= input.size(), "draw: no input triangle may disappear");
     std::size_t seen[3] = {0, 0, 0};
@@ -443,7 +442,7 @@ void TestCyclicOcclusionRing() {
 
     Statistics stats;
     const std::vector<Triangle> out =
-        Order(input, TransparentSortPrecision::Maximum, stats);
+        Order(input, TransparentSortPrecision::Maximum, stats, true);
 
     Check(out.size() >= input.size(), "ring: no face may be lost");
     Check(std::fabs(TotalArea(out) - TotalArea(input)) < 1e-9,
@@ -501,7 +500,7 @@ void TestPerspectiveInterpolation() {
     std::vector<Triangle> input{a, b, c};
     Statistics stats;
     const std::vector<Triangle> out =
-        Order(input, TransparentSortPrecision::Maximum, stats);
+        Order(input, TransparentSortPrecision::Maximum, stats, true);
 
     Check(out.size() > input.size(), "attributes: crossing faces must be split");
     std::size_t checkedVertices = 0;
@@ -629,7 +628,7 @@ void TestStandardBucketOrderAcrossDraws() {
 }
 
 // ---------------------------------------------------------------------------
-// High: per-triangle depth, ordinal breaks an equal depth.
+// Maximum whole-face fallback: depth order, ordinal breaks an equal depth.
 // ---------------------------------------------------------------------------
 // Five faces in three depth groups. The input order disagrees with both the
 // depth order and the ordinal order, so sorting by input order, or ignoring the
@@ -640,7 +639,7 @@ void TestStandardBucketOrderAcrossDraws() {
 //   near  depth 0.0  : ordinals 7, 2  -> 2 before 7
 //
 // Expected: deep(3), deep(9), mid(5), near(2), near(7).
-void TestHighDepthOrderAndOrdinalTies() {
+void TestMaximumFallbackDepthOrderAndOrdinalTies() {
     const double kDeep = 0.5, kMid = 0.25, kNear = 0.0;  // on all three vertices
     Triangle d9 = MakeTriangle(MakeVertex(-0.9, -0.9, kDeep, 1.0),
                                MakeVertex(-0.1, -0.9, kDeep, 1.0),
@@ -660,20 +659,20 @@ void TestHighDepthOrderAndOrdinalTies() {
     std::vector<Triangle> input{d9, n7, m5, d3, n2};
 
     Statistics stats;
-    const std::vector<Triangle> out = Order(input, TransparentSortPrecision::High, stats);
+    const std::vector<Triangle> out = Order(input, TransparentSortPrecision::Maximum, stats, false, false);
 
-    Check(stats.splitCount == 0, "high: High must not split a face");
-    Check(out.size() == input.size(), "high: no face may be added or lost");
-    Check(stats.bucketCount == 0, "high: High uses no counting bucket");
-    CheckExactReorder(input, out, "high: every face and vertex survives exactly once");
+    Check(stats.splitCount == 0, "maximum-fallback: Maximum fallback must not split a face");
+    Check(out.size() == input.size(), "maximum-fallback: no face may be added or lost");
+    Check(stats.bucketCount == 0, "maximum-fallback: Maximum fallback uses no counting bucket");
+    CheckExactReorder(input, out, "maximum-fallback: every face and vertex survives exactly once");
 
     const std::uint32_t expected[5] = {3, 9, 5, 2, 7};
     for (int i = 0; i < 5; ++i) {
         Check(i < static_cast<int>(out.size()) &&
                   out[static_cast<std::size_t>(i)].ordinal == expected[i],
-              "high: depth order with the ordinal tie-break");
+              "maximum-fallback: depth order with the ordinal tie-break");
     }
-    Check(Inversions(out) == 0, "high: no inversion at all");
+    Check(Inversions(out) == 0, "maximum-fallback: no inversion at all");
 
     // Standard reuses the same depth key but not the tie-break: inside one depth
     // group it keeps the input order, so the two tiers must disagree here.
@@ -683,15 +682,15 @@ void TestHighDepthOrderAndOrdinalTies() {
     for (int i = 0; i < 5; ++i) {
         Check(i < static_cast<int>(standard.size()) &&
                   standard[static_cast<std::size_t>(i)].ordinal == standardExpected[i],
-              "high: Standard keeps the input order inside a depth group");
+              "maximum-fallback: Standard keeps the input order inside a depth group");
     }
     bool same = out.size() == standard.size();
     for (std::size_t i = 0; same && i < out.size(); ++i) same = SameTag(out[i], standard[i]);
-    Check(!same, "high: Standard and High must not agree on this input");
+    Check(!same, "maximum-fallback: Standard and Maximum fallback must not agree on this input");
 }
 
 // ---------------------------------------------------------------------------
-// Standard: an inversion inside one bucket, which High never produces.
+// Standard: an inversion inside one bucket, which Maximum fallback never produces.
 // ---------------------------------------------------------------------------
 // Two anchors fix the depth span at exactly [0, 1]: the far anchor has depth 1
 // (one vertex at z = 1, two at z = 0) and the near anchor depth 0. One bucket is
@@ -700,11 +699,11 @@ void TestHighDepthOrderAndOrdinalTies() {
 // whole cluster fits in at most two buckets, so at least 33 of its faces end up
 // in the same one. The cluster is written nearest first.
 //
-// High sorts by depth, so its result descends and holds no inversion. Standard
+// Maximum fallback sorts by depth, so its result descends and holds no inversion. Standard
 // keeps the input order inside a bucket, so that bucket emits its cluster faces
 // nearest first: the result must contain a nearer-before-farther pair and it
-// cannot equal High's.
-void TestStandardBucketInversionVersusHigh() {
+// cannot equal Maximum fallback's.
+void TestStandardBucketInversionVersusMaximum() {
     const int kCluster = 65;
     std::vector<Triangle> input;
     // Far anchor: depth = 1 + 0 + 0, the span maximum.
@@ -727,10 +726,10 @@ void TestStandardBucketInversionVersusHigh() {
     Statistics standardStats, highStats;
     const std::vector<Triangle> standard = Order(input, TransparentSortPrecision::Standard, standardStats);
     const std::vector<Triangle> high =
-        Order(input, TransparentSortPrecision::High, highStats);
+        Order(input, TransparentSortPrecision::Maximum, highStats, false, false);
 
     Check(standardStats.splitCount == 0, "standard-inversion: Standard must not split a face");
-    Check(highStats.splitCount == 0, "standard-inversion: High must not split a face");
+    Check(highStats.splitCount == 0, "standard-inversion: Maximum fallback must not split a face");
     Check(standard.size() == input.size(), "standard-inversion: no face may be added or lost");
     CheckExactReorder(input, standard, "standard-inversion: every face and vertex survives exactly once");
 
@@ -739,11 +738,11 @@ void TestStandardBucketInversionVersusHigh() {
     Check(!standard.empty() && standard.back().ordinal == 2, "standard-inversion: the near anchor comes last");
 
     Check(Inversions(standard) > 0, "standard-inversion: a nearer face may precede a farther one");
-    Check(Inversions(high) == 0, "standard-inversion: High never inverts depth");
+    Check(Inversions(high) == 0, "standard-inversion: Maximum fallback never inverts depth");
 
     bool same = standard.size() == high.size();
     for (std::size_t i = 0; same && i < standard.size(); ++i) same = SameTag(standard[i], high[i]);
-    Check(!same, "standard-inversion: Standard and High must differ");
+    Check(!same, "standard-inversion: Standard and Maximum fallback must differ");
 }
 
 // ---------------------------------------------------------------------------
@@ -946,8 +945,8 @@ void TestLowerStrengths() {
     const auto low = Order(input, TransparentSortPrecision::Low, lowStats);
     const auto standard = Order(input, TransparentSortPrecision::Standard, standardStats);
     const auto high = Order(input, TransparentSortPrecision::High, highStats);
-    Check(lowStats.bucketCount == 16 && standardStats.bucketCount == 64 && highStats.bucketCount == 0,
-          "lower strengths: 16 buckets, 64 buckets, whole-face stable depth sort");
+    Check(lowStats.bucketCount == 16 && standardStats.bucketCount == 64 && highStats.bucketCount == 64,
+          "lower strengths: each of 64 source depths uses a bucket in High");
     Check(low[0].ordinal == 60 && low[1].ordinal == 61 &&
           standard[0].ordinal == 63 && standard[1].ordinal == 62 && high[0].ordinal == 63,
           "lower strengths: coarse bucket keeps source order while finer sort separates depths");
@@ -957,7 +956,152 @@ void TestLowerStrengths() {
           "lower strengths never split geometry");
 }
 
+void TestHighAndMaximumFallbackDifference() {
+    std::vector<Triangle> input;
+    for(unsigned i=0;i<1024;++i) {
+        const double z=double(i)/1023;
+        auto t=MakeTriangle(MakeVertex(-.5,-.5,z,1),MakeVertex(.5,-.5,z,1),
+            MakeVertex(0,.5,z,1),i%3,i);
+        t.sourceIndices[0]=i*3;t.sourceIndices[1]=i*3+1;t.sourceIndices[2]=i*3+2;
+        input.push_back(t);
+    }
+    Statistics ls,ss,hs,ms;
+    const auto low=Order(input,TransparentSortPrecision::Low,ls);
+    const auto standard=Order(input,TransparentSortPrecision::Standard,ss);
+    const auto high=Order(input,TransparentSortPrecision::High,hs);
+    const auto maximum=Order(input,TransparentSortPrecision::Maximum,ms,false,false);
+    Check(ls.bucketCount==16 && ss.bucketCount==64 && hs.bucketCount==256 && !ms.bucketCount,
+          "strengths use 16/64/256 buckets then exact whole-face fallback");
+    Check(Inversions(low)>Inversions(standard) && Inversions(standard)>Inversions(high) &&
+          Inversions(high)>0 && Inversions(maximum)==0,
+          "Maximum fallback is strictly finer than High on nearby depths");
+    for(const auto* result:{&low,&standard,&high,&maximum}) {
+        CheckExactReorder(input,*result,"all strengths retain every face without a face-count cap");
+        for(const auto& t:*result)Check(t.sourceIndices[0]==t.ordinal*3 &&
+            t.sourceIndices[1]==t.ordinal*3+1 && t.sourceIndices[2]==t.ordinal*3+2,
+            "whole-face sorting preserves original MME vertex identities");
+    }
+    Check(!ms.splitCount && !hs.splitCount,"MME-compatible strengths generate no vertices");
+}
+
+void TestObjectLocalStrengths() {
+    std::vector<Triangle> input;
+    for(unsigned object:{9u,2u})for(unsigned i:{0u,1u,2u}) {
+        const double z=(object==9 ? .1 : .7)+i*.04;
+        auto t=MakeTriangle(MakeVertex(-.5,-.5,z,1),MakeVertex(.5,-.5,z,1),
+            MakeVertex(0,.5,z,1),i,static_cast<unsigned>(input.size()));
+        t.object=object;input.push_back(t);
+    }
+    Statistics stats;
+    for(auto precision:{TransparentSortPrecision::Low,TransparentSortPrecision::Standard,TransparentSortPrecision::High,TransparentSortPrecision::Maximum}) {
+        const auto sorted=Order(input,precision,stats);
+        CheckExactReorder(input,sorted,"object-local strengths preserve every complete triangle");
+        Check(sorted[0].ordinal==2 && sorted[1].ordinal==1 && sorted[2].ordinal==0 &&
+              sorted[3].ordinal==5 && sorted[4].ordinal==4 && sorted[5].ordinal==3,
+              "every strength preserves object order when cross-object sorting is off");
+        const auto global=Order(input,precision,stats,true);
+        CheckExactReorder(input,global,"cross-object scope preserves every complete face in this fixture");
+        Check(global.front().object==2 && global.back().object==9,
+              "every strength can independently sort across objects");
+    }
+    const auto maximum=Order(input, TransparentSortPrecision::Maximum, stats, true);
+    Check(maximum[0].object==2 && maximum.back().object==9,"Maximum still orders across objects");
+}
+
+void TestBucketCameraInvariance() {
+    // Dolly/FOV and near/far changes alter projected Z, but cannot change the
+    // bucket precision of the same complete faces in linear camera space.
+    for(auto tier:{TransparentSortPrecision::Low,TransparentSortPrecision::Standard,TransparentSortPrecision::High}) {
+        std::vector<Triangle> reference;
+        for(unsigned i=0;i<1024;++i) {
+            const double z=2.0+i*.125;
+            auto t=MakeTriangle(MakeVertex(-.3,-.3,z/150,1/z),MakeVertex(.3,-.3,z/150,1/z),
+                MakeVertex(0,.3,z/150,1/z),i%3,i);
+            t.linearDepth=z*3;reference.push_back(t);
+        }
+        Statistics stats;
+        const auto expected=Order(reference,tier,stats);
+        for(double dolly:{-1.0,0.0,500.0})for(double zoom:{.5,4.0}) {
+            auto moved=reference;
+            for(auto& t:moved) {
+                const double z=t.linearDepth/3+dolly;t.linearDepth=z*3;
+                for(auto& v:t.v) {v.p[0]*=zoom;v.p[1]*=zoom;v.p[2]=1.0001-.1/z;v.inverseW=1/z;}
+            }
+            const auto actual=Order(moved,tier,stats);
+            bool same=actual.size()==expected.size();
+            for(std::size_t i=0;same && i<actual.size();++i)same=actual[i].ordinal==expected[i].ordinal;
+            Check(same,"linear buckets retain identical order under dolly, zoom and depth projection changes");
+            CheckExactReorder(moved,actual,"linear buckets keep every complete face and vertex identity");
+        }
+    }
+}
+
+void TestOffscreenSorting() {
+    const auto outside=[](const double (&clip)[3][4]) {
+        unsigned mask=0x3F;
+        for(const auto& v:clip)mask&=mikumikustudio::transparent_geometry::FrustumOutsidePlanes(v);
+        return mask!=0;
+    };
+    const double enclosing[3][4]={{-2,-2,.5,1},{2,-2,.5,1},{0,2,.5,1}};
+    Check(!outside(enclosing),"frustum: crossing face with every vertex offscreen must survive");
+    const double eyeCrossing[3][4]={{0,0,-2,-1},{-.5,-.5,.5,1},{.5,.5,.5,1}};
+    Check(!outside(eyeCrossing),"frustum: a face crossing the eye/near plane must survive");
+    for(unsigned plane=0;plane<6;++plane) {
+        double clip[3][4]={{0,0,.5,1},{.1,.1,.6,1},{-.1,.1,.7,1}};
+        for(auto& v:clip) {
+            if(plane<4)v[plane/2]=(plane%2 ? 2.0 : -2.0);
+            else v[2]=plane==4 ? -1.0 : 2.0;
+        }
+        Check(outside(clip),"frustum: all vertices outside a common clip plane are rejected");
+    }
+    const double boundary[4]={1+1e-11,0,.5,1};
+    Check(!mikumikustudio::transparent_geometry::FrustumOutsidePlanes(boundary),"frustum: boundary tolerance avoids edge flicker");
+    const double invalid[4]={std::numeric_limits<double>::quiet_NaN(),0,.5,1};
+    Check(!mikumikustudio::transparent_geometry::FrustumOutsidePlanes(invalid),"frustum: invalid coordinates cannot prove rejection");
+    for(auto tier:{TransparentSortPrecision::Low,TransparentSortPrecision::Standard,TransparentSortPrecision::High})
+    for(bool cross:{false,true}) {
+        std::vector<Triangle> full;
+        for(unsigned object=0;object<2;++object)for(unsigned i=0;i<1024;++i) {
+            auto t=MakeTriangle(MakeVertex(-.5,-.5,.5,1),MakeVertex(.5,-.5,.5,1),MakeVertex(0,.5,.5,1),
+                object,static_cast<unsigned>(full.size()));
+            t.object=object;t.linearDepth=double(i)+object*2048;
+            t.sourceIndices[0]=t.ordinal*3;full.push_back(t);
+        }
+        Statistics stats;
+        const auto reference=Order(full,tier,stats,cross);
+        for(unsigned pattern:{2u,7u}) {
+            auto partial=full;
+            for(auto& t:partial)if(t.ordinal%pattern)t.flags|=mikumikustudio::transparent_geometry::kOutsideFrustum;
+            std::vector<unsigned> expected;
+            for(const auto& t:reference)if(!(t.ordinal%pattern))expected.push_back(t.ordinal);
+            const auto actual=Order(partial,tier,stats,cross);
+            Check(actual.size()==expected.size() && stats.offscreenTriangles==partial.size()-expected.size(),
+                "offscreen: native sorts and submits visible candidates only");
+            bool same=actual.size()==expected.size();
+            for(std::size_t i=0;same && i<actual.size();++i)same=actual[i].ordinal==expected[i] && actual[i].sourceIndices[0]==expected[i]*3;
+            Check(same,"offscreen: full-source depth bounds retain visible order as visibility changes");
+            const auto mme=Order(partial,tier,stats,cross,false,true);
+            Check(mme.size()==partial.size(),"offscreen: MME retains every original submission");
+            std::size_t at=0;bool retained=true;
+            for(std::size_t i=0;i<mme.size();++i) {
+                if(partial[i].flags & mikumikustudio::transparent_geometry::kOutsideFrustum)
+                    retained &= mme[i].ordinal==partial[i].ordinal && mme[i].sourceIndices[0]==partial[i].sourceIndices[0];
+                else retained &= at<expected.size() && mme[i].ordinal==expected[at++];
+            }
+            Check(retained && at==expected.size(),"offscreen: MME keeps unsorted source slots and sorted visible vertex IDs");
+        }
+        for(auto& t:full)t.flags|=mikumikustudio::transparent_geometry::kOutsideFrustum;
+        Check(Order(full,tier,stats,cross).empty() && !stats.bucketCount,"offscreen: all-hidden native scope submits nothing");
+        Check(Order(full,tier,stats,cross,false,true).size()==full.size() && !stats.bucketCount,
+            "offscreen: all-hidden MME scope skips bucket sorting without dropping draws");
+    }
+}
+
 int main() {
+    TestOffscreenSorting();
+    TestBucketCameraInvariance();
+    TestHighAndMaximumFallbackDifference();
+    TestObjectLocalStrengths();
     TestLowerStrengths();
     TestBatchDraws();
     TestIntersectingFaces();
@@ -966,8 +1110,8 @@ int main() {
     TestCyclicOcclusionRing();
     TestPerspectiveInterpolation();
     TestStandardBucketOrderAcrossDraws();
-    TestHighDepthOrderAndOrdinalTies();
-    TestStandardBucketInversionVersusHigh();
+    TestMaximumFallbackDepthOrderAndOrdinalTies();
+    TestStandardBucketInversionVersusMaximum();
     TestStandardDegenerateAndNonFiniteInputs();
     if (failures) {
         std::fprintf(stderr, "%d failures\n", failures);

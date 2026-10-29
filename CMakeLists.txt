@@ -12,6 +12,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+add_library(mikumikustudio_cache_manager STATIC src/io/cache_manager.cpp)
+target_include_directories(mikumikustudio_cache_manager PUBLIC include)
+set_target_properties(mikumikustudio_cache_manager PROPERTIES ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib/$<CONFIG>")
+
 include(cmake/LegacyOptions.cmake)
 
 set(MIKUMIKUSTUDIO_PROFILE "full" CACHE STRING "Build profile: full or mmd932")
@@ -184,9 +188,11 @@ foreach(_case IN ITEMS legacy override fresh)
         -DCASE=${_case} ${_legacy_options} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/legacy_cmake_options_tests.cmake)
 endforeach()
 
-add_executable(native_shadow_tests EXCLUDE_FROM_ALL tests/native_shadow_tests.cpp)
+add_executable(native_shadow_tests EXCLUDE_FROM_ALL
+    tests/native_shadow_tests.cpp src/render/shadow_depth_filter.cpp)
 target_include_directories(native_shadow_tests PRIVATE include)
-target_link_libraries(native_shadow_tests PRIVATE d3d9 user32)
+target_link_libraries(native_shadow_tests PRIVATE
+    mikumikustudio_graphics_runtime mikumikustudio_runtime_log d3d9 user32)
 set_target_properties(native_shadow_tests PROPERTIES
     CXX_STANDARD 17 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 
@@ -212,6 +218,11 @@ add_test(NAME frame_rate_correction_tests COMMAND frame_rate_correction_tests)
 add_executable(animation_curve_host_tests EXCLUDE_FROM_ALL tests/animation_curve_host_tests.cpp)
 add_executable(bone_curve_tests EXCLUDE_FROM_ALL tests/bone_curve_tests.cpp)
 target_link_libraries(bone_curve_tests PRIVATE mikumikustudio_core winmm dsound)
+add_executable(negative_frame_tests EXCLUDE_FROM_ALL tests/negative_frame_tests.cpp)
+target_include_directories(negative_frame_tests PRIVATE include)
+target_link_libraries(negative_frame_tests PRIVATE mikumikustudio_core winmm dsound)
+set_target_properties(negative_frame_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+add_test(NAME negative_frames COMMAND negative_frame_tests)
 set_target_properties(bone_curve_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 add_test(NAME bone_curve_tests COMMAND bone_curve_tests)
 target_link_libraries(animation_curve_host_tests PRIVATE mikumikustudio_core winmm dsound)
@@ -277,6 +288,7 @@ add_library(mikumikustudio_core STATIC
     src/animation/sequence_scatter.cpp
     src/window/sequence_scatter_dialog.cpp
     src/animation/bone_curve.cpp
+    src/animation/negative_frames.cpp
     src/window/frame_rate_dialog.cpp
     src/window/animation_curve_host_ui.cpp
     src/render/native_mesh.cpp
@@ -298,6 +310,7 @@ add_library(mikumikustudio_core STATIC
     src/window/ui_init.cpp
     src/window/ui_font.cpp
     src/window/wndproc.cpp
+    src/window/menu_initial_paint.cpp
     src/window/localize_ui.cpp
     src/window/ui_translation.cpp
     src/window/ui_message.cpp
@@ -352,6 +365,7 @@ add_library(mikumikustudio_core STATIC
     src/render/model_renderers.cpp
     src/render/adaptive_shadow.cpp
     src/render/shadow_filter.cpp
+    src/render/shadow_depth_filter.cpp
     src/exports/effect_display.cpp
     src/render/transparent_geometry.cpp
     src/render/transparent_peeling.cpp
@@ -365,6 +379,8 @@ add_library(mikumikustudio_core STATIC
     src/app/mf_h264_recorder.cpp
     src/model/model_init.cpp
     src/model/path_resolve.cpp
+    src/render/texture_prepare_cache.cpp
+    src/render/texture_cpu_decode.cpp
     src/model/pmd_load.cpp
     src/model/bone_scale.cpp
     src/model/bone_transform.cpp
@@ -383,6 +399,7 @@ add_library(mikumikustudio_core STATIC
     src/window/recent_projects.cpp
     src/app/autosave.cpp
     src/window/autosave_dialog.cpp
+    src/window/cache_manager_dialog.cpp
     src/window/viewport_render_scale_dialog.cpp
     src/render/viewport_render_scale.cpp
     src/render/antialias.cpp
@@ -396,6 +413,7 @@ add_library(mikumikustudio_core STATIC
     src/window/viewport_corner_menu.cpp
     src/window/physics_bake_dialog.cpp
     src/model/pmx_load.cpp
+    src/model/model_geometry_cache.cpp
     src/model/add_model.cpp
     src/model/model_query_gaps.cpp
     src/model/model_dispose.cpp
@@ -470,6 +488,7 @@ add_library(mikumikustudio_core STATIC
     src/exports/effect_api.cpp
     src/exports/effect_names.cpp
     src/exports/effect_paths.cpp
+    src/exports/effect_compile_cache.cpp
     src/exports/effect_apng.cpp
     src/exports/effect_file_watch.cpp
     src/unported/stubs.cpp
@@ -549,6 +568,7 @@ else()
         PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
 target_link_libraries(mikumikustudio_core PUBLIC
+    mikumikustudio_cache_manager
     mikumikustudio_geometry_workers
     mikumikustudio_runtime_log
     BULLET275::BULLET275
@@ -563,6 +583,7 @@ target_link_libraries(mikumikustudio_core PUBLIC
     vfw32       # DrawDibDraw (0x4168D0) + AVIFile*/AVIStream* (0x433250 background AVI)
     avifil32    # AVIFile/AVIStream background playback (0x4168D0)
     ole32       # CoInitialize/CoUninitialize (0x467313 / 0x4096C0)
+    windowscodecs # CPU-only PNG preparation from staged memory
     oleaut32    # VariantCopy/VariantClear/SysAllocString (encoder settings window)
     strmiids    # DirectShow IIDs/CLSIDs (recording graph 0x408F20..0x409A80)
     uuid        # IID_IPropertyBag / IID_IAMVfwCompressDialogs etc.
@@ -1059,6 +1080,10 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     set_target_properties(menu_language_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_test(NAME menu_language_regressions COMMAND menu_language_tests)
+    add_executable(cache_manager_ui_tests EXCLUDE_FROM_ALL tests/cache_manager_ui_tests.cpp res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+    target_link_libraries(cache_manager_ui_tests PRIVATE mikumikustudio_core winmm dsound)
+    target_link_options(cache_manager_ui_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
+    set_target_properties(cache_manager_ui_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_executable(hidden_morph_tests EXCLUDE_FROM_ALL tests/hidden_morph_tests.cpp
         res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
     target_link_libraries(hidden_morph_tests PRIVATE mikumikustudio_core winmm dsound)
@@ -1105,6 +1130,10 @@ add_executable(MikuMikuStudio WIN32
 add_custom_command(TARGET MikuMikuStudio POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/licenses" "$<TARGET_FILE_DIR:MikuMikuStudio>/licenses")
+# Keep the optional launcher beside each configuration's EXE. It changes
+# only the child process environment, never the user's persistent settings.
+file(GENERATE OUTPUT "$<TARGET_FILE_DIR:MikuMikuStudio>/Cache/MemoryOnly/MMS-memory-only.cmd"
+    INPUT "${CMAKE_CURRENT_SOURCE_DIR}/scripts/start_memory_only.cmd")
 
 if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     add_executable(affine_skinning_tests EXCLUDE_FROM_ALL tests/affine_skinning_tests.cpp)
@@ -1255,6 +1284,24 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
         ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/mme-benchmark/lib/$<CONFIG>"
         PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/mme-benchmark/symbols/$<CONFIG>"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/mme-benchmark/$<CONFIG>")
+    # Profile only the frame driver and its measured stages. Direct objects
+    # replace those archive members; the ordinary core keeps timers disabled.
+    add_executable(frame_benchmark_profile EXCLUDE_FROM_ALL
+        tests/frame_benchmark.cpp
+        src/app/frame_driver.cpp src/render/frame_scene.cpp
+        src/render/model_renderers.cpp src/render/accessory.cpp
+        src/render/adaptive_shadow.cpp src/model/model_skinning.cpp
+        src/model/morph_apply.cpp src/physics/physics_frame.cpp
+        src/physics/physics_create.cpp src/exports/effect_api.cpp
+        res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES} exports/MikuMikuDance.def)
+    target_link_libraries(frame_benchmark_profile PRIVATE mikumikustudio_core winmm dsound)
+    target_compile_definitions(frame_benchmark_profile PRIVATE REQUIRE_MME=1 MIKUMIKUSTUDIO_PERF=1)
+    target_link_options(frame_benchmark_profile PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
+    set_target_properties(frame_benchmark_profile PROPERTIES
+        OUTPUT_NAME "MikuMikuDance" ENABLE_EXPORTS ON
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/mme-frame-profile/lib/$<CONFIG>"
+        PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/mme-frame-profile/symbols/$<CONFIG>"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/mme-frame-profile/$<CONFIG>")
     add_executable(pmm_extension_tests EXCLUDE_FROM_ALL tests/pmm_extension_tests.cpp src/io/pmm_extension.cpp)
     target_include_directories(pmm_extension_tests PRIVATE include)
     target_compile_features(pmm_extension_tests PRIVATE cxx_std_17)
@@ -1271,6 +1318,13 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     target_link_options(pmm_project_settings_tests PRIVATE "/MANIFEST:NO"
         "${MIKUMIKUSTUDIO_GEN_RES}")
     set_target_properties(pmm_project_settings_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_executable(pmm_model_adaptation_tests EXCLUDE_FROM_ALL tests/pmm_model_adaptation_tests.cpp
+        res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+    target_link_libraries(pmm_model_adaptation_tests PRIVATE mikumikustudio_core winmm dsound)
+    target_link_options(pmm_model_adaptation_tests PRIVATE "/MANIFEST:NO"
+        "${MIKUMIKUSTUDIO_GEN_RES}")
+    set_target_properties(pmm_model_adaptation_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_executable(camera_follow_tests EXCLUDE_FROM_ALL tests/camera_follow_tests.cpp)
     target_link_libraries(camera_follow_tests PRIVATE mikumikustudio_core winmm dsound)
@@ -1492,6 +1546,50 @@ if (MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/te
     set_target_properties(transparent_geometry_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
     add_test(NAME transparent_geometry_regressions COMMAND transparent_geometry_tests)
 endif()
+
+# Bounded read-ahead under the PMM v1/v2 standard-body record readers.
+add_executable(pmm_read_buffer_tests EXCLUDE_FROM_ALL tests/pmm_read_buffer_tests.cpp)
+target_include_directories(pmm_read_buffer_tests PRIVATE src)
+target_compile_features(pmm_read_buffer_tests PRIVATE cxx_std_17)
+set_target_properties(pmm_read_buffer_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME pmm_read_buffer_tests COMMAND pmm_read_buffer_tests)
+
+add_executable(pmx_vertex_prepare_tests EXCLUDE_FROM_ALL tests/pmx_vertex_prepare_tests.cpp)
+target_include_directories(pmx_vertex_prepare_tests PRIVATE include)
+set_target_properties(pmx_vertex_prepare_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME pmx_vertex_prepare_regressions COMMAND pmx_vertex_prepare_tests)
+
+add_executable(model_geometry_cache_tests EXCLUDE_FROM_ALL
+    tests/model_geometry_cache_tests.cpp src/model/model_geometry_cache.cpp)
+target_include_directories(model_geometry_cache_tests PRIVATE include)
+set_target_properties(model_geometry_cache_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME model_geometry_cache_regressions COMMAND model_geometry_cache_tests
+    "$<TARGET_FILE_DIR:MikuMikuStudio>/Cache/Tests/ModelGeometry")
+
+# Default CTest coverage uses fake D3DX calls. The explicit --integration
+# mode additionally needs a locally installed D3DX runtime and a D3D9 device.
+add_executable(effect_compile_cache_tests EXCLUDE_FROM_ALL
+    tests/effect_compile_cache_tests.cpp src/exports/effect_compile_cache.cpp)
+target_include_directories(effect_compile_cache_tests PRIVATE src/exports)
+target_compile_features(effect_compile_cache_tests PRIVATE cxx_std_17)
+target_link_libraries(effect_compile_cache_tests PRIVATE
+    mikumikustudio_cache_manager
+    mikumikustudio_runtime_log d3d9 bcrypt user32)
+set_target_properties(effect_compile_cache_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME effect_compile_cache_tests COMMAND effect_compile_cache_tests)
+add_test(NAME effect_compile_cache_small_stack COMMAND effect_compile_cache_tests --small-stack)
+
+add_executable(cache_manager_tests EXCLUDE_FROM_ALL tests/cache_manager_tests.cpp)
+target_link_libraries(cache_manager_tests PRIVATE mikumikustudio_cache_manager)
+set_target_properties(cache_manager_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+
+# Explicit integration test: pass a new output directory and a D3DX DLL path.
+add_executable(texture_prepare_cache_tests EXCLUDE_FROM_ALL
+    tests/texture_prepare_cache_tests.cpp src/render/texture_prepare_cache.cpp src/render/texture_cpu_decode.cpp
+    src/exports/effect_compile_cache.cpp)
+target_include_directories(texture_prepare_cache_tests PRIVATE include)
+target_link_libraries(texture_prepare_cache_tests PRIVATE mikumikustudio_runtime_log mikumikustudio_cache_manager d3d9 bcrypt user32 ole32 windowscodecs)
+set_target_properties(texture_prepare_cache_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 
 add_executable(mmv4mms_menu_tests EXCLUDE_FROM_ALL tests/mmv4mms_menu_tests.cpp)
 target_link_libraries(mmv4mms_menu_tests PRIVATE mikumikustudio_core winmm dsound)

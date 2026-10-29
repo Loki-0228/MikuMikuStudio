@@ -155,15 +155,17 @@ int Run(mikumikustudio::MMDApp* app, int seconds, const wchar_t* jsonPath, Prepa
     if (std::fclose(csv)) return 54;
     FILE* json = nullptr;
     if (_wfopen_s(&json, jsonPath, L"wb") || !json) return 54;
+    D3DVIEWPORT9 viewport{};
+    if (FAILED(device->GetViewport(&viewport))) { std::fclose(json); return 56; }
     std::fprintf(json,
         "{\"metric\":\"background_playback_present_fps\",\"valid\":%s,"
         "\"seconds\":%.6f,\"frames\":%zu,\"presents\":%llu,\"fps\":%.6f,"
         "\"draws\":%llu,\"primitives\":%llu,\"present_failures\":%llu,"
         "\"scene_start_frame\":%d,\"scene_end_frame\":%d,\"warmup_seconds\":5,"
-        "\"hidden\":true,\"minimized\":false,\"fps_limit\":1000,\"mme\":%s}",
+        "\"hidden\":true,\"minimized\":false,\"fps_limit\":1000,\"viewport_width\":%lu,\"viewport_height\":%lu,\"mme\":%s}",
         valid ? "true" : "false", elapsed, frames.size(), presents, presents / elapsed,
         draws, primitives, observer.failures, sceneStart, static_cast<int>(app->PlaybackCursorSeconds() * 30.f),
-        GetModuleHandleW(L"MMEffect.dll") ? "true" : "false");
+        viewport.Width, viewport.Height, GetModuleHandleW(L"MMEffect.dll") ? "true" : "false");
     if (std::fclose(json)) return 54;
     std::printf("background_playback_present_fps=%.3f valid=%u frames=%zu\n", presents / elapsed, valid, frames.size());
     app->PlaybackActive() = 0;

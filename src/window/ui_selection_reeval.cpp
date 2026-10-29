@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/bone_curve.hpp"
 // ===========================================================================
@@ -306,6 +307,7 @@ void DragInterpolationControlPoint(MMDApp* app) {  // was Sub416280, VA 0x004162
 // baseline, so every caller funnels through the x64 body.
 void SelectionReeval(MMDApp* app) {  // 0x430510 / x64 0x7FF7CB482BB0
     CurvePanelRepaint(app);
+    negative_frames::RefreshControls(app);
 }
 
 }  // namespace mikumikustudio

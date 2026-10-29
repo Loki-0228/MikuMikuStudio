@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/key_pool.hpp"
@@ -64,6 +65,7 @@ namespace mikumikustudio {
 
 // Forward declarations for functions ported in other translation units
 // (declared here with their original VAs; bodies in the files noted).
+void RefreshAfterFrameApply(MMDApp* app);
 void PanelPaint(MMDApp* app);                                   // VA 0x00414610 (ui_panel_paint.cpp)
 void PostLanguageSweep(MMDApp* app);                            // VA 0x0042F1E0 (ui_panel_sweep.cpp)
 void TimelineDrawTicks(int frameOffset, int width);             // VA 0x004C2A00 (ui_timeline_gfx.cpp)
@@ -879,6 +881,12 @@ static void HandleLButtonDown_TimelineAreaHit(MMDApp* app, HWND hwnd,
                                               std::int32_t y) {
     if (app->PlaybackActive() != 0)
         return;
+    const auto negativeCell=std::int64_t(app->state.timelineStartFrame)+Div13(x-100);
+    if(negativeCell<0 && negativeCell>=frame_limits::minimum) {
+        negative_frames::SelectCell(app,int(negativeCell),Div14(y-160),app->ShiftModifierActive());
+        app->CurrentFrame()=int(negativeCell);RefreshAfterFrameApply(app);PostViewRefresh(app);return;
+    }
+    if(!app->ShiftModifierActive())negative_frames::SelectCell(app,int(negativeCell),-999,false);
     app->TimelineSelectionChanged() = 0;
     app->ClearTimelineRange();
     if (app->state.optflag[0] != 0) {  // 760 (0x2F8)
@@ -1047,7 +1055,7 @@ static void HandleLButtonDown_FrameStripHit(MMDApp* app, HWND hwnd,
     // (x-100)/13 + scroll offset; EM_SETSEL (0xB1) to the end of the old
     // text, then WM_SETTEXT (0xC2) with the new frame
     const auto clickedFrame=std::int64_t(Div13(x-0x64))+app->state.timelineStartFrame;
-    if(clickedFrame<0||clickedFrame>frame_limits::maximum)return;
+    if(clickedFrame<frame_limits::minimum||clickedFrame>frame_limits::maximum)return;
     app->state.currentFrame=static_cast<std::int32_t>(clickedFrame);
     const LRESULT textLen = GetWindowTextLengthA(GetDlgItem(hwnd, panel::kCurrentFrameEdit));
     SendMessageA(GetDlgItem(hwnd, panel::kCurrentFrameEdit), EM_SETSEL, 0, textLen);
@@ -1116,13 +1124,8 @@ static void HandleLButtonDown_FrameStripHit(MMDApp* app, HWND hwnd,
     // scroll clamp + panel repaint (0x44A72D-0x44A766):
     // 0x97C = max(0, 0x980 - (sidebar-0x54)/26) with an unsigned compare
     const std::int32_t pages = (sidebar - 0x54) / 26;
-    const std::uint32_t frameU =
-        static_cast<std::uint32_t>(app->state.currentFrame);
-    if (frameU <= static_cast<std::uint32_t>(pages))  // unsigned compare (jbe)
-        app->state.timelineStartFrame = 0;
-    else
-        app->state.timelineStartFrame =
-            static_cast<std::int32_t>(frameU - static_cast<std::uint32_t>(pages));
+    const auto frame=std::int64_t(app->CurrentFrame());
+    app->state.timelineStartFrame=frame<0 ? static_cast<int>((std::max)(std::int64_t(frame_limits::minimum),frame-pages)) : frame<=pages ? 0 : int(frame-pages);
     PanelPaint(app);                                  // 0x414610
     // timeline strip redraw + physics sync (0x44A768-0x44A850)
     if (app->state.waveEnabled != 0) {  // 657100 (0xA06CC)

@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // Model keyframe edit helpers used by the left frame editor.
@@ -136,6 +137,8 @@ void ReplaceBuffer(void*& slot, std::size_t bytes) {
 // owned IK/selector values are copied after each record and restored in place.
 struct DeleteAuxHeader {
     std::size_t morphCapacity, displayCapacity, ikCount, selectorCount;
+    unsigned maxFrame;
+    int searchCursor;
 };
 std::size_t DeleteAuxSize(const DeleteAuxHeader& h) {
     return sizeof(h) + h.morphCapacity * sizeof(mdl::MorphKey) +
@@ -147,7 +150,7 @@ std::size_t DeleteAuxOffset(const mdl::UndoRecord& entry) {
 DeleteAuxHeader DeleteAuxLayout(const mdl::ModelRecord& m, bool morph, bool display) {
     return {morph ? mdl::MorphKeyCapacity(m.morphKeys) : 0,
             display ? static_cast<std::size_t>(mdl::KeyPoolCapacity(m.displayKeys)) : 0,
-            m.ikChainCount, m.boneOrderCount};
+            m.ikChainCount, m.boneOrderCount, m.maxFrame, m.searchCursor};
 }
 void CaptureDeleteAux(const mdl::ModelRecord& m, const DeleteAuxHeader& h, void* destination) {
     auto* bytes = static_cast<unsigned char*>(destination);
@@ -177,6 +180,10 @@ void ApplyDeleteAux(mdl::ModelRecord& m, const void* snapshot) {
     if (h.morphCapacity) {
         std::memcpy(m.morphKeys, bytes, h.morphCapacity * sizeof(mdl::MorphKey));
         bytes += h.morphCapacity * sizeof(mdl::MorphKey);
+        // Registration can grow a pool. Keep allocation ownership, but remove
+        // keys in the new tail when restoring a pre-growth snapshot.
+        std::fill(m.morphKeys + h.morphCapacity,
+                  m.morphKeys + mdl::MorphKeyCapacity(m.morphKeys), mdl::MorphKey{});
     }
     for (std::size_t i = 0; i < h.displayCapacity; ++i) {
         auto& key = m.displayKeys[i];
@@ -188,6 +195,15 @@ void ApplyDeleteAux(mdl::ModelRecord& m, const void* snapshot) {
         if (h.selectorCount && selectors) std::memcpy(selectors, bytes, h.selectorCount * sizeof(mdl::BoneReference));
         bytes += h.selectorCount * sizeof(mdl::BoneReference);
     }
+    if (h.displayCapacity) for (std::size_t i = h.displayCapacity;
+            i < std::size_t(mdl::KeyPoolCapacity(m.displayKeys)); ++i) {
+        auto& key = m.displayKeys[i];
+        auto* ik = key.ikStates; auto* selectors = key.selectorStates;
+        key = {}; key.ikStates = ik; key.selectorStates = selectors;
+        if (ik) std::fill_n(ik, h.ikCount, 1);
+        if (selectors) std::fill_n(selectors, h.selectorCount, mdl::BoneReference{});
+    }
+    m.maxFrame = h.maxFrame; m.searchCursor = h.searchCursor;
 }
 
 void SnapshotPose(unsigned char* model, mdl::UndoRecord& undo) {
@@ -464,7 +480,11 @@ int RegisterBonePoseAtFrame(unsigned char* model, int boneIndex,  // was Sub4B38
     return static_cast<int>(frame);
 }
 
-void RegisterSelectedBoneKeys(unsigned char* model, int frame, int mode) {  // was Sub4C2080, VA 0x004C2080
+void RegisterSelectedBoneKeys(unsigned char* model, int frame, int mode) {
+    if(model && frame<0) {
+        negative_frames::RegisterSelectedBones(model,frame);
+        return;
+    }  // was Sub4C2080, VA 0x004C2080
     if (model == nullptr)
         return;
 
@@ -1000,6 +1020,7 @@ void UndoModelEdit(unsigned char* model, std::int32_t* frame, int physicsMode) {
         if (type == 7) {
             DeleteAuxHeader layout;
             std::memcpy(&layout, static_cast<const unsigned char*>(undo.auxiliaryPose) + DeleteAuxOffset(undo), sizeof(layout));
+            layout = DeleteAuxLayout(*mdl::Mdl(model), layout.morphCapacity != 0, layout.displayCapacity != 0);
             redo.reserved0 = undo.reserved0;
             bytes = DeleteAuxOffset(undo) + DeleteAuxSize(layout);
         }
@@ -1024,6 +1045,7 @@ void UndoModelEdit(unsigned char* model, std::int32_t* frame, int physicsMode) {
             const auto* before = static_cast<const unsigned char*>(undo.auxiliaryPose) + DeleteAuxOffset(undo);
             auto* after = static_cast<unsigned char*>(redoKeys) + DeleteAuxOffset(redo);
             DeleteAuxHeader layout; std::memcpy(&layout, before, sizeof(layout));
+            layout = DeleteAuxLayout(*mdl::Mdl(model), layout.morphCapacity != 0, layout.displayCapacity != 0);
             CaptureDeleteAux(*mdl::Mdl(model), layout, after);
             ApplyDeleteAux(*mdl::Mdl(model), before);
         }
@@ -1091,6 +1113,10 @@ void RedoModelEdit(unsigned char* model, std::int32_t* frame, int physicsMode) {
     if (type == 5)
         RestoreBakedPhysics(model, redo.bonePose, nullptr,
                             static_cast<int>(mdl::Mdl(model)->boneCount), physicsMode);
+    if (type == 7) {
+        SeekModelFrame(model, *frame, physicsMode);
+        ApplyPose(model, redo.bonePose, static_cast<int>(mdl::Mdl(model)->boneCount));
+    }
     if (UndoAt(model, cursor).operation == 4)
         RedoModelEdit(model, frame, physicsMode);
 }

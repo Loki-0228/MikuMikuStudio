@@ -3,6 +3,8 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/original_file_encoding.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -94,18 +96,29 @@ void CapturePmm(const MMDApp& app,pmm_extension::Document& doc) {
         pmm_extension::Set(doc,Key(slot),std::move(w.data));
     }
 }
-void LoadPmm(MMDApp& app,const pmm_extension::Document& doc) {
+void LoadPmm(MMDApp& app,const pmm_extension::Document& doc,
+             const std::vector<int>& adaptedModelSlots) {
     for(int slot=0;slot<kModelSlotCount;++slot) {
         const auto* entry=pmm_extension::Find(doc,Key(slot));auto* raw=app.ModelSlot(slot);if(!entry||!raw)continue;
+        // Standard PMM reconciliation already moved the animation to the
+        // edited model. This positional name dictionary still describes the
+        // old structure, including when only the order or names changed.
+        if(std::find(adaptedModelSlots.begin(),adaptedModelSlots.end(),slot)!=adaptedModelSlots.end()) {
+            runtime_log::Write("PMM Unicode names ignored for adapted model slot %d",slot);
+            continue;
+        }
         auto& m=*mdl::Mdl(raw);Reader r{entry->value.data(),entry->value.size()};
         if(r.u32()!=1)continue;
         std::vector<std::wstring> values;values.push_back(r.text());values.push_back(r.text());
-        if(r.u32()!=m.boneCount)throw std::runtime_error("Unicode bone count differs from model");
+        if(r.u32()!=m.boneCount)continue;
         for(std::uint32_t i=0;i<m.boneCount;++i)for(int l=0;l<2;++l)values.push_back(r.text());
-        if(r.u32()!=m.morphCount)throw std::runtime_error("Unicode morph count differs from model");
+        if(r.u32()!=m.morphCount)continue;
         for(std::uint32_t i=0;i<m.morphCount;++i)for(int l=0;l<2;++l)values.push_back(r.text());
         const auto groups=r.u32(),faces=r.u32();
-        if(groups!=mdl::DisplayGroupCount(m)||faces!=mdl::FacialFrameCount(m))throw std::runtime_error("Unicode display groups differ from model");
+        // Display groups can change without a bone/morph mismatch prompt.
+        // A dictionary for another structure is optional metadata, not proof
+        // that the standard PMM records are invalid.
+        if(groups!=mdl::DisplayGroupCount(m)||faces!=mdl::FacialFrameCount(m))continue;
         std::vector<std::array<std::wstring,2>> names(groups);std::vector<std::uint8_t> flags(groups);
         for(std::uint32_t i=0;i<groups;++i){names[i][0]=r.text();names[i][1]=r.text();const auto f=r.u32();if(f>255)throw std::runtime_error("Invalid group state");flags[i]=std::uint8_t(f);}
         if(r.at!=r.size)throw std::runtime_error("Unexpected Unicode name bytes");

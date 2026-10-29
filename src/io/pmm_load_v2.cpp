@@ -241,7 +241,7 @@ void LogPmmModelStage(int fd, const char* stage, std::int32_t fileCount,
         return;
     fprintf(stream, "stage=%s file_pos=%ld file_count=%ld model_count=%ld "
                     "model_data=%p\r\n",
-            stage, fd >= 0 ? _tell(fd) : -1L, static_cast<long>(fileCount),
+            stage, fd >= 0 ? Tell(fd) : -1L, static_cast<long>(fileCount),
             static_cast<long>(modelCount), modelData);
     fclose(stream);
 }
@@ -257,7 +257,7 @@ void LogPmmHeapState(int fd, const char* stage) {
         return;
     const BOOL intact = HeapValidate(GetProcessHeap(), 0, nullptr);
     fprintf(stream, "stage=heap-%s intact=%d file_pos=%ld\r\n", stage,
-            intact != FALSE ? 1 : 0, _tell(fd));
+            intact != FALSE ? 1 : 0, Tell(fd));
     fclose(stream);
 }
 #else
@@ -1353,8 +1353,8 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                         mapping.name[len] = 0;
                         mapping.mappedIndex = i;
                         if (workspace.displayCount == loadedModel->boneCount) {
-                            if (strcmp(mapping.name,
-                                       mdl::Bones(model)[i].name) != 0) {
+                            if (strcmp(mapping.name, mdl::Bones(model)[i].name) != 0 &&
+                                !text_encoding::MatchesOldPmxName(mapping.name, mdl::Bones(model)[i].jpText, sizeof mdl::Bones(model)[i].name)) {
                                 workspace.displaysMatch = 0;
                                 mapping.mappedIndex = -1;
                                 for (std::int32_t j = 0;
@@ -1413,8 +1413,8 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                         mapping.name[len] = 0;
                         mapping.mappedIndex = i;
                         if (workspace.morphCount == loadedModel->morphCount) {
-                            if (strcmp(mapping.name,
-                                       mdl::Morphs(model)[i].name) != 0) {
+                            if (strcmp(mapping.name, mdl::Morphs(model)[i].name) != 0 &&
+                                !text_encoding::MatchesOldPmxName(mapping.name, mdl::Morphs(model)[i].jpText, sizeof mdl::Morphs(model)[i].name)) {
                                 workspace.morphsMatch = 0;
                                 mapping.mappedIndex = -1;
                                 for (std::int32_t j = 0;
@@ -1654,8 +1654,8 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                         NameMapping& mapping = boneMappings[i];
                         mapping.mappedIndex = i;
                         if (workspace.displayCount == reloadedModel->boneCount) {
-                            if (strcmp(mapping.name,
-                                       mdl::Bones(model)[i].name) != 0) {
+                            if (strcmp(mapping.name, mdl::Bones(model)[i].name) != 0 &&
+                                !text_encoding::MatchesOldPmxName(mapping.name, mdl::Bones(model)[i].jpText, sizeof mdl::Bones(model)[i].name)) {
                                 workspace.displaysMatch = 0;
                                 mapping.mappedIndex = -1;
                                 for (std::int32_t j = 0;
@@ -1687,8 +1687,8 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, int fd,
                         NameMapping& mapping = morphMappings[i];
                         mapping.mappedIndex = i;
                         if (workspace.morphCount == reloadedModel->morphCount) {
-                            if (strcmp(mapping.name,
-                                       mdl::Morphs(model)[i].name) != 0) {
+                            if (strcmp(mapping.name, mdl::Morphs(model)[i].name) != 0 &&
+                                !text_encoding::MatchesOldPmxName(mapping.name, mdl::Morphs(model)[i].jpText, sizeof mdl::Morphs(model)[i].name)) {
                                 workspace.morphsMatch = 0;
                                 mapping.mappedIndex = -1;
                                 for (std::int32_t j = 0;
@@ -2390,7 +2390,7 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
         {
             HWND item = GetDlgItem(main, panel::kPlayStopFrameEdit);
             SendMessageA(item, EM_SETSEL, 0, GetWindowTextLengthA(item));
-            sprintf_s(text, 0x100, "%d", playStopFrame);
+            sprintf_s(text, 0x100, "%d", playStopFrame==0 ? -1 : playStopFrame);
             SendMessageA(item, EM_REPLACESEL, 0,
                          reinterpret_cast<LPARAM>(text));
         }
@@ -2644,7 +2644,7 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
 #ifdef MIKUMIKUSTUDIO_DIAG
         if (std::getenv("MIKUMIKUSTUDIO_TRACE_NOISE_OFF") != nullptr)
             std::fprintf(stderr, "noise byte file offset=%ld value=%d\n",
-                         static_cast<long>(_tell(fd)), static_cast<int>(b));
+                         Tell(fd), static_cast<int>(b));
 #endif
         s->state.gravityNoiseEnabled = (b == 1) ? 1 : 0;
     }
@@ -2655,7 +2655,8 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
 // sweep, camera parent re-register, 16 config dwords, optional per-model
 // 0x4CCF0 block, _close --------------------------------------------------
 static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, int fd,
-                                            unsigned char modelCount) {
+                                             unsigned char modelCount,
+                                             const PmmModelLoadWorkspace* workspaces) {
     auto* const s = ctx.s;
     HWND const main = ctx.main;
     unsigned char** const slots = ctx.slots;
@@ -2823,7 +2824,14 @@ static void LoadSceneV2_PhysicsTracksAndClose(PmmV2LoadContext& ctx, int fd,
             }
         }
     }
-    pmm_settings::Load(*s, fd);
+    std::vector<int> adaptedModelSlots;
+    for (unsigned i = 0; i < modelCount; ++i) {
+        const auto& workspace = workspaces[i];
+        if (!workspace.skipped &&
+            (!workspace.displaysMatch || !workspace.morphsMatch || !workspace.boneGroupsMatch))
+            adaptedModelSlots.push_back(workspace.modelSlot);
+    }
+    pmm_settings::Load(*s, fd, adaptedModelSlots);
     pmm_io::Close(fd);                                                 // 0x458112
 
 }
@@ -3304,7 +3312,7 @@ void LoadSceneV2(MMDApp* app, int fd) {  // was Sub450000, VA 0x00450000
         if (s->AccessorySlot(slot))
             pmm_io::CheckKeyChains(s->AccessoryKeys(slot), mdl::KeyPoolCapacity(s->AccessoryKeys(slot)));
     LoadSceneV2_ConfigBlock(ctx, fd);                   // 0x456617..0x45776E
-    LoadSceneV2_PhysicsTracksAndClose(ctx, fd, modelCount);  // 0x45777C..0x458112
+    LoadSceneV2_PhysicsTracksAndClose(ctx, fd, modelCount, workspaces);  // 0x45777C..0x458112
     pmm_io::CheckKeyChains(s->ShadowKeys(), mdl::KeyPoolCapacity(s->ShadowKeys()));
     pmm_io::CheckKeyChains(s->GravityKeys(), mdl::KeyPoolCapacity(s->GravityKeys()));
     LoadSceneV2_SuccessTail(ctx, workspaces, modelCount);

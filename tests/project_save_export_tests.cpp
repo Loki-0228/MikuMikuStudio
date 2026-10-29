@@ -379,6 +379,7 @@ int wmain(int argc, wchar_t** argv) {
     SaveTests(app);
     AsyncTests(app);
     VersionTests(app);
+    NumberedVersionTests(app);
     for (int language : {0, 1, 2}) {
         app->EnglishUI() = static_cast<unsigned char>(language);
         for (bool sequence : {false, true}) {

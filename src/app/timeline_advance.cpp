@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 // ===========================================================================
 // VA 0x004175A0 - timeline advance (PlaybackPoseAdvance) + VA 0x00410140
 // bezier easing evaluator  (original: sub_4175A0 / sub_410140)
@@ -186,6 +187,10 @@ void CopyLightKey(MMDApp* app, const mdl::LightKey& key, bool apply) {
 // camera register button. Echo the evaluated FOV after authored curves apply,
 // so a seek displays the same angle that the projection consumes.
 void ReloadModels(MMDApp* app) {
+    if(app && app->CurrentFrame()<0) {
+        const auto frame=app->CurrentFrame();app->CurrentFrame()=0;ReloadModels(app);app->CurrentFrame()=frame;
+        negative_frames::EvaluateGlobals(app,frame);return;
+    }
     if (app == nullptr)
         return;
     auto& s = *app;

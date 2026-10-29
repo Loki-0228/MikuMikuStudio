@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/ui_translation.hpp"
@@ -118,7 +119,11 @@ void* ConstructArrayElements(void* block, std::uint32_t elementSize,
 }
 
 // ---- VA 0x00413120: accessory track seek / object state push ---------------
-void ApplyAccessoryTrack(MMDApp* app, int slot) {  // was Sub413120, VA 0x00413120
+void ApplyAccessoryTrack(MMDApp* app, int slot) {
+    if(app && app->CurrentFrame()<0) {
+        const auto frame=app->CurrentFrame();app->CurrentFrame()=0;ApplyAccessoryTrack(app,slot);app->CurrentFrame()=frame;
+        negative_frames::EvaluateGlobals(app,frame);return;
+    }  // was Sub413120, VA 0x00413120
     if (app == nullptr || slot < 0 || slot >= 255)
         return;
     const std::uint32_t cur =

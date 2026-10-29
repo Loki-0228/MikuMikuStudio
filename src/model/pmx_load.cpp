@@ -3,6 +3,11 @@
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/key_pool.hpp"
+#include "pmx_vertex_prepare.hpp"
+#include "pmx_vertex_parallel.hpp"
+#include "mikumikustudio/parallel_prepare_policy.hpp"
+#include "mikumikustudio/texture_prepare_cache.hpp"
+#include "model_geometry_cache.hpp"
 // ===========================================================================
 // VA 0x004B77E0 - LoadPMX  (original: sub_4B77E0, 32KB)
 // ===========================================================================
@@ -164,26 +169,9 @@ void InitializePmxEdgeVertices(const mdl::PmxVertex* source,
 
 // VA 0x00407910 - wide -> Shift-JIS.  The original falls back through
 // four locale objects kept in the render sub-object; the port uses the
-// plain CRT fallback (docs/ARCHITECTURE.md §8 - only reached when CP932
-// conversion fails).
+// explicit Windows encoding fallback when CP932 cannot represent the name.
 void WideToSjis(char* dst, const wchar_t* src, rsize_t size) {
-    dst[0] = '\0';
-    if (src == nullptr || src[0] == L'\0')
-        return;
-    const int need = WideCharToMultiByte(932, 0, src, -1, nullptr, 0,
-                                         nullptr, nullptr);
-    char* tmp = static_cast<char*>(operator new(need));
-    BOOL usedDefault = FALSE;
-    const int n = WideCharToMultiByte(932, 0, src, -1, tmp, need, nullptr,
-                                      &usedDefault);
-    if (n == 0 || usedDefault) {
-        size_t dummy = 0;
-        if (wcstombs_s(&dummy, dst, size, src, _TRUNCATE) != 0)
-            dst[0] = '\0';
-    } else {
-        strncpy_s(dst, size, tmp, _TRUNCATE);
-    }
-    operator delete(tmp);
+    text_encoding::EncodePmxName(dst,size,src);
 }
 
 // ---- length-prefixed UTF16 text validation --------------------------------
@@ -457,6 +445,13 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     // ---- vertices -----------------------------------------------------------
     reader.Read(&model.vertexCount, sizeof(model.vertexCount));
     const std::int32_t vertCount = static_cast<std::int32_t>(model.vertexCount);
+    auto geometryCache = model_geometry_cache::Session::Begin(
+        fh, {model_geometry_cache::Format::pmx, model.vertexCount,
+             model.pmxAdditionalUvCount, model.pmxBoneIndexSize,
+             model.pmxVertexIndexSize}, reader.Tell());
+    runtime_log::Write("MODEL_GEOMETRY_CACHE format=pmx state=%s vertices=%u",
+        geometryCache.Hit() ? "hit" : geometryCache.Enabled() ? "miss" : "bypass",
+        model.vertexCount);
     if (vertCount != 0) {
         IDirect3DDevice9* dev = DevOf(sub);
         struct VbSpec { std::uint32_t stride, fvf; };
@@ -525,77 +520,37 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
         // later fields are initialized by their respective PMX readers.
         std::memset(verts, 0, 40 * vertCount);
 
-        const std::uint8_t boneIdxSize = model.pmxBoneIndexSize;
-        auto readIdx = [&reader](int size) -> std::int32_t {
-            switch (size) {
-            case 1: { std::int8_t v = 0; reader.Read(&v, 1); return v; }
-            case 2: { std::uint16_t v = 0; reader.Read(&v, 2);
-                      return static_cast<std::int16_t>(v); }
-            default: { std::int32_t v = 0; reader.Read(&v, 4); return v; }
+        bool restoredVertices = false;
+        if (geometryCache.Hit()) {
+            restoredVertices = geometryCache.CopyPmxVertices(verts)
+                && reader.SeekAbsolute(geometryCache.VertexEnd());
+            if (!restoredVertices) geometryCache.Invalidate();
+        }
+        if (!restoredVertices) {
+            // The cached values are already transposed and SDEF-expanded.
+            // A miss uses the normal bounded CPU parser.
+            auto parallel = pmx_prepare::Result::unavailable;
+#if !MMD_ORIGINAL_PROFILE
+            if (!parallel_prepare_policy::Disabled() &&
+                vertCount >= pmx_prepare::kMinimumParallelVertices) {
+                pmx_prepare::Statistics stats;
+                parallel = pmx_prepare::ReadVertices(reader, vertCount,
+                    model.pmxAdditionalUvCount, model.pmxBoneIndexSize,
+                    verts, 2, &stats);
+                runtime_log::Write("MODEL_PREPARE workers=%zu batches=%zu vertices=%zu bytes=%zu",
+                    stats.workers, stats.batches, stats.vertices, stats.temporaryBytes);
             }
-        };
-
-        for (std::int32_t i = 0; i < vertCount; ++i) {
-            mdl::PmxVertex& rec = verts[i];
-            reader.Read(&rec, 0x20);                          // pos+normal+uv
-            const int addl = model.pmxAdditionalUvCount;
-            // Deliberate hardening: the original takes this loop bound straight
-            // from the header's additional-UV byte and only tests it for > 0
-            // (verified at 0x1400AA33E, re-read on every iteration at
-            // 0x1400AA3D2), never against the four UV entries of
-            // additionalUvByComponent, so a count above 4 overwrites weightType
-            // and the rest of the working vertex. The port stores at most four
-            // UVs and consumes the surplus floats without storing them, so the
-            // stream position is unchanged.
-            // Defect MB-01.
-            constexpr int kPmxAdditionalUvSlots =
-                sizeof(rec.additionalUvByComponent)
-                / sizeof(rec.additionalUvByComponent[0]);
-            for (int j = 0; j < addl; ++j) {                // SOA addl UVs
-                for (int c = 0; c < 4; ++c) {
-                    float surplus = 0.0f;
-                    float* destination = j < kPmxAdditionalUvSlots
-                                             ? &rec.additionalUvByComponent[c][j]
-                                             : &surplus;
-                    reader.Read(destination, 4);
-                }
+#endif
+            if (parallel != pmx_prepare::Result::unavailable &&
+                parallel != pmx_prepare::Result::complete)
+                return AbortPmxLoad(reader, m);
+            for (std::int32_t i = 0;
+                 parallel == pmx_prepare::Result::unavailable && i < vertCount; ++i) {
+                if (!pmx_prepare::ReadPackedVertex(
+                        reader, model.pmxAdditionalUvCount,
+                        model.pmxBoneIndexSize, verts[i]))
+                    return AbortPmxLoad(reader, m);
             }
-            reader.Read(&rec.weightType, 1);
-            switch (rec.weightType) {
-            case mdl::PmxWeightType::bdef2:
-                rec.bone[0] = readIdx(boneIdxSize);
-                rec.bone[1] = readIdx(boneIdxSize);
-                reader.Read(rec.weight, 4);
-                break;
-            case mdl::PmxWeightType::bdef4:
-                for (int b = 0; b < 4; ++b)
-                    rec.bone[b] = readIdx(boneIdxSize);
-                reader.Read(rec.weight, 0x10);
-                break;
-            case mdl::PmxWeightType::sdef: {
-                rec.bone[0] = readIdx(boneIdxSize);
-                rec.bone[1] = readIdx(boneIdxSize);
-                reader.Read(rec.weight, 4);                   // weight
-                reader.Read(rec.sdef.center, 0xC);            // PMX C
-                reader.Read(rec.sdef.r0Offset, 0xC);          // PMX R0
-                reader.Read(rec.sdef.r1Offset, 0xC);          // PMX R1
-                const float w = rec.weight[0];
-                float mid[3];
-                for (int c = 0; c < 3; ++c)
-                    mid[c] = w * rec.sdef.r0Offset[c]
-                           + (1.0f - w) * rec.sdef.r1Offset[c];
-                for (int c = 0; c < 3; ++c) {
-                    rec.sdef.r0Offset[c] -= mid[c];
-                    rec.sdef.r1Offset[c] -= mid[c];
-                }
-                break;
-            }
-            default:                                        // BDEF1 (and original fallback)
-                rec.bone[0] = readIdx(boneIdxSize);
-                break;
-            }
-            reader.Read(&rec.edgeScale, 4);
-            rec.hasPmxEdgeData = 1;
         }
 
         // Main VB fill: the loader stores additional UVs component-first,
@@ -660,8 +615,11 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     }
 
     // ---- faces ---------------------------------------------------------------
+    const std::int64_t geometryVertexEnd = reader.Tell();
     reader.Read(&model.indexCount, sizeof(model.indexCount));
     const std::int32_t faceCount = static_cast<std::int32_t>(model.indexCount);
+    if (geometryCache.Hit() && geometryCache.IndexCount() != model.indexCount)
+        geometryCache.Invalidate();
     if (faceCount != 0) {
         IDirect3DDevice9* dev = DevOf(sub);
         const bool wideIdx = model.pmxVertexIndexSize >= 4;
@@ -697,8 +655,10 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             std::uint32_t* gpuIndices = nullptr;
             if (SUCCEEDED(ib->Lock(0, 0,
                                    reinterpret_cast<void**>(&gpuIndices), 0))) {
+                const bool restored = geometryCache.CopyPmxIndices(indices, model.indexCount)
+                    && reader.SeekAbsolute(geometryCache.IndexEnd());
                 for (std::int32_t i = 0; i < faceCount; ++i) {
-                    const std::int32_t value = readVertexIndex();
+                    const std::int32_t value = restored ? indices[i] : readVertexIndex();
                     indices[i] = value;
                     gpuIndices[i] = static_cast<std::uint32_t>(value);
                 }
@@ -708,8 +668,10 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             std::uint16_t* gpuIndices = nullptr;
             if (SUCCEEDED(ib->Lock(0, 0,
                                    reinterpret_cast<void**>(&gpuIndices), 0))) {
+                const bool restored = geometryCache.CopyPmxIndices(indices, model.indexCount)
+                    && reader.SeekAbsolute(geometryCache.IndexEnd());
                 for (std::int32_t i = 0; i < faceCount; ++i) {
-                    const std::int32_t value = readVertexIndex();
+                    const std::int32_t value = restored ? indices[i] : readVertexIndex();
                     indices[i] = value;
                     gpuIndices[i] = static_cast<std::uint16_t>(value);
                 }
@@ -717,6 +679,8 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             }
         }
     }
+    geometryCache.CapturePmx(model.pmxVertices, mdl::PmxIndices(m),
+                             model.indexCount, geometryVertexEnd, reader.Tell());
 
     // ---- textures (local path table) ----------------------------------------
     // The table is local and released once the materials have composed their
@@ -764,6 +728,26 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     for (int i = 0; i < 10; ++i)
         strcpy_s(model.pmdToonFileNames[i],
                  sizeof(model.pmdToonFileNames[i]), kToonNames[i]);
+
+#if !MMD_ORIGINAL_PROFILE
+    std::vector<std::wstring> texturePreparationPaths;
+    if (!parallel_prepare_policy::Disabled()) {
+        // Preserve the exact concatenated path used by material loading. Live
+        // pool entries already have a GPU texture and need no preparation.
+        for (std::uint32_t t=0;t<texCount && texturePreparationPaths.size()<64;++t) {
+            if (!texPaths[t] || !*texPaths[t]) continue;
+            std::wstring path=model.modelDirectory; path+=texPaths[t];
+            bool exists=false;
+            for (int i=0;i<10000 && sub->resourcePool[i].heapBuffer;++i)
+                if (path==static_cast<const wchar_t*>(sub->resourcePool[i].heapBuffer)) {exists=true;break;}
+            if (!exists) texturePreparationPaths.push_back(std::move(path));
+        }
+    }
+    auto& textureD3dx=d3dx::Get();
+    texture_prepare_cache::Batch texturePreparation(
+        textureD3dx.Load() ? textureD3dx.fromFileExW : nullptr,
+        DevOf(sub),texturePreparationPaths);
+#endif
 
     // ---- materials -------------------------------------------------------------
     text_encoding::MaterialNames materialNames;
@@ -1980,6 +1964,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             MessageBoxW(hwnd, warning.c_str(), PmxJointWarningTitle(englishUI),
                         MB_OK | MB_ICONWARNING);
     }
+    geometryCache.Commit();
     return true;
 }
 

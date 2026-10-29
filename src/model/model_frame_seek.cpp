@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/bone_curve.hpp"
 // ===========================================================================
 // VA 0x004B4260 - direct frame seek / pose rebuild  (0x14F8 bytes)
@@ -89,6 +90,11 @@ const float kQuatClamp = 0.999999f;
 
 // ---- VA 0x004B4260 --------------------------------------------------------
 int SeekModelFrame(unsigned char* model, int frameArg, int physicsMode) {  // was Sub4B4260
+    if(frameArg<0) {
+        const int result=SeekModelFrame(model,0,physicsMode);
+        negative_frames::EvaluateModel(model,frameArg);
+        return result;
+    }
     unsigned char* const m = model;
     const std::uint32_t frameU32 = static_cast<std::uint32_t>(frameArg);
     int result = 0;

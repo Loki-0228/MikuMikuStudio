@@ -229,8 +229,24 @@ int main(){
     CheckScaleLabelRepaint(*app,parent);
     curve_host::LayoutControls(app.get());
     for(unsigned lang=0;lang<3;++lang){app->EnglishUI()=uint8_t(lang);curve_host::Localize(app.get());
-        wchar_t text[64]{};GetWindowTextW(GetDlgItem(parent,472),text,64);Check(wcslen(text)>0,"localized load label");
+        wchar_t text[128]{};GetWindowTextW(GetDlgItem(parent,472),text,128);Check(wcslen(text)>0,"localized load label");
         Check(GetMenuState(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND)!=UINT(-1),"explicit accessory VMD menu exists");
+        GetMenuStringW(file,curve_editor::kAccessoryMotionMenu,text,128,MF_BYCOMMAND);
+        Check(std::wstring(text)==(lang==2?L"载入当前附件动作（VMD）…":lang==1?
+            L"Load selected accessory motion (VMD)…":L"選択中のアクセサリのモーション読込（VMD）…"),"accessory motion menu uses the load caption");
+        for(int mode:{0,1,0,1}){
+            app->CameraMode()=mode;curve_host::Localize(app.get());
+            Check((GetMenuState(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND)&MF_GRAYED)==(mode?0:MF_GRAYED),
+                "accessory motion menu is available only in camera mode");
+            SendMessageW(parent,WM_INITMENUPOPUP,reinterpret_cast<WPARAM>(file),0);
+            Check((GetMenuState(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND)&MF_GRAYED)==(mode?0:MF_GRAYED),
+                "opening the menu preserves its mode-dependent availability");
+        }
+        auto* selected=app->AccessorySlot(0);app->AccessorySlot(0)=nullptr;curve_host::Localize(app.get());
+        Check((GetMenuState(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND)&MF_GRAYED)!=0,
+            "camera mode with no selected accessory cannot import accessory motion");
+        app->AccessorySlot(0)=selected;app->CameraMode()=0;curve_host::Localize(app.get());
+        SendMessageW(parent,WM_COMMAND,curve_editor::kAccessoryMotionMenu,0);
     }
     curve_host::Open(app.get(),false);
     Check(GetForegroundWindow()!=parent,"hidden integration does not activate host");

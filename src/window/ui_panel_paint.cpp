@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include <algorithm>
 // ===========================================================================
@@ -243,7 +244,7 @@ void PanelPaint(MMDApp* app) {
                               &app->state.themeColors[30])[2], 1);
                 color = static_cast<COLORREF>(
                     app->state.themeColors[30]);
-            } else if (static_cast<std::uint32_t>(n) % 5 != 0) {
+            } else if (n % 5 != 0) {
                 color = static_cast<COLORREF>(
                     app->state.themeColors[32]);
             } else {
@@ -321,7 +322,7 @@ void PanelPaint(MMDApp* app) {
     // this+0x9E16C clamp applied only in bone-edit mode; both branches pass
     // it, which is a no-op difference for display mode since a == b there).
     auto FinishPanel = [&](std::uint32_t a, std::uint32_t b) {
-        const std::uint32_t pos = static_cast<std::uint32_t>(scroll);
+        const std::int64_t pos=scroll;
         // x64 @0x7FF7CB482963：SCROLLINFO 内嵌在 app+0x1430（cbSize=1Ch、
         // fMask=SIF_ALL），nPage/nPos 落在 app+0x1440/0x1444；HandleHScroll
         // （0x7FF7CB45E060）case 2/3/5 回读的就是这两格。x86 原版把这块临时
@@ -331,12 +332,12 @@ void PanelPaint(MMDApp* app) {
         SCROLLINFO scrollInfo{};
         scrollInfo.cbSize = sizeof(scrollInfo);
         scrollInfo.fMask = SIF_ALL;
-        scrollInfo.nMin = 0;
-        std::uint32_t nMax = pos + static_cast<std::uint32_t>(rows);
+        scrollInfo.nMin=(std::min)(negative_frames::Earliest(app),scroll);
+        std::uint32_t nMax=static_cast<std::uint32_t>((std::max)(std::int64_t(0),pos+rows));
         if (nMax < a) nMax = a;
         if (nMax < b) nMax = b;
         const std::uint32_t mid =
-            static_cast<std::uint32_t>(app->state.currentFrame) +
+            static_cast<std::uint32_t>((std::max)(0,app->CurrentFrame())) +
             static_cast<std::uint32_t>(rows / 2);
         if (nMax < mid) nMax = mid;
         scrollInfo.nMax = static_cast<int>((std::min)(nMax,std::uint32_t(frame_limits::maximum))) - 1;
@@ -373,6 +374,7 @@ void PanelPaint(MMDApp* app) {
             SelectObject(panel, oldPen);
             DeleteObject(box);
         }
+        negative_frames::Draw(app,panel,icons,rows,listH);
         DeleteDC(icons);
         PostViewRefresh(app);
         rc.bottom -= 248;

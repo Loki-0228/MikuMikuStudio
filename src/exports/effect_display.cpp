@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "mikumikustudio/effect_display.hpp"
+#include "mikumikustudio/menu_initial_paint.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/native_mesh.hpp"
@@ -114,5 +115,9 @@ std::wstring EffectListDisplayLabel(MMDApp* app, HWND list, int row) {
 }
 void InstallEffectListDisplay(HWND editor, MMDApp* app) {
     SetWindowSubclass(editor, DisplayProc, kDisplaySubclass, reinterpret_cast<DWORD_PTR>(app));
+    menu_initial_paint::Attach(editor);
+    EnumChildWindows(editor,[](HWND child,LPARAM)->BOOL {
+        menu_initial_paint::Attach(child);return TRUE;
+    },0);
 }
 }

@@ -16,13 +16,13 @@
 | --- | --- | --- |
 | PMD and PMX loading, original animation tools, rigid-body physics, language fixes, MME interface | Included | Included |
 | Image sequences, periodic backups, crash backup attempts, and morph force paste | Included | Included |
-| Equivalent skinning and morph optimizations, unchanged-model reuse, and camera-only outline updates with CPU skinning | Included | Included |
-| MME auto-reload using file-change notifications | Included | Included |
+| Model preview optimizations | Included | Included |
+| MME effect auto-reload | Included | Included |
 | Preview shadow resolution | Scales the built-in renderer's shadow map; MME-owned targets follow their FX declarations | No preview scaling |
 | Recent projects, timeline force-paste button, and viewport render scaling | Included | Omitted |
 | FXAA, TAA, SMAA | Included; NVIDIA fix DLL is a separate optional download | Original anti-aliasing switch only |
 | New transparency sorting | Optional, disabled by default | Omitted; original single-pass material order |
-| Shadow reconstruction, dynamic precision, filtering | Clipping prevention and dynamic resolution; optional shared shadow-map filtering, disabled by default | Original projection and SM2/SM3 shaders; no enhanced-filter control |
+| Shadow reconstruction, dynamic precision, filtering | Extended shadow controls; optional filtering, disabled by default | Original shadow behavior |
 | Bone scaling, nine-channel bone curves, and morph curves | Included | Omitted; original Bezier interpolation retained |
 | DX12, mesh capture, Alembic, additional baking | Included | Omitted |
 | Media | Modern imports and MP4/MOV export through Windows media components | WAV audio, AVI backgrounds and AVI export |
@@ -30,26 +30,26 @@
 
 Both application ZIPs contain `MikuMikuDance.exe` and licenses. Neither includes models, user settings, MME, or the NVIDIA fix DLL. Starting with `v2026.10.15.1`, `MMSNvidiaAAFix.dll` is a separate optional release asset with [installation instructions in the release notes](docs/records/releases.md#optional-nvidia-fix).
 
-In the current source, the minimal build loads readable PMD and PMX models even when their names or references exceed legacy output limits. It retains the loaded data and warns about those limits. Saving checks the selected format separately; VMD's 15-byte bone-name limit does not block model import. Other file-import checks remain in place. Model editing supports PMD only and rejects PMX before opening an editor. Save extended full-build projects as separate copies when using the minimal build, because scale, curve, and mesh-cache extensions are discarded. See [minimal build limits](docs/reference/minimal-build.md) and [measured MMD 9.26 boundaries](docs/reference/legacy-mmd-limits.md). These tests do not establish lossless round trips for arbitrary projects in MMD 9.32.
+The minimal build retains the original feature range with selected fixes; it is not an unchanged copy of original MMD. PMX models can be animated, but model editing supports PMD only. Import success does not guarantee lossless saving in legacy formats. Save extended projects as separate copies, since the minimal build drops MMS extensions. See [minimal build limits](docs/reference/minimal-build.md) and [tested legacy boundaries](docs/reference/legacy-mmd-limits.md).
 
 Extract the two builds into separate directories and run the executable in each directory. Keep your existing installation if it contains settings or plugins.
 
 ### PMM and VMD files
 
-PMM saves a project, including model and media references, scene settings, and keyframes. VMD saves motion tracks for use with another model or project; it does not replace a PMM project file.
+PMM saves a project, including models, media references, scene settings, and keyframes. VMD saves motion to apply to another model or project; it does not replace a PMM.
 
-PMM `0002` extensions preserve bone curves, project settings, and scene and accessory curve records without changing the standard file header. VMD tail extensions store supported curves and bone-scale data while retaining the standard VMD sections. Re-saving an extended project in original MMD may discard MMS-only data. See [curve editor](docs/guides/animation-curves.md) and [PMM v2 extensions](docs/reference/pmm-extensions.md).
+| Saved content | Original MMD compatibility |
+| --- | --- |
+| Standard PMM `0002` and VMD motion | Preserve data that fits the original name, path, frame, and keyframe limits. Identical results for every project and third-party reader are not guaranteed. |
+| Complete names in MMS extensions | Original MMD reads the standard name fields, not the full-name extension. Loading a Unicode-named PMX does not mean its names can be saved unchanged in legacy PMM or VMD. |
+| Negative keyframes | The full build saves them in the `MMSXPMM2` extension of PMM `0002` or `0003`. Negative frames alone do not require `0003`. Original MMD cannot restore them; standard VMD export contains only nonnegative keyframes. |
+| Bone scale, free curves, and mesh caches | MMS extensions require MMS. Original MMD reads only standard data and cannot reproduce these additions unchanged. |
+| FXAA, TAA, SMAA, and other MMS display settings | Apply in MMS. Original MMD uses its own rendering settings. |
+| Extended PMM `0003` | Original MMD and the minimal build cannot open it. Actual excess keyframes, display counts, or frame numbers, can require this format. Reference paths use a reversible byte encoding when they fit the field. |
 
-The full build also provides the following extended-save behavior.
+The full build prefers `0002` when the standard project data still fits. Empty reserved capacity, name extensions, and negative keyframes alone do not select `0003`. When usable, a legacy-name copy is generated automatically as `.compat.pmm` or `.compat.vmd`; excess capacity or conflicting short names can prevent it. A standard-only PMM copy is not generated when it would discard negative-frame data. These copies cannot add MMS-only features to original MMD.
 
-PMM saving prefers the original `0002` header. Unused reserved space does not force a new format, and sparse high key slots are compacted when their live contents still fit. Only content outside the original limits or legacy path encoding selects the MMS `0003` format. Bone names of 16–19 CP932 bytes, canonical truncated bindings, and name extensions alone keep `0002`; the VMD 15-byte name limit does not select the PMM version. Original MMD and the minimal build cannot open `0003`.
-
-If names cannot be encoded without loss, MMS preserves the complete names in an extension and reports the difference. It also writes a `.compat.pmm` or `.compat.vmd` copy with legacy short names when that copy is usable. Existing copies receive a numbered suffix. Capacity overflow, ambiguous short names, or unsupported reference paths prevent a compatible copy; MMS reports this instead of dropping keys or assigning motion to the wrong bone.
-
-The current `0003` writer still uses the v2 record layout and the `MMSXPMM2` tail extension; readers also accept the older `MDSXPMM2` marker. The [new section-based PMM design](docs/reference/pmm-0003-sections.md) groups data by model, camera, light, accessory, and project settings. Full names, paths, and keyframe curves belong to their corresponding sections, and unknown sections are preserved. This design has not been integrated into project loading or saving. It supersedes the earlier `PMM3END` container proposal. See [current PMM extensions](docs/reference/pmm-extensions.md) for implemented behavior and [legacy MMD limits](docs/reference/legacy-mmd-limits.md) for native-executable measurements.
-
-Processor choices are saved per Windows user and take effect on the next
-startup. They are not stored in project files.
+Re-saving in original MMD or the minimal build discards MMS extensions. Keep a separate copy. See [PMM save rules](docs/reference/pmm-extensions.md) and [measured legacy limits](docs/reference/legacy-mmd-limits.md) for boundaries and verification scope. A new PMM section layout is a design document, not the current save format.
 
 ## 下载与版本区别
 
@@ -60,13 +60,13 @@ startup. They are not stored in project files.
 | PMD、PMX 载入，原有骨骼、表情、相机、灯光和刚体物理 | 保留 | 保留 |
 | 原生功能、输入、编码及 MME 兼容修复 | 保留 | 保留 |
 | 图片序列、周期备份、崩溃备份尝试、表情强制粘贴 | 保留 | 保留 |
-| 蒙皮与表情的等价计算优化、未变化模型缓存、CPU 蒙皮下相机移动时仅更新描边 | 保留 | 保留 |
-| MME 自动重载使用文件变更通知 | 保留 | 保留 |
+| 模型预览计算优化 | 保留 | 保留 |
+| MME 效果自动重载 | 保留 | 保留 |
 | 预览阴影分辨率 | 只调整默认渲染的阴影贴图；MME 自建目标遵循 FX 声明 | 不包含预览缩放 |
 | 最近工程、时间轴强制粘贴按钮、视口渲染比例 | 保留 | 不包含 |
 | FXAA、TAA、SMAA | 保留；NVIDIA 补丁 DLL 另行按需下载 | 仅保留原抗锯齿开关 |
-| 新透明排序 | 可选低、标准、高、最高；默认关闭 | 不编入排序与剥层实现，使用原始单遍材质顺序 |
-| 阴影重构、动态精度和滤波 | 保留防裁切与动态精度；可选「滤波加强」，默认关闭 | 使用原版投影及 SM2/SM3 着色器，无「滤波加强」 |
+| 新透明排序 | 可选强度，默认关闭 | 使用原版材质顺序 |
+| 阴影重构、动态精度和滤波 | 扩展阴影控制；可选滤波，默认关闭 | 使用原版阴影行为 |
 | 骨骼缩放、九通道骨骼曲线和表情曲线 | 保留 | 不编入，保留原有 Bezier 插值 |
 | DX12、通用 mesh 捕获、Alembic 和新增烘焙 | 保留 | 不编入对应实现 |
 | 音视频 | 保留现代音视频导入与 MP4/MOV 输出，依赖 Windows 媒体组件 | WAV 音频、AVI 背景与 AVI 输出 |
@@ -75,27 +75,26 @@ startup. They are not stored in project files.
 
 完整包和最小包 ZIP 均包含 `MikuMikuDance.exe` 与许可文件，不附带用户配置、模型、MME 或 NVIDIA 修复 DLL。从 `v2026.10.15.1` 起，`MMSNvidiaAAFix.dll` 作为独立附件按需下载，见[Release Notes 中的安装说明](docs/records/releases.md#nvidia-修复安装可选)。
 
-最小包仍保留三语界面等便利修复，并非原版 MMD 的逐字节复刻。当前源码允许读取结构可解析的 PMD、PMX 模型；名称或引用路径超出旧格式保存限制时，保留读取到的数据并警告。保存时再按所选格式检查，不用 VMD 的 15 字节骨骼名限制取消模型导入。其他文件的导入检查保持原有规则。PMX 可用于场景和动画，模型编辑仍仅支持 PMD。
-
-含缩放、曲线或 mesh 缓存等扩展的完整包工程，经最小包保存后会丢失这些扩展，请另存为副本。真实 MMD 9.32 程序的双向载入及再保存尚未完成验证，不能据此保证任意工程无损互导。选择下载前可查看[最小包范围与格式限制](docs/reference/minimal-build.md)及[透明排序验收记录](docs/records/rendering/transparency.md#record-transparent-sort-validation)。
+最小包保留原版功能范围及部分修复，不等同于原版程序。PMX 可用于动画场景，模型编辑仅支持 PMD。导入成功不代表能以旧格式无损保存。最小包保存时会丢弃 MMS 扩展，请将扩展工程另存为副本。具体限制见[最小包范围](docs/reference/minimal-build.md)及[原版限制实测](docs/reference/legacy-mmd-limits.md)。
 
 两档解压到不同目录，分别运行各自的 `MikuMikuDance.exe`。有旧版配置和插件时，先保留旧目录；不要把两个 ZIP 解压到同一目录后相互覆盖。
 
 ### PMM 与 VMD 的区别和兼容性
 
-PMM 保存完整工程，包括模型与媒体引用、场景设置和关键帧。VMD 保存动作轨道，便于应用到其他模型或工程，不能代替 PMM 工程文件。
+PMM 保存工程，包括模型与媒体引用、场景设置和关键帧。VMD 保存动作，便于应用到其他模型或工程，不能代替 PMM。
 
-PMM `0002` 在保留标准文件头的前提下，通过扩展保存骨骼曲线、工程设置及场景、附件曲线记录。支持的曲线和骨骼缩放也可写入 VMD 尾部扩展，标准数据段保持不变。原版 MMD 重新保存扩展工程时可能丢弃 MMS 专有数据。详见[曲线编辑器](docs/guides/animation-curves.md)和[PMM v2 扩展](docs/reference/pmm-extensions.md)。
+| 保存内容 | 原版 MMD 的兼容范围 |
+| --- | --- |
+| 标准 PMM `0002`、VMD 动作 | 可保留原版名称、路径、帧号及关键帧容量范围内的数据，不保证任意工程或第三方读取器的结果完全一致。 |
+| MMS 扩展中的完整名称 | 原版只读标准名称字段，不恢复完整名称扩展。能载入 Unicode 名称的 PMX，不等于能在旧 PMM、VMD 中原样保存名称。 |
+| 负数关键帧 | 完整包保存到 PMM `0002` 或 `0003` 的 `MMSXPMM2` 扩展区。负帧本身不要求 `0003`。原版无法恢复负帧，标准 VMD 导出只包含非负关键帧。 |
+| 骨骼缩放、自由曲线、网格缓存 | 依赖 MMS 扩展。原版只读取标准部分，不能原样还原这些新增效果。 |
+| FXAA、TAA、SMAA 等新增显示设置 | 只在 MMS 中生效，原版使用自己的渲染设置。 |
+| 扩展 PMM `0003` | 原版 MMD 和最小包均不能打开。实际关键帧数量、显示项数量、帧号超限，时，可能需要此格式。引用路径在字段可容纳时采用可还原的字节编码。 |
 
-完整包还支持以下扩展保存行为。
+完整包在标准部分符合原版限制时优先保存为 `0002`。仅预留更多空容量、增加名称扩展或负数关键帧，不会切换到 `0003`。能够生成可用的旧名称副本时，自动写入 `.compat.pmm`、`.compat.vmd`；超容量或短名称冲突时可能无法生成。含负帧数据时不生成会丢失该数据的标准部分 PMM 副本。这些副本不能让原版获得 MMS 专有功能。
 
-保存 PMM 时优先采用旧版 `0002`。未使用的预留空间不会触发新版格式；高位关键帧槽位存在空洞时，保存器会压紧槽位。只有实际内容超出旧版能力或引用路径无法用旧编码表示时，才采用 MMS `0003`。16～19 个 CP932 字节的骨骼名、符合原版截断规则的绑定名，以及单独的名称扩展仍使用 `0002`，不套用 VMD 的 15 字节名称限制。原版 MMD 和最小包不能打开 `0003`。
-
-名称无法无损编码时，MMS 在扩展中保留完整名称并提示，同时在能生成可用副本时自动写入 `.compat.pmm` 或 `.compat.vmd`。副本采用旧格式短名称，同名副本添加序号。容量不足、短名称冲突或引用路径不兼容时，MMS 会说明无法生成兼容副本，不会删减关键帧或把动作分配给错误的骨骼。
-
-当前 `0003` 仍采用 v2 记录布局和 `MMSXPMM2` 尾部扩展，读取时也接受旧标记 `MDSXPMM2`。[新版 PMM 分节设计](docs/reference/pmm-0003-sections.md)按模型、相机、灯光、配件和工程设置划分数据，将完整名称、路径及关键帧曲线放入对应节，并保留未知节。该设计尚未接入工程保存和加载，已取代早期的 `PMM3END` 尾部容器方案。已实现行为见 [PMM 扩展](docs/reference/pmm-extensions.md)，原版程序的名称、路径与导出边界见[旧版 MMD 限制实测](docs/reference/legacy-mmd-limits.md)。
-
-运算器选择按 Windows 用户跨工程保存，下次启动生效，不写入工程文件。
+原版 MMD 或最小包重新保存时会丢弃 MMS 扩展，请保留独立副本。详细边界和验证范围见 [PMM 保存规则](docs/reference/pmm-extensions.md)及[原版限制实测](docs/reference/legacy-mmd-limits.md)。新的 PMM 分节布局仍是设计文档，尚未用于实际工程保存。
 
 ## ダウンロードとパッケージの違い
 
@@ -105,13 +104,13 @@ PMM `0002` 在保留标准文件头的前提下，通过扩展保存骨骼曲线
 | --- | --- | --- |
 | PMD・PMX 読み込み、従来のアニメーション編集、剛体物理、言語関連の修正、MME インターフェース | 含む | 含む |
 | 連番画像、定期バックアップ、クラッシュ時のバックアップ試行、モーフの強制貼り付け | 含む | 含む |
-| スキニング・モーフの等価な計算最適化、変化のないモデルの再利用、CPU スキニングでのカメラ移動時の輪郭のみの更新 | 含む | 含む |
-| ファイル変更通知による MME 自動再読み込み | 含む | 含む |
+| モデルのプレビュー計算の最適化 | 含む | 含む |
+| MME エフェクトの自動再読み込み | 含む | 含む |
 | プレビューのシャドウ解像度 | 標準レンダラーのシャドウマップのみ調整。MME 独自のターゲットは FX の宣言に従う | プレビュー縮小なし |
 | 最近使ったプロジェクト、タイムラインの強制貼り付けボタン、ビューポート描画倍率 | 含む | 含まない |
 | FXAA、TAA、SMAA | 含む。NVIDIA 修正 DLL は任意の別ダウンロード | 従来のアンチエイリアス切り替えのみ |
 | 新しい透明ソート | 任意で有効化、初期設定は無効 | 含まない。従来の単一パスの材質順序を使用 |
-| シャドウ処理の再構成、動的精度、フィルタリング | クリッピング防止、動的精度、共有シャドウマップのフィルター強化（初期設定は無効） | 従来の投影と SM2/SM3 シェーダー。平滑化スイッチなし |
+| シャドウ処理の再構成、動的精度、フィルタリング | 拡張シャドウ設定、任意のフィルター（初期設定は無効） | 従来のシャドウ処理 |
 | ボーンスケール、9 チャンネルのボーン曲線、モーフ曲線 | 含む | 含まない。従来の Bezier 補間を維持 |
 | DX12、メッシュ取得、Alembic、追加のベイク機能 | 含む | 含まない |
 | 音声・動画 | Windows メディアコンポーネントによる各種形式の読み込みと MP4・MOV 出力 | WAV 音声、AVI 背景、AVI 出力 |
@@ -119,27 +118,26 @@ PMM `0002` 在保留标准文件头的前提下，通过扩展保存骨骼曲线
 
 両方のアプリ ZIP に `MikuMikuDance.exe` とライセンスを含みます。モデル、ユーザー設定、MME、NVIDIA 修正 DLL は同梱しません。`v2026.10.15.1` 以降、`MMSNvidiaAAFix.dll` は任意の独立ダウンロードです。[リリースノートの導入手順](docs/records/releases.md#nvidia-修正の導入任意)を参照してください。
 
-現在のソースでは、最小版は解析可能な PMD・PMX モデルを読み込みます。名前や参照先が旧形式の保存制限を超える場合は、読み込んだデータを保持して警告します。保存時は選択した形式の制限を確認し、VMD の 15 バイトのボーン名制限だけではモデルの読み込みを拒否しません。他のファイルの読み込み時の検証は従来どおりです。PMX はシーンとアニメーションで利用できますが、モデル編集は PMD のみ対応します。完全版の拡張を含むプロジェクトを最小版で保存すると、スケール、曲線、メッシュキャッシュの拡張が失われるため、別名で保存してください。[最小版の制限](docs/reference/minimal-build.md)と [MMD 9.26 の実測結果](docs/reference/legacy-mmd-limits.md)を参照してください。任意のプロジェクトを MMD 9.32 で無損失に往復できることを保証するものではありません。
+最小版は従来の機能範囲と一部の修正を保持しますが、オリジナル MMD そのものではありません。PMX はアニメーションに使えますが、モデル編集は PMD のみです。読み込みに成功しても旧形式で無損失に保存できるとは限りません。MMS 拡張は最小版で保存すると失われるため、別名で保存してください。[最小版の範囲](docs/reference/minimal-build.md)と[MMD の実測記録](docs/reference/legacy-mmd-limits.md)を参照してください。
 
 両方を使う場合は別々のフォルダーに展開し、それぞれの実行ファイルを起動してください。設定やプラグインが入った既存のフォルダーは残してください。
 
 ### PMM と VMD の違いと互換性
 
-PMM はモデルとメディアの参照、シーン設定、キーフレームを含むプロジェクトを保存します。VMD は別のモデルやプロジェクトに適用するモーションを保存します。VMD は PMM プロジェクトの代わりにはなりません。
+PMM はモデルやメディアの参照、シーン設定、キーフレームを含むプロジェクトを保存します。VMD は別のモデルやプロジェクトに適用するモーションで、PMM の代わりにはなりません。
 
-PMM `0002` は標準ヘッダーを維持し、拡張データとしてボーン曲線、プロジェクト設定、シーンとアクセサリの曲線を保存します。対応する曲線とボーンスケールは VMD の末尾拡張にも保存でき、標準データ部分は保持します。オリジナル MMD で再保存すると MMS 固有データが失われることがあります。[曲線エディタ](docs/guides/animation-curves.md)と[PMM v2 拡張](docs/reference/pmm-extensions.md)を参照してください。
+| 保存内容 | オリジナル MMD の対応範囲 |
+| --- | --- |
+| 標準 PMM `0002`・VMD モーション | 従来の名前・パス・フレーム・キー容量の範囲に収まるデータを保持します。任意のプロジェクトや他の読み込みソフトで同じ結果になる保証ではありません。 |
+| MMS 拡張の完全な名前 | オリジナル MMD は標準の名前欄のみ読み、完全な名前の拡張は復元しません。Unicode 名の PMX を読み込めても、従来の PMM・VMD に名前をそのまま保存できるとは限りません。 |
+| 負のキーフレーム | 完全版は PMM `0002` または `0003` の `MMSXPMM2` 拡張に保存します。負のフレームだけでは `0003` に切り替わりません。オリジナル MMD では復元できず、標準 VMD 出力には非負のキーのみ含まれます。 |
+| ボーンスケール・自由曲線・メッシュキャッシュ | MMS 拡張には MMS が必要です。オリジナル MMD は標準部分のみを読み、追加した効果をそのまま再現できません。 |
+| FXAA・TAA・SMAA などの追加表示設定 | MMS で適用します。オリジナル MMD は自身の描画設定を使います。 |
+| 拡張 PMM `0003` | オリジナル MMD と最小版では開けません。キー数・表示項目数・フレーム番号の超過で必要になる場合があります。参照パスは、フィールドに収まれば復元可能なバイト表現で保存します。 |
 
-完全版には、次の拡張保存機能もあります。
+完全版は標準部分が従来の制限内なら `0002` を優先します。空き容量の確保、名前の拡張、負のキーフレームだけでは `0003` に切り替わりません。旧形式の名前を安全に扱える場合は `.compat.pmm`・`.compat.vmd` を自動保存しますが、容量超過や短縮名の重複で作れない場合があります。負のフレームがある場合、そのデータを失う標準部分のみの PMM コピーは生成しません。互換コピーで MMS 固有の機能がオリジナル MMD に追加されるわけではありません。
 
-PMM は従来の `0002` 形式を優先します。未使用の予約領域では新形式に切り替わりません。高い番号に残ったキーは、保存時に空きスロットを詰めます。実際の内容が従来の範囲を超える場合、または参照パスを旧文字コードで表現できない場合にだけ、MMS `0003` 形式を使います。CP932 で 16～19 バイトのボーン名、従来の切り詰め規則に一致する識別名、名前だけの拡張は `0002` のままです。VMD の 15 バイト制限は PMM の形式選択には適用しません。オリジナル MMD と最小版は `0003` を開けません。
-
-名前を無損失で保存できない場合は、拡張に完全な名前を保存して通知します。利用可能な互換コピーを作れる場合は、旧形式の短い名前を使った `.compat.pmm` または `.compat.vmd` を自動保存します。同名のコピーは上書きせず連番を付けます。容量不足、短縮名の重複、参照パスの制約がある場合は、キーの省略や誤ったボーンへの割り当てを行わず、コピーを作れない理由を通知します。
-
-現在の `0003` は v2 のレコード構造と `MMSXPMM2` 末尾拡張を使い、読み込み時は旧マーカー `MDSXPMM2` も受け付けます。[新しい PMM のセクション設計](docs/reference/pmm-0003-sections.md)では、モデル、カメラ、照明、アクセサリ、プロジェクト設定ごとにデータを分けます。完全な名前、パス、キーフレーム曲線を対応するセクションに置き、未知のセクションも保持します。この設計はプロジェクトの読み込みと保存にはまだ接続されておらず、以前の `PMM3END` 末尾コンテナ案を置き換えるものです。実装済みの動作は [PMM 拡張](docs/reference/pmm-extensions.md)、実際の旧版プログラムの制限は [MMD の実測記録](docs/reference/legacy-mmd-limits.md)を参照してください。
-
-処理デバイスの選択は Windows ユーザーごとに保存され、次回起動時に反映されます。プロジェクトファイルには保存されません。
-
----
+オリジナル MMD や最小版で再保存すると MMS 拡張は失われるため、別のコピーを残してください。境界と検証範囲は [PMM の保存規則](docs/reference/pmm-extensions.md)と[MMD の実測記録](docs/reference/legacy-mmd-limits.md)を参照してください。新しい PMM のセクション構造は設計段階で、通常保存にはまだ使われていません。
 
 ## English
 
@@ -147,84 +145,19 @@ MikuMikuStudio (MMS) is a Windows desktop application for creating and editing M
 
 ### Features
 
-- **Models**: PMD / PMX loading (incl. BDEF4/SDEF weights), bone trees, IK,
-  morphs, toon rendering
-- **Animation**: VMD load/save, VPD export, frame editor (bone / morph /
-  camera / lighting / self-made expression / accessory tracks), whole-project
-  frame-rate correction, and frame playback with physics preview
-- **Physics**: Bullet 2.75 rigid bodies + constraints (6DOF spring),
-  deterministic solve order, physics baking and per-frame bone-motion
-  resampling. Supports frame ranges, ERP/CFM, substeps, simulation rate,
-  undo/cancel, and unencrypted UTF-8 JSON presets. The baking UI has English,
-  Chinese, and Japanese labels and tooltips, with Bullet defaults. See
-  [physics baking](docs/guides/physics-baking.md).
-- **Mesh baking and export**: Alembic export includes MME vertex deformations. Exporting ABC and baking into the project can be selected
-  independently; project baking warns about its effects. Clear mesh bake
-  restores live deformation for the current model or all objects while keeping
-  disabled FX disabled. See [mesh export and baking](docs/guides/mesh-export.md).
-- **Rendering**: Native DX12 preview and GPU skinning with DX9/CPU fallback when
-  DX12 is unavailable; MME Effect support, toon textures, ground shadows,
-  stereoscopic 3D (NVIDIA 3D Vision), and separate device choices for main
-  rendering and vertex processing
-- **Multimedia**: Imports many audio formats and MP4/MOV video through Windows
-  Media Foundation, depending on installed Windows media components;
-  plays Wave audio; records AVI through installed DirectShow codecs, MP4/H.264
-  through Media Foundation, and transparent MOV. The export dialog lists
-  registered H.264 encoders and supports aspect-ratio-preserving output sizes.
-  VSQ and Kinect input are also supported.
-- **UI and compatibility**: English/Chinese/Japanese interface, Unicode file
-  paths, timeline, accessory editing, undo/redo
-
-#### Automatic editing capacity
-
-Names retain their complete Unicode text. Bone, morph, display, camera, light, shadow, gravity, and accessory key pools grow as needed. Display groups and facial display lists also retain counts beyond the original byte fields. No capacity settings are required.
-
-Frame numbers use checked arithmetic through 2,147,483,646, with precise playback time for adjacent keys at large frames. Memory and file field sizes still bound automatic growth. For saving and legacy compatibility, see [PMM and VMD files](#pmm-and-vmd-files).
-
-#### Image sequence export and backups
-
-Both packages support image sequence export with a directory, filename prefix, image format, and frame range. The format choices match single-image export, and numbering width follows the output range.
-
-Auto-save settings control the interval in minutes, backup directory, maximum count, and replacement of older backups. The default is `backups` beside the executable, without overwriting manually saved projects. Crash handling also attempts a backup; completion depends on the crash state and destination access.
-
-#### Viewport and shadow controls
-
-The full build can match the viewport to the window, render a lower-resolution preview, or use supersampling without changing export dimensions. Lower-resolution previews use nearest-neighbor upscaling. The HUD and toolbars render at display resolution across the full preview area, including letterbox bars. Numeric input fields shorten before text shrinks. When a toolbar does not fit on one row, it uses two rows if the adjacent letterbox bar has enough room. FPS text and HUD controls keep their normal size, shrinking only when the preview area cannot fit them. FPS counts completed, successfully submitted scene frames.
-
-Self-shadowing restores MMD 9.32 projection and depth sampling. Dynamic resolution and fixed resolution share the same shadow-range setting. Optional stronger filtering, disabled by default, applies two B-spline passes to the shadow map before native materials and MME receive it. A failed filter falls back to the current frame's original map.
-
-#### Anti-aliasing and project settings
-
-The full build offers original MMD anti-aliasing (MSAA), FXAA, motion-vector TAA,
-and SMAA. In the current source, **SMAA** only opens its submenu; it has no default choice.
-Choose 1x or T2x in that submenu, with standard edges or diagonal and corner enhancement.
-Selection dots appear beside SMAA and its current variant only while SMAA is selected.
-T2x combines two jittered frames using motion vectors.
-TAA and T2x keep current and previous deformed positions in GPU textures when
-the adapter supports vertex texture sampling. They share captures across
-matching material inputs and reuse the original index buffers. Verified opaque
-native materials skip the extra coverage draw. MME shaders and alpha textures
-keep their coverage checks. Capability checks apply to NVIDIA, AMD, and Intel;
-devices without vertex texture sampling retain CPU geometry capture.
-Complex MME effects still add work. SMAA 1x avoids motion capture, and unsupported
-motion passes use spatial AA for that frame.
-
-Temporal image export fills missing samples at the same scene time, including
-projects containing only frame zero. A continuous image sequence retains its
-history: T2x needs two scene renders for the first image and one for each next
-image. Sampling does not advance animation or physics and does not add files.
-PMM v2 extensions store the AA switch, algorithm, and last SMAA choice. Loading
-a project does not overwrite local defaults. See [PMM settings](docs/reference/pmm-extensions.md).
-
-Download the optional `MMSNvidiaAAFix.dll` separately if you need the fix. Place it beside the full build's `MikuMikuDance.exe` to manage the fix from **Help**. Copying the DLL does not install the driver setting. When the menu opens, the DLL checks this program's setting and offers **Install** or **Uninstall**. Either operation requests Windows administrator approval and takes effect the next time MMS starts.
-
-The fix applies to NVIDIA only. Installation stops if no usable NVIDIA driver is available; AMD and Intel do not receive this setting. Uninstalling warns that MSAA may show white edges or seams again and removes only this program's setting. Deleting the DLL hides the menu entry without undoing an installed setting.
-
-### Curve editor
-
-The native curve editor edits nine bone channels for position, XYZ rotation, and scale, plus morph, camera, lighting, self-shadow, gravity, and accessory tracks. It supports key insertion that preserves the curve shape, numeric control points, slope and weight dragging, and keyframe navigation.
-
-The source and history audit is in [MMS native feature audit](docs/records/development/features.md#record-mms-native-features-audit).
+- **Models**: PMD and PMX models with bone, IK, morph, and toon rendering support.
+- **Animation**: VMD motion and VPD poses, multitrack keyframe editing, playback with physics preview, and project frame-rate correction, plus VSQ and Kinect input.
+- **Curve editor**: Edit nine bone channels, morphs, camera, lighting, self-shadow, gravity, and accessories. Adjust handles, insert keys along a curve, and seek with the main timeline. [Curve editing](docs/guides/animation-curves.md).
+- **Bone scaling**: Uniform and per-axis bone scaling for local, global, and view coordinates. Scale data requires MMS extensions; original MMD does not apply it. [Bone scaling](docs/guides/bone-scaling.md).
+- **Editing capacity**: Keyframes and display lists grow as needed, within memory and save-format limits. Full Unicode names are preserved in MMS extensions. PMM projects beyond original MMD's limits cannot be opened there. [File compatibility](#pmm-and-vmd-files).
+- **Physics**: Rigid-body simulation, constraints, and baking to bone motion. Supports frame ranges, presets, undo, and cancellation. [Physics baking](docs/guides/physics-baking.md).
+- **Mesh baking and export**: Export captured MME vertex deformation to Alembic or bake it into the project. Clear a bake to return to live deformation. [Mesh export and baking](docs/guides/mesh-export.md).
+- **Rendering**: MME effects, GPU skinning, and optional DX12 preview, with DX9 and CPU paths for unsupported hardware. Rendering and vertex processing can use separate devices.
+- **Anti-aliasing**: Choose original MSAA, FXAA, TAA, or SMAA to balance smoothing and preview performance. Includes outline softening and AA for still images and image sequences. [Display settings](docs/guides/rendering.md).
+- **Viewport and shadows**: Adjust preview resolution without changing export size. Dynamic shadow precision, a wider self-shadow range, optional filtering, and transparency sorting provide scene-specific controls. [Display settings](docs/guides/rendering.md).
+- **Media**: Audio and video import, AVI and MP4/H.264 export, transparent MOV, and image sequences. PNG and DDS exports choose transparent backgrounds automatically. Available media formats depend on Windows components.
+- **Saving and backups**: Background project saving, scheduled backups, and optional `.pmm1` version retention. Fatal errors save a report and attempt recovery. Error logs use the configured backup folder, which defaults to `backups` beside the EXE.
+- **UI**: English, Chinese, and Japanese UI, Unicode file paths, recent projects, undo and redo, and shortcuts that work with an IME outside text fields.
 
 ### Building from Source
 
@@ -260,7 +193,7 @@ This build hides DX12 compute adapters, keeps vertex processing on the CPU,
 and skips native DX12 preview. The normal build keeps DX12 enabled. See
 [DX12 compatibility build details](docs/records/performance/devices.md#record-dx12-optional-compat).
 
-The final MMS package is `D:/MMD-Next/MMS/build/Release/`, with
+The build output is `build/Release/`, with
 `MikuMikuDance.exe` as its GUI application. After moving the checkout, rerun
 `conan install` before using CMake presets to regenerate absolute build paths. The
 DirectShow push source used for AVI is linked into the executable, and MP4
@@ -301,35 +234,7 @@ ctest --test-dir build -C Release --output-on-failure
 
 ### MikuMikuEffect (MME)
 
-The executable keeps the original name `MikuMikuDance.exe` and meets MME's three
-host requirements: the 37 `Exp*` exports by ordinal 1..37
-(`exports/MikuMikuDance.def`); **static** imports of the `d3dx9_43.dll` entries
-MMHack.dll patches - it rewrites the _host's_ IAT, so a host that resolved D3DX
-at runtime exposed no slot and MME aborted with `Initialize error`
-(`res/imports/d3dx9_43.def`, import library generated at build time); and the
-exact module name, from which MMHack.dll's import table binds those `Exp*`
-functions. Copy the x64 `d3d9.dll`, `MMHack.dll` and `MMEffect.dll` next to it
-and the `MMEffect` menu appears; `.fx` effects are then assigned as usual. No
-DirectX SDK, at runtime or at build time. See
-[MME compatibility](docs/guides/effects.md).
-
-### Personal usage changes
-
-These additions exist only for personal convenience; they are neither MMD's
-original usage habits nor compatibility requirements, and builders may delete
-them by editing the code.
-
-- **Native bone scaling**: Uniform and XYZ controls support local, global and view axes for every bone. PMM preserves full scale data; VMD stores scale in a versioned tail extension while preserving its standard prefix. See [bone scaling](docs/guides/bone-scaling.md).
-- **Extended self-shadow range**: Removes the original MMD restriction on the range where self-shadows can be generated.
-- **Dynamic shadow scaling**: Matches shadow-map resolution to the projected density of visible geometry within the shadow-quality and device limits. Dynamic and fixed resolution share one shadow-range slider; there is no separate precision value. The full build preserves shadow coverage at high precision to reduce clipping.
-- **Error reporting**: The program writes no log files by default; diagnostic file tracing can be enabled explicitly. A fatal error raises a
-  modal window whose text can be copied with Ctrl+C, and the PDB under
-  `build/symbols/` resolves source lines.
-- **IME and hotkeys**: Letter hotkeys keep working with a Chinese/Japanese IME
-  active - P play/stop plus A/S/D/F/G/H/I/J/K/L/U/V/X/Z/B/C/R - except inside
-  text fields.
-- **Transparent sorting preference**: Adds five selectable sorting levels,
-  including disable, to adjust transparency ordering for personal scenes.
+Place the x64 MME files `d3d9.dll`, `MMHack.dll`, and `MMEffect.dll` beside `MikuMikuDance.exe`, keeping that executable name. The `MMEffect` menu then provides effect assignment. MME is a separate download; supported setups and troubleshooting are in [MME compatibility](docs/guides/effects.md).
 
 ### Contributions
 
@@ -356,7 +261,7 @@ input fixes, crash diagnostics, and build and release organization.
   extensions to MMD. See the [MME introduction coauthored by its creator](https://codezine.jp/article/detail/5997).
 - MME community effect authors and contributors, for sharing effects,
   tools, and knowledge.
-- 老面星星 (StarNoodle495) for continued testing and suggestions ([BowlRoll](https://bowlroll.net/user/182602)); 沙拉酱 ([Bilibili](https://space.bilibili.com/3493080791517295)) for technical guidance; and 微波叮桃子 ([AplayBox](https://www.aplaybox.com/u/972840773)), 靡苦居士 ([Bilibili](https://space.bilibili.com/8545990)), 幽灵_U0 ([Bilibili](https://space.bilibili.com/454701392)), and 低智商鼻嘎 for testing and bug reports.
+- 老面星星 (StarNoodle495) for continued testing and suggestions ([BowlRoll](https://bowlroll.net/user/182602)); 沙拉酱 ([Bilibili](https://space.bilibili.com/3493080791517295)) and AHKちゃん for technical guidance; and 微波叮桃子 ([AplayBox](https://www.aplaybox.com/u/972840773)), 靡苦居士 ([Bilibili](https://space.bilibili.com/8545990)), 幽灵_U0 ([Bilibili](https://space.bilibili.com/454701392)), and 低智商鼻嘎 for testing and bug reports.
 
 ### License
 
@@ -372,68 +277,19 @@ MikuMikuStudio（MMS）是用于制作和编辑 MMD 舞蹈动画的 Windows 桌�
 
 ### 功能
 
-- **模型**：PMD / PMX（含 BDEF4/SDEF 权重）加载，骨骼树、IK、形态（morph）、toon 渲染
-- **动画**：VMD 加载/保存、VPD 导出、帧编辑器（骨骼/形态/相机/照明/自作表情/附件轨道）、
-  整个工程的帧率修正、帧回放与物理预览
-- **物理**：Bullet 2.75 刚体与约束（6DOF spring），确定性求解顺序；支持烧录物理结果和逐帧重采样骨骼动作。可设置帧范围、ERP、CFM、子步数和计算频率，支持撤销、取消及 UTF-8 非加密 JSON 预设。界面提供中英日三语和悬浮说明，初始值采用 Bullet 默认参数。见[物理烧录](docs/guides/physics-baking.md)
-- **网格烧录与导出**：Alembic 可导出包含 MME 顶点变形的网格；导出 ABC 与烧录回工程可分别选择，只有选择烧录时才提示影响。清除网格烧录可恢复当前模型或全部对象的实时变形，已停用的 FX 保持关闭。见[网格导出与烧录](docs/guides/mesh-export.md)
-- **渲染**：原生 DX12 预览与 GPU 蒙皮；DX12 不可用时回退到 DX9/CPU。支持 MME Effect、toon 纹理、地面阴影、立体视觉（NVIDIA 3D Vision），并可分别选择主渲染和顶点计算设备
-- **多媒体**：通过 Windows Media Foundation 导入多种音频格式和 MP4/MOV 视频，具体格式取决于系统媒体组件。支持 Wave 音频播放、DirectShow AVI（使用已安装的传统编码器）、Media Foundation MP4/H.264 录制，以及透明 MOV 录制。导出页列出系统已注册的 H.264 编码器并支持等比例修改分辨率。另支持 VSQ 乐谱导入和 Kinect 骨骼输入
-- **UI 与兼容**：英中日三语界面、Unicode 文件路径、时间轴、附件编辑、撤销/重做
-
-#### 编辑容量自动扩展
-
-名称保留完整 Unicode 文本。骨骼、表情、显示、镜头、灯光、自阴影、重力和附件关键帧按需扩容；显示分组和表情显示项也不再受原有单字节计数限制，无需手动填写容量。
-
-帧号通过溢出检查扩展至 2,147,483,646，大帧号播放仍能区分相邻关键帧。自动扩容受可用内存和文件字段范围约束。保存与旧版兼容规则见 [PMM 与 VMD 的区别和兼容性](#pmm-与-vmd-的区别和兼容性)。
-
-#### 图片序列与自动备份
-
-两个版本均支持图片序列输出，可设置目录、文件名前缀、图片格式和帧范围。格式与单帧图片输出一致，连号位数随输出范围调整。
-
-「自动保存设置…」可配置分钟间隔、备份目录、数量上限和覆盖旧备份。默认写入程序同级的 `backups`，不覆盖手动保存的工程。崩溃处理也会尝试备份，能否完成取决于当时的程序状态及目录可写性。
-
-#### 视口与阴影控制
-
-完整包支持自动匹配窗口、低比例预览和超采样，不改变导出尺寸。低比例画面使用最近邻放大；HUD 和工具条在放大后按显示分辨率绘制，包含黑边区域。数值输入框会优先缩短，尽量保留文字大小。工具条一行排布不下时，若相邻黑边有足够空间，则改为两行。帧率文字和 HUD 保持正常大小，仅在预览区域容纳不下时缩小。FPS 统计实际完成并成功提交的场景帧。
-
-自阴影恢复 MMD 9.32 的投影和深度采样。动态精度与固定精度共用阴影范围设置。「滤波加强」默认关闭，开启后先对阴影图进行两遍基础样条滤波，再交给原生材质和 MME；失败时使用当帧原始阴影图。
-
-#### 抗锯齿与工程设置
-
-完整版本提供 MMD 原始（MSAA）、FXAA、带运动矢量的 TAA 和 SMAA。
-当前源码中的「SMAA」只展开子菜单，不设默认档位；只能在三级菜单中选择具体档位。
-只有当前选择 SMAA 时，二级「SMAA」和三级当前档位才同时显示圆点。可选档位如下：
-
-| 菜单选项 | 处理方式 |
-| --- | --- |
-| SMAA 1x（标准） | 当前帧的边缘检测与混合。 |
-| SMAA 1x（斜线与拐角增强） | 扩大搜索范围，增加斜线和拐角处理。 |
-| SMAA T2x（标准） | 标准边缘处理，结合运动矢量对齐两帧采样。 |
-| SMAA T2x（斜线与拐角增强） | 两帧采样，增加斜线和拐角处理。 |
-
-显卡支持顶点纹理读取时，TAA 和 T2x 将当前帧、上一帧的变形后位置留在 GPU，
-共享输入相同的材质捕获结果，并沿用原索引缓冲。已确认不透明的原生材质省去额外覆盖绘制，
-MME 着色器和透明贴图保留覆盖检查。程序按实际能力检测 NVIDIA、AMD 和 Intel，
-不支持顶点纹理读取时保留 CPU 几何捕获。复杂 MME 场景仍有额外开销，SMAA 1x 不需要运动捕获。
-
-只有第 0 帧的工程也能输出时间抗锯齿图片。程序在同一场景时间补足缺少的采样，
-不推进动作或物理，不增加输出图片。连续图片序列保留历史：T2x 首张需要两次场景渲染，
-后续每张一次。硬件或效果不支持运动矢量时，回退到单帧处理。
-
-抗锯齿开关、当前算法和上次选择的 SMAA 档位随 PMM v2 扩展保存。加载工程不会改写
-本机默认设置。临时硬件回退和未知档位不会覆盖工程原记录，用户重新选择后才更新。
-具体格式见 [PMM v2 项目扩展](docs/reference/pmm-extensions.md)。
-
-需要此修复时，单独下载 `MMSNvidiaAAFix.dll`，放到完整版的 `MikuMikuDance.exe` 同目录，通过「帮助」菜单管理补丁。放置 DLL 不会自动安装驱动设置。打开菜单时，DLL 查询当前程序的设置，并显示安装或卸载选项。两种操作均请求 Windows 管理员授权，下次启动 MMS 时生效。
-
-此设置只应用于 NVIDIA；没有可用 NVIDIA 驱动时停止安装，AMD、Intel 不应用该设置。卸载前会提示 MSAA 白边或接缝可能再次出现，卸载仅移除当前程序的设置。删除 DLL 会隐藏菜单入口，但不会撤销已安装的驱动设置。
-
-### 曲线编辑器
-
-原生曲线编辑器支持骨骼位移、XYZ 角度和缩放的九通道曲线，也可编辑表情、相机、照明、自阴影、重力和附件轨道。支持保持曲线形状的插帧、控制点数值输入、斜率与权重拖动及关键帧跳转。
-
-源码与 Git 历史核对见[MMS 原生功能审计](docs/records/development/features.md#record-mms-native-features-audit)。
+- **模型**：PMD、PMX 模型载入，支持骨骼、IK、表情和 toon 渲染。
+- **动画**：VMD 动作与 VPD 姿态、多轨道关键帧编辑、物理预览及工程帧率修正，也支持 VSQ、Kinect 输入。
+- **曲线编辑器**：支持骨骼位移、XYZ 旋转和缩放九通道，以及表情、镜头、灯光、自阴影、重力和附件曲线。可调整手柄、沿曲线插帧，并与主时间轴联动。见[曲线编辑](docs/guides/animation-curves.md)。
+- **骨骼缩放**：支持整体及 XYZ 缩放，可选择局部、全局和视图坐标系。缩放依赖 MMS 扩展，原版 MMD 不应用这些数据。见[骨骼缩放](docs/guides/bone-scaling.md)。
+- **编辑容量**：关键帧和显示项按需扩容，完整 Unicode 名称通过 MMS 扩展保留。扩容仍受内存和保存格式限制，超出原版范围的 .pmm 工程不能在原版 MMD 打开。见[格式兼容说明](#pmm-与-vmd-的区别和兼容性)。
+- **物理**：支持刚体与约束模拟，可将结果烧录为骨骼动作，支持帧范围、预设、撤销和取消。见[物理烧录](docs/guides/physics-baking.md)。
+- **网格烧录与导出**：可将捕获到的 MME 顶点变形导出为 Alembic，或烧录到工程；清除烧录后恢复实时变形。见[网格导出与烧录](docs/guides/mesh-export.md)。
+- **渲染**：支持 MME 特效、GPU 蒙皮和可选 DX12 预览，硬件不支持时使用 DX9、CPU 路径；可分别选择主渲染和顶点计算设备。
+- **抗锯齿**：原版 MSAA 与 FXAA、TAA、SMAA 可选，便于平衡画面平滑度和预览性能，支持描边柔化及静帧、图片序列抗锯齿。见[画面设置](docs/guides/rendering.md)。
+- **视口与阴影**：可调整预览分辨率而不改变导出尺寸，并按场景选择阴影动态精度、扩展自阴影范围、滤波和透明排序。见[画面设置](docs/guides/rendering.md)。
+- **多媒体**：支持音视频导入、AVI、MP4/H.264、透明 MOV 和图片序列输出；PNG、DDS 按格式自动导出透明背景。可用音视频格式取决于 Windows 媒体组件。
+- **保存与备份**：支持后台保存、定时备份和可选 `.pmm1` 旧版本保留。致命错误会记录报告并尝试备份；错误日志写入设置的备份目录，默认是程序旁的 `backups`。
+- **界面**：英中日三语界面、Unicode 路径、最近工程、撤销与重做；在文本框外，开启输入法也可使用字母快捷键。
 
 ### 从源码构建
 
@@ -463,7 +319,7 @@ cmake --preset conan-default
 cmake --build build --config Release
 ```
 
-MMS 最终发布包固定在 `D:/MMD-Next/MMS/build/Release/`。移动仓库目录后，先重新运行
+MMS 构建产物位于 `build/Release/`。移动仓库目录后，先重新运行
 `conan install`，再使用 CMake 预设，避免沿用旧目录的绝对路径。构建完成后，主要文件如下：
 
 | 路径                              | 用途                                 |
@@ -471,9 +327,6 @@ MMS 最终发布包固定在 `D:/MMD-Next/MMS/build/Release/`。移动仓库目�
 | `build/Release/MikuMikuDance.exe` | GUI 主程序                           |
 | `build/lib/`                      | 静态库和导入库                       |
 | `build/symbols/`                  | 用于调试和崩溃定位的 PDB 符号文件    |
-
-运行前，还需将 `toon01.bmp` 至 `toon10.bmp` 等 toon 纹理放在**工作目录**的 `Data/` 下。
-例如，以 `build/Release/` 为工作目录启动时，纹理应放在 `build/Release/Data/`。
 
 AVI 使用的 DirectShow 推源过滤器已静态链接进主程序；MP4 使用 Windows
 Media Foundation。AVI 和 MP4 录制都不要求用户另行放置或注册 `MMDxShow.dll`。
@@ -512,42 +365,7 @@ ctest --test-dir build -C Release -R keyboard_input_regressions --output-on-fail
 
 ### MikuMikuEffect（MME）支持
 
-#### 安装与使用
-
-将 **x64 版 MME** 的以下三个文件放到 `MikuMikuDance.exe` 同一目录：
-
-- `d3d9.dll`
-- `MMHack.dll`
-- `MMEffect.dll`
-
-启动后，菜单栏会出现 `MMEffect` 菜单，可按 MME 的常规方式为模型和配件分配 `.fx` 特效。
-请保留主程序名 `MikuMikuDance.exe`，MME 依赖这个名称识别宿主。
-本项目的构建与运行均不要求安装 DirectX SDK。
-
-#### 兼容实现说明
-
-本移植为 MME 提供了以下宿主接口：
-
-- **导出函数**：提供 37 个 `Exp*` 函数，导出序号为 1–37，定义见
-  [`exports/MikuMikuDance.def`](exports/MikuMikuDance.def)。
-- **D3DX 静态导入**：为 `MMHack.dll` 提供可挂钩的导入地址表（IAT）条目，
-  导入库由 [`res/imports/d3dx9_43.def`](res/imports/d3dx9_43.def) 在构建时生成。
-- **宿主名称**：使用 `MikuMikuDance.exe`，与 `MMHack.dll` 引用的模块名一致。
-
-对象登记、效果分配及已验证的兼容范围，见 [MME 使用与兼容说明](docs/guides/effects.md)。
-
-### 个人习惯更改
-
-特性添加仅为方便本人使用，非MMD原本使用习惯或适配需求，编译者可编辑代码删去。
-
-- **原生骨骼缩放**：所有骨骼支持整体及 XYZ 缩放，统一使用局部、全局和视图坐标系。PMM 保存完整数据，VMD 在保留标准前缀的同时，将缩放写入同一文件尾部。见[骨骼缩放说明](docs/guides/bone-scaling.md)。
-- **扩展自阴影产生范围**：取消原版 MMD 对自阴影产生范围的限制。
-- **动态缩放**：按可见几何的投影密度匹配阴影贴图分辨率，受美影设置和显卡上限限制。动态与固定精度共用同一阴影范围滑条，不再保存独立精度值；完整包在高精度下保留覆盖范围，减少裁切。
-- **错误提示**：程序默认不写日志文件，可显式开启诊断文件跟踪。遇到致命错误时会弹出对话框，可按 `Ctrl+C` 复制内容。
-  开发者可结合 `build/symbols/` 下对应构建的 PDB 定位源码。
-- **输入法与快捷键**：开启中文或日文输入法时，字母快捷键仍有效，包括 `P`（播放/停止）
-  和 `A/S/D/F/G/H/I/J/K/L/U/V/X/Z/B/C/R`；在编辑框内输入文字时除外。
-- **透明排序偏好**：增加关闭、低、标准、高、最高五档，便于按个人场景调整透明排序。
+将 x64 MME 的 `d3d9.dll`、`MMHack.dll`、`MMEffect.dll` 放到 `MikuMikuDance.exe` 同目录，并保留主程序名称。启动后通过 `MMEffect` 菜单分配特效。MME 需另行下载，已验证范围及排错方法见 [MME 使用与兼容说明](docs/guides/effects.md)。
 
 ### 项目来源与维护
 
@@ -570,7 +388,7 @@ ctest --test-dir build -C Release -R keyboard_input_regressions --output-on-fail
 - 舞力介入P：MikuMikuEffect（MME）原作者，感谢其为 MMD 带来的特效扩展能力。
   可参阅[作者参与撰写的 MME 介绍](https://codezine.jp/article/detail/5997)。
 - MME 社区的特效作者与贡献者：感谢他们创作和分享特效、工具与使用经验。
-- 老面星星（StarNoodle495，[BowlRoll](https://bowlroll.net/user/182602)）：感谢一直以来持续进行测试并提出建议；感谢沙拉酱（[Bilibili](https://space.bilibili.com/3493080791517295)）提供技术指导；感谢微波叮桃子（[AplayBox](https://www.aplaybox.com/u/972840773)）、靡苦居士（[Bilibili](https://space.bilibili.com/8545990)）、幽灵_U0（[Bilibili](https://space.bilibili.com/454701392)）和低智商鼻嘎参与测试并提交 bug。
+- 老面星星（StarNoodle495，[BowlRoll](https://bowlroll.net/user/182602)）：感谢一直以来持续进行测试并提出建议；感谢沙拉酱（[Bilibili](https://space.bilibili.com/3493080791517295)）和 AHKちゃん 提供技术指导；感谢微波叮桃子（[AplayBox](https://www.aplaybox.com/u/972840773)）、靡苦居士（[Bilibili](https://space.bilibili.com/8545990)）、幽灵_U0（[Bilibili](https://space.bilibili.com/454701392)）和低智商鼻嘎参与测试并提交 bug。
 
 ### 许可
 
@@ -585,64 +403,19 @@ MikuMikuStudio（MMS）は、MMD のダンスアニメーションを制作・�
 
 ### 機能
 
-- **モデル**：PMD / PMX（BDEF4/SDEF ウェイト対応）読み込み、ボーンツリー、IK、
-  モーフ、トゥーンレンダリング
-- **アニメーション**：VMD 読み込み／保存、VPD エクスポート、フレームエディタ
-  （ボーン／モーフ／カメラ／照明／自作表情／アクセサリトラック）、物理プレビュー付き
-  フレーム再生、プロジェクト全体のフレームレート修正
-- **物理**：Bullet 2.75 剛体とコンストレイント（6DOF スプリング）、決定論的な求解順序。物理結果のベイクとボーン動作のフレーム単位再サンプリングにも対応します。フレーム範囲、ERP、CFM、サブステップ、計算周波数を設定でき、取り消し・キャンセルと暗号化しない UTF-8 JSON プリセットを利用できます。UI とツールチップは日英中に対応し、初期値は Bullet の既定値です。[物理ベイク](docs/guides/physics-baking.md)
-- **メッシュベイクと出力**：Alembic は MME の頂点変形を含むメッシュを出力します。ABC 出力とプロジェクトへのベイクは個別に選択でき、ベイクを選んだ場合だけ影響を警告します。メッシュベイク解除で選択モデルまたは全オブジェクトの変形を元に戻し、無効化済み FX は無効のままです。[メッシュ出力・ベイク](docs/guides/mesh-export.md)
-- **レンダリング**：ネイティブ DX12 プレビューと GPU スキニングに対応し、DX12 が使えない場合は DX9/CPU にフォールバックします。MME Effect、トゥーンテクスチャ、地面影、立体視（NVIDIA 3D Vision）をサポートし、メイン描画と頂点計算のデバイスを個別に選べます。
-- **マルチメディア**：Windows Media Foundation を使って多くの音声形式と MP4/MOV 動画を読み込みます。利用可能な形式は Windows のメディアコンポーネントに依存します。Wave 再生、インストール済みコーデックを使う DirectShow AVI、Media Foundation による MP4/H.264、透過 MOV の録画にも対応します。出力画面で登録済み H.264 エンコーダーを確認でき、縦横比を保った解像度変更も可能です。VSQ と Kinect 入力も利用できます。
-- **UI**：英語・中国語・日本語 UI、タイムライン、
-  Unicode ファイルパス、アクセサリ編集、元に戻す／やり直し
-
-#### 編集容量の自動拡張
-
-名前は完全な Unicode 文字列を保持します。ボーン、モーフ、表示、カメラ、照明、セルフシャドウ、重力、アクセサリのキーフレーム容量は必要に応じて拡張します。表示グループとモーフ表示項目も、従来の 1 バイトの件数制限を超えて保持します。容量の手動設定は不要です。
-
-フレーム番号はオーバーフローを検査し、2,147,483,646 まで扱います。大きなフレーム番号でも隣接キーの再生時刻を区別します。自動拡張は利用可能なメモリとファイルの表現範囲に制約されます。保存と旧版互換の規則は [PMM と VMD の違いと互換性](#pmm-と-vmd-の違いと互換性)を参照してください。
-
-#### 連番画像と自動バックアップ
-
-両パッケージで連番画像を出力できます。保存先、ファイル名の接頭辞、画像形式、フレーム範囲を設定でき、形式は単一画像出力と共通です。連番の桁数は出力範囲に合わせて調整します。
-
-自動保存設定では、間隔（分）、保存先、保存数の上限、古いバックアップの上書きを設定できます。既定の保存先は実行ファイルと同じ場所の `backups` で、手動保存したプロジェクトは上書きしません。クラッシュ時にもバックアップを試みますが、完了するかどうかはプログラムの状態や保存先への書き込み可否に依存します。
-
-#### ビューポートと影の設定
-
-完全版はウィンドウサイズへの自動調整、低解像度プレビュー、スーパーサンプリングに対応し、出力サイズは変更しません。低解像度画像は最近傍補間で拡大し、HUD とツールバーは黒帯を含む領域に表示解像度で描画します。数値入力欄の幅を先に詰め、文字の大きさをできるだけ保ちます。ツールバーが一行に収まらず、隣接する黒帯に余裕がある場合は二行に配置します。FPS 表示と HUD は通常の大きさを保ち、プレビュー領域に収まらない場合に限り縮小します。FPS は描画が完了し、正常に送出されたシーンフレームを数えます。
-
-セルフシャドウは MMD 9.32 の投影と深度サンプリングを復元し、動的精度と固定精度で同じ影範囲設定を使います。「フィルター強化」は既定で無効です。有効時は影マップに 2 パスの B スプラインフィルターを適用してから、標準材質と MME に渡します。失敗時はそのフレームの元の影マップを使います。
-
-#### アンチエイリアスとプロジェクト設定
-
-完全版は MMD オリジナル（MSAA）、FXAA、モーションベクトルを使う TAA、SMAA に対応します。
-現在のソースでは、「SMAA」はサブメニューを開くだけで、既定の選択はありません。
-サブメニューで 1x と T2x、それぞれの標準・斜線とコーナーの強化を選びます。
-SMAA を選択している場合だけ、「SMAA」と現在の方式の両方に選択マークを表示します。
-T2x はモーションベクトルで位置を合わせた 2 フレームのサンプルを合成します。
-頂点テクスチャ参照に対応する GPU では、TAA と T2x の現在・前フレームの変形後座標を GPU 上に保持します。
-入力が一致する材質で取得結果を共有し、元のインデックスバッファを再利用します。
-不透明と確認できた標準材質では追加のカバレッジ描画を省き、MME とアルファ付きテクスチャでは確認を維持します。
-NVIDIA、AMD、Intel を実際の機能で判定し、頂点テクスチャ参照に非対応の場合は CPU での取得を維持します。
-複雑な MME には追加の負荷が残ります。SMAA 1x はモーション取得を行わず、モーションに対応しない描画は空間 AA に切り替えます。
-
-フレーム 0 だけの画像出力でも、時刻と姿勢を保ったまま不足するサンプルを描画します。
-アニメーションや物理を進めず、画像数も増やしません。連続画像では履歴を保つため、
-T2x の最初の画像は 2 回、以後は画像ごとに 1 回だけシーンを描画します。
-AA の有効状態、方式、前回の SMAA 選択は PMM v2 拡張に保存されます。
-読み込み時にローカルの既定設定を書き換えません。
-
-必要な場合のみ `MMSNvidiaAAFix.dll` を別途ダウンロードし、完全版の `MikuMikuDance.exe` と同じフォルダーに置いてください。配置しただけではドライバー設定は変更されません。ヘルプメニューを開くと DLL が現在の設定を確認し、インストールまたはアンインストールを表示します。どちらも Windows の管理者権限を要求し、次回の MMS 起動時に反映されます。
-
-この設定は NVIDIA 専用です。利用可能な NVIDIA ドライバーがない場合はインストールを中止し、AMD・Intel には適用しません。アンインストール前に MSAA の白い縁や継ぎ目が再発する可能性を表示し、現在のプログラムの設定だけを解除します。DLL の削除はメニュー項目を非表示にするだけで、適用済みの設定は解除しません。
-
-### 曲線エディタ
-
-ネイティブの曲線エディタで、ボーンの移動、XYZ 回転、拡大縮小の 9 チャンネルに加え、モーフ、カメラ、照明、セルフシャドウ、重力、アクセサリのトラックを編集できます。形状を維持するキー挿入、制御点の数値入力、傾きとウェイトのドラッグ、キーフレームへの移動に対応します。
-
-ソースと Git 履歴の根拠は[MMS ネイティブ機能監査](docs/records/development/features.md#record-mms-native-features-audit)を参照してください。
+- **モデル**：PMD・PMX モデルの読み込み、ボーン、IK、モーフ、toon 描画に対応します。
+- **アニメーション**：VMD モーションと VPD ポーズ、複数トラックのキー編集、物理プレビュー、プロジェクトのフレームレート修正、VSQ・Kinect 入力に対応します。
+- **曲線エディタ**：ボーンの位置・XYZ 回転・スケールの 9 チャンネルに加え、モーフ、カメラ、照明、セルフシャドウ、重力、アクセサリを曲線で編集できます。ハンドル編集、曲線上へのキー挿入、メインタイムラインとの同期に対応します。[曲線編集](docs/guides/animation-curves.md)。
+- **ボーンスケール**：ボーンを一括または XYZ 軸ごとに拡大縮小でき、ローカル・グローバル・ビュー座標を選べます。スケールは MMS 拡張で保存し、オリジナル MMD には適用されません。[ボーンスケール](docs/guides/bone-scaling.md)。
+- **編集容量**：メモリと保存形式の範囲内でキーフレームと表示項目の容量を拡張し、完全な Unicode 名を MMS 拡張に保持します。従来の制限を超えた PMM はオリジナル MMD で開けません。[形式の互換性](#pmm-と-vmd-の違いと互換性)。
+- **物理**：剛体と拘束のシミュレーションに対応し、結果をボーンモーションにベイクできます。範囲、プリセット、元に戻す操作、キャンセルに対応します。[物理ベイク](docs/guides/physics-baking.md)。
+- **メッシュベイクと出力**：取得した MME の頂点変形を Alembic に出力、またはプロジェクトにベイクできます。ベイクを消すとリアルタイム変形に戻ります。[メッシュ出力とベイク](docs/guides/mesh-export.md)。
+- **描画**：MME、GPU スキニング、任意の DX12 プレビューに対応します。非対応環境では DX9・CPU を使い、描画と頂点処理のデバイスを別々に選べます。
+- **アンチエイリアス**：従来の MSAA と FXAA・TAA・SMAA を、滑らかさとプレビュー負荷に応じて選べます。輪郭線の平滑化と、静止画・連番画像の AA にも対応します。[画面設定](docs/guides/rendering.md)。
+- **ビューポートと影**：出力サイズを変えずにプレビュー解像度を調整できます。影の動的精度、セルフシャドウ範囲の拡張、フィルター、透明ソートをシーンに合わせて選べます。[画面設定](docs/guides/rendering.md)。
+- **メディア**：音声・動画の読み込み、AVI・MP4/H.264・透明 MOV・連番画像の出力に対応します。PNG・DDS は形式に応じて透明背景を使います。利用可能なメディア形式は Windows の構成に依存します。
+- **保存とバックアップ**：バックグラウンド保存、定期バックアップ、任意の `.pmm1` 履歴保存に対応します。致命的エラーでは報告を記録してバックアップを試みます。ログの保存先は指定したバックアップフォルダーで、初期設定は EXE 横の `backups` です。
+- **UI**：英語・中国語・日本語 UI、Unicode パス、最近使ったプロジェクト、元に戻す・やり直す操作に対応します。文字入力欄以外では IME 使用中も英字ショートカットを使えます。
 
 ### ソースからのビルド
 
@@ -691,30 +464,7 @@ cmake --install build --config Release --prefix build/Release
 
 ### MikuMikuEffect（MME）対応
 
-実行ファイルはオリジナルと同じ `MikuMikuDance.exe` 名で、MME がホストに要求する 3 点を
-満たします：37 個の `Exp*` エクスポート（序数 1..37）、MMHack.dll が書き換える
-`d3dx9_43.dll` の IAT スロットを**静的インポート**で用意（`res/imports/d3dx9_43.def` から
-ビルド時にインポートライブラリを生成。以前は D3DX を動的解決していたため書き換え先がなく
-`Initialize error` になっていました）、そしてモジュール名そのもの（MMHack.dll のインポート表が
-`MikuMikuDance.exe` から `Exp*` を束縛します）。x64 版の `d3d9.dll`、`MMHack.dll`、
-`MMEffect.dll` を同じフォルダに置くとメニューバーに `MMEffect` 欄が出て、あとは通常どおり
-`.fx` を割り当てるだけです。実行時もビルド時も DirectX SDK は不要です。詳細は
-[MME の使い方と互換性](docs/guides/effects.md)。
-
-### 個人的な使用習慣による変更
-
-追加機能は個人的な利便性のためのもので、MMD 本来の使用習慣でも互換要件でもありません。
-ビルドする方はコードを編集して削除できます。
-
-- **ボーンスケール**：すべてのボーンを一括または XYZ 軸ごとに拡大縮小できます。ローカル・グローバル・ビュー座標に対応し、PMM に保存します。VMD は標準部分を維持し、同じファイルの末尾にスケール拡張を保存します。[詳細](docs/guides/bone-scaling.md)。
-- **セルフシャドウ範囲の拡張**：オリジナル MMD にあるセルフシャドウ生成範囲の制限をなくしました。
-- **動的スケーリング**：表示中のジオメトリの投影密度に応じて、シャドウ品質と GPU の上限内で影マップの解像度を調整します。動的精度と固定精度は同じ影範囲スライダーを使い、独立した精度値は保存しません。完全版は高精度時も影の範囲を保持して欠けを抑えます。
-- **エラー表示**：既定ではログファイルを出力しません。診断用のファイル記録は明示的に有効にできます。致命的エラー時はモーダルなエラーウィンドウを
-  表示します（Ctrl+C で内容をコピーでき、`build/symbols/` の PDB でソース行を特定できます）。
-- **入力メソッドとショートカット**：中国語／日本語の入力メソッドを ON にしたままでも
-  英字ショートカット（P 再生／停止、ほか A/S/D/F/G/H/I/J/K/L/U/V/X/Z/B/C/R）が有効です
-  （テキスト入力欄を除く）。
-- **透明ソート設定**：個人のシーンに合わせて、無効・低・標準・高・最高の五段階を選べます。
+x64 MME の `d3d9.dll`・`MMHack.dll`・`MMEffect.dll` を `MikuMikuDance.exe` と同じ場所に置き、実行ファイル名を維持してください。起動後は `MMEffect` メニューからエフェクトを割り当てます。MME は別途入手してください。検証範囲と対処方法は [MME の使い方と互換性](docs/guides/effects.md)を参照してください。
 
 ### 貢献
 
@@ -742,7 +492,7 @@ cmake --install build --config Release --prefix build/Release
   [作者が共著した MME 紹介記事](https://codezine.jp/article/detail/5997)もご覧ください。
 - MME コミュニティのエフェクト作者・貢献者の皆様：
   エフェクト、ツール、ノウハウの共有に感謝します。
-- 老面星星氏（StarNoodle495、[BowlRoll](https://bowlroll.net/user/182602)）：継続的なテストと提案に感謝します。沙拉酱氏（[Bilibili](https://space.bilibili.com/3493080791517295)）には技術指導を、微波叮桃子氏（[AplayBox](https://www.aplaybox.com/u/972840773)）、靡苦居士氏（[Bilibili](https://space.bilibili.com/8545990)）、幽灵_U0 氏（[Bilibili](https://space.bilibili.com/454701392)）、低智商鼻嘎氏にはテストとバグ報告に感謝します。
+- 老面星星氏（StarNoodle495、[BowlRoll](https://bowlroll.net/user/182602)）：継続的なテストと提案に感謝します。沙拉酱氏（[Bilibili](https://space.bilibili.com/3493080791517295)）と AHKちゃん には技術指導を、微波叮桃子氏（[AplayBox](https://www.aplaybox.com/u/972840773)）、靡苦居士氏（[Bilibili](https://space.bilibili.com/8545990)）、幽灵_U0 氏（[Bilibili](https://space.bilibili.com/454701392)）、低智商鼻嘎氏にはテストとバグ報告に感謝します。
 
 ### ライセンス
 

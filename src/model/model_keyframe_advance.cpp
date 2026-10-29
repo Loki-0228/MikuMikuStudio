@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/bone_curve.hpp"
 // ===========================================================================
 // VA 0x004A31D0 - per-model keyframe application  (5754 bytes, 187 blocks)
@@ -255,7 +256,8 @@ void NotifyBonePhysicsMode(unsigned char* model, int boneIdx, unsigned char mode
 // ---- VA 0x004A2CD0 --------------------------------------------------------
 // Initializes every per-model animation cursor at playback start.  Unlike
 // SeekModelFrame this preserves the incremental-track state consumed by 0x4A31D0.
-void InitModelTrackCursors(unsigned char* model, double cursor, int physicsMode) {  // was Sub4A2CD0
+void InitModelTrackCursors(unsigned char* model, double cursor, int physicsMode) {
+    if(cursor<0) {SeekModelFrame(model,static_cast<int>(cursor),physicsMode);return;}  // was Sub4A2CD0
     unsigned char* const m = model;
     const double frame = static_cast<double>(cursor) * 30.0;
 
@@ -351,7 +353,8 @@ void InitModelTrackCursors(unsigned char* model, double cursor, int physicsMode)
 }
 
 // ---- VA 0x004A31D0 --------------------------------------------------------
-void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode) {  // was Sub4A31D0
+void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode) {
+    if(cursor<0)return;  // was Sub4A31D0
     unsigned char* const m = model;
     mdl::ModelRecord& state = *mdl::Mdl(m);
 

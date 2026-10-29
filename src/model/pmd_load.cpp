@@ -2,6 +2,7 @@
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/key_pool.hpp"
+#include "model_geometry_cache.hpp"
 // ===========================================================================
 // VA 0x004BF3E0 - ModelLoadPMD  (original: sub_4BF3E0, 0x2C95 bytes)
 // ===========================================================================
@@ -231,6 +232,11 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     // ---- vertices ---------------------------------------------------------
     _read(fh, &model.vertexCount, sizeof(model.vertexCount));
     const std::uint32_t vertCount = model.vertexCount;
+    auto geometryCache = model_geometry_cache::Session::Begin(
+        fh, {model_geometry_cache::Format::pmd, vertCount}, _telli64(fh));
+    runtime_log::Write("MODEL_GEOMETRY_CACHE format=pmd state=%s vertices=%u",
+        geometryCache.Hit() ? "hit" : geometryCache.Enabled() ? "miss" : "bypass",
+        vertCount);
     if (vertCount != 0) {
         if (dev == nullptr) {
             return false;
@@ -263,8 +269,21 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
             operator new(sizeof(mdl::PmdVertex) * vertCount));
         model.rawVertices = recs;
         std::memset(recs, 0, sizeof(mdl::PmdVertex) * vertCount);
-        for (std::uint32_t i = 0; i < vertCount; ++i)
-            _read(fh, &recs[i], 0x26);
+        bool restoredVertices = false;
+        if (geometryCache.Hit()) {
+            restoredVertices = geometryCache.CopyPmdVertices(recs)
+                && _lseeki64(fh, geometryCache.VertexEnd(), SEEK_SET)
+                    == geometryCache.VertexEnd();
+            if (!restoredVertices) geometryCache.Invalidate();
+        }
+        if (!restoredVertices) {
+            for (std::uint32_t i = 0; i < vertCount; ++i) {
+                if (_read(fh, &recs[i], 0x26) != 0x26) {
+                    _close(fh);
+                    return false;
+                }
+            }
+        }
 
         float* p1 = nullptr;
         if (SUCCEEDED(mdl::ResourceAs<IDirect3DVertexBuffer9>(
@@ -296,8 +315,11 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     }
 
     // ---- indices ----------------------------------------------------------
+    const std::int64_t geometryVertexEnd = _telli64(fh);
     _read(fh, &model.indexCount, sizeof(model.indexCount));
     const std::uint32_t idxCount = model.indexCount;
+    if (geometryCache.Hit() && geometryCache.IndexCount() != idxCount)
+        geometryCache.Invalidate();
     // Deliberate hardening: the original multiplies the file's index count by four
     // with a 32-bit mul (0x1400B2CBE/0x1400B2CC3), then by two with shl r8,2
     // (0x1400B2CDF), and passes the wrapped result straight to operator new, so a
@@ -336,13 +358,25 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
             _close(fh);
             return false;
         }
+        const bool restored = geometryCache.CopyPmdIndices(idx, idxCount)
+            && _lseeki64(fh, geometryCache.IndexEnd(), SEEK_SET) == geometryCache.IndexEnd();
+        bool completeIndices = true;
         for (std::uint32_t j = 0; j < idxCount; ++j) {
-            _read(fh, idx + 2 * j, 2);
+            if (!restored && _read(fh, idx + 2 * j, 2) != 2) {
+                completeIndices = false;
+                break;
+            }
             static_cast<std::uint16_t*>(ib)[j] = idx[2 * j];
         }
         mdl::ResourceAs<IDirect3DIndexBuffer9>(
             mdl::Mdl(m)->indexBuffer)->Unlock();
+        if (!completeIndices) {
+            _close(fh);
+            return false;
+        }
     }
+    geometryCache.CapturePmd(model.rawVertices, mdl::Indices(m), idxCount,
+                             geometryVertexEnd, _telli64(fh));
 
     // ---- materials --------------------------------------------------------
     _read(fh, &mdl::Mdl(m)->materialCount,
@@ -1014,6 +1048,7 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     PostLoadInit(m);                                          // 0x49C850
     model_vertex_cache::RegisterLoaded(m);
     original_import::WarnModelImport(model, hwnd, englishUi, textFits);
+    geometryCache.Commit();
     return true;
 }
 

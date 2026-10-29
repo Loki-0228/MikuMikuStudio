@@ -19,7 +19,7 @@ parser.add_argument('executable', type=Path)
 parser.add_argument('output', type=Path)
 parser.add_argument('--mme-dir', type=Path)
 parser.add_argument('--effect', type=Path, action='append', default=[])
-parser.add_argument('--case', action='append', choices=['ordinary', 'dpi-change', 'aware-dpi-change', 'scaled-dpi-change', 'reset-failure', 'camera-modes'])
+parser.add_argument('--case', action='append', choices=['ordinary', 'dpi-change', 'aware-dpi-change', 'scaled-dpi-change', 'reset-failure', 'camera-modes', 'model-view-restore'])
 parser.add_argument('--aa', choices=['fxaa', 'taa'])
 parser.add_argument('--scale', type=int)
 args = parser.parse_args()
@@ -54,6 +54,7 @@ cases = [
     ('scaled-dpi-change', 'unaware', {'PROBE_DPI_CHANGE': '1', 'PROBE_SCALE': '50'}),
     ('reset-failure', 'unaware', {'PROBE_RESET_BLOCKER': '1'}),
     ('camera-modes', 'unaware', {'PROBE_CAMERA_MODES': '1'}),
+    ('model-view-restore', 'unaware', {'PROBE_MODEL_VIEW_RESTORE': '1'}),
 ]
 results = []
 for name, dpi, overrides in cases:
@@ -68,7 +69,7 @@ for name, dpi, overrides in cases:
             shutil.copy2(args.mme_dir / dll, directory / dll)
     (directory / 'Data/mmconfig.ini').write_text('40\n40\n1200\n850\n0\n1920\n1080\n250\n2\n')
     (directory / 'fixture.x').write_text(fixture)
-    if name == 'camera-modes':
+    if name in ('camera-modes', 'model-view-restore'):
         from pmd_selection_fixtures import make_fixture
         make_fixture(directory / 'model', 255, [''] * 10)
     env = {key: value for key, value in os.environ.items() if not key.startswith('PROBE_')}

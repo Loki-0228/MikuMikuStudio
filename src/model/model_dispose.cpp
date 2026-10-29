@@ -1,4 +1,5 @@
 #include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/frame_clipboard.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/mmv4mms.hpp"
 #include "mikumikustudio/native_mesh.hpp"
@@ -126,6 +127,7 @@ void ReleasePhysRigid(void* scene, void* bodyPointer) {
 
 // VA 0x0048F830
 void ModelDispose(unsigned char* m) {
+    frame_clipboard::ForgetModel(m);
     text_encoding::ForgetMaterialNames(*mdl::Mdl(m));
     mdl::ForgetDisplayCapacity(*mdl::Mdl(m));
     text_encoding::ForgetDisplayGroupNames(*mdl::Mdl(m));

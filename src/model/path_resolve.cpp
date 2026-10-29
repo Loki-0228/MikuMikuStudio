@@ -48,6 +48,7 @@
 #include "mikumikustudio/text_encoding.hpp"
 
 #include "mikumikustudio/texture_lookup.hpp"
+#include "mikumikustudio/texture_prepare_cache.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -258,24 +259,26 @@ int LoadTextureShared(unsigned char* sub, wchar_t* path) {     // 0x407490
     auto* d3dx = &d3dx::Get();
     if (!d3dx->Load() || d3dx->fromFileExW == nullptr)
         return 0;
-    hr = d3dx->fromFileExW(dev, path, kD3dxDefault, kD3dxDefault, 1, 1024,
-                           D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, kD3dxDefault,
-                           kD3dxDefault, 0, &info, nullptr, entryTex);
+    const auto load = [&](DWORD usage) {
+#if MMD_ORIGINAL_PROFILE
+        return d3dx->fromFileExW(dev, path, kD3dxDefault, kD3dxDefault, 1, usage,
+            D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, kD3dxDefault, kD3dxDefault, 0, &info, nullptr, entryTex);
+#else
+        return texture_prepare_cache::Create(d3dx->fromFileExW, dev, path,
+            kD3dxDefault, kD3dxDefault, 1, usage, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
+            kD3dxDefault, kD3dxDefault, 0, &info, nullptr, entryTex);
+#endif
+    };
+    hr = load(1024);
     if (info.Width == 1 && info.Height == 1 && hr == 0) {
         if (*entryTex != nullptr) {
             (*entryTex)->Release();
             *entryTex = nullptr;
         }
-        hr = d3dx->fromFileExW(dev, path, kD3dxDefault, kD3dxDefault, 1, 0,
-                               D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
-                               kD3dxDefault, kD3dxDefault, 0, &info, nullptr,
-                               entryTex);
+        hr = load(0);
     }
     if (FAILED(hr) &&
-        FAILED(d3dx->fromFileExW(dev, path, kD3dxDefault, kD3dxDefault, 1, 0,
-                                 D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
-                                 kD3dxDefault, kD3dxDefault, 0, &info,
-                                 nullptr, entryTex))) {
+        FAILED(load(0))) {
         *entryTex = nullptr;
         return 0;
     }

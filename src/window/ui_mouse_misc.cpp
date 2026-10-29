@@ -132,7 +132,7 @@ void HandleLButtonDblClk(MMDApp* app) {
         // ---- 2. frame number -> edit box (control 0x1A1 = 417) ------------
         // this+0x980 = this+0x97C + (this+4 - 100) / 13
         const auto nextFrame = std::int64_t(app->state.timelineStartFrame) + (std::int64_t(app->MouseX()) - 100) / 13;
-        if (nextFrame < 0 || nextFrame > frame_limits::maximum) { MessageBeep(MB_ICONWARNING); return; }
+        if (nextFrame < frame_limits::minimum || nextFrame > frame_limits::maximum) { MessageBeep(MB_ICONWARNING); return; }
         app->state.currentFrame = static_cast<int>(nextFrame);
         const LRESULT textLen = GetWindowTextLengthA(GetDlgItem(hwnd, panel::kCurrentFrameEdit));
         SendMessageA(GetDlgItem(hwnd, panel::kCurrentFrameEdit), EM_SETSEL, 0, textLen);
@@ -208,13 +208,8 @@ void HandleLButtonDblClk(MMDApp* app) {
         // ---- 5. scroll clamp + panel repaint -------------------------------
         const std::int32_t pages =
             (app->SidebarWidth() - 84) / 26;
-        const std::uint32_t frameU =
-            static_cast<std::uint32_t>(app->state.currentFrame);
-        if (frameU <= static_cast<std::uint32_t>(pages))          // unsigned compare (jbe)
-            app->state.timelineStartFrame = 0;       // 2428 (0x97C)
-        else
-            app->state.timelineStartFrame =
-                static_cast<std::int32_t>(frameU - static_cast<std::uint32_t>(pages));
+        const auto frame=std::int64_t(app->CurrentFrame());
+    app->state.timelineStartFrame=frame<0 ? static_cast<int>((std::max)(std::int64_t(frame_limits::minimum),frame-pages)) : frame<=pages ? 0 : int(frame-pages);
         PanelPaint(app);                                          // 0x414610
 
         // ---- 6. timeline strip redraw + normalized-time seek ---------------

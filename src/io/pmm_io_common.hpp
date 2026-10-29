@@ -33,6 +33,8 @@
 #include <stdexcept>
 #include <cstring>
 
+#include "pmm_read_buffer.hpp"
+
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/global_key_layout.hpp"
 #include "mikumikustudio/model.hpp"
@@ -46,58 +48,10 @@ namespace mikumikustudio::pmm_io {
 // Stream dialect selector for the two parameterized readers.
 enum class PmmStream { V1, V2 };
 
-// _read thunk shape shared by both loader bodies (v1 0x4593F9-region /
-// v2 0x450208-region call pattern); the result is only tested by the v1
-// read-gated tail and the load shell.
-inline thread_local int checkedDescriptor = -1;
-inline thread_local int* ownedDescriptor = nullptr;
-inline void Close(int fd) {
-    if (fd < 0) return;
-    _close(fd);
-    if (ownedDescriptor && *ownedDescriptor == fd) *ownedDescriptor = -1;
-}
-struct ScopedDescriptor {
-    int& descriptor;
-    int* previous;
-    explicit ScopedDescriptor(int& fd) : descriptor(fd), previous(ownedDescriptor) { ownedDescriptor = &fd; }
-    ~ScopedDescriptor() { Close(descriptor); ownedDescriptor = previous; }
-};
-struct ShortRead : std::runtime_error {
-    __int64 offset;
-    unsigned int expected;
-    int received;
-    ShortRead(__int64 at,unsigned int wanted,int got)
-        : std::runtime_error("Incomplete PMM record"),offset(at),expected(wanted),received(got) {}
-};
-struct CheckedReads {
-    int previous;
-    explicit CheckedReads(int fd):previous(checkedDescriptor){checkedDescriptor=fd;}
-    ~CheckedReads(){checkedDescriptor=previous;}
-};
-inline int Rd(int fd, void* buf, unsigned int count) {
-    const auto offset = checkedDescriptor == fd ? _telli64(fd) : 0;
-    const int received = _read(fd, buf, count);
-    if(checkedDescriptor == fd && received != static_cast<int>(count))
-        throw ShortRead(offset,count,received);
-    return received;
-}
-
-// V1 extensions may be absent at EOF, but a partially present field is corrupt.
-inline int OptionalRd(int fd, void* buf, unsigned int count) {
-    const auto offset = _telli64(fd);
-    const int received = _read(fd, buf, count);
-    if (received != 0 && received != static_cast<int>(count))
-        throw ShortRead(offset, count, received);
-    return received;
-}
-
-inline void ReadCount(int fd, std::int32_t& count, unsigned minimumBytes = 1) {
-    Rd(fd, &count, 4);
-    const auto position = _telli64(fd), size = _filelengthi64(fd);
-    if (count < 0 || position < 0 || size < position ||
-        std::uint64_t(count) > std::uint64_t(size - position) / minimumBytes)
-        throw std::runtime_error("Invalid PMM record count");
-}
+// The record-reader helpers (Close / ScopedDescriptor / ShortRead /
+// CheckedReads / Rd / OptionalRd / ReadCount) live in pmm_read_buffer.hpp:
+// they keep the byte-exact parsing below but serve it from one bounded
+// read-ahead window per checked descriptor.
 
 template<class Key>
 inline void CheckKeyChains(const Key* keys, std::size_t capacity, std::size_t heads = 1) {

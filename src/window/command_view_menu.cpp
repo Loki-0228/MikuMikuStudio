@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/original_import.hpp"
 #include "mikumikustudio/image_sequence_export.hpp"
 #include "mikumikustudio/key_pool.hpp"
@@ -785,7 +786,8 @@ int g_displayOrderDialogCount = 0;    // was g_dword545938, VA 0x00545938 -
 // No free slot raises the "You cannot regist over %dpoint." box
 // (limit 10000, EN/JP by englishUI) and returns without registering.
 // 0x460080 (ApplyGravitySettingDialog above) calls this at the current frame.
-void RegisterGravityKeyCurrent(MMDApp* app, std::int32_t frame) {  // VA 0x00412B20, was Sub412B20
+void RegisterGravityKeyCurrent(MMDApp* app, std::int32_t frame) {
+    if(frame<0){negative_frames::RegisterGlobal(app,negative_frames::Global::Gravity,frame);return;}  // VA 0x00412B20, was Sub412B20
     // JP overflow strings (0x52B918 / 0x52B908, SJIS byte-exact - the
     // same pair key_registrars.cpp uses for the model-track registrars)
     static const char kJpOverflow[] =
@@ -3038,7 +3040,7 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // handler never depends on menu text.  Picking the stored value again is a
     // no-op, with the one exception described at StoredLimitNeedsRewrite above:
     // a project file holding a limit byte this build cannot read still needs
-    // the user's pick to be written.  Id 309 is no longer handled.
+    // the user's pick to be written. Scope uses the separate command 309.
     // ------------------------------------------------------------------
     case kTransparentSortPrecisionMenuFirst:
     case kTransparentSortPrecisionMenuFirst + 1:
@@ -3069,6 +3071,17 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
         InvalidateRect(hwnd, &app->ViewportRect(), FALSE);
         return;
 #endif
+    }
+
+    case kTransparentSortCrossObjectsMenuId: {
+#if !MMD_ORIGINAL_PROFILE
+        app->TransparentSortCrossObjects() = !app->TransparentSortCrossObjects();
+        pmm_settings::SortingCrossObjectsChanged(*app);
+        RefreshTransparentSortPrecisionMenu(app);
+        RefreshMainWindowViewport(app);
+        InvalidateRect(hwnd, &app->ViewportRect(), FALSE);
+#endif
+        return;
     }
 
     case 310: {

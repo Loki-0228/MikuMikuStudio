@@ -107,6 +107,13 @@ void CameraAndContinuityTests(MMDApp* app) {
         app->CameraMode() = cameraMode; app->CurrentFrame() = start;
         app->CameraPositionX() = 99; app->CameraDistance() = -5;
         app->ViewOffsetX() = 8; app->ViewOffsetY() = 7;
+        const auto editorView = [&] {
+            return std::array<float,10>{app->CameraPositionX(),app->CameraPositionY(),app->CameraPositionZ(),
+                app->CameraPitch(),app->CameraYaw(),app->CameraRoll(),app->ViewOffsetX(),app->ViewOffsetY(),
+                app->CameraDistance(),app->CameraFov()};
+        };
+        const auto beforeView = editorView();
+        const auto perspective = app->CameraPerspective();
         ContinuityProbe p;
         p.options.directory = output.wstring(); p.options.width = 64; p.options.height = 48;
         p.options.start = start; p.options.end = start + 2; p.options.fps = fps;
@@ -124,6 +131,9 @@ void CameraAndContinuityTests(MMDApp* app) {
         Check(!seq::Active(app) && p.written == seq::FrameCount(p.options),
             "continuous output writes the complete range without skipped frames");
         Check(app->CameraMode() == cameraMode, "export preserves the editor's selected mode");
+        if (!cameraMode && !app->state.followCameraEnabled)
+            Check(editorView() == beforeView && app->CameraPerspective() == perspective,
+                "image sequence restores the untracked model editing viewpoint");
     }
     continuity = nullptr;
     MH_DisableHook(reinterpret_cast<void*>(&seq::WriteFrame)); MH_RemoveHook(reinterpret_cast<void*>(&seq::WriteFrame));

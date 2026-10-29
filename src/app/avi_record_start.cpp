@@ -52,6 +52,39 @@
 
 namespace mikumikustudio {
 
+void MMDApp::CaptureRecordingEditorView() {
+    auto& view = m_recordingEditorView;
+    view.active = CameraMode() == 0 && state.followCameraEnabled == 0;
+    if (!view.active) return;
+    for (int axis = 0; axis < 3; ++axis) {
+        view.position[axis] = CameraPositionAxis(axis);
+        view.rotation[axis] = CameraRotation()[axis];
+    }
+    view.offset[0] = ViewOffsetX(); view.offset[1] = ViewOffsetY();
+    view.distance = CameraDistance(); view.fov = CameraFov();
+    view.perspective = CameraPerspective();
+    view.parentModel = CameraParentModel(); view.parentBone = CameraParentBone();
+    view.reference = CameraReferenceMode(); view.basis = CameraAttachmentBasis();
+    view.suppressed = CameraAttachmentTransformSuppressed();
+}
+
+void MMDApp::RestoreRecordingEditorView() {
+    auto& view = m_recordingEditorView;
+    if (!view.active) return;
+    view.active = false;
+    for (int axis = 0; axis < 3; ++axis) {
+        CameraPositionAxis(axis) = view.position[axis];
+        CameraRotation()[axis] = view.rotation[axis];
+    }
+    ViewOffsetX() = view.offset[0]; ViewOffsetY() = view.offset[1];
+    CameraDistance() = view.distance; CameraFov() = view.fov;
+    CameraPerspective() = view.perspective;
+    CameraParentModel() = view.parentModel; CameraParentBone() = view.parentBone;
+    CameraReferenceMode() = view.reference; CameraAttachmentBasis() = view.basis;
+    CameraAttachmentTransformSuppressed() = view.suppressed;
+    antialias::ResetHistory(this);
+}
+
 // Bodies live in other translation units (see ported_funcs.hpp / their TUs).
 void RefreshAfterFrameApply(MMDApp* app);          // VA 0x00432FA0, was Sub432FA0
 void DisablePlaybackMenus(HWND hwnd);              // VA 0x00429790
@@ -340,6 +373,7 @@ void StartAviRecordWindow(MMDApp* app) {
                     0);                                         // 0x45EA14
         return;
     }
+    s.CaptureRecordingEditorView();
     if (image_sequence::Active(app))
         SetWindowTextW(recWnd, image_sequence::Text(app, L"正在导出图片序列…",
             L"Exporting image sequence…", L"連番画像を出力中…"));
@@ -411,6 +445,7 @@ void StartAviRecordFullscreen(MMDApp* app) {
     s.RenderWidth() = w;
     s.RenderHeight() = h;
     s.RecordingWindow() = main;                                // 0xA0D24
+    s.CaptureRecordingEditorView();
 
     EnsureRecordRenderTarget(app);
     RefreshMainWindowViewport(app);                                            // 0x464889

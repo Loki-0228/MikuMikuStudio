@@ -4,6 +4,7 @@
 #include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/native_mesh.hpp"
 #include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/transparent_sort_cache.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "mikumikustudio/transparent_peeling.hpp"
@@ -54,6 +55,7 @@ void ReleaseSubSlot(ComPtr& slot) {
 }  // namespace
 
 bool PostDeviceReset(MMDApp* app) {
+    transparent_sort_cache::Release(app);
     model_vertex_cache::Clear();
     device_lost_wait::ResetScope recovery(app);
     viewport_render_scale::Release(app);

@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/bone_curve.hpp"
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -603,7 +604,7 @@ void ResolvePhysics(unsigned char* model,const std::map<int,Transform>& world) {
         }
     }
 }
-void Forget(unsigned char* model) { bone_curve::Forget(model); states.erase(model); }
+void Forget(unsigned char* model) { negative_frames::ForgetModel(model);bone_curve::Forget(model); states.erase(model); }
 bool Scale(unsigned char* model,int bone,const Matrix& basis,const float direction[3],float factor,bool uniform) {
     if (!std::isfinite(factor)||factor<=0||!Valid(basis)) return false;
     Matrix delta;

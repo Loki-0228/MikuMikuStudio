@@ -515,7 +515,7 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
                                 mbPath, widePath, 0x100,
                                 paths);                           // 0x459925
 
-            LogV1Stage("model-resolved", _tell(fd), slotByte);
+            LogV1Stage("model-resolved", Tell(fd), slotByte);
             bool loaded = ModelLoadPMD(                          // 0x459965
                 model, main, widePath, wrap,
                 static_cast<int>(
@@ -591,7 +591,7 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
                 }
             }
 
-            LogV1Stage("model-loaded", _tell(fd), loaded ? 1 : 0);
+            LogV1Stage("model-loaded", Tell(fd), loaded ? 1 : 0);
             // ---- state load (direct indices, no remap records) ----------
             mdl::ModelRecord* const record = mdl::Mdl(model);
             // The two PMM display-order bytes are adjacent in the original
@@ -633,7 +633,7 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
                 if (displayGroups != nullptr && g < loadedGroupCount)
                     displayGroups[g].flags = (b == 1) ? 1 : 0;
             }
-            LogV1Stage("misc-done", _tell(fd),
+            LogV1Stage("misc-done", Tell(fd),
                         static_cast<int>(mikumikustudio::mdl::Mdl(model)->boneCount),
                         static_cast<int>(mikumikustudio::mdl::Mdl(model)->morphCount));
             Rd(fd, &record->boneListPos, sizeof(record->boneListPos));
@@ -713,7 +713,7 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
                 }
             }
 
-            LogV1Stage("bonekeys-done", _tell(fd));
+            LogV1Stage("bonekeys-done", Tell(fd));
             // physics key records (0x26E8 array, 0x1C stride; record 0
             // keeps the IK bool-array pointer at +0x10 and the flag at +0x14)
             {
@@ -771,7 +771,7 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
                     key.allocated = b == 1;
                 }
             }
-            LogV1Stage("physkeys-done", _tell(fd));
+            LogV1Stage("physkeys-done", Tell(fd));
             // Current bone pose. The first quaternion component is read
             // twice, matching the original stream consumption order.
             {
@@ -809,7 +809,7 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
                 Rd(fd, &b, 1);
                 ikChains[i].enabled = (b == 1) ? 1 : 0;
             }
-            LogV1Stage("state-done", _tell(fd));
+            LogV1Stage("state-done", Tell(fd));
             EnableMenuItem(GetMenu(main), 0x120, 0);             // 0x45A682
             EnableMenuItem(GetMenu(main), 0x121, 0);             // 0x45A6A2
             if (!slotInRange) {
@@ -984,7 +984,7 @@ static void LoadSceneV1_CameraTrack(PmmV1LoadContext& ctx, int fd) {
             ReadPmmCameraKey<PmmStream::V1>(fd, cameraKeys[timelineFrame]);
         }
     }
-    LogV1Stage("camtrack-done", _tell(fd));
+    LogV1Stage("camtrack-done", Tell(fd));
     // camera misc (0x45AEE7..0x45AF93)
     Rd(fd, &s->state.cameraPosX, 4);
     Rd(fd, &s->state.cameraPosY, 4);
@@ -1020,7 +1020,7 @@ static void LoadSceneV1_CameraTrack(PmmV1LoadContext& ctx, int fd) {
                      0);                                         // 0x45B07A
     }
 
-    LogV1Stage("cammisc-done", _tell(fd));
+    LogV1Stage("cammisc-done", Tell(fd));
 }
 
 
@@ -1064,7 +1064,7 @@ static void LoadSceneV1_LightTrack(PmmV1LoadContext& ctx, int fd) {
     Rd(fd, s->LightDirection() + 1, sizeof(float));
     Rd(fd, s->LightDirection() + 2, sizeof(float));
 
-    LogV1Stage("light-done", _tell(fd));
+    LogV1Stage("light-done", Tell(fd));
     // rgb/direction slider UI (0x45B399..0x45B74E)
     {
         const int sliderIds[] = {455, 456, 457, 458, 459, 460};  // 0x1C7..0x1CC
@@ -1125,7 +1125,7 @@ static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, int fd) {
         SendMessageA(GetDlgItem(main, panel::kAccessoryCombo), CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(text));
     }
-    LogV1Stage("acc-head-done", _tell(fd), accCount);
+    LogV1Stage("acc-head-done", Tell(fd), accCount);
     char accName[100];
     for (unsigned char i = 0; i < accCount; ++i) {
         unsigned char accSlot = 0;
@@ -1207,7 +1207,7 @@ static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, int fd) {
             }
         }
 
-        LogV1Stage("acc-obj-done", _tell(fd), accSlot);
+        LogV1Stage("acc-obj-done", Tell(fd), accSlot);
         mdl::AccessoryRecord& accessory = *mdl::Accessory(accs[accSlot]);
         Rd(fd, &accessory.order, 1);                              // 0x45BBB8
         accName[sizeof accName - 1] = '\0';
@@ -1294,7 +1294,7 @@ static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, int fd) {
         }
     }
 
-    LogV1Stage("accessories-done", _tell(fd));
+    LogV1Stage("accessories-done", Tell(fd));
     return true;
 }
 
@@ -1368,7 +1368,7 @@ static void LoadSceneV1_ConfigBlock(PmmV1LoadContext& ctx, int fd) {
         {
             HWND item = GetDlgItem(main, panel::kPlayStopFrameEdit);
             SendMessageA(item, EM_SETSEL, 0, GetWindowTextLengthA(item));
-            sprintf_s(text, 0x100, "%d", playStopFrame);                    // 0x45CA05
+            sprintf_s(text, 0x100, "%d", playStopFrame==0 ? -1 : playStopFrame);                    // 0x45CA05
             SendMessageA(item, EM_REPLACESEL, 0,
                          reinterpret_cast<LPARAM>(text));
         }
@@ -1490,7 +1490,7 @@ static void LoadSceneV1_ConfigBlock(PmmV1LoadContext& ctx, int fd) {
         CheckMenuItem(GetMenu(main), 0xDD, b ? 8 : 0);           // 0x45CF2C
     }
 
-    LogV1Stage("config-done", _tell(fd));
+    LogV1Stage("config-done", Tell(fd));
     // FPS menu (0x45CF3F..0x45D02A); float compares against the 1000.0/30.0
     // double constants at 0x52BA60/0x52BA68.
     Rd(fd, &s->state.fpsLimit, 4);      // 0x45CF3F
@@ -1553,7 +1553,7 @@ static void LoadSceneV1_ConfigBlock(PmmV1LoadContext& ctx, int fd) {
     SendMessageA(GetDlgItem(main, panel::kMainComboNormal), CB_SETCURSEL, 0, 0);   // 0x45D248
     SendMessageA(GetDlgItem(main, panel::kBoneRegisterCombo), CB_SETCURSEL, 0, 0);   // 0x45D262
 
-    LogV1Stage("physics-defaults-done", _tell(fd));
+    LogV1Stage("physics-defaults-done", Tell(fd));
 }
 
 
@@ -2176,7 +2176,7 @@ void LoadSceneV1(MMDApp* app, int fd) {
 
     LoadSceneV1_DisposeAndHeader(ctx, fd);            // 0x45916D..0x459630
     const unsigned char modelCount = LoadSceneV1_ModelPrePass(ctx, fd);
-    LogV1Stage("pre-pass-done", _tell(fd), modelCount);
+    LogV1Stage("pre-pass-done", Tell(fd), modelCount);
     if (modelCount != 0) {
         unsigned char modelIdx = 0;
         for (;;) {
@@ -2196,11 +2196,11 @@ void LoadSceneV1(MMDApp* app, int fd) {
     }
     LoadSceneV1_RegisterCombo(ctx);                   // 0x45A6D3..0x45AA89
     LoadSceneV1_ReallocateTracks(ctx);                // 0x45AA93..0x45ABCC
-    LogV1Stage("regcombo-done", _tell(fd));
+    LogV1Stage("regcombo-done", Tell(fd));
     LoadSceneV1_CameraTrack(ctx, fd);                 // 0x45AC10..0x45B090
     LoadSceneV1_LightTrack(ctx, fd);                  // 0x45B090..0x45B761
     if (!LoadSceneV1_AccessoryBlock(ctx, fd)) return; // 0x45B761..0x45C479
-    LogV1Stage("accessories-done", _tell(fd));
+    LogV1Stage("accessories-done", Tell(fd));
     pmm_io::CheckKeyChains(s->CameraKeys(), mdl::KeyPoolCapacity(s->CameraKeys()));
     pmm_io::CheckKeyChains(s->LightKeys(), mdl::KeyPoolCapacity(s->LightKeys()));
     for (int slot = 0; slot < kModelSlotCount; ++slot)
@@ -2209,7 +2209,7 @@ void LoadSceneV1(MMDApp* app, int fd) {
     LoadSceneV1_ConfigBlock(ctx, fd);                 // 0x45C48C..0x45D278
     LoadSceneV1_ReadGatedTail(ctx, fd);               // 0x45D278..0x45E117
     pmm_io::CheckKeyChains(s->ShadowKeys(), mdl::KeyPoolCapacity(s->ShadowKeys()));
-    LogV1Stage("gated-tail-done", _tell(fd));
+    LogV1Stage("gated-tail-done", Tell(fd));
     pmm_io::Close(fd);                                       // 0x45E11D
     LoadSceneV1_SuccessTail(ctx);                     // 0x45E149..0x45E7F7
     native_mesh::ProjectOpened(app, app->EnvFileName());

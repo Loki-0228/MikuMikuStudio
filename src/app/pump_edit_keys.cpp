@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/animation_curve_editor.hpp"
 // ===========================================================================
@@ -387,6 +388,7 @@ void PumpDeleteRebuild(MMDApp* app, HWND focus, bool focusNotInPanelEdit) {
                                         static_cast<int>(app->CurrentFrame()));
         }
     }
+    if(negative_frames::Command(app,423))return;
     DeleteMarkedKeyframes(app);                                       // 0x4316B0
 }
 

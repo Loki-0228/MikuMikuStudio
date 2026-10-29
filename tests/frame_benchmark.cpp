@@ -12,25 +12,35 @@
 // Nothing here is a product path: the executable is EXCLUDE_FROM_ALL, and the
 // renderer phase timers need MIKUMIKUSTUDIO_PERF; MMV host timers do not.
 #include "mikumikustudio/perf_timing.hpp"
+#include "mikumikustudio/save_compatibility.hpp"
 #include "mikumikustudio/d3d12_native.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/d3dx_effect.hpp"
 #include "mikumikustudio/sequential_file_reader.hpp"
 #include "mikumikustudio/gpu_model.hpp"
 #include "mikumikustudio/skinning_backend.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/adaptive_shadow.hpp"
+#include "mikumikustudio/shadow_filter.hpp"
+#include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/model_vertex_cache.hpp"
+#include "mikumikustudio/transparent_sort_cache.hpp"
+#include "mikumikustudio/texture_prepare_cache.hpp"
+#include "mikumikustudio/effect_file_watch.hpp"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 #include <psapi.h>
@@ -41,6 +51,11 @@ namespace mikumikustudio { void LoadSceneFile(); }
 using namespace mikumikustudio;
 #include "playback_benchmark.hpp"
 unsigned loadDialogs=0;
+void PrintTransparentCache() {
+    const auto s=transparent_sort_cache::GetStatistics();
+    std::printf("TRANSPARENT_CACHE source_hits=%llu source_misses=%llu object_hits=%llu object_misses=%llu plan_hits=%llu plan_misses=%llu gpu_hits=%llu uploads=%llu allocations=%llu source_bytes=%zu gpu_bytes=%zu\n",
+        s.sourceHits,s.sourceMisses,s.objectHits,s.objectMisses,s.planHits,s.planMisses,s.gpuHits,s.uploads,s.allocations,s.sourceBytes,s.gpuBytes);
+}
 bool skipMissingModels=false;
 unsigned skippedModels=0;
 bool benchmarkRendering=false;
@@ -118,6 +133,7 @@ constexpr int kExitSaveScene = 19;     // --save-scene could not write its PMM
 constexpr int kExitMmvRequired = 20;   // --require-mmv but MMV is not loaded
 constexpr int kExitMmvForbidden = 21;  // --forbid-mmv but MMV is loaded
 constexpr int kExitMmvUpdate = 22;     // a sampled MMV update failed or was skipped
+constexpr int kExitShadowModes = 56;   // frozen 1 -> 2 -> 1 comparison failed
 
 constexpr int kMaxCopies = 8;
 constexpr int kMaxSamples = 100000;
@@ -131,6 +147,7 @@ struct Options {
     const wchar_t* output = nullptr;   // historical positional output path
     const wchar_t* json = nullptr;
     const wchar_t* saveScene = nullptr;
+    const wchar_t* extraModel = nullptr;
     bool native = false;
     bool throughputSkipMissing = false;
     bool throughput = false;
@@ -151,7 +168,13 @@ struct Options {
     bool viewportGiven = false;
     bool modelFile = false;
     bool cameraGiven = false;
+    bool cameraPanel = false;
+    bool noPreview = false;
     float camera[7]{}; // x,y,z,distance,yaw,pitch,roll; angles in degrees
+    bool shadowCameraSweep = false;
+    float shadowCameraSweepEnd[7]{};
+    int sweepFrames = 61;
+    bool sweepFramesGiven = false;
     float orbitDegrees = 0;
     bool selfShadowGiven = false;
     int selfShadowMode = 0;
@@ -159,15 +182,19 @@ struct Options {
     bool lightGiven = false;
     float light[3]{};
     int fineShadow = -1;
+    int groundShadow = -1;
     int adaptiveShadow = -1;
+    bool fixedModelShadows = true;
     int dynamicPrecision = -1;
     int sortPrecision = -1;
     int antialias = -1;
     int outlines = -1;
     int sortEnabled = -1;
+    int sortCrossObjects = -1;
     bool verifyViewToggles = false;
     bool verifyShadowCycle = false;
     bool verifyShadowZoom = false;
+    bool verifyShadowModes = false;
     bool requireMmv = false;   // sampling may start only with MMV loaded
     bool forbidMmv = false;    // sampling may start only without MMV loaded
     const wchar_t* processor = L"auto";
@@ -227,6 +254,9 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.explicitThroughput = true; setMode();
         } else if (wcscmp(arg, L"--throughput-skip-missing") == 0) {
             options.throughputSkipMissing = true; setMode();
+        } else if (wcscmp(arg, L"--extra-model") == 0) {
+            options.extraModel = value(arg);
+            if (!options.extraModel) return kExitUsage;
         } else if (wcscmp(arg, L"--processor") == 0) {
             const wchar_t* text = value(arg);
             if (!text || (wcscmp(text, L"auto") && wcscmp(text, L"cpu") && wcscmp(text, L"gpu"))) {
@@ -282,11 +312,27 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
                 return kExitUsage;
             }
             options.samples = static_cast<int>(samples);
+        } else if (wcscmp(arg, L"--sweep-frames") == 0) {
+            long frames = 0;
+            if (!ParseLong(value(arg), frames) || frames < 2 || frames > 10000) {
+                std::fputs("--sweep-frames takes an integer in 2..10000\n", stderr);
+                return kExitUsage;
+            }
+            options.sweepFrames = static_cast<int>(frames);
+            options.sweepFramesGiven = true;
+        } else if (wcscmp(arg, L"--ground-shadow") == 0) {
+            long mode = 0;
+            if (!ParseLong(value(arg), mode) || mode < 0 || mode > 1) return kExitUsage;
+            options.groundShadow = int(mode);
         } else if (wcscmp(arg, L"--fine-shadow") == 0) {
             const wchar_t* text = value(arg);
             long mode = 0;
             if (!text || !ParseLong(text, mode) || mode < 0 || mode > 1) return kExitUsage;
             options.fineShadow = static_cast<int>(mode);
+        } else if (wcscmp(arg, L"--fixed-model-shadows") == 0) {
+            long mode=0;
+            if(!ParseLong(value(arg),mode) || mode<0 || mode>1)return kExitUsage;
+            options.fixedModelShadows=mode!=0;
         } else if (wcscmp(arg, L"--adaptive-shadow") == 0) {
             long mode = 0;
             const wchar_t* text = value(arg);
@@ -302,11 +348,12 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
             if (++i >= argc || !ParseLong(argv[i], value) || value < 0 || value > static_cast<int>(TransparentSortPrecision::Off)) return kExitUsage;
             options.sortPrecision = int(value);
         } else if (wcscmp(arg, L"--antialias") == 0 || wcscmp(arg, L"--outlines") == 0 ||
-                   wcscmp(arg, L"--sort-enabled") == 0) {
+                   wcscmp(arg, L"--sort-enabled") == 0 || wcscmp(arg, L"--sort-cross-objects") == 0) {
             long value = -1;
             if (++i >= argc || !ParseLong(argv[i], value) || value < 0 || value > 1) return kExitUsage;
             if (wcscmp(arg, L"--antialias") == 0) options.antialias = int(value);
             else if (wcscmp(arg, L"--outlines") == 0) options.outlines = int(value);
+            else if(wcscmp(arg,L"--sort-cross-objects")==0)options.sortCrossObjects=int(value);
             else options.sortEnabled = int(value);
         } else if (wcscmp(arg, L"--verify-view-toggles") == 0) {
             options.verifyViewToggles = true;
@@ -314,8 +361,14 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.verifyShadowCycle = true;
         } else if (wcscmp(arg, L"--verify-shadow-zoom") == 0) {
             options.verifyShadowZoom = true;
+        } else if (wcscmp(arg, L"--verify-shadow-modes") == 0) {
+            options.verifyShadowModes = true;
         } else if (wcscmp(arg, L"--require-mmv") == 0) {
             options.requireMmv = true;
+        } else if (wcscmp(arg, L"--no-preview") == 0) {
+            options.noPreview = true;
+        } else if (wcscmp(arg, L"--camera-panel") == 0) {
+            options.cameraPanel = true;
         } else if (wcscmp(arg, L"--forbid-mmv") == 0) {
             options.forbidMmv = true;
         } else if (wcscmp(arg, L"--self-shadow") == 0) {
@@ -336,25 +389,29 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
             long range = 0;
             if (!text || !ParseLong(text, range) || range < 0 || range > 9999) return kExitUsage;
             options.shadowRange = static_cast<int>(range);
-        } else if (wcscmp(arg, L"--camera") == 0 || wcscmp(arg, L"--orbit-degrees") == 0 || wcscmp(arg, L"--light") == 0) {
+        } else if (wcscmp(arg, L"--camera") == 0 || wcscmp(arg, L"--shadow-camera-sweep") == 0 ||
+                   wcscmp(arg, L"--orbit-degrees") == 0 || wcscmp(arg, L"--light") == 0) {
             const bool camera = wcscmp(arg, L"--camera") == 0;
+            const bool sweep = wcscmp(arg, L"--shadow-camera-sweep") == 0;
             const bool light = wcscmp(arg, L"--light") == 0;
             const wchar_t* cursor = value(arg);
             if (!cursor) return kExitUsage;
-            for (int field = 0; field < (camera ? 7 : light ? 3 : 1); ++field) {
+            for (int field = 0; field < (camera || sweep ? 7 : light ? 3 : 1); ++field) {
                 wchar_t* end = nullptr;
                 const float parsed = std::wcstof(cursor, &end);
-                const bool last = field == (camera ? 6 : light ? 2 : 0);
+                const bool last = field == (camera || sweep ? 6 : light ? 2 : 0);
                 if (end == cursor || !std::isfinite(parsed) ||
                     (last ? *end != L'\0' : *end != L',')) {
-                    std::fputs("invalid camera/orbit/light value\n", stderr); return kExitUsage;
+                    std::fputs("invalid camera/sweep/orbit/light value\n", stderr); return kExitUsage;
                 }
                 if (camera) options.camera[field] = parsed;
+                else if (sweep) options.shadowCameraSweepEnd[field] = parsed;
                 else if (light) options.light[field] = parsed;
                 else options.orbitDegrees = parsed;
                 cursor = end + (last ? 0 : 1);
             }
             if (camera) options.cameraGiven = true;
+            if (sweep) options.shadowCameraSweep = true;
             if (light) {
                 if (options.light[0] == 0 && options.light[1] == 0 && options.light[2] == 0) return kExitUsage;
                 options.lightGiven = true;
@@ -398,6 +455,33 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
     options.throughput = options.native || options.throughputSkipMissing ||
                          options.explicitThroughput;
     options.loadOnly = options.loadOnly || options.loadSkipMissing || options.unbuffered;
+    if (options.sweepFramesGiven && !options.shadowCameraSweep) {
+        std::fputs("--sweep-frames requires --shadow-camera-sweep\n", stderr);
+        return kExitUsage;
+    }
+    if (options.shadowCameraSweep) {
+        if (!options.throughput || !options.output || !options.viewportGiven ||
+            options.native || options.skinOnly || options.loadOnly || options.playbackSeconds ||
+            options.copiesGiven || options.layoutGiven || options.orbitDegrees != 0 ||
+            options.verifyShadowCycle || options.verifyShadowZoom || options.verifyShadowModes ||
+            options.verifyViewToggles || options.saveScene) {
+            std::fputs("--shadow-camera-sweep requires DX9 --throughput, --viewport and an output path; "
+                       "cannot combine with layouts, playback, orbit, other verification modes or scene saving\n", stderr);
+            return kExitUsage;
+        }
+        options.cameraPanel = true;
+    }
+    if (options.verifyShadowModes) {
+        if (!options.explicitThroughput || !options.output || !options.viewportGiven ||
+            options.native || options.skinOnly || options.loadOnly || options.playbackSeconds ||
+            options.shadowCameraSweep || options.copiesGiven || options.layoutGiven || options.orbitDegrees != 0 ||
+            options.verifyShadowCycle || options.verifyShadowZoom || options.verifyViewToggles || options.saveScene) {
+            std::fputs("--verify-shadow-modes requires DX9 --throughput, --viewport and an output path; "
+                       "cannot combine with sweep, layouts, playback, orbit, other verification modes or scene saving\n", stderr);
+            return kExitUsage;
+        }
+        options.cameraPanel = true;
+    }
     if ((options.requireMmv || options.forbidMmv) &&
         (options.native || options.skinOnly || options.loadOnly)) {
         std::fputs("MMV load-state gates require the full DX9 rendering driver\n", stderr);
@@ -414,8 +498,8 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
         return kExitUsage;
     }
     if (options.saveScene != nullptr && (!options.modelFile || !options.throughput ||
-            options.native || options.skinOnly || (!options.copiesGiven && !options.layoutGiven))) {
-        std::fputs("--save-scene requires --throughput, a model file and an explicit layout/copy count\n",
+            options.native || options.skinOnly || (!options.copiesGiven && !options.layoutGiven && !options.extraModel))) {
+        std::fputs("--save-scene requires --throughput, a model file and a layout/copy count or --extra-model\n",
                    stderr);
         return kExitUsage;
     }
@@ -478,10 +562,10 @@ public:
         first_.pop_back();
         out_ += kind == '{' ? '}' : ']';
     }
-    void Number(const char* key, double value) {
+    void Number(const char* key, double value, int precision = 6) {
         Key(key);
         char buffer[48];
-        std::snprintf(buffer, sizeof buffer, "%.6g", value);
+        std::snprintf(buffer, sizeof buffer, "%.*g", precision, value);
         out_ += buffer;
     }
     void Integer(const char* key, long long value) {
@@ -531,6 +615,301 @@ private:
     std::vector<char> open_;
     std::vector<bool> first_;
 };
+
+// The full renderer uses affine world-light maps. Measure both singular values
+// so an anisotropic projection cannot hide excess sampling on its denser axis.
+void WriteFixedModelShadows(Json& json,MMDApp* app) {
+    json.Array("fixed_model_shadows");
+    for(int slot=0;slot<kModelSlotCount;++slot) {
+        auto* model=native_mesh::RenderModel(app->ModelSlot(slot));if(!model)continue;
+        const auto info=shadow_filter::ReadModelInfo(app,model);
+        json.Item();json.Integer("slot",slot);json.Bool("valid",info.valid);json.Integer("resolution",info.size);
+        double scale=0;for(int row=0;row<3;++row)scale+=double(info.projection[row*4])*info.projection[row*4];
+        json.Number("density",std::sqrt(scale)*info.size*.5,9);json.Number("requested_density",info.densityFloor,9);
+        json.Array("projection");for(int row=0;row<4;++row){json.Item();for(int axis=0;axis<4;++axis){const char* keys[]{"x","y","z","w"};json.Number(keys[axis],info.projection[row*4+axis],9);}json.End();}json.End();
+        json.End();
+    }
+    json.End();
+}
+
+struct ShadowDensity {
+    double minimum=0,maximum=0;
+    bool valid=false;
+};
+constexpr double kShadowDensityTolerance=1e-4;
+ShadowDensity MeasureShadowDensity(const float* matrix,UINT width,UINT height) {
+    if (!width || !height || matrix[3]!=0 || matrix[7]!=0 || matrix[11]!=0 ||
+        !std::isfinite(matrix[15]) || matrix[15]==0) return {};
+    double xx=0,yy=0,xy=0;
+    for (int row=0;row<3;++row) {
+        const double x=double(matrix[row*4])*width/(2*matrix[15]);
+        const double y=double(matrix[row*4+1])*height/(2*matrix[15]);
+        xx+=x*x;yy+=y*y;xy+=x*y;
+    }
+    const double disc=std::sqrt((xx-yy)*(xx-yy)+4*xy*xy);
+    ShadowDensity result{std::sqrt((std::max)(0.0,(xx+yy-disc)*.5)),
+        std::sqrt((std::max)(0.0,(xx+yy+disc)*.5)),false};
+    result.valid=std::isfinite(result.minimum) && std::isfinite(result.maximum) && result.minimum>0;
+    return result;
+}
+bool ShadowDensityWithinReference(const ShadowDensity& density,double reference) {
+    return density.valid && std::isfinite(reference) && reference>0 &&
+        density.maximum<=reference*(1+kShadowDensityTolerance)+1e-7;
+}
+void WriteShadowDensity(Json& json,const ShadowDensity& density,double reference,bool available,
+                         bool includeReference=true,double planned=0) {
+    const bool valid=available && density.valid;
+    const bool ratioValid=valid && std::isfinite(reference) && reference>0;
+    if (includeReference)json.NumberOrNull("reference_density",reference,std::isfinite(reference) && reference>0);
+    json.NumberOrNull("actual_density",density.minimum,valid);
+    json.NumberOrNull("actual_density_max",density.maximum,valid);
+    json.NumberOrNull("reference_ratio",ratioValid?density.minimum/reference:0,ratioValid);
+    json.NumberOrNull("reference_ratio_max",ratioValid?density.maximum/reference:0,ratioValid);
+    json.Bool("density_within_reference",available && ShadowDensityWithinReference(density,reference));
+    const bool planValid=available && std::isfinite(planned) && planned>0;
+    json.NumberOrNull("planned_density",planned,planValid);
+    json.NumberOrNull("planned_reference_ratio",planValid && ratioValid?planned/reference:0,planValid && ratioValid);
+    json.NumberOrNull("actual_planned_ratio",planValid && valid?density.minimum/planned:0,planValid && valid);
+    json.Bool("density_within_plan",planValid && ShadowDensityWithinReference(density,planned));
+}
+bool ShadowSampleDimensions(MMDApp* app,UINT& width,UINT& height) {
+    const auto sampling=shadow_filter::ReadNativeSamplingState(app);
+    D3DSURFACE_DESC desc{};
+    if (!sampling.texture || FAILED(sampling.texture->GetLevelDesc(0,&desc)))return false;
+    width=desc.Width;height=desc.Height;
+    return width && height;
+}
+// Reconstruct the recorded slab rather than assuming a five-unit camera box.
+// The same near/far interval may require a larger sphere with an extreme lens.
+bool ShadowSlabRadius(const float* worldViewProjection,const float* projection,
+                      float nearDepth,float farDepth,double& radius) {
+    if (!std::isfinite(nearDepth) || !std::isfinite(farDepth) || farDepth<=nearDepth)return false;
+    using Matrix=d3dx::D3DXMATRIXF;
+    auto& api=d3dx::Get();Matrix inverseClip{},inverseProjection{},inverseView{};
+    if (!api.inverse(&inverseClip,nullptr,reinterpret_cast<const Matrix*>(worldViewProjection)) ||
+        !api.inverse(&inverseProjection,nullptr,reinterpret_cast<const Matrix*>(projection)))return false;
+    api.multiply(&inverseView,reinterpret_cast<const Matrix*>(projection),&inverseClip);
+    const auto transform=[&](const std::array<float,3>& point,const Matrix& matrix,std::array<float,3>& result) {
+        float out[4]{};api.vec3Transform(out,point.data(),&matrix);
+        if (!std::isfinite(out[3]) || std::abs(out[3])<1e-12f)return false;
+        for(int axis=0;axis<3;++axis) {
+            result[axis]=out[axis]/out[3];
+            if(!std::isfinite(result[axis]))return false;
+        }
+        return true;
+    };
+    std::array<std::array<float,3>,8> points{};double centre[3]{};
+    for (int corner=0;corner<4;++corner) {
+        const float x=corner&1?1.f:-1.f,y=corner&2?1.f:-1.f;
+        std::array<float,3> start{},middle{};
+        if(!transform({x,y,0},inverseProjection,start) || !transform({x,y,.5f},inverseProjection,middle))return false;
+        const float dz=middle[2]-start[2];
+        if (!(dz>0) || !std::isfinite(dz))return false;
+        for (int end=0;end<2;++end) {
+            std::array<float,3> point{};
+            const float depth=end?farDepth:nearDepth;
+            for(int axis=0;axis<3;++axis)
+                point[axis]=start[axis]+(middle[axis]-start[axis])*(depth-start[2])/dz;
+            auto& world=points[corner+end*4];
+            if(!transform(point,inverseView,world))return false;
+            for(int axis=0;axis<3;++axis)centre[axis]+=world[axis]/8.0;
+        }
+    }
+    radius=0;
+    for(const auto& point:points) {
+        double squared=0;
+        for(int axis=0;axis<3;++axis)squared+=(point[axis]-centre[axis])*(point[axis]-centre[axis]);
+        radius=(std::max)(radius,std::sqrt(squared)/.8);
+    }
+    return std::isfinite(radius) && radius>0;
+}
+
+struct ShadowPlanInputs {
+    std::array<float,16> lens{};
+    std::array<double,3> detailDemandDepth{}; // middle, near, bridge
+    std::array<double,3> detailAllocationWidth{};
+    unsigned maximumSize=0,viewportWidth=0,viewportHeight=0;
+    double coverageDensity=0,coverageDemandDepth=0,farBoundary=0,middleFarDepth=0,nearFarDepth=0;
+    float finestDensity=0,projectedPixels=0;
+    bool valid=false,deviceViewport=false,dynamic=false;
+};
+ShadowPlanInputs ReadShadowPlanInputs(MMDApp* app) {
+    ShadowPlanInputs result;
+    auto* renderer=app->Renderer();
+    if(!renderer || !renderer->device)return result;
+    D3DCAPS9 caps{};
+    if(FAILED(renderer->device->GetDeviceCaps(&caps)) ||
+       FAILED(renderer->device->GetTransform(D3DTS_PROJECTION,reinterpret_cast<D3DMATRIX*>(result.lens.data()))))return result;
+    result.maximumSize=(std::min)({8192u,static_cast<unsigned>(caps.MaxTextureWidth),
+        static_cast<unsigned>(caps.MaxTextureHeight),app->ShadowResolutionLimit()*2u});
+    const float reference=NativeShadowSamplingDensity(app->LightDirection(),app->ShadowDistance(),
+        app->SelfShadowMode(),app->ShadowResolutionLimit());
+    result.finestDensity=NativeShadowSamplingDensity(app->LightDirection(),.1f,
+        app->SelfShadowMode(),app->ShadowResolutionLimit());
+    D3DVIEWPORT9 viewport{};
+    result.deviceViewport=SUCCEEDED(renderer->device->GetViewport(&viewport)) && viewport.Width && viewport.Height;
+    result.viewportWidth=result.deviceViewport?viewport.Width:app->RenderWidth();
+    result.viewportHeight=result.deviceViewport?viewport.Height:app->RenderHeight();
+    result.projectedPixels=(std::max)(float(result.viewportWidth)*std::abs(result.lens[0]),
+        float(result.viewportHeight)*std::abs(result.lens[5]));
+    result.dynamic=app->AdaptiveShadowResolution();
+    const auto middle=shadow_filter::ReadDetailInfo(app,0);
+    const auto nearInfo=shadow_filter::ReadDetailInfo(app,1);
+    const auto bridge=shadow_filter::ReadDetailInfo(app,2);
+    result.detailDemandDepth[0]=nearInfo.farDepth-(nearInfo.farDepth-nearInfo.nearDepth)*.35f;
+    result.detailDemandDepth[1]=nearInfo.nearDepth;
+    result.detailDemandDepth[2]=middle.farDepth;
+    result.coverageDemandDepth=bridge.farDepth;
+    result.farBoundary=bridge.farDepth;
+    result.middleFarDepth=middle.farDepth;
+    result.nearFarDepth=nearInfo.farDepth;
+    result.coverageDensity=reference;
+    if(result.dynamic) {
+        for(const auto* info:{&nearInfo,&middle,&bridge})
+            if(!std::isfinite(info->nearDepth) || !std::isfinite(info->farDepth) ||
+               info->farDepth<=info->nearDepth)return result;
+        // Coverage keeps the original 80-unit-radius depth budget even when
+        // the dynamic bridge expands. Reconstruct its eight corner radius
+        // independently; the current bridge endpoint cannot serve as oracle.
+        const float budget=(std::max)(NativeShadowSamplingDensity(app->LightDirection(),.1f,1,app->ShadowResolutionLimit()),
+            NativeShadowSamplingDensity(app->LightDirection(),.1f,2,app->ShadowResolutionLimit()));
+        const double radius=(std::min)(5.0,(result.maximumSize>2?result.maximumSize-2:1)/(2.0*budget))*16;
+        double lo=nearInfo.nearDepth,hi=lo+(std::max)(1.0,radius*4);
+        for(unsigned iteration=0;iteration<28;++iteration) {
+            const double mid=(lo+hi)*.5;double measured=0;
+            if(!ShadowSlabRadius(reinterpret_cast<const float*>(&app->WorldViewProjection()),result.lens.data(),
+                nearInfo.nearDepth,float(mid),measured))return result;
+            if(measured<=radius)lo=mid;else hi=mid;
+        }
+        result.coverageDemandDepth=(std::max)(lo,double(nearInfo.nearDepth)+.001);
+        // Full-picture coverage retains the selected native density in both
+        // fixed and dynamic modes; allocation limits are checked separately.
+        result.coverageDensity=reference;
+        // The translated bridge retains its old nominal 120-radius light box.
+        // Its new visible slab is longer and no longer sphere-fitted, so using
+        // the new endpoints here would invent a larger allocation requirement.
+        const double bridgeRadius=radius*1.5;
+        lo=nearInfo.nearDepth;hi=lo+(std::max)(1.0,bridgeRadius*4);
+        for(unsigned iteration=0;iteration<28;++iteration) {
+            const double mid=(lo+hi)*.5;double measured=0;
+            if(!ShadowSlabRadius(reinterpret_cast<const float*>(&app->WorldViewProjection()),result.lens.data(),
+                nearInfo.nearDepth,float(mid),measured))return result;
+            if(measured<=bridgeRadius)lo=mid;else hi=mid;
+        }
+        double measuredBridgeRadius=0;
+        if(!ShadowSlabRadius(reinterpret_cast<const float*>(&app->WorldViewProjection()),result.lens.data(),
+            nearInfo.nearDepth,float((std::max)(lo,double(nearInfo.nearDepth)+.001)),measuredBridgeRadius))return result;
+        result.detailAllocationWidth[2]=2*measuredBridgeRadius;
+    }
+    result.valid=result.maximumSize>1 && std::isfinite(result.coverageDensity) && result.coverageDensity>0 &&
+        std::isfinite(result.finestDensity) && result.finestDensity>0;
+    return result;
+}
+struct CoverageFixedLimit {
+    double minimum=0,maximum=0;
+    bool known=false,within=false;
+};
+CoverageFixedLimit AssessCoverageFixedLimit(const float* matrix,const ShadowDensity& actual,
+    double reference,const ShadowPlanInputs& inputs) {
+    CoverageFixedLimit result;
+    const auto capacity=MeasureShadowDensity(matrix,inputs.maximumSize,inputs.maximumSize);
+    result.known=inputs.valid && actual.valid && capacity.valid && std::isfinite(reference) && reference>0;
+    if(!result.known)return result;
+    // This is the same already-fitted coverage box, including its snapping
+    // margin. Do not deduct that margin a second time at maximum allocation.
+    result.minimum=(std::min)(reference,capacity.minimum);
+    result.maximum=(std::min)(reference,capacity.maximum);
+    result.within=actual.minimum<=result.minimum*(1+kShadowDensityTolerance)+1e-7 &&
+        actual.maximum<=result.maximum*(1+kShadowDensityTolerance)+1e-7;
+    return result;
+}
+void WriteCoverageFixedLimit(Json& json,const CoverageFixedLimit& limit,const ShadowPlanInputs& inputs) {
+    json.Bool("close_layer",false);
+    json.String("fixed_capacity_basis","same_fitted_box_at_maximum_resolution");
+    json.NumberOrNull("fixed_capacity_density",limit.minimum,limit.known);
+    json.NumberOrNull("fixed_capacity_density_max",limit.maximum,limit.known);
+    json.NumberOrNull("demand_depth",inputs.coverageDemandDepth,
+        inputs.valid && std::isfinite(inputs.coverageDemandDepth) && inputs.coverageDemandDepth>0);
+    json.NumberOrNull("far_boundary_depth",inputs.farBoundary,
+        inputs.valid && std::isfinite(inputs.farBoundary) && inputs.farBoundary>0);
+    json.Bool("far_density_within_fixed_capacity",limit.known && limit.within);
+}
+struct DetailSamplingPlan {
+    double requested=0,requiredSize=0,maximumDensity=0,expectedActual=0,demandDepth=0,fixedCapacity=0,allocationWidth=0;
+    unsigned expectedResolution=0;
+    bool translatedBridge=false,allocationWithinBudget=false;
+    bool closeLayer=false,farWithinFixed=false,fixedBlendMatches=false;
+    bool known=false,hardwareSufficient=false,allocationSufficient=false,matchesCapacity=false,recordedPlanMatches=false;
+};
+DetailSamplingPlan AssessDetailSampling(const shadow_filter::DetailInfo& info,const ShadowDensity& actual,
+    double reference,bool dynamic,const float* camera,const ShadowPlanInputs& inputs,unsigned layer) {
+    DetailSamplingPlan result;
+    if(layer>=inputs.detailDemandDepth.size())return result;
+    result.closeLayer=dynamic || layer!=2;
+    result.demandDepth=inputs.detailDemandDepth[layer];
+    double radius=0;
+    if(!inputs.valid)return result;
+    result.translatedBridge=dynamic && layer==2;
+    if(result.translatedBridge)result.allocationWidth=inputs.detailAllocationWidth[layer];
+    else {
+        if(!ShadowSlabRadius(camera,inputs.lens.data(),info.nearDepth,info.farDepth,radius))return result;
+        result.allocationWidth=2*radius;
+    }
+    if(!std::isfinite(result.allocationWidth) || result.allocationWidth<=0)return result;
+    result.maximumDensity=(inputs.maximumSize-1)/result.allocationWidth;
+    result.requested=dynamic?ShadowLayerDensity(float(reference),inputs.finestDensity,inputs.projectedPixels,
+        float(result.demandDepth),inputs.lens[15]==1.f,true,result.closeLayer,float(result.maximumDensity)):reference;
+    result.recordedPlanMatches=std::isfinite(info.densityFloor) && info.densityFloor>0 &&
+        std::abs(info.densityFloor-result.requested)<=result.requested*kShadowDensityTolerance+1e-7;
+    result.known=info.valid && inputs.valid && info.size>1 && result.recordedPlanMatches;
+    if(!result.known)return result;
+    // Two allocation texels are reserved by the planner; the fitted map retains
+    // one texel of snapping margin. Check the actual allocation independently.
+    result.requiredSize=result.allocationWidth*result.requested+2;
+    result.expectedResolution=ShadowTextureSizeForDensity(float(result.allocationWidth),float(result.requested),inputs.maximumSize);
+    result.allocationWithinBudget=info.size<=result.expectedResolution;
+    result.fixedCapacity=(std::min)(reference,result.maximumDensity);
+    const double allocationDensity=(info.size-1)/result.allocationWidth;
+    result.expectedActual=(std::min)(result.requested,allocationDensity);
+    result.hardwareSufficient=result.maximumDensity>=result.requested*(1-kShadowDensityTolerance);
+    result.allocationSufficient=allocationDensity>=result.requested*(1-kShadowDensityTolerance);
+    result.matchesCapacity=actual.valid && ShadowDensityWithinReference(actual,result.requested) &&
+        std::abs(actual.minimum-result.expectedActual)<=result.expectedActual*kShadowDensityTolerance+1e-7 &&
+        std::abs(actual.maximum-result.expectedActual)<=result.expectedActual*kShadowDensityTolerance+1e-7;
+    result.farWithinFixed=!result.closeLayer && ShadowDensityWithinReference(actual,result.fixedCapacity);
+    const double expectedStart=layer==1?info.farDepth-(info.farDepth-info.nearDepth)*.35:
+        layer==0?(dynamic?(std::max)(inputs.nearFarDepth,double(info.farDepth)/1.5):inputs.nearFarDepth):
+        (dynamic?(std::max)(inputs.middleFarDepth,double(info.farDepth)/2.5):inputs.middleFarDepth);
+    result.fixedBlendMatches=std::isfinite(info.blendStart) &&
+        std::abs(info.blendStart-expectedStart)<=(std::max)(1.0,double(info.farDepth))*2e-6;
+    return result;
+}
+void WriteDetailSamplingPlan(Json& json,const DetailSamplingPlan& plan) {
+    json.Bool("close_layer",plan.closeLayer);
+    json.String("fixed_capacity_basis",plan.translatedBridge?"unchanged_nominal_bridge_box_at_maximum_resolution":
+        "same_camera_slab_at_maximum_resolution");
+    json.NumberOrNull("allocation_box_width",plan.allocationWidth,plan.known);
+    json.NumberOrNull("budget_resolution",plan.expectedResolution,plan.known);
+    json.Bool("allocation_within_unchanged_budget",plan.known && plan.allocationWithinBudget);
+    json.NumberOrNull("demand_depth",plan.demandDepth,plan.known);
+    json.Bool("capacity_known",plan.known);
+    json.NumberOrNull("required_resolution",plan.requiredSize,plan.known);
+    json.NumberOrNull("maximum_attainable_density",plan.maximumDensity,plan.known);
+    json.NumberOrNull("expected_actual_density",plan.expectedActual,plan.known);
+    json.Bool("hardware_sufficient",plan.known && plan.hardwareSufficient);
+    json.Bool("allocation_sufficient",plan.known && plan.allocationSufficient);
+    json.Bool("capacity_limited",plan.known && !plan.allocationSufficient);
+    json.Bool("recorded_plan_matches",plan.recordedPlanMatches);
+    json.Bool("density_matches_capacity",plan.known && plan.matchesCapacity);
+    json.NumberOrNull("fixed_capacity_density",plan.fixedCapacity,plan.known);
+    json.Bool("fade_matches_geometry",plan.known && plan.fixedBlendMatches);
+    if(plan.closeLayer) {
+        json.Null("far_density_within_fixed_capacity");json.Null("far_fixed_blend_matches");
+    } else {
+        json.Bool("far_density_within_fixed_capacity",plan.known && plan.farWithinFixed);
+        json.Bool("far_fixed_blend_matches",plan.known && plan.fixedBlendMatches);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Scene placement
@@ -789,7 +1168,7 @@ const char* const kPhaseNames[] = {
     "physics_sync", "physics_readback", "physics_step", "bone_morph",
     "accessories", "edges", "shadow_map", "ground_shadow", "resource_guard",
     "clear", "composition", "overlays", "end_scene", "validation_release",
-    "screen_capture", "begin_scene", "effect_api"};
+    "screen_capture", "begin_scene", "effect_api", "shadow_bounds", "shadow_bounds_lock"};
 static_assert(sizeof(kPhaseNames) / sizeof(kPhaseNames[0]) == perf::Count,
               "phase name table must match mikumikustudio::perf::Phase");
 #endif
@@ -874,6 +1253,7 @@ int wmain(int argc, wchar_t** argv) {
         if (app->Renderer()->renderTargetWidth != 4096) return 43;
     }
     if (options.fineShadow >= 0) setQuality(options.fineShadow != 0);
+    shadow_filter::SetModelShadowsEnabledForTests(options.fixedModelShadows);
     if (options.adaptiveShadow >= 0) {
         HWND adaptive = GetDlgItem(app->MainWindow(), panel::kAdaptiveShadowCheckbox);
         SendMessageW(adaptive, BM_SETCHECK, options.adaptiveShadow ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -940,10 +1320,15 @@ int wmain(int argc, wchar_t** argv) {
             LoadModelFile(app, options.target, false);
     else
         LoadSceneFile();
+    if (options.extraModel) LoadModelFile(app, options.extraModel, false);
+    const auto pmmReport=save_compatibility::InspectPmm(*app);
+    std::printf("pmm_compatibility new_header=%d names_extension=%d legacy_copy=%d invalid=%d\n",
+        pmmReport.needsNewPmm,pmmReport.namesNeedExtension,pmmReport.canCopyLegacy,pmmReport.invalidData);
     const double loadMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-loadStart).count();
     // Reinstall the same editor state before each frame: UI refreshes can
     // restore a keyframe's shadow mode or the selected model's bone mode.
     const auto installSelfShadow = [&] {
+        if (options.groundShadow >= 0) app->GroundShadowEnabled() = options.groundShadow;
         if (options.shadowRange >= 0 && options.dynamicPrecision < 0)
             app->ShadowDistance() = (10000.f - options.shadowRange) / 100000.f;
         if (options.lightGiven) {
@@ -960,6 +1345,8 @@ int wmain(int argc, wchar_t** argv) {
         CommandDispatch(nullptr, MAKEWPARAM(304 + options.sortPrecision, 0));
         std::printf("requested_sort_precision=%d\n", options.sortPrecision);
     }
+    if(options.sortCrossObjects>=0 && app->TransparentSortCrossObjects()!=(options.sortCrossObjects!=0))
+        CommandDispatch(nullptr,MAKEWPARAM(kTransparentSortCrossObjectsMenuId,0));
     if (options.sortEnabled >= 0 && app->AutoTransparentMaterialSortingEnabled() != (options.sortEnabled != 0))
         CommandDispatch(nullptr, MAKEWPARAM(303, 0));
     if (options.antialias >= 0) {
@@ -989,6 +1376,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     for (int i=0; i<255; ++i) if (app->AccessorySlot(i)) ++accessories;
     std::printf("load_ms=%.3f dialogs=%u models=%u vertices=%u accessories=%u\n",loadMs,loadDialogs,models,vertices,accessories);
+    const auto preparation=texture_prepare_cache::GetParallelStatistics();
+    std::printf("TEXTURE_PARALLEL staged=%llu decoded=%llu used=%llu disk_ready=%llu failures=%llu\n",
+        preparation.staged,preparation.decoded,preparation.used,preparation.diskReady,preparation.failures);
     // Recorded so a run can state whether the scene has any physics at all:
     // the sample model used for the layout checks has none.
     std::printf("physics=rigid_bodies=%u joints=%u\n",rigidBodies,joints);
@@ -1106,12 +1496,19 @@ int wmain(int argc, wchar_t** argv) {
         app->CameraPitch() = -75.0f * 3.14159265358979323846f / 180.0f;
         app->CameraRoll() = 0.0f;
     }
+    if(options.noPreview) {app->DepthTextureCompositionEnabled()=0;app->SelfShadowCompositionEnabled()=0;}
+    if(options.shadowCameraSweep) {
+        app->EditMode()=ViewportEditMode::Camera;
+        app->ViewOffsetX()=app->ViewOffsetY()=0;
+    }
     if (options.cameraGiven) {
+        if(options.cameraPanel)app->EditMode()=ViewportEditMode::Camera;
         app->CameraPositionX() = options.camera[0];
         app->CameraPositionY() = options.camera[1];
         app->CameraPositionZ() = options.camera[2];
         app->ViewOffsetX() = options.camera[0];
         app->ViewOffsetY() = options.camera[1];
+        if(options.cameraPanel)app->ViewOffsetX()=app->ViewOffsetY()=0;
         app->CameraDistance() = options.camera[3];
         constexpr float radians = 3.14159265358979323846f / 180.0f;
         app->CameraYaw() = options.camera[4] * radians;
@@ -1339,6 +1736,12 @@ int wmain(int argc, wchar_t** argv) {
             return kExitUsage;
         const int result = playback_benchmark::Run(app, options.playbackSeconds, options.json,
             [&] { installViewport(); installSelfShadow(); });
+        const auto cacheStats = model_vertex_cache::GetStats();
+        PrintTransparentCache();
+        std::printf("MODEL_VERTEX_CACHE hits=%llu misses=%llu stores=%llu outline_hits=%llu bytes=%zu cpu_bytes=%zu\n",
+            cacheStats.hits, cacheStats.misses, cacheStats.stores, cacheStats.outlineHits, cacheStats.bytes, cacheStats.cpuBytes);
+        std::printf("SHADOW_BOUNDS_CACHE hits=%llu misses=%llu stores=%llu\n",
+            cacheStats.shadowBoundsHits, cacheStats.shadowBoundsMisses, cacheStats.shadowBoundsStores);
         query->Release();
         ResetAppState(app); ShutdownCleanup(app); delete app; g_Block = nullptr;
         return result;
@@ -1392,6 +1795,12 @@ int wmain(int argc, wchar_t** argv) {
     std::printf("automatic_calibrations=%llu cpu_updates=%llu\n",
         static_cast<unsigned long long>(skinning::GetStatus().automaticCalibrations),
         static_cast<unsigned long long>(skinning::GetStatus().cpuUpdates));
+    const auto cacheStats = model_vertex_cache::GetStats();
+    PrintTransparentCache();
+    std::printf("MODEL_VERTEX_CACHE hits=%llu misses=%llu stores=%llu outline_hits=%llu bytes=%zu cpu_bytes=%zu\n",
+        cacheStats.hits, cacheStats.misses, cacheStats.stores, cacheStats.outlineHits, cacheStats.bytes, cacheStats.cpuBytes);
+    std::printf("SHADOW_BOUNDS_CACHE hits=%llu misses=%llu stores=%llu\n",
+        cacheStats.shadowBoundsHits, cacheStats.shadowBoundsMisses, cacheStats.shadowBoundsStores);
     std::printf("skinning=%ls adapter=%ls gpu_updates=%llu cpu_fallbacks=%llu\n",
         options.processor, skinning::GetStatus().adapterName.c_str(),
         static_cast<unsigned long long>(skinning::GetStatus().gpuUpdates),
@@ -1533,6 +1942,453 @@ int wmain(int argc, wchar_t** argv) {
         return kExitViewport;
     }
 
+    const auto renderFrozenPose = [&](int shadowMode = -1) {
+        installViewport();installSelfShadow();
+        if (shadowMode >= 0) {
+            app->SelfShadowMode() = shadowMode;
+            app->state.selfShadowEnabled = shadowMode != 0;
+        }
+        app->state.messageSeen=10;
+        // FrameDriver would advance animation/physics and confound the probe.
+        RenderFrameScene(app);
+    };
+    const auto saveFrozenImage = [&](const std::wstring& imagePath) {
+        IDirect3DSurface9* image=nullptr;
+        if(FAILED(device->GetRenderTarget(0,&image)) || !image)return false;
+        D3DSURFACE_DESC imageDesc{};
+        if(FAILED(image->GetDesc(&imageDesc))){image->Release();return false;}
+        if(imageDesc.MultiSampleType!=D3DMULTISAMPLE_NONE) {
+            IDirect3DSurface9* resolved=nullptr;
+            if(FAILED(device->CreateRenderTarget(imageDesc.Width,imageDesc.Height,imageDesc.Format,
+                    D3DMULTISAMPLE_NONE,0,FALSE,&resolved,nullptr)) ||
+               FAILED(device->StretchRect(image,nullptr,resolved,nullptr,D3DTEXF_NONE))) {
+                if(resolved)resolved->Release();
+                image->Release();return false;
+            }
+            image->Release();image=resolved;
+        }
+        RECT area{0,0,requestedWidth,requestedHeight};
+        const HRESULT saved=d3dx::Get().saveSurfaceToFileW(imagePath.c_str(),3,image,nullptr,&area);
+        image->Release();
+        return SUCCEEDED(saved);
+    };
+
+    // A single loaded, frozen scene exposes temporal layer transitions. The
+    // ordinary benchmark still reports its starting pose and measured frames;
+    // this opt-in sequence writes separate evidence beside the requested image.
+    if (options.shadowCameraSweep) {
+        // Unshadowed sweeps provide the matched lighting reference used to
+        // separate shadow changes from wall textures and camera magnification.
+        if (app->SelfShadowMode()>0 && !UseEffectModelRenderer(app)) {
+            std::fputs("shadow camera sweep requires the effect model renderer\n", stderr);
+            return kExitUsage;
+        }
+        std::error_code pathError;
+        const auto output = std::filesystem::absolute(std::filesystem::path(options.output), pathError);
+        if (pathError) return kExitSurface;
+        std::filesystem::create_directories(output.parent_path(), pathError);
+        if (pathError) return kExitSurface;
+        const auto stem = output.parent_path() / output.stem();
+        constexpr float degrees = 180.f / 3.14159265358979323846f;
+        constexpr float radians = 3.14159265358979323846f / 180.f;
+        const float start[7]{app->CameraPositionX(),app->CameraPositionY(),app->CameraPositionZ(),
+            app->CameraDistance(),app->CameraYaw()*degrees,app->CameraPitch()*degrees,app->CameraRoll()*degrees};
+        const auto setCamera = [&](const float camera[7]) {
+            app->CameraPositionX()=camera[0];app->CameraPositionY()=camera[1];app->CameraPositionZ()=camera[2];
+            app->CameraDistance()=camera[3];app->CameraYaw()=camera[4]*radians;
+            app->CameraPitch()=camera[5]*radians;app->CameraRoll()=camera[6]*radians;
+            app->EditMode()=ViewportEditMode::Camera;
+            app->ViewOffsetX()=app->ViewOffsetY()=0;
+        };
+        for(int settle=0;settle<3;++settle)renderFrozenPose();
+        for(int index=0;index<options.sweepFrames;++index) {
+            const double fraction=double(index)/double(options.sweepFrames-1);
+            float camera[7]{};
+            for(int field=0;field<7;++field)
+                camera[field]=float((1.0-fraction)*start[field]+fraction*options.shadowCameraSweepEnd[field]);
+            setCamera(camera);
+            renderFrozenPose();
+            if(!flush())return kExitFlush;
+            wchar_t suffix[48]{};
+            swprintf_s(suffix,L".sweep-%04d",index);
+            const std::wstring frameStem=stem.wstring()+suffix;
+            const std::wstring imagePath=frameStem+L".png",jsonPath=frameStem+L".json";
+            if (!saveFrozenImage(imagePath)) return kExitSurface;
+            std::string report;
+            Json json(report);
+            json.String("tool","frame_benchmark");
+            json.String("schema","frame_benchmark/shadow-camera-sweep/1");
+            json.String("scene_path",options.target);
+            json.String("image",imagePath.c_str());
+            json.Integer("index",index);json.Integer("frames",options.sweepFrames);
+            json.Number("fraction",fraction);
+            json.Bool("physics_advanced",false);
+            const auto writeMatrix = [&](const char* name,const float* matrix) {
+                json.Array(name);
+                for(int row=0;row<4;++row) {
+                    json.Item();
+                    for(int column=0;column<4;++column) {
+                        const char* keys[]{"x","y","z","w"};
+                        json.NumberOrNull(keys[column],matrix[row*4+column],std::isfinite(matrix[row*4+column]));
+                    }
+                    json.End();
+                }
+                json.End();
+            };
+            json.Object("camera");
+            const char* cameraKeys[]{"pos_x","pos_y","pos_z","distance","yaw_degrees","pitch_degrees","roll_degrees"};
+            for(int field=0;field<7;++field)json.Number(cameraKeys[field],camera[field]);
+            json.Number("fov_degrees",app->CameraFov());
+            writeMatrix("world_view_projection",reinterpret_cast<const float*>(&app->WorldViewProjection()));
+            json.End();
+            json.Object("self_shadow");
+            json.Integer("mode",app->SelfShadowMode());
+            json.Integer("slider",ShadowSliderPosition(app));
+            json.Bool("adaptive_resolution",app->AdaptiveShadowResolution());
+            json.Bool("filter_enhanced",app->ShadowFilterEnhanced());
+            const double referenceDensity=NativeShadowSamplingDensity(app->LightDirection(),app->ShadowDistance(),
+                app->SelfShadowMode(),app->ShadowResolutionLimit());
+            const auto planInputs=ReadShadowPlanInputs(app);
+            json.Number("reference_density",referenceDensity,9);
+            json.Integer("reference_resolution",app->ShadowResolutionLimit());
+            WriteFixedModelShadows(json,app);
+            json.Object("coverage");
+            D3DSURFACE_DESC coverageDesc{};
+            const bool coverageValid=app->Renderer()->shadowSurface &&
+                SUCCEEDED(app->Renderer()->shadowSurface->GetDesc(&coverageDesc));
+            const auto* coverageMatrix=reinterpret_cast<const float*>(&app->LightViewProjection());
+            const double coverageScale=std::sqrt(double(coverageMatrix[0])*coverageMatrix[0]+
+                double(coverageMatrix[4])*coverageMatrix[4]+double(coverageMatrix[8])*coverageMatrix[8]);
+            json.Bool("valid",coverageValid);json.Integer("resolution",coverageDesc.Width);
+            json.Integer("height",coverageDesc.Height);
+            json.NumberOrNull("width",2/coverageScale,coverageScale>0 && std::isfinite(coverageScale));
+            json.NumberOrNull("texels_per_world_unit",coverageDesc.Width*coverageScale*.5,
+                coverageValid && std::isfinite(coverageScale));
+            UINT sampleWidth=0,sampleHeight=0;
+            const bool sampleValid=ShadowSampleDimensions(app,sampleWidth,sampleHeight);
+            json.Integer("sample_width",sampleWidth);json.Integer("sample_height",sampleHeight);
+            WriteShadowDensity(json,MeasureShadowDensity(coverageMatrix,sampleWidth,sampleHeight),referenceDensity,sampleValid,
+                true,planInputs.valid?planInputs.coverageDensity:0);
+            WriteCoverageFixedLimit(json,AssessCoverageFixedLimit(coverageMatrix,
+                MeasureShadowDensity(coverageMatrix,sampleWidth,sampleHeight),referenceDensity,planInputs),planInputs);
+            json.Null("near_depth");json.Null("far_depth");json.Null("blend_start");
+            writeMatrix("projection",coverageMatrix);
+            json.End();
+            const char* layerNames[]{"middle","near","bridge"};
+            for(unsigned layer=0;layer<3;++layer) {
+                const auto info=shadow_filter::ReadDetailInfo(app,layer);
+                const auto& matrix=info.projection;
+                const double scale=std::sqrt(double(matrix[0])*matrix[0]+double(matrix[4])*matrix[4]+double(matrix[8])*matrix[8]);
+                json.Object(layerNames[layer]);
+                json.Bool("valid",info.valid);json.Integer("resolution",info.size);
+                json.NumberOrNull("width",2/scale,scale>0 && std::isfinite(scale));
+                json.NumberOrNull("texels_per_world_unit",info.size*scale*.5,info.valid && std::isfinite(scale));
+                const auto actual=MeasureShadowDensity(matrix.data(),info.size,info.size);
+                const auto plan=AssessDetailSampling(info,actual,referenceDensity,app->AdaptiveShadowResolution(),
+                    reinterpret_cast<const float*>(&app->WorldViewProjection()),planInputs,layer);
+                WriteShadowDensity(json,actual,referenceDensity,info.valid,true,plan.requested);
+                WriteDetailSamplingPlan(json,plan);
+                json.NumberOrNull("density_floor",info.densityFloor,info.valid && std::isfinite(info.densityFloor));
+                json.NumberOrNull("near_depth",info.nearDepth,info.valid && std::isfinite(info.nearDepth));
+                json.NumberOrNull("far_depth",info.farDepth,info.valid && std::isfinite(info.farDepth));
+                json.NumberOrNull("blend_start",info.blendStart,info.valid && std::isfinite(info.blendStart));
+                writeMatrix("projection",matrix.data());
+                json.End();
+            }
+            json.End();
+            FILE* file=nullptr;
+            if(_wfopen_s(&file,jsonPath.c_str(),L"wb") || !file)return kExitJson;
+            const std::string text=json.Finish();
+            const std::size_t written=std::fwrite(text.data(),1,text.size(),file);
+            if(std::fclose(file)!=0 || written!=text.size())return kExitJson;
+            if(index%10==0 || index+1==options.sweepFrames)
+                std::printf("shadow_camera_sweep frame=%d/%d distance=%.6g image=%ls\n",
+                    index+1,options.sweepFrames,camera[3],imagePath.c_str());
+        }
+        setCamera(start);
+        renderFrozenPose();
+        if(!flush())return kExitFlush;
+    }
+
+    if (options.verifyShadowModes) {
+        auto* renderer = app->Renderer();
+        if (!UseEffectModelRenderer(app) || !renderer || !renderer->effect) {
+            std::fputs("shadow mode verification requires the DX9 effect model renderer\n", stderr);
+            return kExitUsage;
+        }
+        std::error_code pathError;
+        const auto output = std::filesystem::absolute(std::filesystem::path(options.output), pathError);
+        if (pathError) return kExitSurface;
+        std::filesystem::create_directories(output.parent_path(), pathError);
+        if (pathError) return kExitSurface;
+        const auto stem = (output.parent_path() / output.stem()).wstring();
+        const std::wstring reportPath = stem + L".shadow-modes.json";
+        struct ModeSnapshot {
+            int mode = 0;
+            bool comparisonRead = false, coverageValid = false, expectedMatches = false;
+            UINT coverageWidth = 0, coverageHeight = 0, sampleWidth = 0, sampleHeight = 0;
+            unsigned referenceSize = 0, maximumSize = 0;
+            double referenceDensity=0;
+            bool densityWithinPlan=false,sharedDepth=false;
+            ShadowPlanInputs planInputs{};
+            std::array<DetailSamplingPlan,3> plans{};
+            ShadowDensity coverageDensity{};
+            CoverageFixedLimit coverageFixedLimit{};
+            std::array<ShadowDensity,3> detailDensity{};
+            float light[3]{};
+            std::array<float,16> coverage{}, toNative{}, expected{}, camera{}, lens{};
+            std::array<double,16> composed{};
+            std::array<shadow_filter::DetailInfo,3> details{};
+            double maxError = 0;
+            std::wstring image;
+        };
+        std::array<ModeSnapshot,3> snapshots{};
+        // ID3DXEffect::GetMatrix is slot 39, immediately after SetMatrix (38).
+        // Read the live effect parameter rather than recomputing the CPU plan.
+        const auto FxGetMatrix = [](void* effect, const char* name, d3dx::D3DXMATRIXF* matrix) {
+            using Fn = HRESULT(WINAPI*)(void*,const char*,d3dx::D3DXMATRIXF*);
+            return d3dx::EffectMethod<Fn,39>(effect)(effect,name,matrix);
+        };
+        const int savedMode = app->SelfShadowMode();
+        const auto savedEnabled = app->state.selfShadowEnabled;
+        // Same-mode control: compare this frame with the formal mode-1 frame
+        // before attributing small raster/cache differences to switching modes.
+        const std::wstring controlImage=stem+L".mode-1-control-start.png";
+        for (int settle=0;settle<3;++settle)renderFrozenPose(1);
+        if (!flush())return kExitFlush;
+        if (!saveFrozenImage(controlImage))return kExitSurface;
+        const int modes[]{1,2,1};
+        const wchar_t* suffixes[]{L".mode-1.png",L".mode-2.png",L".mode-1-repeat.png"};
+        for (unsigned index=0;index<snapshots.size();++index) {
+            // The last timed FrameDriver may leave newer bone matrices than
+            // vertex buffers. Settle that same pose without advancing it.
+            for (int settle=0;settle<3;++settle)renderFrozenPose(modes[index]);
+            if (!flush()) return kExitFlush;
+            auto& snapshot=snapshots[index];
+            snapshot.mode=app->SelfShadowMode();
+            snapshot.image=stem+suffixes[index];
+            if (!saveFrozenImage(snapshot.image)) return kExitSurface;
+            std::copy_n(app->LightDirection(),3,snapshot.light);
+            std::copy_n(reinterpret_cast<const float*>(&app->WorldViewProjection()),16,snapshot.camera.begin());
+            std::copy_n(reinterpret_cast<const float*>(&app->LightViewProjection()),16,snapshot.coverage.begin());
+            D3DSURFACE_DESC desc{};
+            snapshot.coverageValid=renderer->shadowSurface && SUCCEEDED(renderer->shadowSurface->GetDesc(&desc));
+            snapshot.coverageWidth=desc.Width;snapshot.coverageHeight=desc.Height;
+            snapshot.coverageValid &= ShadowSampleDimensions(app,snapshot.sampleWidth,snapshot.sampleHeight);
+            snapshot.coverageDensity=MeasureShadowDensity(snapshot.coverage.data(),snapshot.sampleWidth,snapshot.sampleHeight);
+            snapshot.referenceSize=app->ShadowResolutionLimit();
+            snapshot.referenceDensity=NativeShadowSamplingDensity(snapshot.light,app->ShadowDistance(),
+                snapshot.mode,snapshot.referenceSize);
+            D3DCAPS9 shadowCaps{};
+            if (SUCCEEDED(device->GetDeviceCaps(&shadowCaps)))
+                snapshot.maximumSize=(std::min)({8192u,static_cast<unsigned>(shadowCaps.MaxTextureWidth),
+                    static_cast<unsigned>(shadowCaps.MaxTextureHeight),snapshot.referenceSize*2u});
+            const bool lensRead=SUCCEEDED(device->GetTransform(D3DTS_PROJECTION,
+                reinterpret_cast<D3DMATRIX*>(snapshot.lens.data())));
+            snapshot.planInputs=ReadShadowPlanInputs(app);
+            snapshot.comparisonRead=SUCCEEDED(FxGetMatrix(renderer->effect,"MdsShadowToNative",
+                reinterpret_cast<d3dx::D3DXMATRIXF*>(snapshot.toNative.data())));
+            snapshot.expected=NativeShadowComparisonProjection(snapshot.light,snapshot.mode);
+            snapshot.expectedMatches=snapshot.comparisonRead;
+            for (int row=0;row<4;++row)for (int column=0;column<4;++column) {
+                double value=0;
+                for (int axis=0;axis<4;++axis)
+                    value+=double(snapshot.coverage[row*4+axis])*snapshot.toNative[axis*4+column];
+                const int cell=row*4+column;
+                snapshot.composed[cell]=value;
+                const double error=std::abs(value-snapshot.expected[cell]);
+                snapshot.maxError=(std::max)(snapshot.maxError,error);
+                snapshot.expectedMatches &= std::isfinite(value) &&
+                    error<=2e-5*(std::max)(1.0,std::abs(double(snapshot.expected[cell])));
+            }
+            snapshot.densityWithinPlan=snapshot.coverageValid && snapshot.planInputs.valid &&
+                ShadowDensityWithinReference(snapshot.coverageDensity,snapshot.planInputs.coverageDensity);
+            snapshot.coverageFixedLimit=AssessCoverageFixedLimit(snapshot.coverage.data(),snapshot.coverageDensity,
+                snapshot.referenceDensity,snapshot.planInputs);
+            snapshot.sharedDepth=true;
+            for (unsigned layer=0;layer<snapshot.details.size();++layer) {
+                const auto info=shadow_filter::ReadDetailInfo(app,layer);
+                snapshot.details[layer]=info;
+                const auto density=MeasureShadowDensity(info.projection.data(),info.size,info.size);
+                snapshot.detailDensity[layer]=density;
+                snapshot.plans[layer]=AssessDetailSampling(info,density,snapshot.referenceDensity,
+                    app->AdaptiveShadowResolution(),snapshot.camera.data(),snapshot.planInputs,layer);
+                if (info.valid) {
+                    snapshot.densityWithinPlan &= snapshot.plans[layer].known && snapshot.plans[layer].matchesCapacity &&
+                        snapshot.plans[layer].allocationWithinBudget;
+                    for(int row=0;row<4;++row)for(int column=2;column<4;++column)
+                        snapshot.sharedDepth &= info.projection[row*4+column]==snapshot.coverage[row*4+column];
+                }
+            }
+            snapshot.densityWithinPlan &= lensRead;
+        }
+        const auto sameGeometry = [](const ModeSnapshot& a,const ModeSnapshot& b) {
+            if (a.coverageValid!=b.coverageValid || a.coverageWidth!=b.coverageWidth ||
+                a.coverageHeight!=b.coverageHeight ||
+                std::memcmp(a.coverage.data(),b.coverage.data(),sizeof(a.coverage))!=0) return false;
+            for (unsigned layer=0;layer<a.details.size();++layer) {
+                const auto& x=a.details[layer];const auto& y=b.details[layer];
+                if (x.valid!=y.valid || x.size!=y.size ||
+                    std::memcmp(x.projection.data(),y.projection.data(),sizeof(x.projection))!=0 ||
+                    x.nearDepth!=y.nearDepth || x.farDepth!=y.farDepth ||
+                    x.blendStart!=y.blendStart || x.densityFloor!=y.densityFloor) return false;
+            }
+            return true;
+        };
+        const auto sameDepth = [](const ModeSnapshot& a,const ModeSnapshot& b) {
+            for(int row=0;row<4;++row)for(int column=2;column<4;++column)
+                if(a.coverage[row*4+column]!=b.coverage[row*4+column])return false;
+            return a.sharedDepth && b.sharedDepth;
+        };
+        const auto sameSlabs = [&](const ModeSnapshot& a,const ModeSnapshot& b) {
+            for(unsigned layer=0;layer<a.details.size();++layer) {
+                const auto& x=a.details[layer];const auto& y=b.details[layer];
+                if(x.nearDepth!=y.nearDepth || x.farDepth!=y.farDepth ||
+                   ((!app->AdaptiveShadowResolution() || layer==2) && x.blendStart!=y.blendStart))return false;
+            }
+            return true;
+        };
+        const bool depthUnchanged=sameDepth(snapshots[0],snapshots[1]) && sameDepth(snapshots[0],snapshots[2]);
+        const bool slabsUnchanged=sameSlabs(snapshots[0],snapshots[1]) && sameSlabs(snapshots[0],snapshots[2]);
+        const bool samplingWithinPlan=std::all_of(snapshots.begin(),snapshots.end(),[](const ModeSnapshot& value) {
+            return value.densityWithinPlan;
+        });
+        const bool nearestPlanMet=std::all_of(snapshots.begin(),snapshots.end(),[](const ModeSnapshot& value) {
+            return value.plans[1].known && value.plans[1].matchesCapacity;
+        });
+        const bool farSamplingWithinFixed=std::all_of(snapshots.begin(),snapshots.end(),[](const ModeSnapshot& value) {
+            return value.coverageFixedLimit.known && value.coverageFixedLimit.within &&
+                (!value.details[2].valid || (value.plans[2].known &&
+                    (value.plans[2].closeLayer || value.plans[2].farWithinFixed)));
+        });
+        const bool farFixedFade=std::all_of(snapshots.begin(),snapshots.end(),[](const ModeSnapshot& value) {
+            for(unsigned layer=0;layer<3;++layer)
+                if(value.details[layer].valid && (!value.plans[layer].known || !value.plans[layer].fixedBlendMatches))return false;
+            return true;
+        });
+        const bool expectedChange=snapshots[0].expected!=snapshots[1].expected;
+        const bool comparisonChanged=snapshots[0].toNative!=snapshots[1].toNative;
+        const bool comparisonRestored=std::memcmp(snapshots[0].toNative.data(),snapshots[2].toNative.data(),
+            sizeof(snapshots[0].toNative))==0;
+        const bool geometryUnchanged=sameGeometry(snapshots[0],snapshots[1]);
+        const bool geometryRestored=sameGeometry(snapshots[0],snapshots[2]);
+        const bool lightUnchanged=std::memcmp(snapshots[0].light,snapshots[1].light,sizeof(snapshots[0].light))==0 &&
+            std::memcmp(snapshots[0].light,snapshots[2].light,sizeof(snapshots[0].light))==0;
+        const bool cameraUnchanged=std::memcmp(snapshots[0].camera.data(),snapshots[1].camera.data(),sizeof(snapshots[0].camera))==0 &&
+            std::memcmp(snapshots[0].camera.data(),snapshots[2].camera.data(),sizeof(snapshots[0].camera))==0;
+        const bool expectedMatches=std::all_of(snapshots.begin(),snapshots.end(),[](const ModeSnapshot& value) {
+            return value.comparisonRead && value.coverageValid && value.expectedMatches;
+        });
+        // At |light.z|>0.9 the original modes can use the same comparison
+        // matrix; their shader coefficients still differ. Do not false-fail it.
+        const bool ok=expectedMatches && expectedChange==comparisonChanged && comparisonRestored &&
+            geometryRestored && depthUnchanged && slabsUnchanged && samplingWithinPlan &&
+            nearestPlanMet && farSamplingWithinFixed && farFixedFade && lightUnchanged && cameraUnchanged &&
+            snapshots[0].mode==1 && snapshots[1].mode==2 && snapshots[2].mode==1;
+        std::string report;
+        Json json(report);
+        json.String("tool","frame_benchmark");
+        json.String("schema","frame_benchmark/shadow-modes/6");
+        json.String("scene_path",options.target);
+        json.String("mode_1_control_start_image",controlImage.c_str());
+        json.String("capture_sequence","1-control,1,2,1-repeat");
+        json.Integer("frozen_renders_per_capture",3);
+        json.Bool("filter_enhanced",app->ShadowFilterEnhanced());
+        json.Number("density_relative_tolerance",kShadowDensityTolerance);
+        json.Number("density_absolute_tolerance",1e-7);
+        json.Bool("physics_advanced",false);
+        json.Integer("slider",ShadowSliderPosition(app));
+        json.Bool("adaptive_resolution",app->AdaptiveShadowResolution());
+        json.Integer("viewport_width",requestedWidth);json.Integer("viewport_height",requestedHeight);
+        json.Number("matrix_scaled_tolerance",2e-5);
+        json.String("matrix_tolerance_rule","abs(actual-expected) <= 2e-5 * max(1, abs(expected))");
+        const auto writeMatrix = [&](const char* name,const auto& matrix) {
+            json.Array(name);
+            for (int row=0;row<4;++row) {
+                json.Item();
+                const char* keys[]{"x","y","z","w"};
+                for (int column=0;column<4;++column) {
+                    const auto value=matrix[row*4+column];
+                    if (std::isfinite(value)) json.Number(keys[column],value,9);
+                    else json.Null(keys[column]);
+                }
+                json.End();
+            }
+            json.End();
+        };
+        json.Array("frames");
+        for (const auto& snapshot:snapshots) {
+            json.Item();
+            json.Integer("mode",snapshot.mode);json.String("image",snapshot.image.c_str());
+            json.Number("reference_density",snapshot.referenceDensity,9);
+            json.Integer("reference_resolution",snapshot.referenceSize);
+            json.Integer("maximum_resolution",snapshot.maximumSize);
+            json.Object("light_direction");
+            json.Number("x",snapshot.light[0],9);json.Number("y",snapshot.light[1],9);json.Number("z",snapshot.light[2],9);
+            json.End();
+            writeMatrix("world_view_projection",snapshot.camera);
+            writeMatrix("camera_projection",snapshot.lens);
+            json.Bool("comparison_read",snapshot.comparisonRead);
+            writeMatrix("MdsShadowToNative",snapshot.toNative);
+            writeMatrix("coverage_times_to_native",snapshot.composed);
+            writeMatrix("expected_comparison_projection",snapshot.expected);
+            json.Number("comparison_max_error",snapshot.maxError,9);
+            json.Bool("expected_projection_matches",snapshot.expectedMatches);
+            json.Object("coverage");
+            json.Bool("valid",snapshot.coverageValid);
+            json.Integer("width",snapshot.coverageWidth);json.Integer("height",snapshot.coverageHeight);
+            json.Integer("sample_width",snapshot.sampleWidth);json.Integer("sample_height",snapshot.sampleHeight);
+            WriteShadowDensity(json,snapshot.coverageDensity,snapshot.referenceDensity,snapshot.coverageValid,
+                true,snapshot.planInputs.valid?snapshot.planInputs.coverageDensity:0);
+            WriteCoverageFixedLimit(json,snapshot.coverageFixedLimit,snapshot.planInputs);
+            writeMatrix("LightViewProjection",snapshot.coverage);
+            json.End();
+            const char* layerNames[]{"middle","near","bridge"};
+            for (unsigned layer=0;layer<snapshot.details.size();++layer) {
+                const auto& info=snapshot.details[layer];
+                json.Object(layerNames[layer]);
+                json.Bool("valid",info.valid);json.Integer("resolution",info.size);
+                WriteShadowDensity(json,snapshot.detailDensity[layer],snapshot.referenceDensity,info.valid,
+                    true,snapshot.plans[layer].requested);
+                WriteDetailSamplingPlan(json,snapshot.plans[layer]);
+                json.Number("near_depth",info.nearDepth,9);json.Number("far_depth",info.farDepth,9);
+                json.Number("blend_start",info.blendStart,9);json.Number("density_floor",info.densityFloor,9);
+                writeMatrix("projection",info.projection);
+                json.End();
+            }
+            json.End();
+        }
+        json.End();
+        json.Object("checks");
+        json.Bool("comparison_change_expected",expectedChange);
+        json.Bool("comparison_changed",comparisonChanged);
+        json.Bool("comparison_restored_exact",comparisonRestored);
+        json.Bool("geometry_unchanged_exact",geometryUnchanged);json.Bool("geometry_restored_exact",geometryRestored);
+        json.Bool("camera_unchanged_exact",cameraUnchanged);
+        json.Bool("shared_z_unchanged",depthUnchanged);json.Bool("depth_slabs_unchanged",slabsUnchanged);
+        json.Bool("sampling_matches_plan_and_capacity",samplingWithinPlan);
+        json.Bool("nearest_matches_plan_and_capacity",nearestPlanMet);
+        json.Bool("far_layers_within_fixed_capacity",farSamplingWithinFixed);
+        json.Bool("depth_fades_match_geometry",farFixedFade);
+        json.Bool("light_unchanged",lightUnchanged);json.Bool("expected_projection_matches",expectedMatches);
+        json.Bool("ok",ok);json.End();
+        FILE* file=nullptr;
+        if (_wfopen_s(&file,reportPath.c_str(),L"wb") || !file)return kExitJson;
+        const std::string text=json.Finish();
+        const auto written=std::fwrite(text.data(),1,text.size(),file);
+        if (std::fclose(file)!=0 || written!=text.size())return kExitJson;
+        std::printf("shadow_modes comparison_changed=%u change_expected=%u geometry_unchanged=%u "
+                    "comparison_restored_exact=%u geometry_restored=%u expected_matches=%u z_unchanged=%u "
+                    "slabs_unchanged=%u sampling_matches_plan=%u near_plan_met=%u far_within_fixed=%u "
+                    "far_fixed_fade=%u ok=%u report=%ls\n",
+            comparisonChanged,expectedChange,geometryUnchanged,comparisonRestored,geometryRestored,expectedMatches,
+            depthUnchanged,slabsUnchanged,samplingWithinPlan,nearestPlanMet,farSamplingWithinFixed,farFixedFade,ok,reportPath.c_str());
+        renderFrozenPose(savedMode);
+        app->state.selfShadowEnabled=savedEnabled;
+        if (!flush())return kExitFlush;
+        if (!ok)return kExitShadowModes;
+    }
+
     if (options.verifyShadowZoom) {
         if (!throughput || native || !options.output || !UseEffectModelRenderer(app)) return 50;
         const float savedDistance = app->CameraDistance(), savedRange = app->ShadowDistance();
@@ -1670,6 +2526,12 @@ int wmain(int argc, wchar_t** argv) {
         const float fixedRange = app->ShadowDistance();
         const int fixedPosition = ShadowSliderPosition(app);
         const auto fixed = capture(L".fixed.png");
+        const auto hasDetail = [&]() {
+            for(unsigned layer=0;layer<3;++layer)
+                if(shadow_filter::ReadDetailInfo(app,layer).valid)return true;
+            return false;
+        };
+        const bool fixedSingleGrid=!hasDetail();
         const auto fixedProjection = app->LightViewProjection();
         struct Caster { mdl::ModelMaterialRecord* material; unsigned flags; };
         std::vector<Caster> casters;
@@ -1691,6 +2553,7 @@ int wmain(int argc, wchar_t** argv) {
             SendMessageW(app->MainWindow(), WM_HSCROLL, TB_THUMBPOSITION, reinterpret_cast<LPARAM>(slider));
         };
         capture(L".dynamic.png");
+        const bool dynamicHasDetail=hasDetail();
         const bool sharedCoverage = app->ShadowDistance() == fixedRange &&
             std::memcmp(&fixedProjection, &app->LightViewProjection(), sizeof(fixedProjection)) == 0;
         precision(9500);
@@ -1699,6 +2562,10 @@ int wmain(int argc, wchar_t** argv) {
         precision(fixedPosition);
         toggle(false);
         const auto restored = capture(L".restored.png");
+        const bool restoredSingleGrid=!hasDetail();
+        std::printf("shadow_cycle fixed_single_grid=%u dynamic_detail=%u restored_single_grid=%u\n",
+            fixedSingleGrid,dynamicHasDetail,restoredSingleGrid);
+        if(!fixedSingleGrid || !dynamicHasDetail || !restoredSingleGrid)return 49;
         std::size_t occludedPixels = 0, changedPixels = 0;
         if (fixed.empty() || fixed.size() != unoccluded.size() || fixed.size() != restored.size()) return 48;
         for (std::size_t i = 0; i < fixed.size(); ++i) {
@@ -1917,12 +2784,22 @@ int wmain(int argc, wchar_t** argv) {
         json.Integer("requested_sort_precision", options.sortPrecision);
         json.Integer("effective_sort_precision", static_cast<int>(app->TransparentMaterialSortPrecision()));
         json.Bool("sorting_enabled", app->AutoTransparentMaterialSortingEnabled());
+        json.Bool("sorting_cross_objects", app->TransparentSortCrossObjects());
         json.Integer("shadow_width", app->Renderer()->renderTargetWidth);
         json.Bool("toggle_verification_passed", viewTogglesVerified);
         json.End();
         json.Object("self_shadow");
+        json.Bool("ground_shadow_enabled", app->GroundShadowEnabled() != 0);
+        json.Bool("mme_loaded", GetModuleHandleW(L"MMEffect.dll") != nullptr);
         json.Bool("adaptive_resolution", app->AdaptiveShadowResolution());
         json.Integer("shadow_slider", ShadowSliderPosition(app));
+        json.Bool("filter_enhanced",app->ShadowFilterEnhanced());
+        const double referenceDensity=NativeShadowSamplingDensity(app->LightDirection(),app->ShadowDistance(),
+            app->SelfShadowMode(),app->ShadowResolutionLimit());
+        const auto planInputs=ReadShadowPlanInputs(app);
+        json.Number("reference_density",referenceDensity,9);
+        json.Integer("reference_resolution",app->ShadowResolutionLimit());
+            WriteFixedModelShadows(json,app);
         json.Array("light_projection");
         const auto* shadowMatrix = reinterpret_cast<const float*>(&app->LightViewProjection());
         for (int row = 0; row < 4; ++row) {
@@ -1935,6 +2812,57 @@ int wmain(int argc, wchar_t** argv) {
         }
         json.End();
         json.Integer("resolution", app->Renderer()->renderTargetWidth);
+        UINT sampleWidth=0,sampleHeight=0;
+        const bool sampleValid=ShadowSampleDimensions(app,sampleWidth,sampleHeight);
+        json.Integer("sample_width",sampleWidth);json.Integer("sample_height",sampleHeight);
+        WriteShadowDensity(json,MeasureShadowDensity(shadowMatrix,sampleWidth,sampleHeight),referenceDensity,sampleValid,
+            false,planInputs.valid?planInputs.coverageDensity:0);
+        WriteCoverageFixedLimit(json,AssessCoverageFixedLimit(shadowMatrix,
+            MeasureShadowDensity(shadowMatrix,sampleWidth,sampleHeight),referenceDensity,planInputs),planInputs);
+        const auto detailShadow = shadow_filter::ReadDetailInfo(app);
+        const auto nearShadow=shadow_filter::ReadDetailInfo(app,1);
+        const auto& nm=nearShadow.projection;
+        const double nearScale=std::sqrt(double(nm[0])*nm[0]+double(nm[4])*nm[4]+double(nm[8])*nm[8]);
+        const double nearDensity=nearShadow.size*nearScale*.5;
+        json.Bool("near_valid",nearShadow.valid);
+        json.Integer("near_resolution",nearShadow.size);
+        json.Number("near_coverage_width",nearScale>0?2/nearScale:0);
+        json.Number("near_density_floor",nearShadow.densityFloor);
+        json.Number("near_texels_per_world_unit",nearDensity);
+        json.NumberOrNull("near_reference_ratio",referenceDensity>0?nearDensity/referenceDensity:0,nearShadow.valid && referenceDensity>0);
+        json.Bool("near_density_within_reference",nearShadow.valid &&
+            ShadowDensityWithinReference(MeasureShadowDensity(nm.data(),nearShadow.size,nearShadow.size),referenceDensity));
+        json.Bool("near_density_floor_met",nearShadow.valid && nearDensity+1e-3>=nearShadow.densityFloor);
+        const auto* cameraMatrix=reinterpret_cast<const float*>(&app->WorldViewProjection());
+        json.Object("near_sampling_plan");
+        const auto nearActual=MeasureShadowDensity(nm.data(),nearShadow.size,nearShadow.size);
+        const auto nearPlan=AssessDetailSampling(nearShadow,nearActual,referenceDensity,
+            app->AdaptiveShadowResolution(),cameraMatrix,planInputs,1);
+        WriteShadowDensity(json,nearActual,referenceDensity,nearShadow.valid,true,nearPlan.requested);
+        WriteDetailSamplingPlan(json,nearPlan);json.End();
+        json.Bool("detail_valid", detailShadow.valid);
+        json.Integer("detail_resolution", detailShadow.size);
+        if (detailShadow.valid) {
+            const auto& m=detailShadow.projection;
+            const float scale=std::sqrt(m[0]*m[0]+m[4]*m[4]+m[8]*m[8]);
+            json.Number("detail_coverage_width",2.f/scale);
+            json.Number("detail_texels_per_world_unit",detailShadow.size*scale*.5f);
+            json.NumberOrNull("detail_reference_ratio",referenceDensity>0?detailShadow.size*scale*.5/referenceDensity:0,referenceDensity>0);
+        }
+        json.Object("detail_sampling_plan");
+        const auto detailActual=MeasureShadowDensity(detailShadow.projection.data(),detailShadow.size,detailShadow.size);
+        const auto detailPlan=AssessDetailSampling(detailShadow,detailActual,referenceDensity,
+            app->AdaptiveShadowResolution(),cameraMatrix,planInputs,0);
+        WriteShadowDensity(json,detailActual,referenceDensity,detailShadow.valid,true,detailPlan.requested);
+        WriteDetailSamplingPlan(json,detailPlan);json.End();
+        const auto bridgeShadow=shadow_filter::ReadDetailInfo(app,2);
+        json.Object("bridge");json.Bool("valid",bridgeShadow.valid);json.Integer("resolution",bridgeShadow.size);
+        const auto bridgeActual=MeasureShadowDensity(bridgeShadow.projection.data(),bridgeShadow.size,bridgeShadow.size);
+        const auto bridgePlan=AssessDetailSampling(bridgeShadow,bridgeActual,referenceDensity,
+            app->AdaptiveShadowResolution(),cameraMatrix,planInputs,2);
+        WriteShadowDensity(json,bridgeActual,referenceDensity,bridgeShadow.valid,true,bridgePlan.requested);
+        WriteDetailSamplingPlan(json,bridgePlan);
+        json.End();
         D3DSURFACE_DESC actualShadow{};
         if (app->Renderer()->shadowSurface && SUCCEEDED(app->Renderer()->shadowSurface->GetDesc(&actualShadow))) {
             json.Integer("surface_width", actualShadow.Width);
@@ -2068,7 +2996,7 @@ int wmain(int argc, wchar_t** argv) {
             std::fputs("--save-scene needs a new path shorter than 256 characters\n", stderr);
             jsonResult = kExitSaveScene;
         } else {
-            for (const Copy& copy : copyRecords) {
+            if (layoutRequested) for (const Copy& copy : copyRecords) {
                 auto& model = *mdl::Mdl(copy.model);
                 if (!model.boneTable || !model.boneKeys || !model.boneCount ||
                     model.boneCount > mdl::kBoneKeyCapacity || model.rigidCount != 0) {
@@ -2103,14 +3031,17 @@ int wmain(int argc, wchar_t** argv) {
                 SetWindowTextW(GetDlgItem(app->MainWindow(), panel::kPlayStartFrameEdit), L"0");
                 SetWindowTextW(GetDlgItem(app->MainWindow(), panel::kPlayStopFrameEdit), L"300000");
                 wcscpy_s(app->EnvFileName(), 256, options.saveScene);
-                SaveSceneFile(app);
+                const bool savedOk = layoutRequested ? SaveSceneFile(app)
+                    : SaveSceneCopy(app, options.saveScene);
                 FILE* saved = nullptr;
                 char header[24]{};
-                if (_wfopen_s(&saved, options.saveScene, L"rb") != 0 || !saved) {
+                if (!savedOk || _wfopen_s(&saved, options.saveScene, L"rb") != 0 || !saved) {
                     jsonResult = kExitSaveScene;
                 } else {
                     const auto bytes = std::fread(header, 1, sizeof header, saved);
-                    if (bytes != sizeof header || std::memcmp(header, "Polygon Movie maker 0002", 23) != 0)
+                    if (bytes != sizeof header ||
+                        (std::memcmp(header, "Polygon Movie maker 0002", 23) != 0 &&
+                         std::memcmp(header, "Polygon Movie maker 0003", 23) != 0))
                         jsonResult = kExitSaveScene;
                     std::fclose(saved);
                 }

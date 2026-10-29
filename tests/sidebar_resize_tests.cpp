@@ -559,12 +559,19 @@ void CheckShadowFilter(MMDApp* app) {
     const bool adaptive = app->AdaptiveShadowResolution(), filter = app->ShadowFilterEnhanced();
     const float range = app->ShadowDistance();
     const int modified = app->SceneModified(), language = app->EnglishUI();
-    HWND host = app->MainWindow(), button = GetDlgItem(host, panel::kShadowFilterCheckbox);
+    HWND host = app->MainWindow();
+    HWND dynamic = GetDlgItem(host, panel::kAdaptiveShadowCheckbox);
+    HWND button = GetDlgItem(host, panel::kShadowFilterCheckbox);
+    Check(dynamic != nullptr && IsWindowEnabled(dynamic), "full build offers dynamic precision");
     Check(button != nullptr && IsWindowEnabled(button), "full build offers the spline filter");
+    std::filesystem::remove(preference);
+    app->AdaptiveShadowResolution() = true;
+    LoadShadowResolutionPreference(app);
+    Check(!app->AdaptiveShadowResolution(), "missing preference selects the uniform precision");
     { std::ofstream out(preference); out << "1 9999\n"; }
     LoadShadowResolutionPreference(app);
     Check(app->AdaptiveShadowResolution() && !app->ShadowFilterEnhanced(),
-          "old numeric precision never opts into enhanced filtering");
+          "stored dynamic precision is restored and the legacy numeric field is ignored");
     for (bool enabled : {true, false, true}) {
         SendMessageW(button, BM_SETCHECK, enabled ? BST_CHECKED : BST_UNCHECKED, 0);
         SendMessageW(host, WM_COMMAND, MAKEWPARAM(panel::kShadowFilterCheckbox, BN_CLICKED), reinterpret_cast<LPARAM>(button));
@@ -581,10 +588,14 @@ void CheckShadowFilter(MMDApp* app) {
         const RECT left = ControlBounds(host, panel::kAdaptiveShadowCheckbox);
         const RECT right = ControlBounds(host, panel::kShadowFilterCheckbox);
         Check(left.right <= right.left && left.top == right.top,
-              "filter is on the right of dynamic precision without overlap");
-        wchar_t caption[64]{}; GetWindowTextW(button, caption, 64);
+              "filter sits to the right of dynamic precision on the same row");
+        wchar_t caption[64]{}, dynamicCaption[64]{};
+        GetWindowTextW(button, caption, 64);
+        GetWindowTextW(dynamic, dynamicCaption, 64);
         Check(std::wcscmp(caption, lang == 2 ? L"滤波加强" : lang == 1 ? L"Smoothing" : L"平滑化") == 0,
               "filter caption follows the UI language");
+        Check(std::wcscmp(dynamicCaption, lang == 2 ? L"动态精度" : lang == 1 ? L"Dynamic" : L"動的精度") == 0,
+              "dynamic precision caption follows the UI language");
         HDC dc = GetDC(button);
         HGDIOBJ font = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(button, WM_GETFONT, 0, 0)));
         SIZE extent{}; GetTextExtentPoint32W(dc, caption, static_cast<int>(std::wcslen(caption)), &extent);
@@ -594,6 +605,7 @@ void CheckShadowFilter(MMDApp* app) {
     app->EnglishUI() = language; LocalizeUI(app);
     app->AdaptiveShadowResolution() = adaptive; app->ShadowFilterEnhanced() = filter;
     SendMessageW(button, BM_SETCHECK, filter ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(dynamic, BM_SETCHECK, adaptive ? BST_CHECKED : BST_UNCHECKED, 0);
     if (existed) { std::ofstream out(preference, std::ios::binary); out << previous; }
     else std::filesystem::remove(preference);
 }

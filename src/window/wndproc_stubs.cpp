@@ -172,6 +172,7 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
                 unsigned char* flags =
                     mikumikustudio::mdl::Mdl(model)->bonePhysicsState;
                 flags[bone] = 1;
+                s.SceneModified()=1;
                 PostViewRefresh(app);
             } else {
                 PostViewRefresh(app);                            // 0x46252E
@@ -182,7 +183,8 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
     case 0x21C:                                                  // 0x462314
     case 0x21D:
     case 0x21E: {
-        const int axis = id - 0x21C;  // which degree cache stays non-zero
+        const int axis = id - 0x21C;
+        SendDlgItemMessageA(separate ? separate : main,panel::kReadoutRotXEdit+axis,EM_SETMODIFY,FALSE,0);  // which degree cache stays non-zero
         if (s.CameraMode() == 0) {
             unsigned char* model = s.SelectedModel();
             const std::int32_t bone = mikumikustudio::mdl::Mdl(model)->selectedBone;
@@ -225,6 +227,7 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
                 unsigned char* flags =
                     mikumikustudio::mdl::Mdl(model)->bonePhysicsState;
                 flags[bone] = 1;
+                s.SceneModified()=1;
             }
             PostViewRefresh(app);                                // 0x46252E
         } else {

@@ -1,3 +1,6 @@
+#include "mikumikustudio/negative_frames.hpp"
+#include "mikumikustudio/frame_clipboard.hpp"
+#include "mikumikustudio/cache_manager.hpp"
 #include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/autosave.hpp"
@@ -8,6 +11,7 @@
 #include "mikumikustudio/mmv4mms.hpp"
 #include "mikumikustudio/plugin_menu.hpp"
 #include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/transparent_sort_cache.hpp"
 #include "mikumikustudio/wic_mov_recorder.hpp"
 #include "mikumikustudio/native_media.hpp"
 #include "mikumikustudio/native_mesh.hpp"
@@ -455,6 +459,8 @@ void TeardownDShowGraphCoUninit(DShowRecorder* rec) {
 // VA 0x00462C40 - ShutdownCleanup  (original: sub_462C40, __thiscall, app)
 // =========================================================================//
 void ShutdownCleanup(MMDApp* app) {
+    negative_frames::Reset(app);
+    frame_clipboard::Reset(app);
     background_save::Wait(app);
     viewport_render_scale::Release(app);
     antialias::Release(app);
@@ -463,6 +469,8 @@ void ShutdownCleanup(MMDApp* app) {
     AbortPngMovRecording(app->Recorder());
     image_sequence::Abort(app);
     ReleaseTransparentCapture(app);
+    transparent_sort_cache::Release(app);
+    cache_manager::Shutdown();
     mmv4mms::Shutdown();
     plugin_menu::Shutdown(app);
     native_mesh::Shutdown();

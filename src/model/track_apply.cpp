@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // VA 0x00412330 - ApplyGravityTrack (was Sub412330)  (0x7F1 bytes)  gravity-track apply + physics
@@ -98,7 +99,11 @@ void RefreshPhysicsDialog(MMDApp* app) {
 }  // namespace
 
 // ---- VA 0x00412330 --------------------------------------------------------
-void ApplyGravityTrack(MMDApp* app) {  // was Sub412330, VA 0x00412330
+void ApplyGravityTrack(MMDApp* app) {
+    if(app && app->CurrentFrame()<0) {
+        const auto frame=app->CurrentFrame();app->CurrentFrame()=0;ApplyGravityTrack(app);app->CurrentFrame()=frame;
+        negative_frames::EvaluateGlobals(app,frame);return;
+    }  // was Sub412330, VA 0x00412330
     const std::uint32_t frame = app->state.currentFrame;
     mdl::GravityKey* const track = app->GravityKeys();
     if (track == nullptr) return;   // guard: 0x466D20 allocates the track

@@ -21,12 +21,17 @@
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/global_key_layout.hpp"
 #include "mikumikustudio/frame_scope.hpp"
+#include "mikumikustudio/frame_clipboard.hpp"
+#include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/negative_frames.hpp"
+#include "mikumikustudio/key_pool.hpp"
 
 namespace mikumikustudio {
 bool PrepareFramePaste(MMDApp*);
 void CmdControl400(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void CmdViewMenu(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void CmdControl500(MMDApp*, HWND, std::uint16_t, std::uint16_t);
+void CmdFileMenu(MMDApp*, HWND, std::uint16_t, std::uint16_t);
 void DispatchLetterHotkeys(MMDApp*, HWND);
 void StepFrame(MMDApp*, bool);
 void RefreshAfterFrameApply(MMDApp*);
@@ -1263,12 +1268,382 @@ int RunDisplayFramePaste() {
 }
 
 #include "review_editing_checks.hpp"
+#if !MMD_ORIGINAL_PROFILE
 #include "curve_compatibility_review_checks.hpp"
+#endif
+
+namespace {
+bool framePasteExpectsDialog = false;
+unsigned framePasteExpectedDialogs = 0, framePasteUnexpectedDialogs = 0;
+LRESULT CALLBACK FramePasteDismissDialog(int code, WPARAM wp, LPARAM lp) {
+    if (code == HCBT_ACTIVATE) {
+        const HWND dialog = reinterpret_cast<HWND>(wp);
+        wchar_t type[32]{}; GetClassNameW(dialog, type, 32);
+        if (std::wcscmp(type, L"#32770") == 0) {
+            if (framePasteExpectsDialog) ++framePasteExpectedDialogs;
+            else ++framePasteUnexpectedDialogs;
+            // End the modal loop directly. Hiding and posting a button command
+            // from the activation hook can leave MessageBox waiting forever.
+            EndDialog(dialog, IDOK);
+        }
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+
+void SameModelFramePaste() {
+    Fixture f, other;
+    std::array<mdl::MorphRecord, 2> morphs{}, otherMorphs{};
+    for (auto* fixture : {&f, &other}) {
+        std::strcpy(fixture->bones[1].name, "duplicate");
+        std::strcpy(fixture->bones[2].name, "duplicate");
+        fixture->model->morphCount = 2;
+        fixture->model->physicsMode = 2;
+    }
+    for (auto* table : {&morphs, &otherMorphs})
+        for (auto& morph : *table) std::strcpy(morph.name, "same-face");
+    f.model->morphs = morphs.data();
+    other.model->morphs = otherMorphs.data();
+    // Two same-name tracks have different poses at the same frame, and the
+    // second track has another key so a paste must retain its relative time.
+    f.keys[1].next = 4; f.keys[4].previous = 1; f.keys[4].frame = 10;
+    f.keys[2].next = 5; f.keys[5].previous = 2; f.keys[5].frame = 10;
+    f.keys[5].next = 6; f.keys[6].previous = 5; f.keys[6].frame = 14;
+    for (int index : {4, 5, 6}) {
+        auto& key = f.keys[index];
+        key.position[0] = static_cast<float>(index * 3);
+        key.position[1] = -static_cast<float>(index);
+        key.rotation[3] = 1.f;
+        key.physicsDisabled = index == 5;
+        for (int channel = 0; channel < 16; ++channel)
+            key.interpolation[channel] = static_cast<std::uint8_t>(20 + index + channel);
+    }
+    f.morphKeys[0].next = 2; f.morphKeys[2].previous = 0;
+    f.morphKeys[2].frame = 10; f.morphKeys[2].value = .25f;
+    f.morphKeys[1].next = 3; f.morphKeys[3].previous = 1;
+    f.morphKeys[3].frame = 10; f.morphKeys[3].value = .75f;
+    f.morphKeys[3].next = 4; f.morphKeys[4].previous = 3;
+    f.morphKeys[4].frame = 14; f.morphKeys[4].value = .5f;
+    f.model->maxFrame = 14;
+    const std::array<mdl::BoneKey, 3> original{f.keys[4], f.keys[5], f.keys[6]};
+    const auto selectedBones = f.selection;
+    auto app = std::make_unique<MMDApp>(); app->state = MMDAppState{};
+    auto renderer = std::make_unique<D3DRenderer>();
+    std::memset(renderer.get(), 0, sizeof(*renderer));
+    app->Renderer() = renderer.get(); app->ModelSlot(0) = f.Raw();
+    app->ModelSlot(1) = other.Raw(); app->SelectedModelSlot() = 0;
+    auto* previous = g_Block; g_Block = app.get();
+    const auto clearMarks = [&] {
+        for (auto& key : f.keys) key.allocated = 0;
+        for (auto& key : f.morphKeys) key.allocated = 0;
+        for (auto& key : f.displayKeys) key.allocated = 0;
+    };
+    const auto find = [](const auto& keys, std::size_t root, std::uint32_t frame) {
+        for (std::size_t visited = 0, index = root; visited < keys.size(); ++visited) {
+            Check(index < keys.size(), "pasted track references stay inside the key pool");
+            if (keys[index].frame == frame) return static_cast<int>(index);
+            if (keys[index].frame > frame || !keys[index].next) return -1;
+            index = keys[index].next;
+        }
+        Check(false, "pasted tracks have no cycles");
+        return -1;
+    };
+    const auto samePose = [](const mdl::BoneKey& actual, const mdl::BoneKey& expected) {
+        return std::memcmp(actual.position, expected.position, sizeof actual.position) == 0 &&
+            std::memcmp(actual.rotation, expected.rotation, sizeof actual.rotation) == 0 &&
+            std::memcmp(actual.interpolation, expected.interpolation, sizeof actual.interpolation) == 0 &&
+            actual.physicsDisabled == expected.physicsDisabled;
+    };
+    const auto paste = [&](int frame) {
+        app->CurrentFrame() = frame;
+        Check(PrepareFramePaste(app.get()), "real same-model copy accepts repeated track names");
+        const auto dialogs = framePasteUnexpectedDialogs;
+        CmdControl400(app.get(), nullptr, 421, 0);
+        Check(framePasteUnexpectedDialogs == dialogs, "valid same-model paste shows no warning");
+        Check(f.selection == selectedBones, "frame paste preserves the selected bones");
+        f.CheckTracks();
+    };
+    const auto reject = [&](Fixture& destination, const char* description) {
+        const auto bonesBefore = destination.keys;
+        const auto morphsBefore = destination.morphKeys;
+        const auto selectedBefore = destination.selection;
+        const auto undoBefore = destination.model->undoState[0];
+        const auto dirtyBefore = app->SceneModified();
+        Check(!PrepareFramePaste(app.get()), description);
+        const auto dialogs = framePasteExpectedDialogs;
+        framePasteExpectsDialog = true;
+        CmdControl400(app.get(), nullptr, 421, 0);
+        framePasteExpectsDialog = false;
+        Check(framePasteExpectedDialogs == dialogs + 1, "rejected paste reports exactly one warning");
+        Check(std::memcmp(bonesBefore.data(), destination.keys.data(),
+                          bonesBefore.size() * sizeof(mdl::BoneKey)) == 0 &&
+              std::memcmp(morphsBefore.data(), destination.morphKeys.data(),
+                          morphsBefore.size() * sizeof(mdl::MorphKey)) == 0 &&
+              destination.selection == selectedBefore && destination.model->undoState[0] == undoBefore &&
+              app->SceneModified() == dirtyBefore,
+              "rejected paste preserves keys, key marks, bone selection, undo and dirty state");
+    };
+
+    clearMarks(); f.keys[5].allocated = f.morphKeys[3].allocated = 1;
+    CmdControl400(app.get(), nullptr, 420, 0);
+    Check(app->ClipboardCounts().bones == 1 && app->ClipboardCounts().morphs == 1 &&
+          frame_clipboard::BoneTarget(app.get(), f.Raw(), 0) == 2 &&
+          frame_clipboard::MorphTarget(app.get(), f.Raw(), 0) == 1,
+          "real copy remembers the second same-name bone and morph");
+    paste(30);
+    const int secondBone = find(f.keys, 2, 30), secondMorph = find(f.morphKeys, 1, 30);
+    Check(secondBone >= 0 && samePose(f.keys[secondBone], original[1]) &&
+          secondMorph >= 0 && f.morphKeys[secondMorph].value == .75f &&
+          find(f.keys, 1, 30) < 0 && find(f.morphKeys, 0, 30) < 0,
+          "single copied key returns to the second track without changing the first match");
+
+    clearMarks();
+    for (int index : {4, 5, 6}) f.keys[index].allocated = 1;
+    for (int index : {2, 3, 4}) f.morphKeys[index].allocated = 1;
+    CmdControl400(app.get(), nullptr, 420, 0);
+    Check(app->ClipboardCounts().bones == 3 && app->ClipboardCounts().morphs == 3,
+          "real copy includes both same-name tracks and their later keys");
+    paste(50);
+    const auto verifyBatch = [&] {
+        for (int i = 0; i < 3; ++i) {
+            const int bone = find(f.keys, i == 0 ? 1 : 2, i == 2 ? 54 : 50);
+            const int morph = find(f.morphKeys, i == 0 ? 0 : 1, i == 2 ? 54 : 50);
+            const float value[] = {.25f, .75f, .5f};
+            Check(bone >= 0 && samePose(f.keys[bone], original[i]) && f.keys[bone].allocated &&
+                  morph >= 0 && f.morphKeys[morph].value == value[i] && f.morphKeys[morph].allocated,
+                  "mixed paste retains each track's pose, curve, physics flag, value, time and key mark");
+            Check(samePose(f.keys[4 + i], original[i]), "paste leaves original key payloads unchanged");
+        }
+        f.CheckTracks();
+    };
+    verifyBatch();
+    CmdControl400(app.get(), nullptr, 400, 0);
+    Check(find(f.keys, 1, 50) < 0 && find(f.keys, 2, 50) < 0 && find(f.keys, 2, 54) < 0 &&
+          find(f.morphKeys, 0, 50) < 0 && find(f.morphKeys, 1, 50) < 0 && find(f.morphKeys, 1, 54) < 0 &&
+          find(f.keys, 2, 30) >= 0 && find(f.morphKeys, 1, 30) >= 0,
+          "one undo removes the whole mixed paste while retaining the earlier paste");
+    CmdControl400(app.get(), nullptr, 401, 0);
+    verifyBatch();
+
+    app->SelectedModelSlot() = 1;
+    Check(frame_clipboard::BoneTarget(app.get(), other.Raw(), 0) < 0 &&
+          frame_clipboard::MorphTarget(app.get(), other.Raw(), 0) < 0,
+          "clipboard indices are not reused for a different model");
+    reject(other, "cross-model duplicate names remain ambiguous");
+    app->SelectedModelSlot() = 0;
+    paste(70);
+    Check(find(f.keys, 1, 70) >= 0 && find(f.keys, 2, 74) >= 0 &&
+          find(f.morphKeys, 0, 70) >= 0 && find(f.morphKeys, 1, 74) >= 0,
+          "returning to the source model retains the copied identities");
+    app->CurrentFrame() = frame_limits::maximum;
+    reject(f, "same-model metadata does not bypass frame overflow checks");
+    app->CurrentFrame() = 90;
+    frame_clipboard::ForgetModel(f.Raw());
+    Check(frame_clipboard::BoneTarget(app.get(), f.Raw(), 0) < 0 &&
+          frame_clipboard::MorphTarget(app.get(), f.Raw(), 0) < 0,
+          "forgetting a model invalidates its clipboard identities");
+    reject(f, "forgotten source identities cannot resolve duplicate names");
+
+    clearMarks(); f.keys[5].allocated = f.morphKeys[3].allocated = 1;
+    CmdControl400(app.get(), nullptr, 420, 0);
+    Check(PrepareFramePaste(app.get()), "copy after forgetting records fresh identities");
+    clearMarks(); CmdControl400(app.get(), nullptr, 420, 0);
+    Check(app->ClipboardCounts().bones == 0 && app->ClipboardCounts().morphs == 0 &&
+          frame_clipboard::BoneTarget(app.get(), f.Raw(), 0) < 0 &&
+          frame_clipboard::MorphTarget(app.get(), f.Raw(), 0) < 0,
+          "copying an empty selection invalidates the old clipboard identities");
+    f.keys[4].allocated = f.morphKeys[2].allocated = 1;
+    CmdControl400(app.get(), nullptr, 420, 0);
+    Check(frame_clipboard::BoneTarget(app.get(), f.Raw(), 0) == 1 &&
+          frame_clipboard::MorphTarget(app.get(), f.Raw(), 0) == 0,
+          "the next copy replaces second-track identities with the new first-track selection");
+    paste(90);
+    Check(find(f.keys, 1, 90) >= 0 && find(f.keys, 2, 90) < 0 &&
+          find(f.morphKeys, 0, 90) >= 0 && find(f.morphKeys, 1, 90) < 0,
+          "new clipboard metadata cannot reuse the previous selection's destination");
+#if !MMD_ORIGINAL_PROFILE
+    clearMarks(); f.keys[5].allocated = f.morphKeys[3].allocated = 1;
+    CmdControl400(app.get(), nullptr, 420, 0);
+    app->CurrentFrame() = -20;
+    CmdControl400(app.get(), nullptr, 421, 0);
+    Check(negative_frames::Count(app.get()) == 2,
+          "positive-to-negative paste retains both the bone and morph key");
+    f.bones[1].trans[0] = 123.f; morphs[0].value = .125f;
+    f.bones[2].trans[0] = 0; morphs[1].value = 0;
+    negative_frames::EvaluateModel(f.Raw(), -20);
+    Check(f.bones[2].trans[0] == original[1].position[0] && morphs[1].value == .75f &&
+          f.bones[1].trans[0] == 123.f && morphs[0].value == .125f,
+          "negative paste restores the second same-name tracks without touching the first");
+    negative_frames::Reset(app.get());
+#endif
+    frame_clipboard::Reset(app.get());
+    Check(frame_clipboard::BoneTarget(app.get(), f.Raw(), 0) < 0 &&
+          frame_clipboard::MorphTarget(app.get(), f.Raw(), 0) < 0,
+          "reset invalidates all clipboard identity records for the app");
+    std::free(app->BoneClipboard()); app->BoneClipboard() = nullptr;
+    std::free(app->MorphClipboard()); app->MorphClipboard() = nullptr;
+    g_Block = previous;
+}
+
+void FramePasteChecks() {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    framePasteExpectsDialog = false;
+    framePasteExpectedDialogs = framePasteUnexpectedDialogs = 0;
+    const HHOOK hook = SetWindowsHookExW(WH_CBT, FramePasteDismissDialog, nullptr, GetCurrentThreadId());
+    Check(hook != nullptr, "install dialog dismissal for paste rejection checks");
+    PasteDestinationNames();
+    SameModelFramePaste();
+    UnhookWindowsHookEx(hook);
+    Check(framePasteExpectedDialogs == 3 && framePasteUnexpectedDialogs == 0,
+          "paste regressions show only the three expected rejection dialogs");
+    std::puts("Frame paste identity regressions passed");
+}
+}
+
+void AuxiliaryRegistrationUndo() {
+    Fixture f;
+    std::array<mdl::MorphRecord, 4> morphs{};
+    std::array<mdl::IkChain, 1> chains{};
+    std::array<mdl::BoneOrderEntry, 1> order{};
+    std::vector<unsigned char> ik(f.displayKeys.size(), 1);
+    std::vector<mdl::BoneReference> parents(f.displayKeys.size(), {-1, 0});
+    f.model->physicsMode = 2; f.model->morphCount = 4; f.model->morphs = morphs.data();
+    f.model->ikChainCount = 1; f.model->ikChains = chains.data();
+    f.model->boneOrderCount = 1; mdl::BoneOrder(f.Raw()) = order.data();
+    order[0].linkedModel = -1; chains[0].enabled = 1;
+    for (std::size_t i = 0; i < f.displayKeys.size(); ++i) {
+        f.displayKeys[i].ikStates = &ik[i]; f.displayKeys[i].selectorStates = &parents[i];
+    }
+    f.displayKeys[0].visible = 1;
+    for (int i = 0; i < 4; ++i) f.model->selectedMorphs[i] = i;
+    auto app = std::make_unique<MMDApp>(); app->state = MMDAppState{};
+    auto renderer = std::make_unique<D3DRenderer>(); std::memset(renderer.get(), 0, sizeof(*renderer));
+    app->Renderer() = renderer.get(); app->ModelSlot(0) = f.Raw();
+    auto* previous = g_Block; g_Block = app.get();
+    const auto undo = [&] { CmdControl400(app.get(), nullptr, 400, 0); };
+    const auto redo = [&] { CmdControl400(app.get(), nullptr, 401, 0); };
+    const int buttons[] = {525, 524, 527, 526};
+    f.Register(5);
+    const auto boneCursor = f.model->undoState[0];
+    for (int lane = 0; lane < 4; ++lane) {
+        app->CurrentFrame() = 10 + lane;
+        morphs[lane].value = .75f;
+        CmdControl500(app.get(), nullptr, buttons[lane], 0);
+        const auto slot = f.morphKeys[lane].next;
+        Check(slot && f.morphKeys[slot].value == .75f, "facial panel registers selected lane");
+        undo();
+        Check(!f.morphKeys[lane].next && morphs[lane].value == 0 && f.keys[Fixture::kShoulder].next,
+              "facial undo removes the key and reevaluates weight without undoing earlier bones");
+        redo();
+        Check(f.morphKeys[lane].next == slot && morphs[lane].value == .75f,
+              "facial redo restores links and live weight");
+        morphs[lane].value = .25f;
+        CmdControl500(app.get(), nullptr, buttons[lane], 0);
+        undo(); Check(f.morphKeys[slot].value == .75f && morphs[lane].value == .75f,
+                      "overwritten facial key restores its previous value");
+        redo(); Check(f.morphKeys[slot].value == .25f, "facial overwrite redo");
+    }
+    app->CurrentFrame() = 20;
+    f.model->loadComplete = 0; chains[0].enabled = 0;
+    order[0].linkedModel = 3; order[0].linkedBone = 7;
+    CmdControl400(app.get(), nullptr, 438, 0);
+    const auto display = f.displayKeys[0].next;
+    Check(display && !f.displayKeys[display].visible && !ik[display] && parents[display].modelIndex == 3,
+          "display registration includes visibility IK and external parent");
+    undo();
+    Check(!f.displayKeys[0].next && f.model->loadComplete && chains[0].enabled && order[0].linkedModel == -1,
+          "display undo restores all live channels and removes the new key");
+    redo();
+    Check(f.displayKeys[0].next == display && !f.model->loadComplete && !chains[0].enabled &&
+          order[0].linkedModel == 3 && order[0].linkedBone == 7, "display redo restores owned IK and parent arrays");
+    f.model->loadComplete = 1; chains[0].enabled = 1; order[0].linkedModel = -1;
+    CmdControl400(app.get(), nullptr, 438, 0);
+    undo(); Check(!f.displayKeys[display].visible && !ik[display] && parents[display].modelIndex == 3,
+                  "display overwrite undo restores previous payload");
+    redo(); Check(f.displayKeys[display].visible && ik[display] && parents[display].modelIndex == -1,
+                  "display overwrite redo restores replacement payload");
+    app->CurrentFrame() = 0; morphs[0].value = .4f;
+    CmdControl500(app.get(), nullptr, 525, 0);
+    undo(); Check(f.morphKeys[0].value == 0 && f.morphKeys[0].next, "frame-zero undo preserves later keys");
+    redo(); Check(f.morphKeys[0].value == .4f, "frame-zero redo restores head value");
+    undo();
+    app->CurrentFrame() = 30; morphs[0].value = .6f;
+    CmdControl500(app.get(), nullptr, 525, 0);
+    Check(!f.model->redoDirty && f.model->undoState[0] != boneCursor,
+          "new facial registration after undo discards redo branch");
+    undo(); Check(f.model->maxFrame == 20, "undo restores model frame extent");
+    app->CurrentFrame() = 40;
+    for(auto& morph:morphs)morph.value=.9f;
+    const auto bulkCursor=f.model->undoState[0];
+    CmdFileMenu(app.get(),nullptr,229,0);
+    Check(f.model->undoState[0] == (bulkCursor+1)%30, "all facial registration consumes one undo entry");
+    undo(); Check(f.model->maxFrame==20 && f.model->undoState[0]==bulkCursor,
+                  "one undo removes the complete all-facial operation");
+    redo(); Check(f.model->maxFrame==40 && morphs[3].value==.9f, "all facial redo restores evaluated values");
+#if !MMD_ORIGINAL_PROFILE
+    app->CurrentFrame()=-10;morphs[0].value=.8f;
+    const auto nativeCursor=f.model->undoState[0];
+    CmdControl500(app.get(),nullptr,525,0);
+    Check(negative_frames::Count(app.get())==1 && f.model->undoState[0]==nativeCursor,
+          "negative facial registration retains its dedicated history without a duplicate native entry");
+    Check(negative_frames::Command(app.get(),400) && negative_frames::Count(app.get())==0,
+          "negative facial undo still works");
+    Check(negative_frames::Command(app.get(),401) && negative_frames::Count(app.get())==1,
+          "negative facial redo still works");
+    negative_frames::Reset(app.get());
+#endif
+    g_Block = previous;
+    std::puts("PASS issue 40: facial lanes, display/IK/OP, overwrite, zero head, mixed history and redo");
+}
+
+void AuxiliaryUndoPoolGrowth() {
+    Fixture f;
+    std::array<mdl::MorphRecord,1> morphs{};
+    f.model->morphs=morphs.data();f.model->physicsMode=2;
+    f.model->morphKeys=mdl::MorphKeyPoolCreate(2);
+    auto& m=*f.model;
+    m.morphKeys[0].next=1;m.morphKeys[1].frame=5;m.morphKeys[1].value=.5f;
+    m.maxFrame=5;
+    BeginModelFramePasteUndo(f.Raw(),10,0,true,false);
+    morphs[0].value=.8f;RegisterMorphKeyCurrent(f.Raw(),0,10);
+    Check(mdl::MorphKeyCapacity(m.morphKeys)>2, "facial registration grows exhausted pool");
+    const auto added=m.morphKeys[1].next;
+    int frame=10;UndoModelEdit(f.Raw(),&frame);
+    Check(!m.morphKeys[1].next && !m.morphKeys[added].frame && m.maxFrame==5,
+          "undo clears newly allocated tail without losing old facial keys");
+    RedoModelEdit(f.Raw(),&frame);
+    Check(m.morphKeys[1].next==added && m.morphKeys[added].value==.8f && m.maxFrame==10,
+          "redo captures and restores the expanded facial pool");
+    UndoModelEdit(f.Raw(),&frame);RedoModelEdit(f.Raw(),&frame);
+    Check(m.morphKeys[added].frame==10, "repeated undo redo survives pool growth");
+    mdl::MorphKeyPoolDestroy(m.morphKeys);m.morphKeys=f.morphKeys.data();
+    m.displayKeys=mdl::KeyPoolCreate<mdl::DisplayKey>(2);
+    m.displayKeys[0].next=1;m.displayKeys[1].frame=5;
+    m.maxFrame=5;m.searchCursor=1;
+    BeginModelFramePasteUndo(f.Raw(),10,0,false,true);
+    m.loadComplete=1;RegisterDisplayKeyCurrent(f.Raw(),10);
+    const auto display=m.displayKeys[1].next;
+    Check(display>=2 && mdl::KeyPoolCapacity(m.displayKeys)>2, "display registration grows exhausted pool");
+    UndoModelEdit(f.Raw(),&frame);
+    Check(!m.displayKeys[1].next && !m.displayKeys[display].frame && m.maxFrame==5,
+          "display undo clears grown tail");
+    RedoModelEdit(f.Raw(),&frame);
+    Check(m.displayKeys[1].next==display && m.displayKeys[display].frame==10,
+          "display redo restores grown tail");
+    mdl::KeyPoolDestroy(m.displayKeys);m.displayKeys=f.displayKeys.data();
+    std::puts("PASS issue 40: morph and display pool growth undo/redo");
+}
 
 int main(int argc, char** argv) {
+    if (argc > 1 && std::strcmp(argv[1], "--auxiliary-undo") == 0) {AuxiliaryRegistrationUndo();AuxiliaryUndoPoolGrowth();return 0;}
     if (argc > 1 && std::strcmp(argv[1], "--review-editing") == 0) {ReviewEditingChecks();return 0;}
+#if !MMD_ORIGINAL_PROFILE
     if (argc > 1 && std::strcmp(argv[1], "--review-curves") == 0) {ReviewCurveEditingChecks();return 0;}
+#endif
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    if (argc > 1 && std::strcmp(argv[1], "--frame-paste") == 0) {
+        FramePasteChecks();
+        return 0;
+    }
     if (argc > 1 && std::strcmp(argv[1], "--pick-cycle") == 0) {
         ViewportOverlappingBoneCycle();
         std::puts("Overlapping bone pick regressions passed");
@@ -1276,7 +1651,10 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::strcmp(argv[1], "display-paste") == 0)
         return RunDisplayFramePaste();
+    AuxiliaryRegistrationUndo();
+    AuxiliaryUndoPoolGrowth();
     if (RunDisplayFramePaste() != 0) return 1;
+    FramePasteChecks();
     std::puts("bone_registration_tests: fresh model / right shoulder");
     FreshModelRegistration();
     std::puts("bone_registration_tests: physics selection menu / Chinese frame scopes");

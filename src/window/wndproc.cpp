@@ -1,3 +1,4 @@
+#include "cache_manager_dialog.hpp"
 #include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/plugin_menu.hpp"
@@ -40,6 +41,8 @@
 #include <cstdlib>
 
 #include <cstdint>
+#include <algorithm>
+#include <vector>
 
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/recent_projects.hpp"
@@ -52,6 +55,7 @@
 #include "mikumikustudio/physics_bake.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
 #include "viewport_corner_menu.hpp"
+#include "mikumikustudio/menu_initial_paint.hpp"
 
 namespace mikumikustudio {
 
@@ -118,6 +122,7 @@ static const char kCaptionQuitJp[] = "\x8F\x49\x97\xB9";  // x64 0x7FF7CB5526F8 
 LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     MMDApp* app = g_Block;
     auto& s = *app;
+    if(menu_initial_paint::HandleMessage(hwnd,msg,wParam,lParam))return 0;
     // EnableWindow prevents new user input; queued commands and accelerators
     // still need to be rejected while a bake's message loop is pumping.
     if (bake::UiLocked()) {
@@ -152,6 +157,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         viewport_corner_menu::EnsureItem(app);
     }
     if (msg == WM_INITMENUPOPUP) autosave::RefreshMenu(app);
+    if (msg == WM_INITMENUPOPUP) cache_manager_ui::RefreshMenu(app);
     if (msg == WM_NCPAINT || msg == WM_NCACTIVATE || msg == WM_SETTEXT || msg == WM_EXITMENULOOP) {
         const auto result = DefWindowProcW(hwnd, msg, wParam, lParam);
         autosave::PaintMenuWarning(app);

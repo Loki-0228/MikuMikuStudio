@@ -1,4 +1,6 @@
 #include "mikumikustudio/shadow_filter.hpp"
+#include "mikumikustudio/shadow_depth_filter.hpp"
+#include "mikumikustudio/adaptive_shadow.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/viewport_render_scale.hpp"
 #include "mikumikustudio/d3d_wrapper.hpp"
@@ -35,120 +37,10 @@ struct AttemptKey {
     }
 };
 
-// Experimental receiver-independent depth preprocessing. Two separable passes
-// integrate exactly the same positive cubic kernel at output texel centers.
-// No receiver ddx/ddy footprint and no directional extension in this baseline.
-struct PrefilterTarget {
-    ComPtr<IDirect3DTexture9> scratch, final;
-    ComPtr<IDirect3DSurface9> scratchSurface, finalSurface;
-    ComPtr<IDirect3DPixelShader9> shader;
-    UINT size=0;
-    unsigned frames=0;
-    void Release() {scratch.Reset();final.Reset();scratchSurface.Reset();finalSurface.Reset();shader.Reset();size=0;frames=0;}
-    IDirect3DTexture9* Texture() const {return final.Get();}
-    HRESULT Ensure(IDirect3DDevice9* device,UINT requested) {
-        if(size==requested && scratch && final && shader)return S_OK;
-        Release();
-        static constexpr char code[]=R"HLSL(
-sampler2D depthMap : register(s0);
-float4 sizeAxis : register(c0); // xy source dimensions, zw unit pass axis
-float4 weights[17] : register(c1); // x paired offset, y combined weight
-float4 kernel : register(c18); // x paired sample count
-float4 main(float2 uv:TEXCOORD0):COLOR0 {
-    float value=0;
-    [loop]for(int i=0;i<17;++i) {
-        if(i>=kernel.x)break;
-        value+=weights[i].y*tex2Dlod(depthMap,float4(uv+sizeAxis.zw*weights[i].x/sizeAxis.xy,0,0)).r;
-    }
-    return float4(value,value,value,1);
-}
-)HLSL";
-        ComPtr<ID3DBlob> bytes,error;
-        HRESULT hr=graphics_runtime::Compile(code,sizeof(code)-1,"shared-depth-baseline",nullptr,nullptr,"main","ps_3_0",D3DCOMPILE_OPTIMIZATION_LEVEL3,0,&bytes,&error);
-        if(FAILED(hr)) {runtime_log::Write("SHARED_DEPTH compile hr=%08lX %s",hr,error?static_cast<const char*>(error->GetBufferPointer()):"");return hr;}
-        if(FAILED(hr=device->CreatePixelShader(static_cast<const DWORD*>(bytes->GetBufferPointer()),&shader)))return hr;
-        for(int i=0;i<2;++i) {
-            auto& texture=i?final:scratch;auto& surface=i?finalSurface:scratchSurface;
-            if(FAILED(hr=device->CreateTexture(requested,requested,1,D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,&texture,nullptr)) ||
-               FAILED(hr=texture->GetSurfaceLevel(0,&surface))) {Release();return hr;}
-        }
-        size=requested;
-        runtime_log::Write("SHARED_DEPTH allocated size=%u extra_bytes=%llu",size,8ull*size*size);
-        return S_OK;
-    }
-    HRESULT Apply(IDirect3DDevice9* device,IDirect3DTexture9* input,UINT coarse) {
-        D3DSURFACE_DESC desc{};HRESULT hr=input?input->GetLevelDesc(0,&desc):E_INVALIDARG;
-        if(FAILED(hr)||!coarse)return FAILED(hr)?hr:E_INVALIDARG;
-        if(FAILED(hr=Ensure(device,desc.Width)))return hr;
-        const float scale=(std::min)(8.f,.75f*(std::max)(1.f,1.240967365f*float(coarse)/4096.f)*float(size)/float(coarse));
-        const auto cubic=[](float coordinate){float x=std::abs(coordinate),t=(std::max)(2.f-x,0.f);return x<1.f?(4.f-6.f*x*x+3.f*x*x*x)/6.f:t*t*t/6.f;};
-        float constants[17][4]{};unsigned count=0;float normalization=0;
-        const int reach=int(std::ceil(2.f*scale));
-        for(int k=-reach;k<=reach;k+=2) {
-            float a=cubic(float(k)/scale),b=cubic(float(k+1)/scale),sum=a+b;
-            if(sum<=1.e-8f)continue;
-            constants[count][0]=float(k)+b/sum;constants[count][1]=sum;normalization+=sum;++count;
-        }
-        for(unsigned i=0;i<count;++i)constants[i][1]/=normalization;
-        struct Saved {
-            IDirect3DDevice9* d;
-            ComPtr<IDirect3DStateBlock9> state;
-            ComPtr<IDirect3DSurface9> rt[4],depth;
-            D3DVIEWPORT9 view{};UINT count=0;bool valid=false;
-            HRESULT Restore() {
-                if(!valid)return S_OK;valid=false;
-                HRESULT h=d->SetTexture(0,nullptr);
-                h=FirstFailure(h,d->SetDepthStencilSurface(nullptr));
-                for(UINT i=1;i<count;++i)h=FirstFailure(h,d->SetRenderTarget(i,nullptr));
-                for(UINT i=0;i<count;++i)if(rt[i]||i==0)h=FirstFailure(h,d->SetRenderTarget(i,rt[i].Get()));
-                h=FirstFailure(h,d->SetDepthStencilSurface(depth.Get()));
-                h=FirstFailure(h,state->Apply());h=FirstFailure(h,d->SetViewport(&view));return h;
-            }
-            ~Saved(){Restore();}
-        } saved{device};
-        D3DCAPS9 caps{};if(FAILED(hr=device->GetDeviceCaps(&caps)))return hr;
-        saved.count=(std::clamp)(UINT(caps.NumSimultaneousRTs),1u,4u);
-        if(FAILED(hr=device->CreateStateBlock(D3DSBT_ALL,&saved.state)) || FAILED(hr=saved.state->Capture()) ||
-           FAILED(hr=device->GetViewport(&saved.view)))return hr;
-        for(UINT i=0;i<saved.count;++i){hr=device->GetRenderTarget(i,&saved.rt[i]);if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)return hr;}
-        hr=device->GetDepthStencilSurface(&saved.depth);if(FAILED(hr)&&hr!=D3DERR_NOTFOUND)return hr;
-        saved.valid=true;
-        for(DWORD i=0;i<16;++i)device->SetTexture(i,nullptr);
-        if(D3DSHADER_VERSION_MAJOR(caps.VertexShaderVersion)>=3&&caps.VertexTextureFilterCaps)
-            for(DWORD i=0;i<4;++i)device->SetTexture(D3DVERTEXTEXTURESAMPLER0+i,nullptr);
-        device->SetDepthStencilSurface(nullptr);for(UINT i=1;i<saved.count;++i)device->SetRenderTarget(i,nullptr);
-        device->SetVertexShader(nullptr);device->SetFVF(D3DFVF_XYZRHW|D3DFVF_TEX1);
-        for(auto rs:{D3DRS_ZENABLE,D3DRS_ZWRITEENABLE,D3DRS_STENCILENABLE,D3DRS_ALPHABLENDENABLE,
-            D3DRS_ALPHATESTENABLE,D3DRS_SCISSORTESTENABLE,D3DRS_FOGENABLE,D3DRS_LIGHTING,
-            D3DRS_CLIPPLANEENABLE,D3DRS_SRGBWRITEENABLE,D3DRS_MULTISAMPLEANTIALIAS})device->SetRenderState(rs,FALSE);
-        device->SetRenderState(D3DRS_CULLMODE,D3DCULL_NONE);device->SetRenderState(D3DRS_FILLMODE,D3DFILL_SOLID);
-        device->SetRenderState(D3DRS_COLORWRITEENABLE,15);
-        device->SetSamplerState(0,D3DSAMP_MINFILTER,D3DTEXF_LINEAR);device->SetSamplerState(0,D3DSAMP_MAGFILTER,D3DTEXF_LINEAR);
-        device->SetSamplerState(0,D3DSAMP_MIPFILTER,D3DTEXF_NONE);device->SetSamplerState(0,D3DSAMP_ADDRESSU,D3DTADDRESS_CLAMP);
-        device->SetSamplerState(0,D3DSAMP_ADDRESSV,D3DTADDRESS_CLAMP);device->SetSamplerState(0,D3DSAMP_SRGBTEXTURE,FALSE);
-        device->SetPixelShader(shader.Get());device->SetPixelShaderConstantF(1,&constants[0][0],17);
-        const float kernel[4]{float(count),0,0,0};device->SetPixelShaderConstantF(18,kernel,1);
-        struct Vertex{float x,y,z,w,u,v;};
-        const float edge=float(size)-.5f;
-        const Vertex quad[]={{-.5f,-.5f,0,1,0,0},{edge,-.5f,0,1,1,0},{-.5f,edge,0,1,0,1},{edge,edge,0,1,1,1}};
-        const D3DVIEWPORT9 view{0,0,size,size,0,1};
-        for(int pass=0;pass<2;++pass) {
-            device->SetTexture(0,nullptr);
-            if(FAILED(hr=device->SetRenderTarget(0,pass?finalSurface.Get():scratchSurface.Get())))break;
-            device->SetViewport(&view);device->SetTexture(0,pass?scratch.Get():input);
-            const float axis[4]{float(size),float(size),pass?0.f:1.f,pass?1.f:0.f};
-            device->SetPixelShaderConstantF(0,axis,1);
-            if(FAILED(hr=device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,quad,sizeof(Vertex))))break;
-        }
-        hr=FirstFailure(hr,saved.Restore());
-        if(frames++==0)runtime_log::Write("SHARED_DEPTH applied coarse=%u fine=%u scale=%.9f pairs=%u passes=2 hr=0x%08lX receiver_kernel=off",coarse,size,scale,count,hr);
-        return hr;
-    }
-};
 
 struct State {
     FineDepthTarget fine;
-    PrefilterTarget filtered;
+    DepthPrefilter filtered;
     bool filteredValid = false;
     AttemptKey key;
     bool hasKey = false;
@@ -158,6 +50,22 @@ struct State {
     bool directionalCoarse = false;
 };
 std::unordered_map<D3DRenderer*, State> states;
+struct DetailState {
+    FineDepthTarget target;
+    std::array<float,16> projection{}, coverageToDetail{};
+    std::array<float,4> depthBlend{};
+    UINT requested = 0, failedSize = 0;
+    ULONGLONG failedAt = 0;
+    float densityFloor = 0;
+    float projectionScale = 0, coverageScale = 0;
+    float nearDepth = 0, farDepth = 0, blendStart = 0, logBlend = 0;
+    float fixedBlendStart = 0, screenDemand = 0;
+    bool orthographic = false;
+    bool planned = false, valid = false;
+};
+std::unordered_map<D3DRenderer*, std::array<DetailState,3>> details;
+std::unordered_map<D3DRenderer*, std::unordered_map<unsigned char*,DetailState>> modelDetails;
+bool modelShadowsEnabled=true;
 
 bool Enabled(MMDApp* app) {
     if constexpr (build_profile::original) return false;
@@ -175,6 +83,33 @@ bool ReadCoarse(D3DRenderer* renderer, D3DSURFACE_DESC& desc) {
 bool Current(const State& state, D3DRenderer* renderer) {
     return state.hasKey && state.key.device == renderer->device &&
         state.key.coarse == renderer->hdrTexture;
+}
+
+// All three maps use affine light projections. Use the smaller singular value
+// of their XY mapping so a layer is never preferred for only one light axis.
+float LightPlaneScale(const std::array<float,16>& matrix) {
+    if (!std::isfinite(matrix[15]) || std::fabs(matrix[15]) < 1e-6f ||
+        matrix[3] != 0 || matrix[7] != 0 || matrix[11] != 0) return 0;
+    double xx=0, yy=0, xy=0;
+    for (int row=0;row<3;++row) {
+        const double x=double(matrix[row*4])/matrix[15];
+        const double y=double(matrix[row*4+1])/matrix[15];
+        xx+=x*x; yy+=y*y; xy+=x*y;
+    }
+    const double discriminant=std::sqrt((xx-yy)*(xx-yy)+4*xy*xy);
+    const double scale=std::sqrt((std::max)(0.0,(xx+yy-discriminant)*.5));
+    return std::isfinite(scale) ? float(scale) : 0;
+}
+
+UINT CoverageTextureSize(MMDApp* app, D3DRenderer* renderer) {
+    const auto found=states.find(renderer);
+    if (Enabled(app) && found!=states.end() && Current(found->second,renderer)) {
+        const auto& state=found->second;
+        if (state.filteredValid) return state.filtered.Size();
+        if (state.valid) return state.fine.Size();
+    }
+    return static_cast<UINT>((std::max)(0,(std::min)(renderer->renderTargetWidth,
+        renderer->renderTargetHeight)));
 }
 
 void Fail(State& state) {
@@ -291,7 +226,25 @@ HRESULT TargetScope::Restore() noexcept {
 
 void Invalidate(MMDApp* app) {
     if (!app || !app->Renderer()) return;
-    if (!Enabled(app)) { ReleaseRenderer(app->Renderer(), true); return; }
+    if (app->ShadowMode() <= 0 || !app->AdaptiveShadowResolution()) {
+        if (app->Renderer()->device)
+            for (DWORD stage=3;stage<=6;++stage) app->Renderer()->device->SetTexture(stage,nullptr);
+        details.erase(app->Renderer());
+    }
+    if (const auto detail = details.find(app->Renderer()); detail != details.end())
+        for(auto& layer:detail->second)layer.planned=layer.valid=false;
+    if(app->ShadowMode()<=0 || app->AdaptiveShadowResolution()) {
+        if(app->Renderer()->device && modelDetails.find(app->Renderer())!=modelDetails.end())
+            app->Renderer()->device->SetTexture(3,nullptr);
+        modelDetails.erase(app->Renderer());
+    }
+    else if(auto found=modelDetails.find(app->Renderer());found!=modelDetails.end())
+        for(auto& entry:found->second)entry.second.planned=entry.second.valid=false;
+    if (!Enabled(app)) {
+        // Filtering can be disabled while the independent detail map is active.
+        states.erase(app->Renderer());
+        return;
+    }
     const auto found = states.find(app->Renderer());
     if (found == states.end()) return;
     auto& state = found->second;
@@ -299,7 +252,7 @@ void Invalidate(MMDApp* app) {
 }
 
 FineDepthTarget* Prepare(MMDApp* app, bool nativeSucceeded) {
-    if (!Enabled(app)) { Invalidate(app); return nullptr; }
+    if (!Enabled(app)) return nullptr;
     auto* renderer = app->Renderer();
     auto& state = states.try_emplace(renderer).first->second;
     state.pending = state.valid = state.directionalCoarse = state.filteredValid = false;
@@ -319,11 +272,10 @@ FineDepthTarget* Prepare(MMDApp* app, bool nativeSucceeded) {
         (std::min)({8192u, static_cast<UINT>(caps.MaxTextureWidth),
                    static_cast<UINT>(caps.MaxTextureHeight)}));
     if (!cap) { state.fine.Release(); return nullptr; }
-    // coarse.Width is already scaled by UpdateAdaptiveShadowMap. Scale only
-    // the quality floor/cap so neither the extra depth pass nor its two filter
-    // passes silently restore full-resolution work in a reduced preview.
-    const UINT requested = (std::min)(cap, (std::max)(viewport_render_scale::ShadowSize(app, 4096u),
-        (std::min)(coarse.Width, 8192u) * 2u));
+    // The shared projection already carries the slider's world-space density.
+    // Filtering must use that grid; a second, larger texture with the same
+    // projection would silently override coarse precision again.
+    const UINT requested = (std::min)(cap, coarse.Width);
     const AttemptKey key{renderer->device, renderer->hdrTexture, coarse.Width,
         coarse.Height, requested, caps.MaxTextureWidth, caps.MaxTextureHeight,
         coarse.Format, renderer->device->TestCooperativeLevel()};
@@ -440,14 +392,250 @@ SamplingState ReadSamplingState(MMDApp* app) {
     return result;
 }
 
+SamplingState ReadNativeSamplingState(MMDApp* app) {
+    if(!Enabled(app))return ReadSamplingState(app);
+    D3DSURFACE_DESC raw{};
+    if(!ReadCoarse(app->Renderer(),raw))return ReadSamplingState(app);
+    SamplingState result;
+    result.texture=app->Renderer()->hdrTexture;
+    result.enhanced=true;
+    result.mapSize[0]=float(raw.Width);result.mapSize[1]=float(raw.Height);
+    return result;
+}
+
 void ConfigureEffect(MMDApp* app, void* effect) {
     if (!effect) return;
-    const auto state = ReadSamplingState(app);
+    const auto state = ReadNativeSamplingState(app);
+    d3dx::FxSetInt(effect, "MdsLayerFilterEnhanced", Enabled(app) ? 1 : 0);
+    d3dx::FxSetFloatArray(effect, "MdsShadowFilterSideWeight", &kDepthFilterSideWeight, 1);
     d3dx::FxSetInt(effect, "MdsShadowFilterEnhanced", state.enhanced ? 1 : 0);
     d3dx::FxSetFloatArray(effect, "MdsShadowMapSize", state.mapSize, 4);
+    ConfigureDetailReceiver(app, effect, false);
+}
+
+void PlanDetail(MMDApp* app, const std::array<float,16>& projection,
+                const std::array<float,16>& coverage, const float view[16],
+                float farDepth, UINT size, unsigned layer, float densityFloor, float nearDepth,
+                float blendFraction,float screenDemand,bool orthographic) {
+    auto* renderer = app->Renderer();
+    if (!app->AdaptiveShadowResolution() || !renderer || !renderer->effect || renderer->shaderModelCaps < 3 || size < 512 ||
+        FAILED(d3dx::FxSetInt(renderer->effect, "MdsDetailEnabled", 0))) return;
+    if(layer>=3 || !std::isfinite(nearDepth) || !std::isfinite(farDepth) || farDepth<=nearDepth)return;
+    auto& detail = details[renderer][layer];
+    using Matrix = d3dx::D3DXMATRIXF;
+    Matrix inverse{}, transform{};
+    if (!d3dx::Get().inverse(&inverse, nullptr, reinterpret_cast<const Matrix*>(coverage.data()))) return;
+    d3dx::Get().multiply(&transform, &inverse, reinterpret_cast<const Matrix*>(projection.data()));
+    std::copy_n(&transform.m[0][0], 16, detail.coverageToDetail.begin());
+    d3dx::Get().multiply(&transform, &inverse, reinterpret_cast<const Matrix*>(view));
+    // A narrow close layer must still be fully weighted at its near plane.
+    const float fraction=std::isfinite(blendFraction) ? (std::clamp)(blendFraction,.001f,1.f) : .2f;
+    const float blendWidth = (std::max)(1e-6f,(farDepth-nearDepth)*fraction);
+    for(int row=0;row<4;++row) detail.depthBlend[row]=-transform.m[row][2]/blendWidth;
+    detail.depthBlend[3]+=farDepth/blendWidth;
+    detail.projection = projection;
+    detail.projectionScale = LightPlaneScale(projection);
+    detail.coverageScale = LightPlaneScale(coverage);
+    detail.requested = size;
+    detail.densityFloor = densityFloor;
+    detail.nearDepth = nearDepth;
+    detail.farDepth = farDepth;
+    detail.blendStart = farDepth-blendWidth;
+    detail.fixedBlendStart = detail.blendStart;
+    detail.screenDemand = screenDemand;
+    detail.orthographic = orthographic;
+    detail.logBlend = ShadowTransitionLogRatio(detail.blendStart,farDepth);
+    detail.planned = true;
+}
+
+FineDepthTarget* PrepareDetail(MMDApp* app, bool nativeSucceeded,
+                              std::array<float,16>& projection, unsigned layer) {
+    auto* renderer = app->Renderer();
+    const auto found = details.find(renderer);
+    if (found == details.end() || layer>=3) return nullptr;
+    auto& detail = found->second[layer];
+    detail.valid = false;
+    if (!nativeSucceeded || !detail.planned) return nullptr;
+    // Temporary memory pressure must not disable this size until device reset.
+    // Retry at most once a second; a changed request may be tried immediately.
+    if (detail.failedSize == detail.requested && GetTickCount64()-detail.failedAt < 1000)
+        return nullptr;
+    const HRESULT allocation=detail.target.Ensure(renderer->device, 1, detail.requested);
+    if (FAILED(allocation)) {
+        detail.failedSize = detail.requested;
+        detail.failedAt = GetTickCount64();
+        runtime_log::Write("SHADOW_DETAIL allocation failed layer=%u size=%u hr=0x%08lX retry_ms=1000",
+            layer,detail.requested,static_cast<unsigned long>(allocation));
+        return nullptr;
+    }
+    detail.failedSize = 0;
+    detail.failedAt = 0;
+    projection = detail.projection;
+    return &detail.target;
+}
+
+void MarkDetailRendered(MMDApp* app, bool succeeded, unsigned layer) {
+    const auto found = details.find(app->Renderer());
+    if (found != details.end() && layer<3) found->second[layer].valid = succeeded && found->second[layer].planned;
+}
+
+void PlanModel(MMDApp* app,unsigned char* model,const std::array<float,16>& projection,
+               const std::array<float,16>& coverage,UINT size,float density) {
+    if(!modelShadowsEnabled || !app || !model || app->AdaptiveShadowResolution() || app->ShadowMode()<=0 || size<512)return;
+    auto* renderer=app->Renderer();
+    if(!renderer || !renderer->effect || renderer->shaderModelCaps<3 ||
+        FAILED(d3dx::FxSetInt(renderer->effect,"MdsDetailEnabled",0)))return;
+    using Matrix=d3dx::D3DXMATRIXF;
+    Matrix inverse{},transform{};
+    if(!d3dx::Get().inverse(&inverse,nullptr,reinterpret_cast<const Matrix*>(coverage.data())))return;
+    d3dx::Get().multiply(&transform,&inverse,reinterpret_cast<const Matrix*>(projection.data()));
+    auto& state=modelDetails[renderer][model];
+    state.projection=projection;
+    std::copy_n(&transform.m[0][0],16,state.coverageToDetail.begin());
+    state.projectionScale=LightPlaneScale(projection);state.coverageScale=LightPlaneScale(coverage);
+    state.requested=size;state.densityFloor=density;state.depthBlend={0,0,0,1};
+    state.planned=true;
+}
+
+void SetModelShadowsEnabledForTests(bool enabled) {modelShadowsEnabled=enabled;}
+
+std::vector<unsigned char*> PlannedModels(MMDApp* app) {
+    std::vector<unsigned char*> result;
+    if(!app || !app->Renderer())return result;
+    auto found=modelDetails.find(app->Renderer());if(found==modelDetails.end())return result;
+    for(auto i=found->second.begin();i!=found->second.end();) {
+        if(!i->second.planned)i=found->second.erase(i);
+        else {result.push_back(i->first);++i;}
+    }
+    return result;
+}
+
+FineDepthTarget* PrepareModel(MMDApp* app,unsigned char* model,bool nativeSucceeded,
+                             std::array<float,16>& projection) {
+    auto found=modelDetails.find(app->Renderer());if(found==modelDetails.end())return nullptr;
+    auto entry=found->second.find(model);if(entry==found->second.end())return nullptr;
+    auto& state=entry->second;state.valid=false;
+    if(!nativeSucceeded || !state.planned || app->AdaptiveShadowResolution())return nullptr;
+    if(state.failedSize==state.requested && GetTickCount64()-state.failedAt<1000)return nullptr;
+    const HRESULT allocation=state.target.Ensure(app->Renderer()->device,1,state.requested);
+    if(FAILED(allocation)) {
+        state.failedSize=state.requested;state.failedAt=GetTickCount64();
+        runtime_log::Write("SHADOW_MODEL allocation failed model=%p size=%u hr=0x%08lX retry_ms=1000",
+            model,state.requested,static_cast<unsigned long>(allocation));
+        return nullptr;
+    }
+    state.failedSize=0;projection=state.projection;return &state.target;
+}
+
+void MarkModelRendered(MMDApp* app,unsigned char* model,bool succeeded) {
+    auto found=modelDetails.find(app->Renderer());if(found==modelDetails.end())return;
+    auto entry=found->second.find(model);if(entry!=found->second.end())
+        entry->second.valid=succeeded && entry->second.planned;
+}
+
+DetailInfo ReadModelInfo(MMDApp* app,unsigned char* model) {
+    if(!app || !app->Renderer())return {};
+    const auto found=modelDetails.find(app->Renderer());if(found==modelDetails.end())return {};
+    const auto entry=found->second.find(model);if(entry==found->second.end())return {};
+    const auto& state=entry->second;
+    return {state.valid,state.target.Size(),state.projection,state.densityFloor,0,0,0};
+}
+
+void ConfigureDetailReceiver(MMDApp* app, void* effect, bool receivesShadow,unsigned char* model) {
+    if(!app || !effect || !app->Renderer())return;
+    auto* renderer=app->Renderer();
+    if(!renderer->device)return;
+    // MME inherits sampler 0 through its captured device state. Keep its
+    // shared depth texture there and bind raw coverage only for native draws.
+    D3DSURFACE_DESC raw{};
+    bool nativeCoverage=receivesShadow && Enabled(app) && ReadCoarse(renderer,raw);
+    const HRESULT bound=renderer->device->SetTexture(6,nativeCoverage?renderer->hdrTexture:nullptr);
+    if(FAILED(bound)) {
+        nativeCoverage=false;
+        renderer->device->SetTexture(6,nullptr);
+    }
+    const auto sampling=nativeCoverage?ReadNativeSamplingState(app):ReadSamplingState(app);
+    d3dx::FxSetInt(effect,"MdsShadowFilterEnhanced",nativeCoverage?1:0);
+    d3dx::FxSetFloatArray(effect,"MdsShadowMapSize",sampling.mapSize,4);
+    const auto found=details.find(renderer);
+    DetailState* fixedModel=nullptr;
+    if(receivesShadow && !app->AdaptiveShadowResolution() && app->ShadowMode()>0 && model) {
+        const auto owner=modelDetails.find(renderer);
+        if(owner!=modelDetails.end()) {
+            const auto entry=owner->second.find(model);
+            if(entry!=owner->second.end() && entry->second.valid)fixedModel=&entry->second;
+        }
+    }
+    const char* enabledNames[]{"MdsDetailEnabled","MdsNearEnabled","MdsBridgeEnabled"};
+    const char* matrixNames[]{"MdsCoverageToDetail","MdsCoverageToNear","MdsCoverageToBridge"};
+    const char* blendNames[]{"MdsDetailDepthBlend","MdsNearDepthBlend","MdsBridgeDepthBlend"};
+    const char* texelNames[]{"MdsDetailTexelSize","MdsNearTexelSize","MdsBridgeTexelSize"};
+    const float coverageSize=fixedModel ? float(renderer->renderTargetWidth) : float(CoverageTextureSize(app,renderer));
+    float density[3]{};
+    float logBlend[3]{};
+    bool enabled[3]{};
+    float coarseDensity=0.f;
+    // Process outer to inner, skipping invalid or failed maps. The transition
+    // then uses the texture actually available to receive the cast shadow.
+    for(unsigned layer:{2u,0u,1u}) {
+        DetailState* selected=layer==0?fixedModel:nullptr;
+        if (receivesShadow && app->AdaptiveShadowResolution() && app->ShadowMode()>0 && found!=details.end() && found->second[layer].valid)
+            selected=&found->second[layer];
+        if (selected) {
+            const auto& state=*selected;
+            density[layer]=state.projectionScale*float(state.target.Size())*.5f;
+            const float coverageDensity=state.coverageScale*coverageSize*.5f;
+            if(!(coarseDensity>0))coarseDensity=coverageDensity;
+            // Allow only rounding noise when comparing equivalent light axes.
+            enabled[layer]=density[layer]>0 && coverageDensity>0 &&
+                density[layer]>=coverageDensity*(1.f-1e-5f);
+        }
+        d3dx::FxSetInt(effect,enabledNames[layer],enabled[layer]?1:0);
+        if(enabled[layer]) {
+            auto& state=*selected;
+            auto depthBlend=state.depthBlend;
+            state.blendStart=state.fixedBlendStart;
+            logBlend[layer]=state.logBlend;
+            if(state.screenDemand>0 && coarseDensity>0) {
+                state.blendStart=ShadowScreenBlendStartForDemand(state.nearDepth,state.farDepth,
+                    state.fixedBlendStart,coarseDensity,state.screenDemand,state.orthographic);
+                const float scale=(state.farDepth-state.fixedBlendStart)/(state.farDepth-state.blendStart);
+                for(float& value:depthBlend)value*=scale;
+                logBlend[layer]=ShadowTransitionLogRatio(state.blendStart,state.farDepth);
+            }
+            d3dx::FxSetMatrix(effect,matrixNames[layer],reinterpret_cast<const d3dx::D3DXMATRIXF*>(state.coverageToDetail.data()));
+            d3dx::FxSetFloatArray(effect,blendNames[layer],depthBlend.data(),4);
+            const float texel[]{1.f/state.target.Size(),1.f/state.target.Size(),0,0};
+            d3dx::FxSetFloatArray(effect,texelNames[layer],texel,4);
+            renderer->device->SetTexture(3+layer,state.target.Texture());
+            coarseDensity=density[layer];
+        } else renderer->device->SetTexture(3+layer,nullptr);
+    }
+    d3dx::FxSetFloatArray(effect,"MdsDetailLogBlend",logBlend,3);
+    d3dx::FxSetInt(effect,"MdsProgressiveBridge",app->AdaptiveShadowResolution()?1:0);
+    // Nested boxes grow near->middle->bridge while requested density falls.
+    // Padding absorbs allocation rounding; with the common hardware cap their
+    // actual densities retain that order. A failed detail allocation is disabled,
+    // not downscaled. Never reorder equal grids because of float roundoff.
+    d3dx::FxSetInt(effect,"MdsPreferMiddle",0);
+    constexpr float rank[]{1,2,0};
+    d3dx::FxSetFloatArray(effect,"MdsDetailRank",rank,3);
+}
+
+DetailInfo ReadDetailInfo(MMDApp* app, unsigned layer) {
+    if (!app || layer>=3) return {};
+    const auto found = details.find(app->Renderer());
+    if (found == details.end()) return {};
+    const auto& state = found->second[layer];
+    return {state.valid, state.target.Size(), state.projection, state.densityFloor,
+        state.nearDepth,state.farDepth,state.blendStart};
 }
 
 void ReleaseRenderer(D3DRenderer* renderer, bool forget) {
+    if(renderer && renderer->device)
+        for(DWORD stage=3;stage<=6;++stage) renderer->device->SetTexture(stage,nullptr);
+    details.erase(renderer);
+    modelDetails.erase(renderer);
     const auto found = states.find(renderer);
     if (found == states.end()) return;
     auto& state = found->second;

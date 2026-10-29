@@ -26,7 +26,7 @@ def main():
     for mode in (1, 2):
         sizes = []
         for name, x, y, distance in [('centre', 0, 10, 45), ('left', -15, 20, 45),
-                                      ('right', 15, 0, 45), ('far', 0, 10, 4800)]:
+                                      ('right', 15, 0, 45), ('far', 0, 10, 48000)]:
             stem = root / f'mode-{mode}-{name}'
             command = [str(executable), str(model), '--forbid-mmv', '--throughput', '--processor', 'cpu',
                        '--viewport', '480x360', '--camera', f'{x},{y},0,-{distance},0,0,0',
@@ -41,15 +41,19 @@ def main():
             metadata = json.loads(stem.with_suffix('.json').read_text(encoding='utf-8'))
             resolution = metadata['self_shadow']['resolution']
             sizes.append(resolution)
-            result = {'case': stem.name, 'resolution': resolution}
+            density = metadata['self_shadow']['texels_per_world_unit']
+            result = {'case': stem.name, 'resolution': resolution, 'texels_per_world_unit': density}
             results.append(result)
             print(json.dumps(result), flush=True)
-        # The auto-fitted map covers the entire large mesh. At depth 42 its
-        # demand exceeds the compensated 4096 ceiling in both modes, even though all
-        # vertices are outside the viewport. Only the distant view may shrink.
-        expected_near = 4096
-        if sizes[:3] != [expected_near] * 3 or sizes[0] <= sizes[3]:
-            raise RuntimeError(f'mode {mode}: expected three near maps of {expected_near} and a smaller far map: {sizes}')
+            # Large off-screen vertices cannot dilute the visible triangles.
+            # At this fixed view there are about 11 screen pixels/world unit.
+            if name != 'far' and density < 12:
+                raise RuntimeError(f'{stem.name}: insufficient near shadow sampling: {density}')
+        # Focused coverage can provide more detail with a smaller map. Require
+        # stable near allocation and a smaller map when the whole fixture is
+        # only a few screen pixels wide; 4800 still leaves it over 100 px wide.
+        if len(set(sizes[:3])) != 1 or sizes[0] <= sizes[3]:
+            raise RuntimeError(f'mode {mode}: expected stable near maps and a smaller far map: {sizes}')
     (root / 'results.json').write_text(json.dumps(results, indent=2), encoding='utf-8')
 
 

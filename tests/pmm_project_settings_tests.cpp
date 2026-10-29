@@ -62,7 +62,7 @@ constexpr TierLabel kTierLabels[] = {
     {L"标准", L"Standard", L"標準"},
     {L"高", L"High", L"高"},
     {L"最高", L"Maximum", L"最高"},
-    {L"关闭（默认）", L"Off (default)", L"オフ（既定）"},
+    {L"关闭", L"Off", L"オフ"},
 };
 
 void Check(bool ok, const char* message) {
@@ -240,6 +240,12 @@ void LegacyBindingMetadata() {
     const auto expect=[&](bool extended,const char* message) {
         const auto report=save_compatibility::InspectPmm(*app);
         Check(!report.needsNewPmm&&report.namesNeedExtension==extended,message);
+        if(extended) {
+            Check(!report.details.empty(),"name warnings include an exact field");
+            const auto notification=save_compatibility::Describe(report,L"",false);
+            Check(notification.find(L"Ronova")!=std::wstring::npos &&
+                notification.find(report.nameIssue)!=std::wstring::npos,"notification identifies the model and rejected binding name");
+        }
     };
     assign(bones[0],L"+FlycloakRootB CB A01");assign(morphs[0],L"face");
     Check(std::strcmp(bones[0].name,"+FlycloakRootB CB A")==0,"Ronova sample uses its original nineteen-byte binding");
@@ -261,11 +267,18 @@ void LegacyBindingMetadata() {
     std::strcpy(bones[0].name,"+FlycloakRootB");expect(true,"an arbitrary shorter alias still requires an extension");
     assign(bones[0],L"+FlycloakRootB CB A01");
     Check(extended_names::Assign(bones[0].jpText,L"骨骼\U0001f31f"),"allocate non-CP932 binding name");
-    expect(true,"Unicode replacement aliases still require an extension");
+    expect(false,"unique Unicode replacement tokens roundtrip through the extension without a warning");
     assign(bones[0],L"+FlycloakRootB CB A01");assign(bones[1],L"+FlycloakRootB CB A02");model->boneCount=2;
     expect(true,"distinct bones with colliding canonical short names still require an extension");model->boneCount=1;
     assign(morphs[0],L"+FlycloakRootB CB A01");assign(morphs[1],L"+FlycloakRootB CB A02");model->morphCount=2;
     expect(true,"distinct morphs with colliding canonical short names still require an extension");
+    model->morphKeys=mdl::MorphKeyPoolCreate(2);
+    expect(false,"default zero-weight morph collisions do not require an extension");
+    model->morphKeys[0].value=0.01f;
+    expect(true,"a frame-zero morph weight makes its collision group significant");
+    model->morphKeys[0].value=0;model->morphKeys[1].next=1;
+    expect(true,"subsequent morph keys prevent the default-only exemption");
+    mdl::MorphKeyPoolDestroy(model->morphKeys);model->morphKeys=nullptr;
     app->ModelSlot(0)=nullptr;
     for(auto* p:model->pmxTextBuffers)std::free(p);
     for(auto& bone:bones){std::free(bone.jpText);std::free(bone.enText);}
@@ -350,8 +363,8 @@ void MeasuredNameBoundariesRoundtrip(MMDApp& app, const std::filesystem::path& d
         const auto report = save_compatibility::InspectPmm(app);
         Check(!report.invalidData && !report.needsNewPmm,
               "measured names alone never upgrade PMM to v3");
-        Check(report.namesNeedExtension == (i == names.size() - 1),
-              "canonical CP932 names need no warning; a Unicode alias still does");
+        Check(!report.namesNeedExtension,
+              "unique binding mirrors and reversible Unicode extensions need no warning");
         const std::string mirror(model.boneTable[0].name);
         model.boneKeys[0].position[0] = float(i + 1);
         Check(SaveSceneCopy(&app, pmm.c_str()), "save the measured-name project");
@@ -401,9 +414,24 @@ void PmxNameBoundaries(MMDApp& app, const std::filesystem::path& directory) {
           "a split 19-byte CP932 mirror still binds and needs no extension");
     model.boneCount = 4;
     report = inspect();
-    Check(report.namesNeedExtension && !report.needsNewPmm,
-          "a non-CP932 source name needs the extension but never selects v3");
+    Check(!report.namesNeedExtension && !report.needsNewPmm,
+          "a unique Unicode source name is restored by the extension without a warning");
     model.boneCount = 6;
+    report = inspect();
+    Check(!report.namesNeedExtension && report.canCopyLegacy,
+          "unused colliding bones with default initial keys do not block ordinary PMM");
+    const auto initial=model.boneKeys[4];
+    model.boneKeys[4].position[0]=0.001f;
+    Check(inspect().namesNeedExtension,"even a small frame-zero position edit protects the entire collision group");
+    model.boneKeys[4]=initial;model.boneKeys[5].physicsDisabled=1;
+    Check(inspect().namesNeedExtension,"physics disable on a colliding bone must be preserved");
+    model.boneKeys[5].physicsDisabled=0;model.boneKeys[5].rotation[0]=0.1f;
+    Check(inspect().namesNeedExtension,"frame-zero rotation on a colliding bone must be preserved");
+    model.boneKeys[5]=initial;model.boneKeys[5].interpolation[0]=21;
+    Check(inspect().namesNeedExtension,"edited interpolation is not treated as an untouched initial key");
+    model.boneKeys[5]=initial;model.boneKeys[5].next=4;
+    Check(inspect().namesNeedExtension,"a subsequent key link prevents the default-only exemption");
+    model.boneKeys[5]=initial;model.boneKeys[4].position[0]=1;
     report = inspect();
     Check(report.namesNeedExtension && !report.needsNewPmm && !report.canCopyLegacy,
           "distinct full names sharing one mirror need the extension and cannot be copied");
@@ -433,7 +461,7 @@ void PmxNameBoundaries(MMDApp& app, const std::filesystem::path& directory) {
     mdl::SetDisplayCapacity(model, 0, 0);
     mdl::ForgetDisplayCapacity(model);
     wcscpy_s(model.path, L"D:\\model-\U0001f31f.pmx");
-    Check(inspect().needsNewPmm, "a non-CP932 model path selects PMM v3");
+    Check(!inspect().needsNewPmm, "a reversible non-CP932 model path stays PMM v2");
     std::puts("PASS real PMX name mirrors and the strict PMM v3 selection boundary");
 }
 
@@ -462,7 +490,7 @@ void AutomaticMetadata() {
     const auto ordinary=save_compatibility::InspectPmm(*app);
     Check(!ordinary.needsNewPmm&&!ordinary.namesNeedExtension,"English captions and display-group metadata do not trigger a PMM compatibility warning");
     Check(extended_names::Assign(bones[0].jpText,first),"restore a Unicode binding name");
-    Check(save_compatibility::InspectPmm(*app).namesNeedExtension,"a real binding alias still requires Unicode extension data");
+    Check(!save_compatibility::InspectPmm(*app).namesNeedExtension,"a unique Unicode binding remains restorable without a warning");
     app->ModelSlot(0)=nullptr;
     auto*& camera=app->CameraKeys();camera=mdl::KeyPoolCreate<mdl::CameraKey>();
     Check(!save_compatibility::InspectPmm(*app).needsNewPmm,"ordinary project prefers original PMM");
@@ -556,7 +584,7 @@ void FormatTriggerBoundaries(MMDApp& app) {
     mdl::SetDisplayCapacity(*model,255,256);expect(true,"256 facial rows select v3");
     mdl::SetDisplayCapacity(*model,0,0);
     wcscpy_s(model->path,L"D:\\model.pmx");expect(false,"legacy reference path selects v2");
-    wcscpy_s(model->path,L"D:\\model-\U0001f31f.pmx");expect(true,"non-CP932 model reference selects v3");
+    wcscpy_s(model->path,L"D:\\model-\U0001f31f.pmx");expect(false,"reversible non-CP932 model reference stays v2");
     app.ModelSlot(254)=nullptr;
     mdl::ForgetDisplayCapacity(*model);
     mdl::BoneKeyPoolDestroy(model->boneKeys);mdl::MorphKeyPoolDestroy(model->morphKeys);mdl::KeyPoolDestroy(model->displayKeys);
@@ -565,23 +593,46 @@ void FormatTriggerBoundaries(MMDApp& app) {
     auto* savedAccessoryKeys=app.AccessoryKeys(254);
     app.AccessorySlot(254)=accessory.get();app.AccessoryKeys(254)=mdl::KeyPoolCreate<mdl::AccessoryKey>(1);
     TrackFormatBoundaries(app,app.AccessoryKeys(254),10000);
-    wcscpy_s(accessory->sourcePath,L"D:\\accessory-\U0001f31f.x");expect(true,"non-CP932 accessory reference selects v3");
+    wcscpy_s(accessory->sourcePath,L"D:\\accessory-\U0001f31f.x");expect(false,"reversible non-CP932 accessory reference stays v2");
     mdl::KeyPoolDestroy(app.AccessoryKeys(254));app.AccessorySlot(254)=nullptr;app.AccessoryKeys(254)=savedAccessoryKeys;
     for(auto* path:{app.WavePath(),app.AviBackgroundPath(),app.PictureBackgroundPath()}) {
         const std::wstring saved=path;
-        wcscpy_s(path,256,L"D:\\media-\U0001f31f.png");expect(true,"each non-CP932 media reference selects v3");
+        wcscpy_s(path,256,L"D:\\media-\U0001f31f.png");expect(false,"each reversible non-CP932 media reference stays v2");
         wcscpy_s(path,256,saved.c_str());
     }
     for(auto* frame:{&app.CurrentFrame(),&app.TimelineStartFrame()}) {
         const auto saved=*frame;
         *frame=frame_limits::legacyMaximum;expect(false,"exact legacy UI frame selects v2");
         ++*frame;expect(true,"first extended UI frame selects v3");
-        *frame=-1;Check(save_compatibility::InspectPmm(app).invalidData,"negative UI frame is invalid");
+        *frame=-1;
+        const auto signedReport=save_compatibility::InspectPmm(app);
+        Check(!signedReport.invalidData && !signedReport.needsNewPmm && !signedReport.canCopyLegacy,
+              "negative UI frame uses v2 extension and cannot be stripped to legacy data");
         *frame=saved;
     }
     const auto last=app.LastRegisteredFrame();
     app.LastRegisteredFrame()=frame_limits::legacyMaximum;expect(false,"exact legacy last frame selects v2");
     ++app.LastRegisteredFrame();expect(true,"extended last frame selects v3");app.LastRegisteredFrame()=last;
+    {
+        char start[256]{},stop[256]{};
+        GetDlgItemTextA(app.MainWindow(),panel::kPlayStartFrameEdit,start,sizeof start);
+        GetDlgItemTextA(app.MainWindow(),panel::kPlayStopFrameEdit,stop,sizeof stop);
+        app.LastRegisteredFrame()=600;
+        for(const auto& range:std::array<std::array<const char*,2>,3>{{{{"0","-1"}},{{"100","-5"}},{{"100","5"}}}}) {
+            SetDlgItemTextA(app.MainWindow(),panel::kPlayStartFrameEdit,range[0]);
+            SetDlgItemTextA(app.MainWindow(),panel::kPlayStopFrameEdit,range[1]);
+            const auto r=save_compatibility::InspectPmm(app);
+            Check(!r.invalidData && !r.needsNewPmm && r.canCopyLegacy,
+                  "end-relative playback range is not a negative-frame compatibility restriction");
+        }
+        SetDlgItemTextA(app.MainWindow(),panel::kPlayStartFrameEdit,"-10");
+        SetDlgItemTextA(app.MainWindow(),panel::kPlayStopFrameEdit,"-1");
+        Check(!save_compatibility::InspectPmm(app).canCopyLegacy,
+              "ordered negative playback bounds retain literal negative-frame semantics");
+        SetDlgItemTextA(app.MainWindow(),panel::kPlayStartFrameEdit,start);
+        SetDlgItemTextA(app.MainWindow(),panel::kPlayStopFrameEdit,stop);
+        app.LastRegisteredFrame()=last;
+    }
     for(auto control:{panel::kPlayStartFrameEdit,panel::kPlayStopFrameEdit}) {
         char saved[256]{};GetDlgItemTextA(app.MainWindow(),control,saved,sizeof saved);
         SetDlgItemTextA(app.MainWindow(),control,"10000000");expect(false,"exact legacy playback bound selects v2");
@@ -717,7 +768,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (argc < 2 || argc > 4) return 2;
     const bool capacityOnly = argc == 4 && wcscmp(argv[3], L"--key-capacity") == 0;
-    if (argc == 4 && !capacityOnly) return 2;
+    const bool compatibilityOnly=argc==4 && wcscmp(argv[3],L"--compatibility")==0;
+    const bool oldCompatibility=argc==4 && wcscmp(argv[3],L"--old-compatibility")==0;
+    if (argc == 4 && !capacityOnly && !compatibilityOnly && !oldCompatibility) return 2;
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetWindowsHookExW(WH_CBT,[](int code,WPARAM wp,LPARAM lp)->LRESULT {
         if(code==HCBT_ACTIVATE){
@@ -761,8 +814,45 @@ int wmain(int argc, wchar_t** argv) {
     const auto precisionFile = directory / L"precision.pmm";
     const auto fixture = directory / L"fixture.pmm";
     if (argc >= 3) {
-        LoadModelFile(app, argv[2], false);
+        if(oldCompatibility)Load(*app,argv[2]);
+        else LoadModelFile(app, argv[2], false);
         Check(app->ModelSlot(0) != nullptr, "load optional real model fixture");
+    }
+
+    if(oldCompatibility) {
+        const auto& model=*mdl::Mdl(app->ModelSlot(0));
+        Check(model.boneCount>290,"old project keeps bone table");
+        Check(model.boneKeys[289].position[0]==12.5f,"old empty binding keeps first bone key");
+        Check(model.boneKeys[290].position[0]==-7.25f,"old empty binding keeps second bone key");
+        ShutdownCleanup(app);delete app;g_Block=nullptr;return 0;
+    }
+    if(compatibilityOnly) {
+        const auto report=save_compatibility::InspectPmm(*app);
+        std::string issue;text_encoding::EncodeExact(report.nameIssue.c_str(),CP_UTF8,issue);
+        std::ofstream log(directory/L"compatibility.txt");
+        log<<"new_header="<<report.needsNewPmm<<" names="<<report.namesNeedExtension<<" copy="<<report.canCopyLegacy<<"\n"<<issue<<"\n";
+        for(const auto& detail:report.details) {
+            std::string utf8;text_encoding::EncodeExact(detail.c_str(),CP_UTF8,utf8);log<<utf8<<"\n";
+        }
+        std::string message;text_encoding::EncodeExact(save_compatibility::Describe(report,L"",false).c_str(),CP_UTF8,message);
+        std::ofstream(directory/L"notification.txt")<<message;
+        Check(!report.namesNeedExtension || !report.details.empty(),"real model reports the exact incompatible field");
+        auto& source=*mdl::Mdl(app->ModelSlot(0));std::vector<std::wstring> sourceNames;
+        if(source.boneCount>290) {source.boneKeys[289].position[0]=12.5f;source.boneKeys[290].position[0]=-7.25f;}
+        for(unsigned i=0;i<source.boneCount;++i)sourceNames.push_back(text_encoding::BoneName(source.boneTable[i],false));
+        Check(SaveSceneCopy(app,(directory/L"complete-model.pmm").c_str()),"complete model remains saveable despite compatibility limits");
+        Load(*app,directory/L"complete-model.pmm");
+        const auto& restored=*mdl::Mdl(app->ModelSlot(0));
+        if(restored.boneCount>290) {
+            Check(restored.boneKeys[289].position[0]==12.5f,"new binding keeps first bone key");
+            Check(restored.boneKeys[290].position[0]==-7.25f,"new binding keeps second bone key");
+            Check(restored.boneTable[289].name[0]!=0,"Chinese primary name has a nonempty binding without English");
+        }
+        Check(restored.boneCount==sourceNames.size(),"complete project restores every real model bone");
+        for(unsigned i=0;i<restored.boneCount;++i)Check(text_encoding::BoneName(restored.boneTable[i],false)==sourceNames[i],
+            "complete project restores the source name even when legacy bindings collide");
+        std::printf("COMPAT new_header=%d names=%d copy=%d\n",report.needsNewPmm,report.namesNeedExtension,report.canCopyLegacy);
+        ShutdownCleanup(app);delete app;g_Block=nullptr;return 0;
     }
 
 
@@ -894,13 +984,23 @@ int wmain(int argc, wchar_t** argv) {
                     static_cast<UINT>(-1))
                 continue;
             ++count;
-            Check(GetMenuItemCount(sub) == kTierCount, "five limit entries after a language switch");
+            Check(GetMenuItemCount(sub)==9,"flat sorting popup has six actions, a heading and two separators");
+            const UINT order[]={kTransparentSortPrecisionMenuOff,0,32005,304,305,306,307,0,kTransparentSortCrossObjectsMenuId};
+            for(UINT index=0;index<std::size(order);++index) {
+                MENUITEMINFOW entry{sizeof(entry)};entry.fMask=MIIM_SUBMENU|MIIM_ID|MIIM_FTYPE;
+                Check(GetMenuItemInfoW(sub,index,TRUE,&entry) && !entry.hSubMenu,
+                      "all transparent sorting entries are directly reachable without a third menu");
+                Check(order[index] ? entry.wID==order[index] && !(entry.fType&MFT_SEPARATOR) : (entry.fType&MFT_SEPARATOR)!=0,
+                      "Off, strengths and scope occupy three separated groups in order");
+            }
+            Check(GetMenuState(sub,32005,MF_BYCOMMAND)&MF_GRAYED,"strength section has an inactive heading");
+            Check(ItemLabel(sub,32005)==(lang==2?L"排序程度":lang==1?L"Sorting strength":L"ソート精度"),
+                "strength heading is localized without opening another popup");
             Check(GetMenuState(sub, kAutoTransparentMaterialSortingMenuId, MF_BYCOMMAND) ==
                       static_cast<UINT>(-1),
                   "the retired 303 toggle has no entry inside the limit popup");
-            Check(GetMenuState(sub, kTransparentSortPrecisionMenuOff + 1, MF_BYCOMMAND) ==
-                      static_cast<UINT>(-1),
-                  "no sixth entry survives above the five tiers");
+            Check(GetMenuState(sub,kTransparentSortCrossObjectsMenuId,MF_BYCOMMAND)!=UINT(-1),
+                  "scope is a separate checkbox");
             for (int tier = 0; tier < kTierCount; ++tier) {
                 MENUITEMINFOW item{};
                 item.cbSize = sizeof(item);
@@ -924,9 +1024,9 @@ int wmain(int argc, wchar_t** argv) {
                   ItemLabel(sub, kTransparentSortPrecisionMenuFirst).find(L'(') == std::wstring::npos,
                   "the low entry carries no bracketed hint");
             wchar_t title[128]{}; GetMenuStringW(view, pos, title, 128, MF_BYPOSITION);
-            Check(wcscmp(title, lang == 2 ? L"透明排序上限"
-                                          : lang == 1 ? L"Transparent sort limit"
-                                                      : L"透明ソート上限") == 0,
+            Check(wcscmp(title, lang == 2 ? L"透明排序"
+                                          : lang == 1 ? L"Transparent sorting"
+                                                      : L"透明ソート") == 0,
                   "localized transparent sort limit menu title");
         }
         Check(count == 1, "a language switch does not duplicate the limit menu");
@@ -935,7 +1035,28 @@ int wmain(int argc, wchar_t** argv) {
               "the retired 303 toggle has no separate view-menu entry");
     }
     app->EnglishUI() = language; RefreshMenuLanguage(app);
-    std::puts("PASS one five-entry radio popup with a title per language and no 303 entry");
+    std::puts("PASS flat sorting popup with three groups in every language");
+
+    // Scope is a separate project setting for every strength, including Off.
+    for(int tier=0;tier<kTierCount;++tier) {
+        settings::Reset(*app);
+        SendMessageW(app->MainWindow(),WM_COMMAND,kTransparentSortPrecisionMenuFirst+tier,0);
+        Check(!app->TransparentSortCrossObjects(),"new setting keeps object order at every strength");
+        app->SceneModified()=0;
+        SendMessageW(app->MainWindow(),WM_COMMAND,kTransparentSortCrossObjectsMenuId,0);
+        Check(app->TransparentSortCrossObjects() && app->SceneModified() && int(app->TransparentMaterialSortPrecision())==tier,
+              "scope toggles independently without changing strength");
+        Save(*app,precisionFile);Load(*app,precisionFile);
+        Check(app->TransparentSortCrossObjects() && int(app->TransparentMaterialSortPrecision())==tier,
+              "scope and strength independently survive PMM roundtrip");
+        Check(ext::Find(Read(precisionFile),settings::kSortingCrossObjectsKey)->value==std::vector<std::uint8_t>{1},
+              "writer stores one boolean scope byte");
+        SendMessageW(app->MainWindow(),WM_COMMAND,kTransparentSortCrossObjectsMenuId,0);
+        Save(*app,precisionFile);Load(*app,precisionFile);
+        Check(!app->TransparentSortCrossObjects() && int(app->TransparentMaterialSortPrecision())==tier,
+              "disabling scope persists without changing strength");
+    }
+    std::puts("PASS independent sorting strength and scope roundtrip");
 
     // ---- processor and unknown records stay independent of the tier --------
     settings::Reset(*app);

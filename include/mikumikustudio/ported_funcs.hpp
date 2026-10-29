@@ -462,6 +462,8 @@ int ResetMorphKeyCursor(unsigned char* model);    // VA 0x004A49A0, was Sub4A49A
 bool RegisterBoneKey(unsigned char* model, unsigned char* rec,
                      int frameOffset, unsigned char useSelected);  // 0x0049D880,
                                                   // was Sub49D880 (VMD/paste buffer)
+bool RegisterBoneKeyAtIndex(unsigned char* model, unsigned char* rec,
+                            int frameOffset, int boneIdx);
 bool RegisterMirroredBoneKey(unsigned char* model, unsigned char* rec,
                              int frameOffset);    // 0x0049E310, was Sub49E310
 void ResetBoneKeyCursor(unsigned char* model);    // VA 0x004A4940, was Sub4A4940

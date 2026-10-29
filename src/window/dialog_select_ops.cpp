@@ -422,6 +422,8 @@ void ResetModelSelection(MMDApp* app) {  // was Sub4256C0, VA 0x004256C0
                sizeof(SelectAttachRecord) * static_cast<std::size_t>(count));
     }
 
+    if (app->CurrentFrame() >= 0)
+        BeginModelFramePasteUndo(model, app->CurrentFrame(), 0, false, true);
     RegisterDisplayKeyCurrent(model, app->state.currentFrame);    // 0x42592E
     const auto registeredFrames = mdl::Mdl(model)->maxFrame;         // 0x31B0
     if (app->LastRegisteredFrame() < registeredFrames)                // 0x42594E

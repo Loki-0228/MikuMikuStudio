@@ -2,6 +2,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/geometry_workers.hpp"
+#include "mikumikustudio/native_shadow_projection.hpp"
 #include <algorithm>
 #include <cstring>
 #include <unordered_map>
@@ -50,12 +51,34 @@ struct Entry {
     unsigned stable = 0;
     bool valid = false;
     bool wantsCpuBody = false;
+    NativeShadowBounds shadowBounds;
+    const void* shadowBuffer = nullptr;
+    unsigned shadowStride = 0, shadowCount = 0;
+    bool shadowValid = false, bodyVerifiedThisFrame = false;
 };
 std::unordered_map<unsigned char*, Entry> entries;
 std::unordered_set<unsigned char*> loadedModels;
 Stats stats;
 bool enabled = true;
 bool outlineEnabled = true;
+bool shadowBoundsEnabled = true;
+
+bool ShadowBoundsDisabled() noexcept {
+    static const bool disabled = [] {
+        wchar_t value[2]{};
+        return GetEnvironmentVariableW(L"MMS_SHADOW_BOUNDS_CACHE_DISABLE", value, 2) == 1 && value[0] == L'1';
+    }();
+    return disabled;
+}
+
+Entry* BoundsEntry(unsigned char* model, const void* buffer) noexcept {
+    if (!enabled || !shadowBoundsEnabled || ShadowBoundsDisabled() || !model || !buffer ||
+        !loadedModels.count(model)) return nullptr;
+    const auto found = entries.find(model);
+    if (found == entries.end() || !found->second.valid || !found->second.bodyVerifiedThisFrame ||
+        mdl::Mdl(model)->vertexBuffer != buffer) return nullptr;
+    return &found->second;
+}
 
 bool Describe(MMDApp* app, unsigned char* model, float distance, Plan& plan) {
     const auto& m = *mdl::Mdl(model);
@@ -142,12 +165,40 @@ void RegisterLoaded(unsigned char* model) noexcept {
 }
 void Invalidate(unsigned char* model) noexcept {
     const auto found = entries.find(model);
-    if (found != entries.end()) { found->second.valid = false; DropCpuBody(found->second); }
+    if (found != entries.end()) {
+        found->second.valid = false;
+        found->second.shadowValid = found->second.bodyVerifiedThisFrame = false;
+        DropCpuBody(found->second);
+    }
 }
 void Clear() noexcept { entries.clear(); stats.bytes = stats.cpuBytes = 0; }
 Stats GetStats() noexcept { return stats; }
 void SetEnabledForTests(bool value) noexcept { enabled = value; Clear(); }
 void SetOutlineEnabledForTests(bool value) noexcept { outlineEnabled = value; Clear(); }
+void SetShadowBoundsEnabledForTests(bool value) noexcept {
+    shadowBoundsEnabled = value;
+    for (auto& pair : entries) pair.second.shadowValid = false;
+}
+void BeginFrame() noexcept {
+    for (auto& pair : entries) pair.second.bodyVerifiedThisFrame = false;
+}
+bool ShadowBounds(unsigned char* model, const void* buffer, unsigned stride,
+                  unsigned count, NativeShadowBounds& output) noexcept {
+    auto* entry = BoundsEntry(model, buffer);
+    if (!entry || !entry->shadowValid || entry->shadowBuffer != buffer ||
+        entry->shadowStride != stride || entry->shadowCount != count) {
+        ++stats.shadowBoundsMisses; return false;
+    }
+    output = entry->shadowBounds; ++stats.shadowBoundsHits; return true;
+}
+void RememberShadowBounds(unsigned char* model, const void* buffer, unsigned stride,
+                          unsigned count, const NativeShadowBounds& bounds) noexcept {
+    auto* entry = BoundsEntry(model, buffer);
+    if (!entry || stride < 12 || !count || !bounds.Valid()) return;
+    entry->shadowBounds = bounds; entry->shadowBuffer = buffer;
+    entry->shadowStride = stride; entry->shadowCount = count; entry->shadowValid = true;
+    ++stats.shadowBoundsStores;
+}
 
 bool Reuse(MMDApp* app, unsigned char* model, float distance, OutlineUpdate updateOutline) noexcept {
     if (!enabled) return false;
@@ -155,20 +206,25 @@ bool Reuse(MMDApp* app, unsigned char* model, float distance, OutlineUpdate upda
         Plan plan;
         if (!Describe(app, model, distance, plan)) { Forget(model); return false; }
         auto& entry = entries[model];
+        entry.bodyVerifiedThisFrame = false;
         if (entry.key != plan.key) {
             DropCpuBody(entry);
             entry.wantsCpuBody = false;
             entry.key = std::move(plan.key); entry.valid = false; entry.stable = 0;
         } else if (entry.valid && Same(entry, plan)) {
-            if (entry.outlineKey == plan.outlineKey) { ++stats.hits; return true; }
+            if (entry.outlineKey == plan.outlineKey) {
+                entry.bodyVerifiedThisFrame = true; ++stats.hits; return true;
+            }
             if (outlineEnabled && updateOutline && !entry.cpuBody.empty() &&
                 updateOutline(app, model, distance, entry.cpuBody.data(), entry.cpuBody.size())) {
                 entry.outlineKey = std::move(plan.outlineKey);
+                entry.bodyVerifiedThisFrame = true;
                 ++stats.outlineHits; return true;
             }
             entry.wantsCpuBody = true;
         }
         entry.valid = false;
+        entry.shadowValid = false;
         // Foreign geometry and the comparison control retain the full-input gate.
         if ((!plan.hostOwned || !outlineEnabled) && entry.outlineKey != plan.outlineKey) {
             entry.stable = 0; entry.outlineKey = std::move(plan.outlineKey);
@@ -212,6 +268,7 @@ void Remember(MMDApp* app, unsigned char* model, float distance) noexcept {
     if (!enabled) return;
     const auto found = entries.find(model);
     if (found == entries.end() || found->second.stable < 2) return;
+    found->second.shadowValid = false;
     // Two matching poses are required before copying large input tables. A
     // moving camera/character pays the small-key check, not a snapshot copy.
     try {
@@ -231,7 +288,7 @@ void Remember(MMDApp* app, unsigned char* model, float distance) noexcept {
         }
         entry.bytes = plan.bytes; stats.bytes += entry.bytes;
         entry.outlineKey = std::move(plan.outlineKey);
-        entry.valid = true; ++stats.stores;
+        entry.valid = true; entry.bodyVerifiedThisFrame = true; ++stats.stores;
     } catch (...) { Forget(model); }
 }
 }

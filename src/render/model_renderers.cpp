@@ -4,6 +4,7 @@
 #include "mikumikustudio/deformed_mesh_capture.hpp"
 #include "mikumikustudio/perf_timing.hpp"
 #include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/transparent_sort_cache.hpp"
 // ===========================================================================
 // VA 0x00425D20 / 0x00426CD0 / 0x004277E0 - model and shadow render passes
 // ===========================================================================
@@ -313,7 +314,7 @@ bool CachedTextureUsesAlpha(D3DRenderer* sub, const wchar_t* path) {
     const auto* entry = FindTextureResource(sub, path);
     if (!entry) return false;
     const auto flags = reinterpret_cast<const unsigned char*>(&entry->tag)[3];
-    return (flags & kTextureAlphaKnown) == 0 || (flags & kTextureUsesAlpha) != 0;
+    return (flags & kTextureAlphaKnown) != 0 && (flags & kTextureUsesAlpha) != 0;
 }
 
 bool ModelMaterialUsesAlpha(D3DRenderer* sub, const mdl::ModelRecord& state,
@@ -324,15 +325,13 @@ bool ModelMaterialUsesAlpha(D3DRenderer* sub, const mdl::ModelRecord& state,
         return true;
     const float alpha = EffectiveMaterialAlpha(material.diffuse[3],
                                                state.displayState != 0);
-    // Native alpha 0 emits no fragment. Keep the original classification when
-    // MME is loaded: a custom FX can replace authored alpha, so moving that draw
-    // to the opaque pass could change its visible result.
-    if (!MaterialAlphaVisible(alpha) && GetModuleHandleW(L"MMEffect.dll") == nullptr)
+    // Hidden helpers still draw once through the original/opaque path, but
+    // authored alpha zero is not a transparent-sort candidate.
+    if (!MaterialAlphaVisible(alpha))
         return false;
-    return alpha < 1.0f ||
-        CachedTextureUsesAlpha(sub, material.texturePath) ||
-        ((state.physicsMode != 2 || material.sphereMode != 0) &&
-            CachedTextureUsesAlpha(sub, material.spherePath));
+    // Sphere-map RGB contributes lighting; the native material shaders restore
+    // output alpha from diffuse/base texture rather than the sphere map alpha.
+    return alpha < 1.0f || CachedTextureUsesAlpha(sub, material.texturePath);
 }
 
 void SortTransparentModelMaterials(D3DRenderer* sub, unsigned char* model,
@@ -340,6 +339,7 @@ void SortTransparentModelMaterials(D3DRenderer* sub, unsigned char* model,
                                   IDirect3DIndexBuffer9* indices, UINT stride) {
     MMD_PERF_SCOPE(Sort);
     auto& state = *mdl::Mdl(model);
+    if(state.postLoadFlag2 != 0)return;
     // CPU source indices stay untouched for saving and stable coplanar order.
     const auto* pmxIndices = native_mesh::Indices32(model);
     const auto* pmdIndices = native_mesh::Indices32(model) == nullptr ? mdl::Indices(model) : nullptr;
@@ -979,6 +979,10 @@ void ConfigureEffectMaterial(MMDApp* app, D3DRenderer* sub,
                              unsigned char* model,
                              unsigned char* material, UINT materialIndex) {
     const mdl::ModelMaterialRecord& record = mdl::Material(material);
+#if !MMD_ORIGINAL_PROFILE
+    shadow_filter::ConfigureDetailReceiver(app, effect,
+        mdl::Mdl(model)->physicsMode != 2 || (record.flags & 8) != 0, model);
+#endif
     const float alpha = record.diffuse[3];
     const float diffuse[4] = {record.diffuse[0], record.diffuse[1],
                               record.diffuse[2], alpha};
@@ -1748,6 +1752,13 @@ struct AlphaClipVertex {
     float data[24]{};
 };
 
+bool UseOriginalAlphaVertices(MMDApp* app) {
+    // Bucket tiers need a complete, projection-independent set of source faces.
+    // The GPU clips them without changing their depth range or vertex IDs.
+    return app->TransparentMaterialSortPrecision()!=TransparentSortPrecision::Maximum ||
+        GetModuleHandleW(L"MMEffect.dll")!=nullptr;
+}
+
 double AlphaClipDistance(const AlphaClipVertex& v, int plane) {
     switch (plane) {
     case 0: return v.clip[3] + v.clip[0];
@@ -1759,7 +1770,7 @@ double AlphaClipDistance(const AlphaClipVertex& v, int plane) {
     }
 }
 
-void ClipAlphaTriangle(const AlphaClipVertex input[3], UINT draw, UINT ordinal,
+void ClipAlphaTriangle(const AlphaClipVertex input[3], UINT draw, UINT ordinal, UINT object,
                        std::vector<transparent_geometry::Triangle>& output) {
     std::vector<AlphaClipVertex> polygon(input, input + 3), next;
     for (int plane = 0; plane < 6 && !polygon.empty(); ++plane) {
@@ -1787,6 +1798,7 @@ void ClipAlphaTriangle(const AlphaClipVertex input[3], UINT draw, UINT ordinal,
         transparent_geometry::Triangle triangle{};
         triangle.draw = draw;
         triangle.ordinal = ordinal;
+        triangle.object = object;
         const AlphaClipVertex* corners[] = {&polygon[0], &polygon[i], &polygon[i + 1]};
         bool valid = true;
         for (int c = 0; c < 3; ++c) {
@@ -1801,9 +1813,115 @@ void ClipAlphaTriangle(const AlphaClipVertex input[3], UINT draw, UINT ordinal,
     }
 }
 
+struct AlphaSource {
+    IDirect3DVertexBuffer9* buffer=nullptr;
+    const void* indices=nullptr;
+    std::size_t vertexBytes=0,indexBytes=0;
+    std::size_t firstTriangle=0,endTriangle=0;
+    bool reusable=false;
+    std::vector<unsigned char> vertices,sourceIndices;
+};
+struct AlphaGpu {
+    Microsoft::WRL::ComPtr<IDirect3DVertexBuffer9> vertices;
+    Microsoft::WRL::ComPtr<IDirect3DIndexBuffer9> indices;
+    UINT count=0;
+    bool valid=false;
+};
+struct AlphaPlan {
+    MMDApp* app=nullptr;
+    IDirect3DDevice9* device=nullptr;
+    std::vector<transparent_geometry::Triangle> source,sorted;
+    std::vector<AlphaSource> snapshots;
+    std::vector<unsigned char> key;
+    TransparentSortPrecision precision=TransparentSortPrecision::Off;
+    transparent_geometry::Statistics stats;
+    bool sortedValid=false,batchNative=false,crossObjects=false;
+    DWORD width=0,height=0;
+    AlphaGpu gpu;
+    struct Run {UINT draw,first,count;};
+    std::vector<Run> runs;
+};
+thread_local AlphaPlan alphaPlan;
+thread_local transparent_sort_cache::Statistics alphaCacheStats;
+thread_local int alphaCacheOverride=-1;
+constexpr std::size_t kAlphaSourceBudget=128u*1024u*1024u;
+constexpr std::size_t kAlphaGpuBudget=256u*1024u*1024u;
+bool AlphaCacheEnabled() {
+    if(alphaCacheOverride>=0)return alphaCacheOverride!=0;
+    static const bool disabled=[] {
+        wchar_t value[2]{};
+        return GetEnvironmentVariableW(L"MMS_TRANSPARENT_CACHE_DISABLE",value,2)==1 && value[0]==L'1';
+    }();
+    return !disabled;
+}
+template<class T> void AlphaKey(std::vector<unsigned char>& key,const T& value) {
+    const auto* p=reinterpret_cast<const unsigned char*>(&value);
+    key.insert(key.end(),p,p+sizeof(value));
+}
+// Exact CPU and GPU source bytes are checked even with MME. A pose revision
+// alone would miss effect-side writes to the host's original vertex buffer.
+bool AlphaSourceKey(MMDApp* app,const std::vector<NativeAlphaDraw>& draws,
+                    std::vector<unsigned char>& key,std::vector<AlphaSource>& sources) {
+    auto* device=app->Renderer()->device;
+    Matrix world{},view{},projection{};
+    if(FAILED(device->GetTransform(D3DTS_WORLD,reinterpret_cast<D3DMATRIX*>(&world))) ||
+       FAILED(device->GetTransform(D3DTS_VIEW,reinterpret_cast<D3DMATRIX*>(&view))) ||
+       FAILED(device->GetTransform(D3DTS_PROJECTION,reinterpret_cast<D3DMATRIX*>(&projection))))return false;
+    AlphaKey(key,world);AlphaKey(key,view);AlphaKey(key,projection);
+    AlphaKey(key,app->WorldViewProjection());
+    AlphaKey(key,UseOriginalAlphaVertices(app));
+    std::size_t bytes=0;
+    unsigned char* previous=nullptr;
+    for(const auto& draw:draws) {
+        const auto& state=*mdl::Mdl(draw.model);
+        AlphaKey(key,draw.model);AlphaKey(key,draw.selection.material);
+        AlphaKey(key,draw.selection.firstIndex);AlphaKey(key,draw.effect);
+        AlphaKey(key,mdl::Materials(draw.model)[draw.selection.material].faceVertexCount);
+        if(draw.model==previous)continue;
+        previous=draw.model;
+        DWORD fvf=0;UINT stride=0;ModelVertexFormat(draw.model,&fvf,&stride);
+        AlphaSource source;
+        source.buffer=static_cast<IDirect3DVertexBuffer9*>(state.vertexBuffer);
+        const auto* wide=native_mesh::Indices32(draw.model);
+        source.indices=wide ? static_cast<const void*>(wide) : mdl::Indices(draw.model);
+        source.vertexBytes=std::size_t(state.vertexCount)*stride;
+        source.indexBytes=std::size_t(state.indexCount)*4; // PMD CPU indices also have a four-byte stride
+        if(!source.indices || !PlausibleD3dObject(source.buffer) ||
+           source.vertexBytes>kAlphaSourceBudget-bytes)return false;
+        bytes+=source.vertexBytes;
+        if(source.indexBytes>kAlphaSourceBudget-bytes)return false;
+        bytes+=source.indexBytes;
+        AlphaKey(key,source.buffer);AlphaKey(key,source.indices);
+        AlphaKey(key,source.vertexBytes);AlphaKey(key,source.indexBytes);AlphaKey(key,stride);
+        sources.push_back(std::move(source));
+    }
+    return true;
+}
+bool SameAlphaSources(std::vector<AlphaSource>& now,const std::vector<AlphaSource>& saved) {
+    if(now.size()!=saved.size())return false;
+    bool all=true;
+    for(std::size_t i=0;i<now.size();++i) {
+        auto& a=now[i];const auto& b=saved[i];
+        D3DVERTEXBUFFER_DESC desc{};void* data=nullptr;
+        if(a.vertexBytes==b.vertices.size() && a.indexBytes==b.sourceIndices.size() &&
+           !std::memcmp(a.indices,b.sourceIndices.data(),a.indexBytes) &&
+           SUCCEEDED(a.buffer->GetDesc(&desc)) && a.vertexBytes<=desc.Size &&
+           SUCCEEDED(a.buffer->Lock(0,0,&data,D3DLOCK_READONLY))) {
+            const bool same=data && !std::memcmp(data,b.vertices.data(),a.vertexBytes);
+            a.reusable=SUCCEEDED(a.buffer->Unlock()) && same;
+        }
+        if(a.reusable)++alphaCacheStats.objectHits;
+        else {++alphaCacheStats.objectMisses;all=false;}
+    }
+    return all;
+}
+
 bool CollectAlphaGeometry(MMDApp* app, const std::vector<NativeAlphaDraw>& draws,
-                          std::vector<transparent_geometry::Triangle>& triangles) {
+                          std::vector<transparent_geometry::Triangle>& triangles,
+                          std::vector<AlphaSource>* snapshots=nullptr,
+                          AlphaPlan* previous=nullptr) {
     auto* device = app->Renderer()->device;
+    const bool preserveVertexIdentity=UseOriginalAlphaVertices(app);
     Matrix world{}, view{}, projection{}, worldView{}, fixedTransform{};
     if (FAILED(device->GetTransform(D3DTS_WORLD, reinterpret_cast<D3DMATRIX*>(&world))) ||
         FAILED(device->GetTransform(D3DTS_VIEW, reinterpret_cast<D3DMATRIX*>(&view))) ||
@@ -1811,6 +1929,11 @@ bool CollectAlphaGeometry(MMDApp* app, const std::vector<NativeAlphaDraw>& draws
     Multiply(&worldView, &world, &view);
     Multiply(&fixedTransform, &worldView, &projection);
     UINT ordinal = 0;
+    UINT object=0;
+    unsigned char* previousModel=nullptr;
+    IDirect3DVertexBuffer9* lockedBuffer=nullptr;
+    void* data=nullptr;
+    struct Unlock { IDirect3DVertexBuffer9*& buffer; ~Unlock(){if(buffer)buffer->Unlock();} } unlock{lockedBuffer};
     for (UINT d = 0; d < draws.size(); ++d) {
         const auto& draw = draws[d];
         const auto& state = *mdl::Mdl(draw.model);
@@ -1822,18 +1945,54 @@ bool CollectAlphaGeometry(MMDApp* app, const std::vector<NativeAlphaDraw>& draws
         ModelVertexFormat(draw.model, &fvf, &stride);
         D3DVERTEXBUFFER_DESC desc{};
         if (FAILED(vb->GetDesc(&desc)) || std::size_t(state.vertexCount) * stride > desc.Size) return false;
-        void* data = nullptr;
-        if (FAILED(vb->Lock(0, 0, &data, D3DLOCK_READONLY))) return false;
-        struct Unlock { IDirect3DVertexBuffer9* buffer; ~Unlock() { buffer->Unlock(); } } unlock{vb};
+        if(draw.model!=previousModel) {
+            if(lockedBuffer && FAILED(lockedBuffer->Unlock())){lockedBuffer=nullptr;return false;}
+            lockedBuffer=nullptr;
+            if(previousModel)++object;
+            previousModel=draw.model;
+            if(snapshots) {
+                auto& saved=(*snapshots)[object];
+                saved.firstTriangle=triangles.size();
+                if(saved.reusable && previous) {
+                    auto& old=previous->snapshots[object];
+                    triangles.insert(triangles.end(),previous->source.begin()+old.firstTriangle,
+                                     previous->source.begin()+old.endTriangle);
+                    saved.vertices=std::move(old.vertices);
+                    saved.sourceIndices=std::move(old.sourceIndices);
+                    saved.endTriangle=triangles.size();
+                    do {
+                        ordinal+=mdl::Materials(draws[d].model)[draws[d].selection.material].faceVertexCount/3;
+                        ++d;
+                    } while(d<draws.size() && draws[d].model==previousModel);
+                    --d;
+                    continue;
+                }
+            }
+            if(FAILED(vb->Lock(0,0,&data,D3DLOCK_READONLY)))return false;
+            lockedBuffer=vb;
+            if(!data)return false;
+            if(snapshots) {
+                auto& saved=(*snapshots)[object];
+                const auto* bytes=static_cast<const unsigned char*>(data);
+                saved.vertices.assign(bytes,bytes+saved.vertexBytes);
+                const auto* indices=static_cast<const unsigned char*>(saved.indices);
+                saved.sourceIndices.assign(indices,indices+saved.indexBytes);
+            }
+        }
         const auto* pmx = native_mesh::Indices32(draw.model);
         const auto* pmd = native_mesh::Indices32(draw.model) == nullptr ? mdl::Indices(draw.model) : nullptr;
         bool valid = (pmx || pmd) && stride <= sizeof(AlphaClipVertex::data);
         const UINT count = mdl::Materials(draw.model)[draw.selection.material].faceVertexCount;
         for (UINT offset = 0; valid && offset < count; offset += 3, ++ordinal) {
             AlphaClipVertex vertices[3]{};
+            transparent_geometry::Triangle original{};
+            original.draw=d;original.ordinal=ordinal;original.object=object;
+            original.linearDepth=0;
+            unsigned outsidePlanes=0x3F;
             for (UINT c = 0; c < 3; ++c) {
                 const UINT at = draw.selection.firstIndex + offset + c;
                 const UINT index = pmx ? UINT(pmx[at]) : UINT(pmd[2 * at]);
+                original.sourceIndices[c]=index;
                 if (index >= state.vertexCount) { valid = false; break; }
                 auto& v = vertices[c];
                 std::memcpy(v.data, static_cast<const char*>(data) + std::size_t(index) * stride, stride);
@@ -1843,12 +2002,67 @@ bool CollectAlphaGeometry(MMDApp* app, const std::vector<NativeAlphaDraw>& draws
                                 double(v.data[2]) * transform.m[2][j] + transform.m[3][j];
                     if (!std::isfinite(v.clip[j])) valid = false;
                 }
+                // Perspective W is linear camera Z, before the nonlinear Z/W
+                // mapping. Orthographic clip Z is already linear. Accumulate
+                // the original face, including portions outside the viewport.
+                original.linearDepth+=projection.m[2][3]!=0 ? v.clip[3] : v.clip[2];
+                outsidePlanes&=transparent_geometry::FrustumOutsidePlanes(v.clip);
             }
-            if (valid) ClipAlphaTriangle(vertices, d, ordinal, triangles);
+            if (valid && preserveVertexIdentity) {
+                if(outsidePlanes)
+                    original.flags|=transparent_geometry::kOutsideFrustum;
+                // Keep complete original faces and vertex IDs. Clipping or
+                // expanding a new VB changes MME's _INDEX and makes effects
+                // such as MotionBlur read another vertex's previous position.
+                // The GPU still performs ordinary frustum clipping at draw.
+                for(UINT c=0;c<3;++c) {
+                    auto& out=original.v[c];const auto& in=vertices[c];
+                    const double w=std::max(std::abs(in.clip[3]),1e-20);
+                    out.inverseW=1/w;
+                    for(int j=0;j<3;++j)out.p[j]=in.clip[j]/w;
+                    std::memcpy(out.data,in.data,sizeof(out.data));
+                }
+                triangles.push_back(original);
+            } else if (valid) ClipAlphaTriangle(vertices, d, ordinal, object, triangles);
         }
         if (!valid) return false;
+        if(snapshots)(*snapshots)[object].endTriangle=triangles.size();
     }
     return true;
+}
+
+bool UploadAlphaGpu(IDirect3DDevice9* device,AlphaGpu& gpu,
+                    const std::vector<transparent_geometry::Triangle>& sorted,bool originalVertices) {
+    const UINT count=UINT(sorted.size()*3);
+    if(gpu.valid && count<=gpu.count){++alphaCacheStats.gpuHits;return true;}
+    if((!originalVertices && !gpu.vertices) || !gpu.indices || count>gpu.count) {
+        gpu=AlphaGpu{};
+        if((!originalVertices && FAILED(device->CreateVertexBuffer(count*96,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,
+            D3DPOOL_DEFAULT,&gpu.vertices,nullptr))) ||
+           FAILED(device->CreateIndexBuffer(count*4,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,
+            D3DPOOL_DEFAULT,&gpu.indices,nullptr))) {gpu=AlphaGpu{};return false;}
+        void* data=nullptr;
+        if(FAILED(gpu.indices->Lock(0,0,&data,0))) {gpu=AlphaGpu{};return false;}
+        for(UINT i=0;i<count;++i)static_cast<UINT*>(data)[i]=i;
+        if(FAILED(gpu.indices->Unlock())) {gpu=AlphaGpu{};return false;}
+        gpu.count=count;alphaCacheStats.allocations+=originalVertices?1:2;
+    }
+    if(originalVertices) {
+        void* memory=nullptr;
+        if(FAILED(gpu.indices->Lock(0,0,&memory,D3DLOCK_DISCARD)))return false;
+        auto* indices=static_cast<UINT*>(memory);
+        for(const auto& triangle:sorted)for(auto index:triangle.sourceIndices)*indices++=index;
+        if(FAILED(gpu.indices->Unlock()))return false;
+        gpu.valid=true;++alphaCacheStats.uploads;return true;
+    }
+    void* destination=nullptr;
+    if(FAILED(gpu.vertices->Lock(0,count*96,&destination,D3DLOCK_DISCARD)))return false;
+    auto* floats=static_cast<float*>(destination);
+    for(const auto& triangle:sorted)for(const auto& vertex:triangle.v) {
+        std::memcpy(floats,vertex.data,sizeof(vertex.data));floats+=24;
+    }
+    if(FAILED(gpu.vertices->Unlock()))return false;
+    gpu.valid=true;++alphaCacheStats.uploads;return true;
 }
 
 // Optional, explicit diagnostic output: projected geometry, never a desktop capture.
@@ -1980,70 +2194,84 @@ bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame) {
             first += count;
         }
     }
-    if (draws.empty()) return false;
+    if (draws.empty()) {transparent_sort_cache::Release(app);return false;}
+    auto* device=sub->device;
+    auto& cache=alphaPlan;
+    if(cache.app!=app || cache.device!=device) {
+        cache=AlphaPlan{};cache.app=app;cache.device=device;
+        alphaCacheStats.sourceBytes=alphaCacheStats.gpuBytes=0;
+    }
+    const bool enabled=AlphaCacheEnabled();
     thread_local std::vector<transparent_geometry::Triangle> input;
-    input.clear();
-    if (!CollectAlphaGeometry(app, draws, input)) return false;
-    if (effectFrame && RenderPeelingAlpha(app, draws, input)) return true;
+    std::vector<unsigned char> key;
+    std::vector<AlphaSource> sources;
+    const bool snapshot=enabled && AlphaSourceKey(app,draws,key,sources);
+    const bool comparable=snapshot && key==cache.key && sources.size()==cache.snapshots.size();
+    const bool sameSource=comparable && SameAlphaSources(sources,cache.snapshots);
+    if(snapshot && !comparable)alphaCacheStats.objectMisses+=sources.size();
+    if(sameSource)++alphaCacheStats.sourceHits;
+    else {
+        ++alphaCacheStats.sourceMisses;
+        input.clear();
+        if(!CollectAlphaGeometry(app,draws,input,snapshot ? &sources : nullptr,comparable ? &cache : nullptr))return false;
+        const bool same=input.size()==cache.source.size() &&
+            (input.empty() || !std::memcmp(input.data(),cache.source.data(),input.size()*sizeof(input[0])));
+        if(!same){cache.source.swap(input);cache.sortedValid=false;cache.gpu.valid=false;}
+        cache.key=snapshot ? std::move(key) : std::vector<unsigned char>{};
+        cache.snapshots=snapshot ? std::move(sources) : std::vector<AlphaSource>{};
+        alphaCacheStats.sourceBytes=0;
+        for(const auto& source:cache.snapshots)
+            alphaCacheStats.sourceBytes+=source.vertices.size()+source.sourceIndices.size();
+    }
+    const bool crossObjects=app->TransparentSortCrossObjects();
+    const bool originalVertices=UseOriginalAlphaVertices(app);
+    const bool oneObject=cache.source.empty() || cache.source.front().object==cache.source.back().object;
+    if (effectFrame && !originalVertices && (crossObjects || oneObject) && RenderPeelingAlpha(app, draws, cache.source)) return true;
     D3DVIEWPORT9 batchViewport{};
     // Unknown MME shaders can move vertices or have effects outside a source
     // triangle. Native passes alone have the screen-coverage contract needed
     // to move disjoint triangles without changing their output.
-    const bool batchNative = GetModuleHandleW(L"MMEffect.dll") == nullptr &&
-        SUCCEEDED(sub->device->GetViewport(&batchViewport));
-    struct Plan {
-        std::vector<transparent_geometry::Triangle> source, sorted;
-        TransparentSortPrecision precision = TransparentSortPrecision::Low;
-        transparent_geometry::Statistics stats;
-        bool batchNative = false;
-        DWORD width = 0, height = 0;
-    };
-    thread_local Plan cache;
     const auto precision = app->TransparentMaterialSortPrecision();
-    const bool same = precision == cache.precision && batchNative == cache.batchNative &&
-        batchViewport.Width == cache.width && batchViewport.Height == cache.height &&
-        input.size() == cache.source.size() &&
-        (input.empty() || std::memcmp(input.data(), cache.source.data(), input.size() * sizeof(input[0])) == 0);
+    const bool batchNative = precision==TransparentSortPrecision::Maximum && crossObjects &&
+        GetModuleHandleW(L"MMEffect.dll") == nullptr &&
+        SUCCEEDED(sub->device->GetViewport(&batchViewport));
+    const bool same = cache.sortedValid && precision == cache.precision && crossObjects == cache.crossObjects && batchNative == cache.batchNative &&
+        batchViewport.Width == cache.width && batchViewport.Height == cache.height;
     if (!same) {
-        cache.sorted = transparent_geometry::Order(input, precision, cache.stats);
+        ++alphaCacheStats.planMisses;
+        // Unknown MME shaders may depend on original vertex IDs. Highest uses
+        // whole-face depth ordering there instead of inventing split vertices.
+        cache.sorted = transparent_geometry::Order(cache.source, precision, cache.stats, crossObjects, !originalVertices,
+            GetModuleHandleW(L"MMEffect.dll")!=nullptr);
         if (batchNative)
             transparent_geometry::BatchDraws(cache.sorted, batchViewport.Width, batchViewport.Height);
-        cache.source = input;
+        cache.sortedValid=true;cache.gpu.valid=false;
+        cache.runs.clear();
+        for(std::size_t first=0;first<cache.sorted.size();) {
+            std::size_t end=first+1;
+            while(end<cache.sorted.size() && cache.sorted[end].draw==cache.sorted[first].draw)++end;
+            cache.runs.push_back({cache.sorted[first].draw,UINT(first*3),UINT((end-first)*3)});
+            first=end;
+        }
         cache.precision = precision;
+        cache.crossObjects = crossObjects;
         cache.batchNative = batchNative;
         cache.width = batchViewport.Width;
         cache.height = batchViewport.Height;
-        runtime_log::Trace("alpha-bsp precision=%u input=%zu output=%zu splits=%zu limited=%u buckets=%zu",
+        runtime_log::Trace("alpha-bsp precision=%u input=%zu output=%zu splits=%zu limited=%u buckets=%zu offscreen=%zu",
             unsigned(precision), cache.stats.inputTriangles, cache.stats.outputTriangles,
-            cache.stats.splitCount, cache.stats.limited ? 1u : 0u, cache.stats.bucketCount);
-    }
-    DumpAlphaGeometry(input, cache.sorted);
-    if (cache.sorted.empty()) return true;
+            cache.stats.splitCount, cache.stats.limited ? 1u : 0u, cache.stats.bucketCount, cache.stats.offscreenTriangles);
+    } else ++alphaCacheStats.planHits;
+    DumpAlphaGeometry(cache.source, cache.sorted);
+    if (cache.sorted.empty()) {cache.gpu=AlphaGpu{};alphaCacheStats.gpuBytes=0;return true;}
     if (cache.sorted.size() > std::numeric_limits<UINT>::max() / (3 * 96)) return false;
     const UINT vertexCount = UINT(cache.sorted.size() * 3);
-    struct Buffers {
-        IDirect3DVertexBuffer9* vb = nullptr;
-        IDirect3DIndexBuffer9* ib = nullptr;
-        ~Buffers() { if (vb) vb->Release(); if (ib) ib->Release(); }
-    } scratch;
-    auto* device = sub->device;
-    if (FAILED(device->CreateVertexBuffer(vertexCount * 96, D3DUSAGE_WRITEONLY, 0,
-                                          D3DPOOL_DEFAULT, &scratch.vb, nullptr)) ||
-        FAILED(device->CreateIndexBuffer(vertexCount * 4, D3DUSAGE_WRITEONLY, D3DFMT_INDEX32,
-                                         D3DPOOL_DEFAULT, &scratch.ib, nullptr))) return false;
-    void* destination = nullptr;
-    if (FAILED(scratch.vb->Lock(0, 0, &destination, 0))) return false;
-    auto* floats = static_cast<float*>(destination);
-    for (const auto& triangle : cache.sorted) {
-        for (const auto& vertex : triangle.v) {
-            std::memcpy(floats, vertex.data, sizeof(vertex.data));
-            floats += 24;
-        }
-    }
-    if (FAILED(scratch.vb->Unlock())) return false;
-    if (FAILED(scratch.ib->Lock(0, 0, &destination, 0))) return false;
-    for (UINT i = 0; i < vertexCount; ++i) static_cast<UINT*>(destination)[i] = i;
-    if (FAILED(scratch.ib->Unlock())) return false;
+    AlphaGpu scratch;
+    const bool keepGpu=enabled && std::uint64_t(vertexCount)*100<=kAlphaGpuBudget;
+    if(!keepGpu){cache.gpu=AlphaGpu{};alphaCacheStats.gpuBytes=0;}
+    auto& gpu=keepGpu ? cache.gpu : scratch;
+    if(!UploadAlphaGpu(device,gpu,cache.sorted,originalVertices))return false;
+    if(keepGpu)alphaCacheStats.gpuBytes=std::size_t(gpu.count)*(originalVertices?4:100);
     IDirect3DVertexBuffer9* oldVertices = nullptr;
     IDirect3DIndexBuffer9* oldIndices = nullptr;
     IDirect3DVertexDeclaration9* oldDeclaration = nullptr;
@@ -2054,22 +2282,20 @@ bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame) {
     device->GetVertexDeclaration(&oldDeclaration);
     const auto oldPass = app->ActiveRenderPass();
     auto* oldObject = app->ActiveRenderObject();
-    for (std::size_t first = 0; first < cache.sorted.size();) {
-        std::size_t end = first + 1;
-        const UINT d = cache.sorted[first].draw;
-        while (end < cache.sorted.size() && cache.sorted[end].draw == d) ++end;
-        auto command = draws[d];
-        command.selection.firstIndex = UINT(first * 3);
-        command.selection.indexCount = UINT((end - first) * 3);
-        command.selection.buffer = scratch.ib;
-        command.selection.vertices = scratch.vb;
-        command.selection.vertexCount = vertexCount;
-        command.selection.vertexStride = 96;
+    for (const auto& run:cache.runs) {
+        auto command = draws[run.draw];
+        command.selection.firstIndex = run.first;
+        command.selection.indexCount = run.count;
+        command.selection.buffer = gpu.indices.Get();
+        if(!originalVertices) {
+            command.selection.vertices = gpu.vertices.Get();
+            command.selection.vertexCount = vertexCount;
+            command.selection.vertexStride = 96;
+        }
         app->ActiveRenderObject() = command.model;
         app->ActiveRenderPass() = command.effect ? AccessoryRenderPass::Effect : AccessoryRenderPass::FixedFunction;
         if (command.effect) device->SetTexture(0, shadow_filter::VisibleTexture(app));
         DrawModelMaterials(app, command.model, command.effect, false, ModelAlphaPass::Translucent, &command.selection);
-        first = end;
     }
     device->SetStreamSource(0, oldVertices, oldOffset, oldStride);
     device->SetIndices(oldIndices);
@@ -2402,11 +2628,35 @@ void RestoreTextureStages(IDirect3DDevice9* device) {
 
 }  // namespace
 
+namespace transparent_sort_cache {
+Statistics GetStatistics() noexcept {
+#if !MMD_ORIGINAL_PROFILE
+    return alphaCacheStats;
+#else
+    return {};
+#endif
+}
+void Release(MMDApp* app) noexcept {
+#if !MMD_ORIGINAL_PROFILE
+    if(!app || alphaPlan.app==app) {
+        alphaPlan=AlphaPlan{};
+        alphaCacheStats.sourceBytes=alphaCacheStats.gpuBytes=0;
+    }
+#endif
+}
+void SetEnabledForTests(bool enabled) noexcept {
+#if !MMD_ORIGINAL_PROFILE
+    Release(nullptr);alphaCacheOverride=enabled ? 1 : 0;
+#endif
+}
+}
+
 bool UseEffectModelRenderer(MMDApp* app) {
     return EffectRenderEnabled(app);
 }
 
 void RenderModelsFixed(MMDApp* app) {                         // 0x425D20
+    if(!app->AutoTransparentMaterialSortingEnabled())transparent_sort_cache::Release(app);
     D3DRenderer* sub = app->Renderer();
     auto* device = sub->device;
     // x64 帧头 0x7FF7CB4BFC08 仅一条 SetTextureStageState(2, TEXCOORDINDEX,
@@ -2446,7 +2696,9 @@ void RenderModelsFixed(MMDApp* app) {                         // 0x425D20
 #if !MMD_ORIGINAL_PROFILE
         if (alphaPass == ModelAlphaPass::Translucent &&
             app->AutoTransparentMaterialSortingEnabled() &&
-            (RenderSplitOrderedAlpha(app, false) || RenderNativeOrderedAlpha(app, false))) continue;
+            (RenderSplitOrderedAlpha(app, false) ||
+             (app->TransparentMaterialSortPrecision()==TransparentSortPrecision::Maximum &&
+              RenderNativeOrderedAlpha(app, false)))) continue;
 #endif
         for (int order = 0; order < kModelSlotCount; ++order) {
             const auto& entry = orderedModels[order];
@@ -2510,6 +2762,7 @@ void RenderModelsFixed(MMDApp* app) {                         // 0x425D20
 }
 
 void RenderModelsEffect(MMDApp* app, const float frameMatrix[16]) { // 0x4277E0
+    if(!app->AutoTransparentMaterialSortingEnabled())transparent_sort_cache::Release(app);
     D3DRenderer* sub = app->Renderer();
     auto* device = sub->device;
     void* effect = sub->effect;
@@ -2622,7 +2875,9 @@ void RenderModelsEffect(MMDApp* app, const float frameMatrix[16]) { // 0x4277E0
 #if !MMD_ORIGINAL_PROFILE
         if (alphaPass == ModelAlphaPass::Translucent &&
             app->AutoTransparentMaterialSortingEnabled() &&
-            (RenderSplitOrderedAlpha(app, true) || RenderNativeOrderedAlpha(app, true))) continue;
+            (RenderSplitOrderedAlpha(app, true) ||
+             (app->TransparentMaterialSortPrecision()==TransparentSortPrecision::Maximum &&
+              RenderNativeOrderedAlpha(app, true)))) continue;
 #endif
         for (int order = 0; order < kModelSlotCount; ++order) {
             const auto& entry = orderedModels[order];
@@ -2941,6 +3196,52 @@ static bool RenderShadowMapImpl(MMDApp* app, const float frameMatrix[16], bool c
         shadow_filter::MarkRendered(app, auxiliary && succeeded);
     }
     shadow_filter::FinalizeDepth(app, succeeded);
+    const auto renderDetail=[&](shadow_filter::FineDepthTarget* detail,const std::array<float,16>& detailProjection) {
+        shadow_filter::TargetScope scope;
+        bool rendered = SUCCEEDED(scope.Begin(device, *detail));
+        const auto objectBefore = app->ActiveRenderObject();
+        const auto passBefore = app->ActiveRenderPass();
+        Matrix detailMatrix;
+        std::memcpy(&detailMatrix, detailProjection.data(), sizeof(detailMatrix));
+        // Accessory casters obtain their transform through the application field.
+        std::memcpy(&app->LightViewProjection(), &detailMatrix, sizeof(detailMatrix));
+        UINT detailPasses = 0;
+        if (rendered) {
+            rendered = SUCCEEDED(FxSetTechnique(effect, "ZValuePlotTec"));
+            rendered = rendered && SUCCEEDED(FxBegin(effect, &detailPasses));
+            if (rendered) {
+                app->ActiveRenderPass() = AccessoryRenderPass::ModelEffect;
+                if (!RenderAccessoriesShadowChecked(app)) rendered = false;
+                if (FAILED(FxSetMatrix(effect, "matLightViewProj", &detailMatrix))) rendered = false;
+                for (int slot = 0; slot < kModelSlotCount; ++slot) {
+                    auto* model = native_mesh::RenderModel(app->ModelSlot(slot));
+                    if (!model || mdl::Mdl(model)->toonFlag == 0) continue;
+                    app->ActiveRenderObject() = model;
+                    DrawModelMaterials(app, model, true, true, ModelAlphaPass::Original, nullptr, &rendered);
+                }
+                if (FAILED(FxEnd(effect))) rendered = false;
+            }
+        }
+        std::memcpy(&app->LightViewProjection(), &shadowMatrix, sizeof(shadowMatrix));
+        app->ActiveRenderObject() = objectBefore;
+        app->ActiveRenderPass() = passBefore;
+        if (FAILED(scope.Restore())) rendered = false;
+        if (FAILED(FxSetMatrix(effect, "matLightViewProj", &shadowMatrix))) rendered = false;
+        if (FAILED(FxSetMatrix(effect, "matWorldViewProj",
+            reinterpret_cast<const Matrix*>(&app->WorldViewProjection())))) rendered = false;
+        return rendered && succeeded;
+    };
+    constexpr unsigned detailRenderOrder[]{1,0,2};
+    for(unsigned detailLayer:detailRenderOrder) {
+        std::array<float,16> detailProjection{};
+        if(auto* detail=shadow_filter::PrepareDetail(app,succeeded,detailProjection,detailLayer))
+            shadow_filter::MarkDetailRendered(app,renderDetail(detail,detailProjection),detailLayer);
+    }
+    for(auto* model:shadow_filter::PlannedModels(app)) {
+        std::array<float,16> projection{};
+        if(auto* target=shadow_filter::PrepareModel(app,model,succeeded,projection))
+            shadow_filter::MarkModelRendered(app,model,renderDetail(target,projection));
+    }
 #endif
     app->ActiveRenderPass() = AccessoryRenderPass::None;
     device->SetVertexShader(nullptr);

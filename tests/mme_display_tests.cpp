@@ -156,6 +156,8 @@ HRESULT WINAPI ObservePresent(IDirect3DDevice9* device, const RECT* source, cons
     }
     return originalPresent(device, source, destination, window, region);
 }
+bool inspectAlphaVertexIdentity=false;
+unsigned alphaVertexChecks=0,alphaVertexErrors=0;
 HRESULT WINAPI ObserveDraw(IDirect3DDevice9* device, D3DPRIMITIVETYPE type, INT base, UINT min,
                             UINT vertices, UINT start, UINT primitives) {
     if (inspectOutlines && g_Block && g_Block->ActiveRenderPass() == AccessoryRenderPass::ModelOutline) {
@@ -174,6 +176,15 @@ HRESULT WINAPI ObserveDraw(IDirect3DDevice9* device, D3DPRIMITIVETYPE type, INT 
          g_Block->ActiveRenderPass() == AccessoryRenderPass::Effect)) {
         const auto material = mdl::Mdl(g_Block->SelectedModel())->toonShared;
         if (drawnMaterials.empty() || drawnMaterials.back() != material) drawnMaterials.push_back(material);
+        if(inspectAlphaVertexIdentity) {
+            Microsoft::WRL::ComPtr<IDirect3DVertexBuffer9> source;
+            UINT offset=0,stride=0;
+            const auto& model=*mdl::Mdl(g_Block->SelectedModel());
+            ++alphaVertexChecks;
+            if(FAILED(device->GetStreamSource(0,&source,&offset,&stride)) ||
+               source.Get()!=model.vertexBuffer || base!=0 || min+vertices>model.vertexCount)
+                ++alphaVertexErrors;
+        }
     }
     return originalDraw(device, type, base, min, vertices, start, primitives);
 }
@@ -231,6 +242,7 @@ void CheckOutlineAntialias(MMDApp* app) {
 }
 void CheckAlphaOrder(MMDApp* app) {
     const bool mmeLoaded = GetModuleHandleW(L"MMEffect.dll") != nullptr;
+    inspectAlphaVertexIdentity=mmeLoaded;
     auto** vtable = *reinterpret_cast<void***>(app->Renderer()->device);
     auto* target = vtable[82]; // IDirect3DDevice9::DrawIndexedPrimitive
     Check(MH_CreateHook(target, &ObserveDraw, reinterpret_cast<void**>(&originalDraw)) == MH_OK &&
@@ -242,7 +254,9 @@ void CheckAlphaOrder(MMDApp* app) {
         app->SelfShadowMode() = shadow;
         std::vector<std::uint32_t> firstOff;
         unsigned run = 0;
-        for (auto precision : {TransparentSortPrecision::Off, TransparentSortPrecision::Low, TransparentSortPrecision::Off}) {
+        for (auto precision : {TransparentSortPrecision::Off, TransparentSortPrecision::Low,
+             TransparentSortPrecision::Standard,TransparentSortPrecision::High,
+             TransparentSortPrecision::Maximum,TransparentSortPrecision::Off}) {
             app->TransparentMaterialSortPrecision() = precision;
             drawnMaterials.clear();
             captureRequested = true;
@@ -259,7 +273,8 @@ void CheckAlphaOrder(MMDApp* app) {
             if (run == 0) firstOff = capturedPixels;
             if (run == 1 && mmeLoaded && !MMD_ORIGINAL_PROFILE)
                 Check(firstOff != capturedPixels, "fixture visibly distinguishes authored and alpha-grouped material order");
-            if (run == 2) Check(firstOff == capturedPixels, "On to Off preserves every frame RGB pixel");
+            if (run && precision==TransparentSortPrecision::Off)
+                Check(firstOff == capturedPixels, "On to Off preserves every frame RGB pixel");
             std::uint64_t hash = 14695981039346656037ull;
             for (auto pixel : capturedPixels) hash = (hash ^ pixel) * 1099511628211ull;
             std::printf("PIXELS shadow=%d run=%u precision=%d width=%u height=%u hash=%016llx\n",
@@ -276,6 +291,9 @@ void CheckAlphaOrder(MMDApp* app) {
     }
     MH_DisableHook(target);
     MH_DisableHook(vtable[17]);
+    if(mmeLoaded)Check(alphaVertexChecks && !alphaVertexErrors,
+        "all sorting strengths keep original MME vertex buffers and vertex index ranges");
+    inspectAlphaVertexIdentity=false;
     Check(!IsWindowVisible(app->MainWindow()), "material-order host stays hidden");
 }
 DrawIndexed surfaceDraw = nullptr;
@@ -562,6 +580,27 @@ int wmain(int argc, wchar_t** argv) {
     auto* app = new MMDApp; g_Block = app;
     app->state = MMDAppState{}; app->InitDefaults();
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "start production host");
+    if(argc==3 && std::wcscmp(argv[2],L"--transform-alignment")==0) {
+        for(int id:{478,479,480,481,482,483,484,544,545,546,547,548,549,550,572,575,577}) {
+            HWND edit=GetDlgItem(app->MainWindow(),id);
+            Check(edit && !(GetWindowLongPtrW(edit,GWL_STYLE)&(ES_CENTER|ES_RIGHT)),
+                "transform readout is left aligned");
+            char before[128]{};GetWindowTextA(edit,before,sizeof(before));
+            SetWindowTextA(edit,"-123456789.0000");
+            Check(SendMessageA(edit,EM_GETFIRSTVISIBLELINE,0,0)==0,
+                "long transform value starts at its sign and integer digits");
+            SendMessageA(edit,EM_SETSEL,0,-1);
+            SendMessageA(edit,EM_REPLACESEL,FALSE,reinterpret_cast<LPARAM>("987654321.2500"));
+            Check(SendMessageA(edit,EM_GETFIRSTVISIBLELINE,0,0)==0,
+                "programmatic readout refresh returns to the leading digits");
+            SetWindowTextA(edit,before);
+        }
+        for(int id:{485,417,448})
+            Check((GetWindowLongPtrW(GetDlgItem(app->MainWindow(),id),GWL_STYLE)&(ES_CENTER|ES_RIGHT))==ES_CENTER,
+                "Tr and unrelated centered inputs retain their alignment");
+        Check(!IsWindowVisible(app->MainWindow()),"alignment host stays hidden");
+        ShutdownCleanup(app);delete app;g_Block=nullptr;UnhookWindowsHookEx(guard);return 0;
+    }
     if (argc == 4 && std::wcscmp(argv[2], L"--project-import") == 0) {
         CheckProjectImport(app, argv[1], argv[3]);
         ShutdownCleanup(app); delete app; g_Block = nullptr; UnhookWindowsHookEx(guard); return 0;

@@ -10,7 +10,10 @@ namespace extended_names {
 // Replaces an owned Unicode string only after its replacement is allocated.
 bool Assign(wchar_t*& destination, const std::wstring& value) noexcept;
 void CapturePmm(const MMDApp&, pmm_extension::Document&);
-void LoadPmm(MMDApp&, const pmm_extension::Document&);
+// Adapted models keep their newly loaded names; the saved dictionary uses
+// the old model's indices and must not overwrite them.
+void LoadPmm(MMDApp&, const pmm_extension::Document&,
+             const std::vector<int>& adaptedModelSlots = {});
 bool LegacyNamesFit(const mdl::ModelRecord&, bool motion);
 struct MotionNames {
     std::wstring model;

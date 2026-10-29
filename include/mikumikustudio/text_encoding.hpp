@@ -11,6 +11,10 @@ namespace mikumikustudio::text_encoding {
 // when exact; use a UTF-8 BOM only for text no legacy code page can represent.
 bool Decode(const char* bytes, unsigned int codePage, std::wstring& result);
 bool EncodeExact(const wchar_t* text, unsigned int codePage, std::string& result);
+// Fixed PMX identity mirror; full Unicode names stay in model metadata.
+void EncodePmxName(char* destination, std::size_t capacity, const wchar_t* text);
+// Only use at the same index when the saved and loaded table sizes agree.
+bool MatchesOldPmxName(const char* saved, const wchar_t* text, std::size_t capacity);
 bool EncodePath(char* destination, std::size_t capacity, const wchar_t* path);
 bool EncodeDisplay(char* destination, std::size_t capacity, const wchar_t* text);
 std::wstring Display(const char* text);

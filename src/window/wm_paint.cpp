@@ -319,6 +319,18 @@ void HandleWindowPaint(MMDApp* app) {
             PanelTitle(app, hdc, "self_shadow manipulation", kJpLblSelfShadow,
                 682 - panelShift, 859 - panelShift, rc.bottom - 157,
                 708 - panelShift, 733 - panelShift);
+#if !MMD_ORIGINAL_PROFILE
+            if (en) {
+                Lbl(app,"shadow precision",hdc,12,690-panelShift,rc.bottom-87);
+                Lbl(app,"detail",hdc,12,690-panelShift,rc.bottom-54);
+                Lbl(app,"far",hdc,12,
+                    (app->EnglishUI()==kUiChinese?830:840)-panelShift,rc.bottom-54);
+            } else {
+                Lbl(app,"\x89\x65\x90\xb8\x93\x78",hdc,12,690-panelShift,rc.bottom-92);
+                Lbl(app,kJpLblKirei,hdc,12,690-panelShift,rc.bottom-53);
+                Lbl(app,kJpLblEnpou,hdc,12,830-panelShift,rc.bottom-53);
+            }
+#else
             if (en) {
                 Lbl(app, "shadow range", hdc, 12, 690 - panelShift, rc.bottom - 87);
                 Lbl(app, "detail", hdc, 12, 690 - panelShift, rc.bottom - 54);
@@ -329,6 +341,7 @@ void HandleWindowPaint(MMDApp* app) {
                 Lbl(app, kJpLblKirei, hdc, 12, 690 - panelShift, rc.bottom - 53);
                 Lbl(app, kJpLblEnpou, hdc, 12, 830 - panelShift, rc.bottom - 53);
             }
+#endif
         } else {
             if (en) {
                 Lbl(app, "s", hdc, 12, 688 - panelShift, rc.bottom - 130);

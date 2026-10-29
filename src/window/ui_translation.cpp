@@ -106,7 +106,7 @@ constexpr Translation kLabels[] = {
     {"light manipulation", L"照明操作"}, {"facial manipulation", L"表情操作"},
     {"eyes", L"眼睛"}, {"brow", L"眉毛"}, {"mouth", L"嘴部"}, {"other", L"其他"},
     {"self_shadow manipulation", L"自阴影操作"},
-    {"shadow range", L"阴影范围"}, {"detail", L"精细"}, {"far", L"远处"},
+    {"shadow precision", L"阴影精度"}, {"shadow range", L"阴影范围"}, {"detail", L"精细"}, {"far", L"远处"},
     {"accessory manipulation", L"配件操作"}, {"display", L"显示"}, {"shadow", L"阴影"},
     {"view", L"视图"}, {"model", L"模型"}, {"bone", L"骨骼"},
     {"play", L"播放"}, {"stop", L"停止"}, {"repeat", L"循环"},

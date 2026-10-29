@@ -224,9 +224,18 @@ int TimelineParameterReadouts() {
         verify(std::fabs(value(fovEdit)-app->CameraFov())<.0001,"FOV edit echoes the evaluated value including fractional frames");
         verify(SendMessageW(fovSlider,TBM_GETPOS,0,0)==std::lround(app->CameraFov()),"FOV slider follows the evaluated angle");
     }
+    int shadowPaints=0;
+    SetWindowSubclass(shadowSlider,[](HWND h,UINT message,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR data)->LRESULT {
+        if(message==WM_PAINT)++*reinterpret_cast<int*>(data);
+        return DefSubclassProc(h,message,w,l);
+    },1,reinterpret_cast<DWORD_PTR>(&shadowPaints));
+    ShowWindow(shadowSlider,SW_SHOW);ShowWindow(window,SW_SHOWNOACTIVATE);
+    UpdateWindow(window);UpdateWindow(shadowSlider);
     for(int frame:{20,25,10,0}) {
         SetWindowTextA(shadowEdit,"999");SendMessageW(shadowSlider,TBM_SETPOS,TRUE,999);
+        const int paintsBefore=shadowPaints;
         app->CurrentFrame()=frame;RefreshSelfShadowPanel(app.get());
+        verify(shadowPaints>paintsBefore,"shadow seek repaints the thumb before returning to the message pump");
         const int expected=frame>=20?7000:8875,mode=frame>=20?2:1;
         verify(std::lround(10000.0-app->ShadowDistance()*100000.0)==expected,"shadow seek retains the last key after its frame");
         verify(value(shadowEdit)==expected,"shadow range edit echoes the sought value");

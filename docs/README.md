@@ -19,7 +19,7 @@
 
 | 参考 | 内容 |
 | --- | --- |
-| [PMM 扩展](reference/pmm-extensions.md) | 标准数据、尾部记录、自动扩容、Unicode 名称及版本选择 |
+| [PMM 扩展](reference/pmm-extensions.md) | 标准数据、负数关键帧、尾部记录、自动扩容、Unicode 名称及版本选择 |
 | [新版 PMM 分节设计](reference/pmm-0003-sections.md) | 尚未接入工程读写的设计稿，按类别保存名称、路径与曲线 |
 | [旧版 MMD 限制实测](reference/legacy-mmd-limits.md) | MMD 9.26 的名称字节边界、路径损失及保存后重开结果 |
 | [VPD 缩放扩展](reference/vpd-scale.md) | 姿态文件的骨骼缩放记录 |

@@ -71,6 +71,7 @@
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/bone_scale.hpp"
+#include "transform_edit_layout.hpp"
 
 namespace mikumikustudio {
 
@@ -331,7 +332,7 @@ void CommitEditControl(MMDApp* app, HWND edit) {  // was Sub463640
         char text[256];
         GetWindowTextA(edit,text,sizeof text);
         std::int32_t frame=0;
-        if(GetWindowTextLengthA(edit)>=sizeof(text)||!frame_limits::Parse(text,frame)){PostViewRefresh(app);MessageBeep(MB_ICONWARNING);return;}
+        if(GetWindowTextLengthA(edit)>=sizeof(text)||!frame_limits::ParseSigned(text,frame)){PostViewRefresh(app);MessageBeep(MB_ICONWARNING);return;}
         s.CurrentFrame()=frame;
         RefreshAfterFrameApply(app);
         PostViewRefresh(app);
@@ -524,9 +525,15 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
             app->state.recordPlaybackStartPending == 0)
             CommitEditControl(app, hWnd);
     }
-    return CallWindowProcA(
+    const auto result=CallWindowProcA(
         app->OriginalEditProc(),
         hWnd, Msg, wParam, lParam);
+    if(ui::TransformEditShowsPrefix(GetDlgCtrlID(hWnd)) &&
+       (Msg==WM_KILLFOCUS || (GetFocus()!=hWnd && (Msg==WM_SETTEXT || Msg==EM_REPLACESEL)))) {
+        SendMessageA(hWnd,EM_SETSEL,0,0);
+        SendMessageA(hWnd,EM_SCROLLCARET,0,0);
+    }
+    return result;
 }
 
 // ---------------------------------------------------------------------------
