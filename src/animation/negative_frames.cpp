@@ -47,8 +47,12 @@ struct Key {
 };
 struct State {
     std::vector<Key> keys,clipboard;
-    struct Snapshot {std::vector<Key> keys;const unsigned char* model=nullptr;int nativeCursor=0;};
+    struct Snapshot {std::vector<Key> keys;const unsigned char* model=nullptr;int nativeCursor=0;bool drag=false;};
     std::vector<Snapshot> undo,redo;
+    std::vector<std::pair<std::size_t,int>> dragging;
+    std::int64_t dragMin=0,dragMax=0;
+    int dragOffset=0;
+    bool dragHistory=false;
 };
 std::unordered_map<const MMDApp*,State> states;
 bool Current(const MMDApp& app,const Key& key) {
@@ -467,7 +471,7 @@ void RefreshControls(MMDApp* app) {
     const bool selected=std::any_of(state.keys.begin(),state.keys.end(),[&](const Key& key){return key.selected && Current(*app,key);});
     if(selected){EnableWindow(GetDlgItem(app->MainWindow(),420),TRUE);EnableWindow(GetDlgItem(app->MainWindow(),423),TRUE);}
     if(!state.clipboard.empty())EnableWindow(GetDlgItem(app->MainWindow(),421),TRUE);
-    if(app->CurrentFrame()<0) {
+    if(app->CurrentFrame()<0 || (!state.undo.empty() && state.undo.back().drag) || (!state.redo.empty() && state.redo.back().drag)) {
         if(!state.undo.empty())EnableWindow(GetDlgItem(app->MainWindow(),400),TRUE);
         if(!state.redo.empty())EnableWindow(GetDlgItem(app->MainWindow(),401),TRUE);
     }
@@ -645,10 +649,11 @@ bool Command(MMDApp* app,unsigned id) {
         History(state);state.keys.erase(std::remove_if(state.keys.begin(),state.keys.end(),[](const Key& k){return k.selected;}),state.keys.end());
         RefreshAfterFrameApply(app);Changed(app);return true;
     }
-    if((id==400 || id==401) && app->CurrentFrame()<0) {
+    if(id==400 || id==401) {
         auto& from=id==400 ? state.undo : state.redo;auto& to=id==400 ? state.redo : state.undo;
         if(from.empty())return false;
-        const auto now=Snapshot(state);
+        if(app->CurrentFrame()>=0 && !from.back().drag)return false;
+        auto now=Snapshot(state);now.drag=from.back().drag;
         if(now.model!=from.back().model || (now.model && now.nativeCursor!=from.back().nativeCursor)) {
             if(id==401)state.redo.clear();
             return false;
@@ -675,6 +680,57 @@ bool SelectCell(MMDApp* app,int frame,int row,bool additive) {
         else if(!additive)key.selected=false;
     }
     return hit;
+}
+bool CellSelected(MMDApp* app,int frame,int row) {
+    auto found=states.find(app);if(found==states.end())return false;
+    return std::any_of(found->second.keys.begin(),found->second.keys.end(),[&](const Key& key){
+        return Current(*app,key) && (app->CameraMode()?!key.model:key.model==app->SelectedModel()) &&
+            key.frame==frame && Row(*app,key)==row && key.selected;
+    });
+}
+void BeginDrag(MMDApp* app) {
+    auto found=states.find(app);if(found==states.end())return;
+    auto& state=found->second;state.dragging.clear();state.dragOffset=0;state.dragHistory=false;
+    for(std::size_t i=0;i<state.keys.size();++i) {
+        const auto& key=state.keys[i];
+        if(key.selected && Current(*app,key) && (app->CameraMode()?!key.model:key.model==app->SelectedModel()))
+            state.dragging.emplace_back(i,key.frame);
+    }
+    std::vector<bool> moving(state.keys.size(),false);
+    for(const auto& item:state.dragging)moving[item.first]=true;
+    // Compute collision limits once at press time, not on every mouse move.
+    std::int64_t low=frame_limits::minimum,high=frame_limits::maximum;
+    for(const auto& [index,frame]:state.dragging) {
+        if(index>=state.keys.size())return;
+        low=std::max(low,std::int64_t(frame_limits::minimum)-frame);
+        high=std::min(high,std::int64_t(-1)-frame);
+        const auto& key=state.keys[index];
+        for(std::size_t i=0;i<state.keys.size();++i) {
+            const auto& other=state.keys[i];
+            if(other.model!=key.model || other.identity!=key.identity || other.target!=key.target || other.morph!=key.morph)continue;
+            if(moving[i])continue;
+            if(other.frame<frame)low=std::max(low,std::int64_t(other.frame)+1-frame);
+            else if(other.frame>frame)high=std::min(high,std::int64_t(other.frame)-1-frame);
+        }
+    }
+    state.dragMin=low;state.dragMax=high;
+}
+void Drag(MMDApp* app,int offset) {
+    auto found=states.find(app);if(found==states.end())return;
+    auto& state=found->second;if(state.dragging.empty())return;
+    // Preserve track order, spacing and frame-zero boundary. Always use the
+    // press snapshot so reversing direction restores the original frames.
+    const int effective=int(std::clamp(std::int64_t(offset),state.dragMin,state.dragMax));
+    if(effective==state.dragOffset)return;
+    if(!state.dragHistory){History(state);state.undo.back().drag=true;state.dragHistory=true;}
+    for(const auto& [index,frame]:state.dragging)state.keys[index].frame=frame+effective;
+    state.dragOffset=effective;app->SceneModified()=1;RefreshControls(app);
+}
+void EndDrag(MMDApp* app) {
+    auto found=states.find(app);if(found==states.end())return;
+    auto& state=found->second;
+    if(state.dragHistory && state.dragOffset==0 && !state.undo.empty())state.undo.pop_back();
+    state.dragging.clear();state.dragHistory=false;state.dragOffset=0;
 }
 void SelectBox(MMDApp* app,std::int64_t first,std::int64_t last,int top,int bottom,bool selected,bool additive) {
     auto found=states.find(app);if(found==states.end())return;

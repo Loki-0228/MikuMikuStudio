@@ -56,7 +56,6 @@ if ((& git -C $repo rev-parse HEAD).Trim() -ne $commit -or (& git -C $repo statu
 }
 New-Item -ItemType Directory -Path $output | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$checksums = [System.Collections.Generic.List[string]]::new()
 $packages = [System.Collections.Generic.List[object]]::new()
 foreach ($build in $builds) {
     $name = 'MikuMikuStudio-' + $Version + '-windows-x64-' + $build.Name
@@ -95,7 +94,6 @@ Source: https://github.com/Loki-0228/MikuMikuStudio/tree/$commit
     $zip = Join-Path $output ($name + '.zip')
     [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip, [IO.Compression.CompressionLevel]::Optimal, $false)
     $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-    $checksums.Add($hash + '  ' + [IO.Path]::GetFileName($zip))
     $packages.Add([ordered]@{File=[IO.Path]::GetFileName($zip); Bytes=(Get-Item -LiteralPath $zip).Length; SHA256=$hash; Profile=$build.Profile})
 }
 # Ship the optional helper as its own release asset, never inside either ZIP.
@@ -103,10 +101,8 @@ $helper = Join-Path $output 'MMSNvidiaAAFix.dll'
 Copy-Item -LiteralPath (Join-Path $builds[0].Path 'Release/MMSNvidiaAAFix.dll') -Destination $helper
 $helperHash = (Get-FileHash -LiteralPath $helper -Algorithm SHA256).Hash.ToLowerInvariant()
 $optionalComponents = @([ordered]@{File='MMSNvidiaAAFix.dll'; Bytes=(Get-Item -LiteralPath $helper).Length; SHA256=$helperHash; SourceProfile='full'; Optional=$true})
-$checksums.Add($helperHash + '  MMSNvidiaAAFix.dll')
-Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination $output
-$checksums.Add((Get-FileHash -LiteralPath (Join-Path $output 'LICENSE') -Algorithm SHA256).Hash.ToLowerInvariant() + '  LICENSE')
-[IO.File]::WriteAllLines((Join-Path $output 'SHA256SUMS.txt'), $checksums)
+# Licenses remain inside the packages. Do not emit standalone LICENSE or
+# SHA256SUMS release assets; hashes remain available in the build manifests.
 [IO.File]::WriteAllText((Join-Path $output 'RELEASE_NOTES.md'), $releaseNotes)
 [IO.File]::WriteAllText((Join-Path $output 'RELEASE_BUILD.json'), ([ordered]@{Version=$Version; Commit=$commit; Prerelease=$isPrerelease; Uploaded=$false; Packages=$packages; OptionalComponents=$optionalComponents} | ConvertTo-Json -Depth 6) + "`n")
 Write-Output "发布包已生成：$output"

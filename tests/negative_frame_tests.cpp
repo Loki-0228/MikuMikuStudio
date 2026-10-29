@@ -84,6 +84,16 @@ int main() {
     negative_frames::SelectBox(app.get(),-51,-49,1,4,false,true);
     negative_frames::Command(app.get(),420);app->CurrentFrame()=-100;negative_frames::Command(app.get(),421);
     Check(negative_frames::Count(app.get())==13,"cross-zero marquee and subtractive marquee retain remaining negative keys");
+    negative_frames::RegisterBone(model,0,-4);
+    negative_frames::SelectCell(app.get(),-10,1,false);
+    negative_frames::BeginDrag(app.get());negative_frames::Drag(app.get(),100);
+    Check(negative_frames::CellSelected(app.get(),-5,1),"negative drag stops before an unselected key without overwriting it");
+    negative_frames::Drag(app.get(),0);negative_frames::EndDrag(app.get());
+    Check(negative_frames::CellSelected(app.get(),-10,1),"returning to drag anchor restores exact original frame");
+    app->CameraMode()=1;app->CurrentFrame()=0;
+    negative_frames::SelectCell(app.get(),-10,0,false);
+    negative_frames::BeginDrag(app.get());negative_frames::Drag(app.get(),100);negative_frames::EndDrag(app.get());
+    Check(negative_frames::CellSelected(app.get(),-1,0),"signed drag preserves the frame zero boundary");
     negative_frames::Reset(app.get());bone_scale::Forget(model);g_Block=previous;
     std::printf("PASS negative frames checks=%u\n",checks);
 }

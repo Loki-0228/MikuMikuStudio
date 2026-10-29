@@ -4,6 +4,8 @@
 
 ## 记录索引
 
+- [v2026.10.29.2 关键帧拖动修复](#release-v2026-10-29-2)
+
 - [v2026.10.29.1 正式发布说明](#release-v2026-10-29-1)
 
 - [v2026.10.20.1 正式发布说明](#release-v2026-10-20-1)
@@ -25,6 +27,39 @@
 - [v2026.10.11.3 构建与发布记录](#record-release-3)
 - [v2026.10.11.2 构建与发布记录](#record-release-2)
 - [MMS 原生媒体导入与导出](#record-native-media)
+
+<a id="release-v2026-10-29-2"></a>
+
+<!-- release-notes:v2026.10.29.2:begin -->
+## MikuMikuStudio v2026.10.29.2
+
+### 中文
+
+- 修复时间轴关键帧拖动：按住关键帧可直接移动，从空白处按下则框选。已选中的多个关键帧保留选择并一起移动。
+- 补齐负数关键帧拖动，保持时间轴显示位置不变，支持反向拖回及撤销、重做。负数帧移动不会覆盖相邻未选中的关键帧，也不会越过零帧边界。
+- 保留负数帧纵向选择、框选及骨骼帧序列散布。
+- Release 仅提供完整包、最小包和可选 NVIDIA 辅助 DLL，不再单独提供 LICENSE 或 SHA256SUMS；许可证仍包含在程序包内。
+
+两种 ZIP 请分别解压并运行 `MikuMikuDance.exe`。可选 `MMSNvidiaAAFix.dll` 放在完整包 EXE 同级，通过帮助菜单安装后重启；卸载也使用帮助菜单。无需该功能时不用下载 DLL。
+
+### English
+
+- Drag a key directly to move it; drag from empty timeline space to select a rectangle. Existing multi-selection moves together.
+- Added negative-key dragging with a stable timeline view, direction reversal, undo and redo. Moves stop before unselected neighboring keys and the frame-zero boundary.
+- Negative-frame column/marquee selection and bone sequence scattering remain available.
+- Release assets contain only the full/minimal ZIPs and the optional NVIDIA helper DLL. Licenses remain inside the packages; no separate LICENSE or SHA256SUMS assets are published.
+
+Extract each ZIP separately and run `MikuMikuDance.exe`. To use the optional NVIDIA fix, place `MMSNvidiaAAFix.dll` beside the full EXE, install it through Help, then restart. Uninstall through Help as well.
+
+### 日本語
+
+- キーを押してそのままドラッグすると移動し、空白からのドラッグは範囲選択になります。選択済みの複数キーは一緒に移動します。
+- 負のキーのドラッグ、逆方向への移動、元に戻す・やり直すに対応。タイムライン表示位置を維持し、未選択の隣接キーやゼロフレーム境界を越えません。
+- 負のフレームの縦選択・範囲選択とボーン列の散布を維持しました。
+- 添付は完全版・最小版 ZIP と任意の NVIDIA 補助 DLL のみです。ライセンスは ZIP 内に同梱し、LICENSE・SHA256SUMS は別添しません。
+
+各 ZIP を別々に展開し、`MikuMikuDance.exe` を実行してください。NVIDIA 修正を使う場合は DLL を完全版 EXE の隣に置き、ヘルプからインストール後に再起動してください。解除もヘルプから行います。
+<!-- release-notes:v2026.10.29.2:end -->
 
 <a id="release-v2026-10-29-1"></a>
 

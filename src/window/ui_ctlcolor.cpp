@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 // ===========================================================================
 // VA 0x0040E0E0 - HandleCtlColor  (original: sub_40E0E0)
 // ===========================================================================
@@ -202,6 +203,7 @@ LRESULT HandleCtlColor(HWND control, HDC dc) {
 // Reference: ../translated/MikuMikuDance/fcn_0044a9a0.cpp
 // =========================================================================//
 void HandleLButtonUp(MMDApp* app) {
+    mikumikustudio::negative_frames::EndDrag(app);
     HandleViewportToolRelease(app);
     const bool dragActive = app->SelectionBoxDragging() != 0;
     app->SidebarResizeDragging() = 0;

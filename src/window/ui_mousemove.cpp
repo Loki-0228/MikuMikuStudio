@@ -395,6 +395,7 @@ void HandleMouseMove(std::uint32_t lParam, int mouseY) {
             // Avoid rewriting every selected key and re-seeking physics until
             // the frame offset changes; returning to offset zero still applies.
             if (row == previousRow) return;
+            negative_frames::Drag(app,row);
             app->SceneModified() = 1;
             if (app->state.optflag[0] == 0) {
                 // ---- bone-edit mode (0x445887..0x446065) ------------------

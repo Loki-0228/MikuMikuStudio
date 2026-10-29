@@ -192,6 +192,7 @@ static bool MatchText(const char* a, const char* b) {
 // (sub_446A70 @ 0x447460 / 0x447580 / 0x4476A0 / 0x4477C0 / 0x447900 /
 //  0x4479E0 / 0x447A30)
 static void ClearSelectionBitmaps(MMDApp* app) {
+    negative_frames::SelectCell(app,0,-999,false);
     for (std::size_t i = 0, capacity = mdl::KeyPoolCapacity(app->CameraKeys()); i < capacity; ++i)
         app->CameraKeys()[i].selected = 0;
     for (std::size_t i = 0, capacity = mdl::KeyPoolCapacity(app->LightKeys()); i < capacity; ++i)
@@ -217,6 +218,7 @@ static void ClearSelectionBitmaps(MMDApp* app) {
 // Clear the active model's bone and morph key selections, plus the remaining
 // display-key selections.  (sub_446A70 @ 0x447AF0 / 0x447BA0 / 0x447C30 etc.)
 static void ClearActiveModelFlags(MMDApp* app) {
+    negative_frames::SelectCell(app,0,-999,false);
     // The original reaches this helper only while the model-edit context is
     // active.  During a partially completed mode switch MikuMikuStudio can briefly
     // expose the same row with no active slot, so preserve that entrance
@@ -493,6 +495,7 @@ static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
             }
         }
     }
+    if(app->TimelineSelectionChanged())negative_frames::BeginDrag(app);
     // loc_44A437
     PanelPaint(app);                               // 0x414610
     SelectionReeval(app);                          // 0x430510
@@ -519,6 +522,7 @@ static void ToggleTimelineCell(MMDApp* app, bool shiftActive,
     } else if (!shiftActive) {
         ClearSelectionBitmaps(app);
         selected = 1;
+        app->TimelineSelectionChanged() = 1;
     } else {
         selected = 1;
     }
@@ -574,6 +578,7 @@ static void ToggleModelKeyAllocated(MMDApp* app, KeyT& key,
     } else {
         ClearActiveModelFlags(app);
         key.allocated = 1;
+        app->TimelineSelectionChanged() = 1;
     }
 }
 
@@ -592,6 +597,11 @@ static void StageRangeRow(MMDApp* app, std::int32_t type,
                                   frameColumn + 1, trackRow + 1);
         if (!shiftActive)
             ClearActiveModelFlags(app);
+        if (!shiftActive) {
+            PanelPaint(app); // Resolve the collapsed row into actual selected keys.
+            app->ClearTimelineRange();
+            app->TimelineSelectionChanged() = 1;
+        }
     }
 }
 
@@ -886,13 +896,15 @@ static void HandleLButtonDown_TimelineAreaHit(MMDApp* app, HWND hwnd,
     if(negativeCell<0 && negativeCell>=frame_limits::minimum) {
         app->TimelineSelectionChanged()=0;
         app->ClearTimelineRange();
-        if(!app->ShiftModifierActive())ClearTimelineKeySelection(app);
-        negative_frames::SelectCell(app,int(negativeCell),Div14(y-160),app->ShiftModifierActive());
+        const bool shift=app->ShiftModifierActive();
+        const bool selected=negative_frames::CellSelected(app,int(negativeCell),Div14(y-160));
+        if(!shift && !selected)ClearTimelineKeySelection(app);
+        const bool hit=selected && !shift ? true : negative_frames::SelectCell(app,int(negativeCell),Div14(y-160),shift);
+        app->TimelineSelectionChanged()=hit && !shift;
         SelectionStats(app,x,y,hwnd);
         SelectionReeval(app);
         return;
     }
-    if(!app->ShiftModifierActive())negative_frames::SelectCell(app,int(negativeCell),-999,false);
     app->TimelineSelectionChanged() = 0;
     app->ClearTimelineRange();
     if (app->state.optflag[0] != 0) {  // 760 (0x2F8)
@@ -943,6 +955,7 @@ static void HandleLButtonDown_TimelineAreaHit(MMDApp* app, HWND hwnd,
                 } else if (!shiftActive) {
                     ClearSelectionBitmaps(app);
                     *rec = 1;
+                    app->TimelineSelectionChanged() = 1;
                 } else {
                     *rec = 1;
                 }
