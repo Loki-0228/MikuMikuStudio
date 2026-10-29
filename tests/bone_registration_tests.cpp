@@ -1396,6 +1396,19 @@ void SameModelFramePaste() {
           find(f.keys, 1, 30) < 0 && find(f.morphKeys, 0, 30) < 0,
           "single copied key returns to the second track without changing the first match");
 
+    app->SelectedModelSlot() = 1;
+    app->CurrentFrame() = 30;
+    Check(frame_clipboard::BoneTarget(app.get(), other.Raw(), 0) == 2 &&
+          frame_clipboard::MorphTarget(app.get(), other.Raw(), 0) == 1,
+          "copying only the second duplicate keeps its full-table occurrence across models");
+    CmdControl400(app.get(), nullptr, 421, 0);
+    const int otherBone = find(other.keys, 2, 30), otherMorph = find(other.morphKeys, 1, 30);
+    Check(otherBone >= 0 && samePose(other.keys[otherBone], original[1]) &&
+          otherMorph >= 0 && other.morphKeys[otherMorph].value == .75f &&
+          find(other.keys, 1, 30) < 0 && find(other.morphKeys, 0, 30) < 0,
+          "cross-model single-key paste leaves the first duplicate untouched");
+    app->SelectedModelSlot() = 0;
+
     clearMarks();
     for (int index : {4, 5, 6}) f.keys[index].allocated = 1;
     for (int index : {2, 3, 4}) f.morphKeys[index].allocated = 1;
@@ -1425,10 +1438,25 @@ void SameModelFramePaste() {
     verifyBatch();
 
     app->SelectedModelSlot() = 1;
-    Check(frame_clipboard::BoneTarget(app.get(), other.Raw(), 0) < 0 &&
-          frame_clipboard::MorphTarget(app.get(), other.Raw(), 0) < 0,
-          "clipboard indices are not reused for a different model");
-    reject(other, "cross-model duplicate names remain ambiguous");
+    Check(frame_clipboard::BoneTarget(app.get(), other.Raw(), 0) == 1 &&
+          frame_clipboard::MorphTarget(app.get(), other.Raw(), 0) == 0,
+          "cross-model duplicate names resolve in model table order");
+    Check(PrepareFramePaste(app.get()), "cross-model duplicate names allow a complete paste");
+    CmdControl400(app.get(), nullptr, 421, 0);
+    for (int i = 0; i < 3; ++i) {
+        const int bone = find(other.keys, i == 0 ? 1 : 2, i == 2 ? 54 : 50);
+        const int morph = find(other.morphKeys, i == 0 ? 0 : 1, i == 2 ? 54 : 50);
+        const float values[] = {.25f, .75f, .5f};
+        Check(bone >= 0 && samePose(other.keys[bone], original[i]) &&
+              morph >= 0 && other.morphKeys[morph].value == values[i],
+              "cross-model batch preserves duplicate tracks and relative frame offsets");
+    }
+    // The target can contain unrelated entries before the duplicate group.
+    std::swap(other.bones[0], other.bones[1]);
+    Check(frame_clipboard::BoneTarget(app.get(), other.Raw(), 0) == 0 &&
+          frame_clipboard::BoneTarget(app.get(), other.Raw(), 1) == 2,
+          "cross-model occurrence matching does not reuse absolute source indices");
+    std::swap(other.bones[0], other.bones[1]);
     app->SelectedModelSlot() = 0;
     paste(70);
     Check(find(f.keys, 1, 70) >= 0 && find(f.keys, 2, 74) >= 0 &&
@@ -1493,8 +1521,8 @@ void FramePasteChecks() {
     PasteDestinationNames();
     SameModelFramePaste();
     UnhookWindowsHookEx(hook);
-    Check(framePasteExpectedDialogs == 3 && framePasteUnexpectedDialogs == 0,
-          "paste regressions show only the three expected rejection dialogs");
+    Check(framePasteExpectedDialogs == 2 && framePasteUnexpectedDialogs == 0,
+          "paste regressions show only the two expected rejection dialogs");
     std::puts("Frame paste identity regressions passed");
 }
 }

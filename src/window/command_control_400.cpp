@@ -217,7 +217,17 @@ namespace {
 struct CopiedTrack {
     std::uint32_t index;
     std::string name;
+    std::uint32_t occurrence = 0;
 };
+template<class Target>
+std::vector<std::uint32_t> TrackOccurrences(const Target* targets, std::uint32_t count) {
+    std::unordered_map<std::string, std::uint32_t> seen;
+    std::vector<std::uint32_t> result(count);
+    for (std::uint32_t i = 0; i < count; ++i)
+        result[i] = seen[std::string(targets[i].name,
+            strnlen_s(targets[i].name, sizeof targets[i].name))]++;
+    return result;
+}
 struct FrameClipboardSource {
     const unsigned char* model = nullptr;
     const mdl::BoneRecord* bones = nullptr;
@@ -232,13 +242,24 @@ std::unordered_map<const MMDApp*, FrameClipboardSource> frameClipboardSources;
 template<class Record, class Target>
 int CopiedTarget(const Record* records, std::uint32_t count,
                  const Record* copiedRecords, const std::vector<CopiedTrack>& tracks,
-                 const Target* targets, std::uint32_t targetCount, std::size_t index) {
+                 const Target* targets, std::uint32_t targetCount, std::size_t index,
+                 bool sameModel) {
     if (!records || records != copiedRecords || count != tracks.size() ||
         index >= tracks.size() || !targets) return -1;
     const auto& track = tracks[index];
+    if (std::string_view(track.name) != std::string_view(records[index].name,
+            strnlen_s(records[index].name, sizeof records[index].name))) return -1;
+    if (!sameModel) {
+        // Ordinals describe the complete source table, not the selected keys:
+        // copying only the second duplicate must still target the second one.
+        std::uint32_t occurrence = 0;
+        for (std::uint32_t i = 0; i < targetCount; ++i)
+            if (std::string_view(track.name) == std::string_view(targets[i].name,
+                    strnlen_s(targets[i].name, sizeof targets[i].name)) &&
+                occurrence++ == track.occurrence) return static_cast<int>(i);
+        return -1;
+    }
     if (track.index >= targetCount ||
-        std::string_view(track.name) != std::string_view(records[index].name,
-            strnlen_s(records[index].name, sizeof records[index].name)) ||
         std::string_view(track.name) != std::string_view(targets[track.index].name,
             strnlen_s(targets[track.index].name, sizeof targets[track.index].name))) return -1;
     return static_cast<int>(track.index);
@@ -251,11 +272,12 @@ int BoneTarget(const MMDApp* app, const unsigned char* model, std::size_t index)
     if (!app || !model || found == frameClipboardSources.end()) return -1;
     const auto& source = found->second;
     const auto& target = *mdl::Mdl(model);
-    if (source.model != model || source.bones != target.boneTable ||
-        source.boneCount != target.boneCount) return -1;
+    if (source.model == model && (source.bones != target.boneTable ||
+        source.boneCount != target.boneCount)) return -1;
     auto* state = const_cast<MMDApp*>(app); // Legacy clipboard accessors are mutable-only.
     return CopiedTarget(state->BoneClipboard(), state->ClipboardCounts().bones,
-        source.boneClipboard, source.boneTracks, target.boneTable, target.boneCount, index);
+        source.boneClipboard, source.boneTracks, target.boneTable, target.boneCount, index,
+        source.model == model);
 }
 
 int MorphTarget(const MMDApp* app, const unsigned char* model, std::size_t index) {
@@ -263,11 +285,12 @@ int MorphTarget(const MMDApp* app, const unsigned char* model, std::size_t index
     if (!app || !model || found == frameClipboardSources.end()) return -1;
     const auto& source = found->second;
     const auto& target = *mdl::Mdl(model);
-    if (source.model != model || source.morphs != target.morphs ||
-        source.morphCount != target.morphCount) return -1;
+    if (source.model == model && (source.morphs != target.morphs ||
+        source.morphCount != target.morphCount)) return -1;
     auto* state = const_cast<MMDApp*>(app);
     return CopiedTarget(state->MorphClipboard(), state->ClipboardCounts().morphs,
-        source.morphClipboard, source.morphTracks, target.morphs, target.morphCount, index);
+        source.morphClipboard, source.morphTracks, target.morphs, target.morphCount, index,
+        source.model == model);
 }
 
 void Reset(const MMDApp* app) { frameClipboardSources.erase(app); }
@@ -1746,6 +1769,8 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
         copied.morphCount = sourceModel.morphCount;
         copied.boneTracks.resize(boneSel);
         copied.morphTracks.resize(morphSel);
+        const auto boneOccurrences = TrackOccurrences(copied.bones, copied.boneCount);
+        const auto morphOccurrences = TrackOccurrences(copied.morphs, copied.morphCount);
         EnableWindow(GetDlgItem(hwnd, panel::kPasteButton), TRUE);
         EnableMenuItem(GetMenu(hwnd), 0xFA, FALSE);
         EnableWindow(GetDlgItem(hwnd, panel::kReversePasteButton),
@@ -1837,7 +1862,7 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
                                           bone_scale::KeyCurve(model, recordIndex));
                 BoneClipboardRecord& rec = dst[cnt];
                 strcpy_s(rec.name, sizeof(rec.name), bones[idx].name);
-                copied.boneTracks[cnt] = {idx, rec.name};
+                copied.boneTracks[cnt] = {idx, rec.name, boneOccurrences[idx]};
                 rec.frame = key.frame - minFrame;
                 std::memcpy(rec.rotation, key.rotation,
                             sizeof(rec.rotation));
@@ -1874,7 +1899,7 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
                 }
                 MorphClipboardRecord& rec = dst[cnt];
                 strcpy_s(rec.name, sizeof(rec.name), morphs[idx].name);
-                copied.morphTracks[cnt] = {idx, rec.name};
+                copied.morphTracks[cnt] = {idx, rec.name, morphOccurrences[idx]};
                 rec.frame = key.frame - minFrame;
                 rec.value = key.value;
                 ++cnt;
