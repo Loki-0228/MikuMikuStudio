@@ -11,6 +11,7 @@ bool RegisterAccessory(MMDApp* app,int slot,int frame);
 bool RegisterDisplay(unsigned char* model,int frame);
 void EvaluateGlobals(MMDApp* app,int frame);
 inline constexpr char kPmmKey[]="org.mikudancestudio.timeline.negative_keys.v1";
+inline constexpr char kPmmSelectionKey[]="org.mikudancestudio.timeline.negative_selection.v1";
 bool RegisterBone(unsigned char* model,int bone,int frame);
 bool RegisterSelectedBones(unsigned char* model,int frame);
 bool RegisterMorph(unsigned char* model,int morph,int frame,float value);

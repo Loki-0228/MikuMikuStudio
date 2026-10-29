@@ -4,6 +4,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -13,6 +14,98 @@
 using namespace mikumikustudio;
 static unsigned checks=0;
 void Check(bool value,const char* message){++checks;if(!value){std::fprintf(stderr,"FAIL %s\n",message);std::exit(1);}}
+void CheckSelectionPersistence() {
+    constexpr char selectionKey[]="org.mikudancestudio.timeline.negative_selection.v1";
+    auto app=std::make_unique<MMDApp>();auto record=std::make_unique<mdl::ModelRecord>();
+    std::array<mdl::BoneRecord,1> bones{};std::array<mdl::MorphRecord,1> morphs{};
+    std::array<std::uint32_t,1> boneRows{1},morphRows{2};
+    mdl::IkChain ik{};mdl::BoneOrderEntry parent{};mdl::AccessoryRecord accessory{};
+    auto* model=reinterpret_cast<unsigned char*>(record.get());
+    record->boneCount=record->morphCount=1;record->boneTable=bones.data();record->morphs=morphs.data();
+    record->boneKeyIndices=boneRows.data();record->morphKeyIndices=morphRows.data();
+    record->ikChainCount=record->boneOrderCount=1;record->ikChains=&ik;mdl::BoneOrder(model)=&parent;
+    record->loadComplete=ik.enabled=1;parent.linkedModel=-1;
+    std::strcpy(bones[0].name,"bone");std::strcpy(morphs[0].name,"morph");bones[0].rotQuat[3]=1;
+    app->ModelSlot(0)=model;app->AccessorySlot(0)=&accessory;
+    app->state.jointLineMap[0]=0;app->state.jointLineMap[1]=-1;
+    app->CameraFov()=40;app->CameraParentModel()=-1;accessory.parentModel=-1;
+    accessory.scale=accessory.opacity=1;
+    auto* previous=g_Block;g_Block=app.get();
+    for(int frame:{-10,-20}) {
+        Check(negative_frames::RegisterBone(model,0,frame),"selection fixture bone registers");
+        Check(negative_frames::RegisterMorph(model,0,frame,.5f),"selection fixture morph registers");
+        Check(negative_frames::RegisterDisplay(model,frame),"selection fixture visibility, IK and parent register");
+        for(auto kind:{negative_frames::Global::Camera,negative_frames::Global::Light,
+                      negative_frames::Global::Shadow,negative_frames::Global::Gravity})
+            Check(negative_frames::RegisterGlobal(app.get(),kind,frame),"selection fixture global registers");
+        Check(negative_frames::RegisterAccessory(app.get(),0,frame),"selection fixture accessory registers");
+    }
+    for(int mode:{0,1}) {
+        app->CameraMode()=mode;
+        for(int row=0;row<(mode?5:3);++row)
+            Check(negative_frames::SelectCell(app.get(),-10,row,row!=0),"mixed selection covers every negative track type");
+    }
+    const auto checkSelection=[&](bool selected) {
+        for(int mode:{0,1}) {
+            app->CameraMode()=mode;
+            for(int row=0;row<(mode?5:3);++row) {
+                Check(negative_frames::CellSelected(app.get(),-10,row)==selected,"negative track restores selected state");
+                Check(!negative_frames::CellSelected(app.get(),-20,row),"negative track preserves unselected state");
+            }
+        }
+    };
+    checkSelection(true);
+    pmm_extension::Document document;negative_frames::Capture(*app,document);
+    const auto originalKeys=pmm_extension::Find(document,negative_frames::kPmmKey)->value;
+    Check(originalKeys.size()==8+20*164 && originalKeys[0]==1,"selection persistence keeps legacy negative key layout");
+    negative_frames::Reset(app.get());
+    Check(negative_frames::Load(*app,document)&&negative_frames::Count(app.get())==20,"all negative track types roundtrip");
+    checkSelection(true);
+    const auto* selection=pmm_extension::Find(document,selectionKey);
+    Check(selection && selection->value.size()==12+20,"negative selection has an independent versioned extension");
+    const auto selectionBytes=selection->value;
+
+    const auto checkIgnored=[&](const pmm_extension::Document& input) {
+        Check(negative_frames::Load(*app,input)&&negative_frames::Count(app.get())==20,
+              "ignored selection metadata never drops negative keyframes");
+        checkSelection(false);
+    };
+    auto legacy=document;pmm_extension::Erase(legacy,selectionKey);checkIgnored(legacy);
+    auto malformed=document;
+    for(std::size_t offset:{std::size_t(0),std::size_t(4),std::size_t(8),std::size_t(12)}) {
+        auto bytes=selectionBytes;bytes[offset]=offset==12?2:std::uint8_t(bytes[offset]^1);
+        pmm_extension::Set(malformed,selectionKey,std::move(bytes));checkIgnored(malformed);
+    }
+    auto truncated=selectionBytes;truncated.pop_back();
+    pmm_extension::Set(malformed,selectionKey,std::move(truncated));checkIgnored(malformed);
+    auto oversized=selectionBytes;oversized.push_back(0);
+    pmm_extension::Set(malformed,selectionKey,std::move(oversized));checkIgnored(malformed);
+    auto stale=document;auto changedKeys=originalKeys;
+    changedKeys[8+12]=std::uint8_t(changedKeys[8+12]-1); // Same count, first bone moves from -10 to -11.
+    pmm_extension::Set(stale,negative_frames::kPmmKey,std::move(changedKeys));checkIgnored(stale);
+    app->CameraMode()=0;
+    Check(!negative_frames::CellSelected(app.get(),-11,1),"stale metadata cannot select a key moved by an older writer");
+
+    app->ModelSlot(0)=nullptr;
+    Check(negative_frames::Load(*app,document)&&negative_frames::Count(app.get())==10,
+          "missing model skips only its negative keys");
+    app->CameraMode()=1;
+    for(int row=0;row<5;++row) {
+        Check(negative_frames::CellSelected(app.get(),-10,row),"skipped keys do not shift later selection flags");
+        Check(!negative_frames::CellSelected(app.get(),-20,row),"skipped keys do not select later unselected keys");
+    }
+    app->ModelSlot(0)=model;
+    Check(negative_frames::Load(*app,document),"original selection fixture reloads");
+    pmm_extension::Document recaptured;negative_frames::Capture(*app,recaptured);
+    Check(pmm_extension::Find(recaptured,negative_frames::kPmmKey)->value==originalKeys,
+          "selection roundtrip leaves legacy negative key bytes unchanged");
+    Check(pmm_extension::Find(recaptured,selectionKey)->value==selectionBytes,
+          "all visibility, IK and parent flags survive selection roundtrip");
+    negative_frames::Reset(app.get());negative_frames::Capture(*app,recaptured);
+    Check(!pmm_extension::Find(recaptured,negative_frames::kPmmKey) && !pmm_extension::Find(recaptured,selectionKey),
+          "empty negative tracks remove both payload and selection metadata");
+    bone_scale::Forget(model);g_Block=previous;
+}
 int main() {
     int first=0,last=0,value=0;
     Check(frame_limits::ParseSigned("-1",value)&&value==-1,"signed cursor accepts negative frame");
@@ -95,5 +188,6 @@ int main() {
     negative_frames::BeginDrag(app.get());negative_frames::Drag(app.get(),100);negative_frames::EndDrag(app.get());
     Check(negative_frames::CellSelected(app.get(),-1,0),"signed drag preserves the frame zero boundary");
     negative_frames::Reset(app.get());bone_scale::Forget(model);g_Block=previous;
+    CheckSelectionPersistence();
     std::printf("PASS negative frames checks=%u\n",checks);
 }

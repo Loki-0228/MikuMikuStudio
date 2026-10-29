@@ -1,8 +1,11 @@
+// MAINTENANCE: regression-keep; VMD parsing, import selection, and modal input isolation.
 #include "mikumikustudio/extended_names.hpp"
 #include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/build_profile.hpp"
 // Exercise the real LoadVmdMotion entry, key registrars, and extension loaders.
-// No windows or D3D device are created. Each case can also run in isolation:
-// vmd_load_safety_tests.exe --case overflow|short|counts|valid|tails|camera|ik|twist|force-morph
+// The dialog-enter case uses an inactive private desktop for real modal dialogs;
+// the other cases create no windows. No case creates a D3D device.
+// vmd_load_safety_tests.exe --case overflow|short|counts|valid|dialog-enter|tails|camera|ik|twist|force-morph
 // vmd_load_safety_tests.exe --benchmark [warmup iterations]
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -16,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
@@ -39,7 +43,12 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include <limits>
 
-namespace mikumikustudio { int LoadVmdMotion(MMDApp*, const char*); }
+namespace mikumikustudio {
+int LoadVmdMotion(MMDApp*, const char*);
+void MouseInteractionBegin(MMDApp*);
+void PumpEnterRegisterFrame(MMDApp*, HWND, bool);
+void CmdControl500(MMDApp*, HWND, std::uint16_t, std::uint16_t);
+}
 namespace {
 using namespace mikumikustudio;
 using Bytes = std::vector<std::uint8_t>;
@@ -448,12 +457,207 @@ void Valid() {
         Motion empty(version, false, true); Fixture fixture; fixture.Imported(empty.bytes, false);
     }
 }
+
+struct SelectionDialogCase {
+    Fixture* fixture;
+    int response;
+    bool enterHeld;
+    unsigned dialogs = 0, registrations = 0;
+    HWND owner = nullptr;
+    ULONGLONG started = 0;
+    bool responseSent = false;
+};
+SelectionDialogCase* selectionDialogCase = nullptr;
+
+void SetSelectionTestEnter(bool held) {
+    // This thread runs on an inactive desktop. Its keyboard table drives the
+    // real poll without sending input or changing the user's foreground window.
+    BYTE keys[256]{};
+    keys[VK_RETURN] = held ? 0x80 : 0;
+    Check(SetKeyboardState(keys) != FALSE, "set private-desktop keyboard state");
+}
+
+void CALLBACK SelectionDialogTimer(HWND, UINT, UINT_PTR, DWORD) {
+    auto& state = *selectionDialogCase;
+    Check(GetTickCount64() - state.started < 5000,
+          "VMD confirmation appears and closes within five seconds");
+    if (state.responseSent) return;
+    // An inactive desktop need not activate a MessageBox. Find its initialized
+    // controls from the real modal loop, not from an activation/creation hook.
+    HWND dialog = nullptr;
+    EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM parameter) -> BOOL {
+        wchar_t type[32]{};
+        GetClassNameW(window, type, 32);
+        if (std::wcscmp(type, L"#32770") == 0 &&
+            GetWindow(window, GW_OWNER) == selectionDialogCase->owner &&
+            GetDlgItem(window, IDOK) && GetDlgItem(window, IDCANCEL)) {
+            *reinterpret_cast<HWND*>(parameter) = window;
+            return FALSE;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&dialog));
+    if (!dialog) return;
+    ++state.dialogs;
+    state.responseSent = true;
+    SetSelectionTestEnter(state.enterHeld);
+    SendMessageW(dialog, WM_COMMAND, MAKEWPARAM(state.response, BN_CLICKED),
+                 reinterpret_cast<LPARAM>(GetDlgItem(dialog, state.response)));
+}
+
+LRESULT CALLBACK SelectionInputOwner(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == WM_COMMAND && LOWORD(wp) == 500) {
+        ++selectionDialogCase->registrations;
+        CmdControl500(selectionDialogCase->fixture->app.get(), window, 500, 0);
+        return 0;
+    }
+    return DefWindowProcW(window, message, wp, lp);
+}
+
+DWORD WINAPI SelectionAfterModelConfirmationThread(void* parameter) {
+    Check(SetThreadDesktop(static_cast<HDESK>(parameter)) != FALSE,
+          "use inactive VMD confirmation desktop");
+    WNDCLASSW windowClass{};
+    windowClass.lpfnWndProc = SelectionInputOwner;
+    windowClass.hInstance = GetModuleHandleW(nullptr);
+    windowClass.lpszClassName = L"MmsVmdSelectionInputTest";
+    Check(RegisterClassW(&windowClass) != 0, "register VMD input test owner");
+
+    Bytes motion;
+    Text(motion, "Vocaloid Motion Data 0002", 30);
+    Text(motion, "another model", 20);
+    U32(motion, 3);
+    for (unsigned frame : {0u, 12u, 24u}) {
+        Text(motion, "bone", 15); U32(motion, frame);
+        for (float value : {7.f, 8.f, 9.f, 0.f, 0.f, 0.f, 1.f}) Put(motion, value);
+        motion.resize(motion.size() + 64);
+    }
+    U32(motion, 3);
+    for (unsigned frame : {0u, 12u, 24u}) {
+        Text(motion, "face", 15); U32(motion, frame); Put(motion, .75f);
+    }
+    U32(motion, 0); U32(motion, 0); U32(motion, 0); // camera, light, shadow
+    U32(motion, 3);
+    for (unsigned frame : {0u, 12u, 24u}) {
+        U32(motion, frame); motion.push_back(1); U32(motion, 0);
+    }
+
+    for (bool enterHeld : {true, false}) for (int response : {IDOK, IDCANCEL}) {
+        Fixture fixture;
+        SelectionDialogCase state{&fixture, response, enterHeld};
+        selectionDialogCase = &state;
+        HWND owner = CreateWindowW(windowClass.lpszClassName, L"VMD selection test",
+            WS_OVERLAPPED, 0, 0, 400, 300, nullptr, nullptr, windowClass.hInstance, nullptr);
+        Check(owner != nullptr, "create private VMD input owner");
+        state.owner = owner;
+        fixture.app->Hwnd() = owner; fixture.model->hwnd = owner;
+        SetSelectionTestEnter(false);
+        // Dropped VMDs enter the loader with no menu's Enter latch. An Enter
+        // used to accept the mismatch must not become command 500 afterwards.
+        fixture.app->state.enterKeyState = 0;
+        state.started = GetTickCount64();
+        const UINT_PTR timer = SetTimer(owner, 1, 10, SelectionDialogTimer);
+        Check(timer != 0, "schedule bounded VMD confirmation response");
+        const int result = fixture.Load(motion);
+        Check(KillTimer(owner, timer) != FALSE && state.dialogs == 1,
+              "one real VMD model-name confirmation was handled");
+        const bool imported = response == IDOK;
+        Check(result == (imported ? 1 : 0), "confirmation accepts or cancels the VMD import");
+
+        auto checkSelection = [&] {
+            if (!imported) {
+                Check(fixture.model->undoState[0] == 4 && fixture.boneKeys[0].position[0] == -3 &&
+                      fixture.morphKeys[1].value == .125f && fixture.boneKeys[0].allocated &&
+                      fixture.morphKeys[1].allocated && fixture.displayKeys[0].allocated &&
+                      fixture.boneKeys.back().allocated && fixture.morphKeys.back().allocated &&
+                      fixture.displayKeys.back().allocated,
+                      "cancel preserves motion, previous selections, and undo history");
+                return;
+            }
+            auto checkTrack = [](const auto* keys, unsigned root) {
+                unsigned slot = root;
+                for (unsigned frame : {0u, 12u, 24u}) {
+                    Check(keys[slot].frame == frame && keys[slot].allocated,
+                          "every imported bone, morph, and display key remains selected");
+                    if (frame == 24) Check(keys[slot].next == 0, "imported track ends at the expected key");
+                    else Check(keys[slot].next != 0, "imported track retains its linked keys");
+                    slot = keys[slot].next;
+                }
+            };
+            checkTrack(fixture.model->boneKeys, 0);
+            checkTrack(fixture.model->morphKeys, 1);
+            checkTrack(fixture.model->displayKeys, 0);
+            Check(fixture.model->undoState[0] == 5 && fixture.model->undoState[1] == 5,
+                  "confirmation creates only the motion import undo entry");
+            Check(!fixture.boneKeys.back().allocated && !fixture.morphKeys.back().allocated &&
+                  !fixture.displayKeys.back().allocated,
+                  "import selects its own keys instead of unrelated previous selections");
+        };
+        checkSelection();
+        auto poll = [&](bool held) {
+            SetSelectionTestEnter(held);
+            MouseInteractionBegin(fixture.app.get());
+            PumpEnterRegisterFrame(fixture.app.get(), owner, true);
+        };
+        for (int tick = 0; tick < 3; ++tick) {
+            poll(enterHeld);
+            Check(state.registrations == 0, "modal confirmation never leaks an Enter registration");
+            checkSelection();
+        }
+        poll(false); poll(false);
+        Check(state.registrations == 0 && fixture.app->state.enterKeyState == 0,
+              "releasing the confirmation key returns the input poll to idle");
+        if (imported) {
+            fixture.selected[0] = 1;
+            fixture.app->CurrentFrame() = 36;
+            poll(true);
+            Check(state.registrations == 1 && fixture.model->undoState[0] == 6,
+                  "a later deliberate Enter still registers exactly one frame");
+            unsigned slot = 0;
+            for (int steps = 0; steps < 4 && fixture.model->boneKeys[slot].next; ++steps)
+                slot = fixture.model->boneKeys[slot].next;
+            Check(fixture.model->boneKeys[slot].frame == 36 && fixture.model->boneKeys[slot].allocated,
+                  "deliberate Enter reaches the real registrar and selects its new key");
+            poll(true);
+            Check(state.registrations == 1, "holding a deliberate Enter does not repeat registration");
+        }
+        SetSelectionTestEnter(false);
+        DestroyWindow(owner);
+        fixture.app->Hwnd() = nullptr; fixture.model->hwnd = nullptr;
+        selectionDialogCase = nullptr;
+    }
+    Check(UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance) != FALSE,
+          "release private VMD owner class");
+    return 0;
+}
+
+void SelectionAfterModelConfirmation() {
+    wchar_t desktopName[80]{};
+    swprintf_s(desktopName, L"MMS-vmd-selection-%lu", GetCurrentProcessId());
+    const HDESK desktop = CreateDesktopW(desktopName, nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+    Check(desktop != nullptr, "create inactive VMD confirmation desktop");
+    // Destroy any system-created IME/dialog windows with their owning thread
+    // before closing the desktop; they can outlive the explicit owner window.
+    const HANDLE thread = CreateThread(nullptr, 0, SelectionAfterModelConfirmationThread,
+                                       desktop, 0, nullptr);
+    Check(thread && WaitForSingleObject(thread, 30000) == WAIT_OBJECT_0,
+          "VMD confirmation regression finishes within thirty seconds");
+    DWORD exitCode = 1;
+    Check(GetExitCodeThread(thread, &exitCode) && exitCode == 0,
+          "private VMD input thread succeeds");
+    CloseHandle(thread);
+    // The Windows input framework can retain a helper thread on this desktop
+    // until process exit. In that case the process owns its remaining handle.
+    Check(CloseDesktop(desktop) != FALSE || GetLastError() == ERROR_BUSY,
+          "release inactive VMD confirmation desktop");
+}
+
 void Tails() {
     Motion motion;
     for (const Bytes& tail : {Bytes{1, 2, 3}, Bytes{'M','M','S','M','C','R','V','1', 16, 0, 0, 0}, Bytes{'M','D','S','X','M','D','S','X'}}) {
         auto bytes = motion.bytes; bytes.insert(bytes.end(), tail.begin(), tail.end());
         Fixture fixture; fixture.Imported(bytes);
     }
+#if !MMD_ORIGINAL_PROFILE
     // A checksummed morph block followed by a valid scale extension proves
     // that the validated standard boundary reaches both existing codecs.
     auto bytes = motion.bytes;
@@ -469,6 +673,7 @@ void Tails() {
     bytes.insert(bytes.end(), encoded.begin(), encoded.end()); Put(bytes, std::uint64_t(encoded.size())); Text(bytes, "MDSXVMDX", 8);
     Fixture fixture; fixture.Imported(bytes);
     Check(bone_scale::Key(fixture.Raw(), 0).v[0] == 2, "scale extension follows exact morph-block boundary");
+#endif
 }
 void Camera() {
     for (int version : {1, 2}) {
@@ -677,7 +882,7 @@ int main(int argc, char** argv) {
         Benchmark(warmup, iterations); return 0;
     }
     struct Case { const char* name; void (*run)(); };
-    const Case cases[]{{"path-motion", UnicodeMotionPaths}, {"path-camera", UnicodeCameraPaths}, {"unicode", UnicodeIdentity}, {"overflow", Overflow}, {"short", ShortReads}, {"counts", Counts}, {"valid", Valid}, {"tails", Tails}, {"camera", Camera}, {"ik", Ik}, {"twist", FixedAxisRotations}, {"force-morph", ForceMorphPaste}};
+    const Case cases[]{{"path-motion", UnicodeMotionPaths}, {"path-camera", UnicodeCameraPaths}, {"unicode", UnicodeIdentity}, {"overflow", Overflow}, {"short", ShortReads}, {"counts", Counts}, {"valid", Valid}, {"dialog-enter", SelectionAfterModelConfirmation}, {"tails", Tails}, {"camera", Camera}, {"ik", Ik}, {"twist", FixedAxisRotations}, {"force-morph", ForceMorphPaste}};
     if (argc == 3 && std::strcmp(argv[1], "--case") == 0) {
         for (const auto& test : cases) if (std::strcmp(argv[2], test.name) == 0) { test.run(); std::printf("VMD %s: passed\n", test.name); return 0; }
         return 2;

@@ -66,6 +66,8 @@
 | `device_reset_tests.cpp` | 设备重置和资源恢复。 |
 | `filename_encoding_tests.cpp` | 中文/日文路径与编码转换。 |
 | `morph_import_tests.cpp` | 表情记录步长、Unicode 控件、VSQ 歌词/时间隔离；可另传 VMD 验证实际素材。 |
+| `vmd_load_safety_tests.cpp` | VMD 导入边界、名称与扩展数据。`--case dialog-enter` 验证 issue #39：关闭导入提示框后，持续按住 Enter 不应再次登记或清除导入选区，松开后再次按下仍可正常登记。提示框运行在测试专用桌面；完整包与最小包均需验证。 |
+| `pmm_model_adaptation_tests.cpp` | 传入一个尚不存在的输出目录，自动生成 PMX/PMM，并以隐藏生产窗口检查模型结构适配与连续保存重开。验证骨骼、表情、显示轨道的混合选区，以及打开工程时持续按住 Enter 不会改写关键帧或新增撤销记录；两档均需验证，完整包另覆盖扩展尾和旧工程。 |
 | `ui_language_tests.cpp` | 多语言字符串、控件语义、时间轴固定标题翻译、实际 PMX 导入后的 Unicode 绘制与中日文字号。 |
 | `ui_message_tests.cpp` | 实际对话框资源和消息。 |
 | `video_export_range_tests.cpp` | 由私有桌面 runner 显式运行；实际三语导出对话框的范围默认值、宽高比例初始化、重复打开、取消和确认读回。两档共用，编码器枚举用固定选项隔离；不创建设备、不编码视频、不注册普通 CTest。 |
@@ -267,7 +269,7 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 
 修复前后图像和限制见[大场景自阴影修复记录](../docs/records/rendering/shadows.md#record-focused-self-shadow-20261022)。
 
-`negative_frame_tests` 验证带符号帧解析、范围解释、负帧与原生无符号关键帧池隔离、插值、复制粘贴，以及 `MMSXPMM2` 记录往返和损坏数据拒绝。`panel_key_tests --bone-translation-reset` 检查主窗口与分离窗口的 XYZ 重置、物理模式读数及撤销重做。`mme_display_tests <模型绝对路径> --model-edit-controls <输出目录>` 使用真实 MME 与隐藏生产窗口，验证骨骼重置、0 帧左移复位、负帧登记、PMM 保存重载、正负帧双向粘贴及播放下限。集成测试输出写入独立目录，不改写输入模型。
+`negative_frame_tests` 验证带符号帧解析、范围解释、负帧与原生无符号关键帧池隔离、插值、复制粘贴，以及 `MMSXPMM2` 记录往返和损坏数据拒绝。完整包还检查各类负帧的混合选区持久化、缺失模型的记录对齐，以及旧文件或损坏、过期的可选选区数据不影响关键帧加载。`panel_key_tests --bone-translation-reset` 检查主窗口与分离窗口的 XYZ 重置、物理模式读数及撤销重做。`mme_display_tests <模型绝对路径> --model-edit-controls <输出目录>` 使用真实 MME 与隐藏生产窗口，验证骨骼重置、0 帧左移复位、负帧登记、PMM 保存重载、正负帧双向粘贴及播放下限。集成测试输出写入独立目录，不改写输入模型。
 
 `native_shadow_tests <着色器> --bands-only` 检查放大的低精度斜平面：不启用滤波，不添加投影物，解析预期为全亮，避免硬件插值量化制造假阴影。`--detail-only` 同样包含此检查。`native_shadow_cycle.py` 还检查动态开关关→开→关时固定模式无细节图、动态模式有细节图、关闭后阴影数据恢复一致。
 

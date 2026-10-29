@@ -105,15 +105,26 @@ void ApplyGravityTrack(MMDApp* app);                        // 0x412330 (track_a
 
 namespace {
 
-int MotionMessageBox(HWND owner, int language, const wchar_t* japanese,
+int MotionMessageBox(MMDApp* app, const wchar_t* body, const wchar_t* caption,
+                     UINT flags) {
+    const HWND owner = app->state.hwnd;
+    if (!owner) return 0;
+    const int result = MessageBoxW(owner, body, caption, flags);
+    // The frame loop does not poll keys while a modal dialog owns input.
+    // Consume its Enter press so accepting a dropped motion cannot also
+    // register the current pose and clear the newly imported key selection.
+    if (result != 0) app->state.enterKeyState = 3;
+    return result;
+}
+
+int MotionMessageBox(MMDApp* app, int language, const wchar_t* japanese,
                      const wchar_t* english, const wchar_t* chinese,
                      UINT flags) {
-    if (!owner) return 0;
     const wchar_t* caption = language == 1 ? L"Load motion data"
         : language == 2 ? L"载入动作数据" : L"モーション読込";
     const wchar_t* body = language == 1 ? english
         : language == 2 ? chinese : japanese;
-    return MessageBoxW(owner, body, caption, flags);
+    return MotionMessageBox(app, body, caption, flags);
 }
 
 // SJIS constants from .rdata (byte-exact)
@@ -188,7 +199,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             swprintf_s(message, L"无法打开文件：%d", openErr);
         else
             swprintf_s(message, L"ファイルを読み込めません：%d", openErr);
-        if (hwnd) MessageBoxW(hwnd, message, language == 1 ? L"Load motion data"
+        if (hwnd) MotionMessageBox(app, message, language == 1 ? L"Load motion data"
             : language == 2 ? L"载入动作数据" : L"モーション読込", MB_OK | MB_ICONWARNING);
         return 0;
     }
@@ -199,7 +210,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     bool valid = false;
     try { valid = input.Load(fileHandle); } catch (const std::exception&) {}
     if (!valid) {
-        if (hwnd) MotionMessageBox(hwnd, language,
+        if (hwnd) MotionMessageBox(app, language,
             L"VMD ファイルが不完全か、レコード数が正しくありません。",
             L"The VMD file is incomplete or contains invalid record counts.",
             L"VMD 文件不完整或记录数量无效。", MB_OK | MB_ICONWARNING);
@@ -210,6 +221,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     if (!input.OriginalNamesFit()) {
         _close(fileHandle);
         original_import::Refuse(hwnd, language);
+        if (hwnd) app->state.enterKeyState = 3;
         return 0;
     }
 #endif
@@ -220,7 +232,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
 
     std::uint32_t lastImportedFrame=0;
     if(!frame_limits::Add(s.state.currentFrame,input.maximumFrame,lastImportedFrame)){
-        if(hwnd)MotionMessageBox(hwnd,language,L"フレーム番号が保存可能な範囲を超えます。",L"The motion exceeds the representable frame range.",L"动作超出可表示的帧号范围，未导入。",MB_OK|MB_ICONWARNING);
+        if(hwnd)MotionMessageBox(app,language,L"フレーム番号が保存可能な範囲を超えます。",L"The motion exceeds the representable frame range.",L"动作超出可表示的帧号范围，未导入。",MB_OK|MB_ICONWARNING);
         _close(fileHandle);return 0;
     }
     // header + model name (the name read overwrites the header buffer)
@@ -234,7 +246,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     } else if (std::strcmp(text, "Vocaloid Motion Data 0002") == 0) {
         ver = 2; flavor = 2; nameLen = 20;
     } else {
-        MotionMessageBox(hwnd, language,
+        MotionMessageBox(app, language,
             L"Vocaloid Motion Data ファイルではありません。",
             L"This is not a Vocaloid Motion Data file.",
             L"这不是 Vocaloid Motion Data 动作文件。", MB_OK | MB_ICONWARNING);
@@ -293,7 +305,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
                 static_cast<std::int64_t>(tailStart)) == bone_scale_io::ExtensionLoad::Loaded;
         }
     } catch (const std::exception&) {
-        MotionMessageBox(hwnd, language,
+        MotionMessageBox(app, language,
             L"モーションの追加データを読み込めませんでした。",
             L"Cannot prepare the motion's extension data.",
             L"无法读取动作扩展数据。", MB_OK | MB_ICONWARNING);
@@ -309,12 +321,12 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             return count<=free||mdl::KeyPoolEnsure(keys,std::uint64_t(capacity)+count-free);
         };
         if(!reserve(app->CameraKeys(),input.cameraCount)||!reserve(app->LightKeys(),input.lightCount)||!reserve(app->ShadowKeys(),input.shadowCount)){
-            if(hwnd)MotionMessageBox(hwnd,language,L"メモリ不足です。",L"Not enough memory to import this motion.",L"内存不足，未导入此动作。",MB_OK|MB_ICONWARNING);
+            if(hwnd)MotionMessageBox(app,language,L"メモリ不足です。",L"Not enough memory to import this motion.",L"内存不足，未导入此动作。",MB_OK|MB_ICONWARNING);
             _close(fileHandle);return 0;
         }
         // ==== camera / light / self-shadow motion =========================
         if (ver == 2 && std::memcmp(text, kCameraLightName, 13) != 0) {
-            MotionMessageBox(hwnd, language,
+            MotionMessageBox(app, language,
                 L"このモーションファイルにカメラ・照明・セルフシャドウのデータがありません。",
                 L"This motion file has no camera, light, or self-shadow data.",
                 L"此动作文件不含镜头、灯光或自阴影数据。", MB_OK | MB_ICONWARNING);
@@ -335,7 +347,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             input.Read(&scratch, 4);
         }
         if (input.Read(&count, 4) == 0) {
-            MotionMessageBox(hwnd, language,
+            MotionMessageBox(app, language,
                 L"このモーションファイルにカメラ・照明のデータがありません。",
                 L"This motion file has no camera or light data.",
                 L"此动作文件不含镜头或灯光数据。", MB_OK | MB_ICONWARNING);
@@ -461,7 +473,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     if (hasFullNames ? fullNames.model != text_encoding::ModelName(*mdl::Mdl(model),false) : std::strcmp(text, mdl::Mdl(model)->name) != 0) {
 #endif
         if (std::memcmp(text, kCameraLightName, 13) == 0) {
-            MotionMessageBox(hwnd, language,
+            MotionMessageBox(app, language,
                 L"このモーションはカメラ・照明用です。カメラ編集モードで読み込んでください。",
                 L"This is a camera/light motion. Load it in camera editing mode.",
                 L"这是镜头/灯光动作，请切换到镜头编辑模式后载入。", MB_OK | MB_ICONWARNING);
@@ -478,7 +490,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             swprintf_s(prompt, L"此动作文件属于“%s”。\n只会导入骨骼名称匹配的动作。\n是否继续？", sourceModelName.c_str());
         else
             swprintf_s(prompt, L"このモーションファイルは「%s」用です。\n同じボーン名のモーションのみ読み込みます。\n続行しますか？", sourceModelName.c_str());
-        if (!hwnd || MessageBoxW(hwnd, prompt,
+        if (!hwnd || MotionMessageBox(app, prompt,
                         language == 1 ? L"Load motion data"
                             : language == 2 ? L"载入动作数据" : L"モーション読込",
                         MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
@@ -537,7 +549,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             mdl::DisplayKeyPoolEnsure(record,needed(record.displayKeys,mdl::KeyPoolCapacity(record.displayKeys),1,input.displayCount));
     }
     if (!allocationsReady) {
-        MotionMessageBox(hwnd, language,
+        MotionMessageBox(app, language,
             L"モーションを読み込むためのメモリが不足しています。",
             L"Not enough memory to load this motion.",
             L"内存不足，无法载入此动作。", MB_OK | MB_ICONWARNING);
@@ -760,7 +772,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     if(!boneCurveBlock.empty()){
         std::string error;
         if(!bone_curve::ApplyVmd(model,boneCurveBlock.data(),boneCurveBlock.size(),int(s.state.currentFrame),error))
-            MotionMessageBox(hwnd,language,L"自由カーブは空のボーントラックに読み込んでください。標準キーのみ読み込みました。",L"Free curves require empty bone tracks. Only the standard keys were imported.",L"自由曲线需要导入空的骨骼轨道，本次只读取了标准关键帧。",MB_OK|MB_ICONWARNING);
+            MotionMessageBox(app,language,L"自由カーブは空のボーントラックに読み込んでください。標準キーのみ読み込みました。",L"Free curves require empty bone tracks. Only the standard keys were imported.",L"自由曲线需要导入空的骨骼轨道，本次只读取了标准关键帧。",MB_OK|MB_ICONWARNING);
     }
 #endif
 

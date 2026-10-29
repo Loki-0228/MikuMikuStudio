@@ -172,6 +172,15 @@ void LoadSceneFile(const wchar_t* candidate) {
     // An unreadable or unsupported file must not change the current scene's
     // dirty state, path base or MME assignments.
     accepted = true;
+    // Recent-file and drop entry points have no open-dialog Enter latch.
+    // Consume it before load-time repaints and again after any load prompts,
+    // so the frame pump cannot register over the restored key selection.
+    struct ConsumeOpenEnter {
+        MMDApp* app;
+        void Consume() const { if (app->MainWindow()) app->state.enterKeyState = 3; }
+        ~ConsumeOpenEnter() { Consume(); }
+    } openEnter{app};
+    openEnter.Consume();
     cache_manager::BeginProject(app->EnvFileName());
     struct CacheLoadEnd {~CacheLoadEnd(){cache_manager::EndProjectLoad();}} cacheLoadEnd;
     app->AdvanceSceneGeneration();

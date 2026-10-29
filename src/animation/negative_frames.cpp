@@ -9,6 +9,7 @@
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/bone_scale_io.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/frame_clipboard.hpp"
 #include "mikumikustudio/panel_controls.hpp"
@@ -254,6 +255,23 @@ void EvaluateGlobalsImpl(MMDApp* app,int frame) {
 std::uint32_t Read32(const std::uint8_t* bytes) {
     return std::uint32_t(bytes[0])|(std::uint32_t(bytes[1])<<8)|(std::uint32_t(bytes[2])<<16)|(std::uint32_t(bytes[3])<<24);
 }
+std::uint32_t PayloadCrc32(const std::vector<std::uint8_t>& bytes) {
+    bone_scale_io::PrefixFingerprint fingerprint;
+    fingerprint.Append(bytes.data(),bytes.size());
+    return fingerprint.crc32();
+}
+const std::uint8_t* SelectionFlags(const pmm_extension::Document& document,
+                                 const std::vector<std::uint8_t>& keys,std::uint32_t count) {
+    const auto* record=pmm_extension::Find(document,kPmmSelectionKey);
+    if(!record)return nullptr;
+    const auto& bytes=record->value;
+    // Older writers preserve unknown records, so flags only apply to the exact
+    // v1 key payload captured alongside them. Bad optional metadata never drops keys.
+    if(bytes.size()!=std::uint64_t(count)+12 || Read32(bytes.data())!=1 ||
+       Read32(bytes.data()+4)!=count || Read32(bytes.data()+8)!=PayloadCrc32(keys))return nullptr;
+    if(std::any_of(bytes.begin()+12,bytes.end(),[](std::uint8_t flag){return flag>1;}))return nullptr;
+    return bytes.data()+12;
+}
 std::vector<Key> NativeClipboard(MMDApp* app) {
     std::vector<Key> out;const auto& counts=app->ClipboardCounts();auto* model=app->SelectedModel();
     const auto global=[&](int kind,unsigned frame,const Values& values) {
@@ -497,6 +515,9 @@ void Capture(const MMDApp& app,pmm_extension::Document& document) {
         pmm_extension::Set(document,"org.mikudancestudio.timeline.signed_play_range.v1",std::move(bounds));
     }
     const auto found=states.find(&app);std::vector<std::uint8_t> bytes;U32(bytes,1);U32(bytes,0);unsigned count=0;
+    // Keep the v1 key rows readable by older programs. Selection is a separate
+    // record: u32 version, u32 key count, u32 key-payload CRC32, then one 0/1 per row.
+    std::vector<std::uint8_t> selection;U32(selection,1);U32(selection,0);U32(selection,0);
     if(found!=states.end())for(const auto& key:found->second.keys)if(Current(app,key)) {
         int slot=255;if(key.model){slot=0;while(slot<255 && app.ModelSlot(slot)!=key.model)++slot;}
         U32(bytes,unsigned(slot));U32(bytes,!key.model?2:key.target<0?3:key.morph?1:0);U32(bytes,unsigned(key.target));U32(bytes,std::uint32_t(key.frame));
@@ -504,11 +525,15 @@ void Capture(const MMDApp& app,pmm_extension::Document& document) {
             const char* name=key.morph ? record.morphs[key.target].name : record.boneTable[key.target].name;
             bytes.insert(bytes.end(),name,name+20);}
         else bytes.insert(bytes.end(),20,0);
-        for(double value:key.values){std::uint64_t bits;std::memcpy(&bits,&value,8);for(int j=0;j<8;++j)bytes.push_back(std::uint8_t(bits>>(8*j)));}++count;
+        for(double value:key.values){std::uint64_t bits;std::memcpy(&bits,&value,8);for(int j=0;j<8;++j)bytes.push_back(std::uint8_t(bits>>(8*j)));}
+        selection.push_back(key.selected?1:0);++count;
     }
-    if(!count){pmm_extension::Erase(document,kPmmKey);return;}
-    for(int i=0;i<4;++i)bytes[4+i]=std::uint8_t(count>>(8*i));
+    if(!count){pmm_extension::Erase(document,kPmmKey);pmm_extension::Erase(document,kPmmSelectionKey);return;}
+    for(int i=0;i<4;++i)bytes[4+i]=selection[4+i]=std::uint8_t(count>>(8*i));
+    const auto crc=PayloadCrc32(bytes);
+    for(int i=0;i<4;++i)selection[8+i]=std::uint8_t(crc>>(8*i));
     pmm_extension::Set(document,kPmmKey,std::move(bytes));
+    pmm_extension::Set(document,kPmmSelectionKey,std::move(selection));
 }
 static void RestoreMetadata(MMDApp& app,const pmm_extension::Document& document) {
     if(const auto* cursor=pmm_extension::Find(document,"org.mikudancestudio.timeline.signed_cursor.v1");cursor && cursor->value.size()==8) {
@@ -534,26 +559,28 @@ bool Load(MMDApp& app,const pmm_extension::Document& document) {
     if(bytes.size()<8 || Read32(bytes.data())!=1)return false;
     const auto count=Read32(bytes.data()+4);
     if(std::uint64_t(count)*stride!=bytes.size()-8)return false;
+    const auto* selection=SelectionFlags(document,bytes,count);
     State pending;
     std::set<std::tuple<unsigned,unsigned,unsigned,int>> unique;
     for(unsigned i=0;i<count;++i) {
         const auto* row=bytes.data()+8+std::size_t(i)*stride;
         const auto slot=Read32(row),kind=Read32(row+4),target=Read32(row+8);
         const auto frame=static_cast<std::int32_t>(Read32(row+12));
+        const bool selected=selection && selection[i]!=0;
         if(!unique.emplace(slot,kind,target,frame).second)return false;
         if(kind==2) {
             if(slot!=255 || !((target>=2 && target<=5)||(target>=1000 && target<1255)) || frame>=0 || frame<frame_limits::minimum)return false;
             Values values{};for(unsigned j=0;j<16;++j){std::uint64_t bits=0;for(int k=0;k<8;++k)bits|=std::uint64_t(row[36+j*8+k])<<(8*k);std::memcpy(&values[j],&bits,8);if(!std::isfinite(values[j]))return false;}
             if(!GlobalValid(values,int(target)))return false;
             const void* identity=target>=1000 ? static_cast<const void*>(app.AccessorySlot(target-1000)) : &app;
-            if(identity)Upsert(pending,{nullptr,identity,int(target),frame,false,false,values});continue;
+            if(identity)Upsert(pending,{nullptr,identity,int(target),frame,false,selected,values});continue;
         }
         if(kind==3) {
             if(slot>=255 || frame>=0 || frame<frame_limits::minimum)return false;
             if(static_cast<std::int32_t>(target)>=0)return false;
             auto* model=app.ModelSlot(slot);if(!model)continue;
             Values values{};for(unsigned j=0;j<16;++j){std::uint64_t bits=0;for(int k=0;k<8;++k)bits|=std::uint64_t(row[36+j*8+k])<<(8*k);std::memcpy(&values[j],&bits,8);if(!std::isfinite(values[j]))return false;}
-            Key key{model,mdl::Mdl(model)->boneTable,static_cast<std::int32_t>(target),frame,false,false,values};
+            Key key{model,mdl::Mdl(model)->boneTable,static_cast<std::int32_t>(target),frame,false,selected,values};
             if(key.target<=-1000000) {
                 if(!Integer(values[0],-1,254) || !Integer(values[1],-1,frame_limits::maximum))return false;
             } else if(!Integer(values[0],0,1))return false;
@@ -566,7 +593,7 @@ bool Load(MMDApp& app,const pmm_extension::Document& document) {
         if(std::memcmp(name,row+16,20))continue;
         Values values{};for(unsigned j=0;j<16;++j){std::uint64_t bits=0;for(int k=0;k<8;++k)bits|=std::uint64_t(row[36+j*8+k])<<(8*k);std::memcpy(&values[j],&bits,8);}
         if(!Valid(values,kind!=0))return false;
-        Key key{model,kind ? static_cast<const void*>(record.morphs) : record.boneTable,int(target),frame,kind!=0,false,values};
+        Key key{model,kind ? static_cast<const void*>(record.morphs) : record.boneTable,int(target),frame,kind!=0,selected,values};
         const auto before=pending.keys.size();Upsert(pending,key);if(pending.keys.size()==before)return false;
     }
     states[&app]=std::move(pending);RestoreMetadata(app,document);return true;
