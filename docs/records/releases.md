@@ -4,6 +4,8 @@
 
 ## 记录索引
 
+- [v2026.10.29.1 正式发布说明](#release-v2026-10-29-1)
+
 - [v2026.10.20.1 正式发布说明](#release-v2026-10-20-1)
 
 - [v2026.10.19.1 正式发布说明](#release-v2026-10-19-1)
@@ -23,6 +25,57 @@
 - [v2026.10.11.3 构建与发布记录](#record-release-3)
 - [v2026.10.11.2 构建与发布记录](#record-release-2)
 - [MMS 原生媒体导入与导出](#record-native-media)
+
+<a id="release-v2026-10-29-1"></a>
+
+<!-- release-notes:v2026.10.29.1:begin -->
+## MikuMikuStudio v2026.10.29.1
+
+### 中文
+
+相较 `v2026.10.20.1`：
+
+- 重新整理完整包的自阴影覆盖、固定精度、动态精度和滤波。改善大场景中的人物清晰度、低精度条纹、视角变化时的过渡，以及开启滤波加强后的墙面和人物面部伪影。关闭动态精度时保持固定采样策略；人物专用阴影会增加显存及绘制开销。模式 1/2 保留各自的原生差异。
+- 新增帮助菜单中的缓存管理，支持空间上限、最近工程保留、固定保留和手动清理。优化模型与纹理准备、外部 MME 编译缓存，并改进透明排序、MME 兼容回退及菜单首次绘制。
+- 支持编辑和保存负数关键帧；负数范围不参与播放。修复负数帧纵向选择、拖框选择和点击后的时间轴偏移。倒序范围的右端按倒数第几帧解释，`0 … -1` 仍表示播放或选择全部正常帧。
+- 「选中帧序列散布」支持骨骼、表情及混合片段，保留骨骼姿态、原生插值、物理开关和缩放，整次操作可撤销重做。
+- 改进骨骼多选操作、轴向手柄、位置/旋转重置，以及同模型重名轨道的关键帧粘贴。修复表情与显示/IK/外亲登记的撤销问题（#40）。
+- 自动备份与增量保存支持自定义命名及预览，包括 `[/YY]`、`[/YYYY]` 等时间、工程名和序号标记；默认备份位置为程序同级 `backups`。
+- 保存兼容提示列出具体受限字段；改进名称和路径的可还原编码判断、默认重名轨道检查，以及播放结束帧 `-1` 的识别。完整数据保存在 MMS 扩展中；原版 MMD 无法表示的数据仍需在 MMS 中编辑。
+- 修复系统 H.264 导出上下颠倒，允许对当前程序重新安装可选 NVIDIA 抗锯齿修复。
+
+完整包包含扩展功能；最小包保留原版功能范围。两种 ZIP 请分别解压后运行 `MikuMikuDance.exe`，均不包含模型、个人设置、MME、MMV 或 FFmpeg。可选 `MMSNvidiaAAFix.dll` 单独下载，放在完整包 EXE 同级，通过帮助菜单安装并重启；卸载也通过帮助菜单。
+
+### English
+
+Changes since `v2026.10.20.1`:
+
+- Reworked full-build self-shadow coverage, fixed/dynamic precision and filtering. Improved character detail in large scenes, coarse-shadow striping, camera transitions, and enhanced-filter artifacts on walls and faces. Fixed mode keeps a fixed sampling policy; character detail maps incur additional memory and draw costs. Modes 1 and 2 retain their native differences.
+- Added cache management in Help, including a size limit, recent-project retention, pinning and manual cleanup. Improved model/texture preparation, external MME compilation caching, transparency sorting, MME fallback and initial menu painting.
+- Added editable negative keyframes saved in MMS extensions, excluded from playback. Fixed negative-frame column and marquee selection and unwanted timeline scrolling. Reversed ranges interpret the right endpoint relative to the end; `0 … -1` still covers all normal frames.
+- Sequence scatter now supports bone keys and mixed bone/expression clips, preserving native interpolation, physics flags and scale, with batch undo/redo.
+- Improved bone multiselection, axis handles, transform reset and same-model duplicate-name track pasting. Fixed undo for expression and display/IK/external-parent registration (#40).
+- Added customizable backup/incremental naming with previews and tokens including `[/YY]` and `[/YYYY]`. Default backups are stored beside the application.
+- Compatibility warnings identify individual fields. Improved reversible name/path encoding checks, default duplicate-track handling and relative playback endpoint recognition. MMS preserves full extension data that original MMD cannot represent.
+- Fixed vertically inverted system H.264 output and allowed reinstalling the optional NVIDIA antialiasing fix for the current EXE.
+
+Extract full and minimal packages separately. Run `MikuMikuDance.exe`; models, user settings, MME, MMV and FFmpeg are not included. The minimal build retains the original feature range. The optional `MMSNvidiaAAFix.dll` is a separate download: place it beside the full-build EXE, install via Help, then restart. Uninstall via Help as well.
+
+### 日本語
+
+`v2026.10.20.1` からの変更：
+
+- 完全版のセルフシャドウ範囲、固定・動的精度とフィルタを改修。大きなステージ内の人物の解像感、低精度時の縞、視点移動時の切り替わり、強化フィルタによる壁面・顔の模様を改善しました。固定モードではサンプリング方針を固定し、モード1・2の元の違いを維持します。人物用の詳細シャドウには追加のメモリと描画負荷が発生します。
+- ヘルプにキャッシュ管理を追加。容量上限、最近のプロジェクト、固定保持、手動削除に対応。モデル・テクスチャ準備、外部MMEのコンパイルキャッシュ、透明ソート、MMEのフォールバックとメニュー初回描画を改善しました。
+- 負のキーフレームの編集・保存に対応（再生対象外）。縦選択、範囲ドラッグ、クリック時の意図しないスクロールを修正。逆順の範囲は右端を末尾から数え、`0 … -1` は通常フレーム全体を指定します。
+- フレーム列の散布がボーンと表情の混在に対応。標準補間、物理フラグ、スケールを保持し、一括で元に戻す・やり直すことができます。
+- ボーン複数選択、軸ハンドル、変形リセット、同一モデルの同名トラックへの貼り付けを改善。表情と表示・IK・外部親の登録取り消しを修正しました（#40）。
+- バックアップ・増分保存の命名とプレビューを追加。`[/YY]`、`[/YYYY]` などの記号が使えます。既定の保存先はアプリと同じ場所の `backups` です。
+- 保存互換性の警告に対象項目を表示。名称・パスの復元可能な文字コード、既定状態の同名トラック、再生終了の `-1` の判定を改善。原版MMDで表現できないデータはMMS拡張に保持します。
+- システムH.264出力の上下反転を修正し、任意のNVIDIAアンチエイリアス修正を現在のEXEに再インストールできるようにしました。
+
+完全版と最小版は別々に展開し、`MikuMikuDance.exe` を起動してください。モデル、個人設定、MME、MMV、FFmpegは含みません。最小版は原版の機能範囲を維持します。任意の `MMSNvidiaAAFix.dll` は別添です。完全版EXEと同じ場所に置き、ヘルプからインストール後に再起動してください。解除もヘルプから行います。
+<!-- release-notes:v2026.10.29.1:end -->
 
 <a id="release-v2026-10-20-1"></a>
 
