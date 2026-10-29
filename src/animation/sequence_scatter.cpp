@@ -4,6 +4,7 @@
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/bone_key_pool.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -23,7 +24,10 @@ struct SnapshotHeader {
     std::size_t capacity, curveBytes;
     std::uint32_t maxFrame;
     std::int32_t cursor;
+    std::size_t boneCapacity, poses, scales, scaleCurves;
 };
+struct ScaleEntry { int index; bone_scale::Matrix value; };
+struct CurveEntry { int index; bone_scale::Curve value; };
 using Buffer = std::unique_ptr<void, decltype(&std::free)>;
 Buffer Snapshot(unsigned char* model) {
     const auto& m = *mdl::Mdl(model);
@@ -35,34 +39,48 @@ Buffer Snapshot(unsigned char* model) {
         !morph_curve::LayersTracks(layers, tracks, error) ||
         !ac::Encode(tracks, encoded, error)) throw std::runtime_error(error);
     SnapshotHeader h{mdl::MorphKeyCapacity(m.morphKeys), encoded.size(), m.maxFrame, m.searchCursor};
+    const auto scales=bone_scale::Capture(model);
+    h.boneCapacity=mdl::BoneKeyCapacity(m);h.poses=scales.pose.size();h.scales=scales.keys.size();h.scaleCurves=scales.curves.size();
     const auto poolBytes = h.capacity * sizeof(mdl::MorphKey);
-    Buffer result(std::malloc(sizeof(h) + poolBytes + encoded.size()), &std::free);
+    Buffer result(std::malloc(sizeof(h) + poolBytes + encoded.size()+h.boneCapacity*sizeof(mdl::BoneKey)
+        +(h.poses+h.scales)*sizeof(ScaleEntry)+h.scaleCurves*sizeof(CurveEntry)), &std::free);
     if (!result) throw std::bad_alloc();
     auto* bytes = static_cast<unsigned char*>(result.get());
     std::memcpy(bytes, &h, sizeof(h));
     std::memcpy(bytes + sizeof(h), m.morphKeys, poolBytes);
     std::memcpy(bytes + sizeof(h) + poolBytes, encoded.data(), encoded.size());
+    auto* tail=bytes+sizeof(h)+poolBytes+encoded.size();
+    std::memcpy(tail,m.boneKeys,h.boneCapacity*sizeof(mdl::BoneKey));tail+=h.boneCapacity*sizeof(mdl::BoneKey);
+    for(const auto* values:{&scales.pose,&scales.keys})for(const auto& [index,value]:*values){ScaleEntry e{index,value};std::memcpy(tail,&e,sizeof(e));tail+=sizeof(e);}
+    for(const auto& [index,value]:scales.curves){CurveEntry e{index,value};std::memcpy(tail,&e,sizeof(e));tail+=sizeof(e);}
     return result;
 }
-void RestorePool(unsigned char* model, const std::vector<mdl::MorphKey>& pool,
-                 unsigned maxFrame, int cursor) noexcept {
-    auto& m = *mdl::Mdl(model);
-    std::memcpy(m.morphKeys, pool.data(), pool.size() * sizeof(mdl::MorphKey));
-    std::fill(m.morphKeys + pool.size(), m.morphKeys + mdl::MorphKeyCapacity(m.morphKeys), mdl::MorphKey{});
-    m.maxFrame = maxFrame;
-    m.searchCursor = cursor;
-}
+
 }
 
 bool Capture(unsigned char* model, Source& out, std::string& error) {
     out = {}; error.clear();
-    if (!model) { error = "Select a model and a sequence of expression keys first."; return false; }
+    if (!model) { error = "Select a model and bone or expression keys first."; return false; }
     try {
         const auto& m = *mdl::Mdl(model);
-        if (!m.morphKeys || !m.morphs) return false;
+        if (!m.boneKeys || !m.morphKeys) return false;
         Source source; source.model = model; source.first = frame_limits::maximum;
         const auto capacity = mdl::MorphKeyCapacity(m.morphKeys);
         source.pool.assign(m.morphKeys, m.morphKeys + capacity);
+        const auto boneCapacity=mdl::BoneKeyCapacity(m);
+        source.bonePool.assign(m.boneKeys,m.boneKeys+boneCapacity);
+        source.scales=bone_scale::Capture(model);
+        for(unsigned bone=0;bone<m.boneCount;++bone){
+            Source::BoneChannel channel;channel.bone=static_cast<int>(bone);
+            unsigned index=bone;std::size_t guard=0;
+            do{
+                if(index>=boneCapacity || ++guard>boneCapacity){error="The bone key chain is damaged.";return false;}
+                const auto& key=m.boneKeys[index];channel.original.push_back(index);
+                if(key.allocated){channel.clip.push_back(index);source.first=std::min(source.first,int(key.frame));source.last=std::max(source.last,int(key.frame));++source.keyCount;}
+                index=key.next;
+            }while(index);
+            if(!channel.clip.empty())source.bones.push_back(std::move(channel));
+        }
         for (unsigned morph = 0; morph < m.morphCount; ++morph) {
             if (static_cast<unsigned>(m.morphs[morph].panel) == 0) continue;
             std::set<int> marked;
@@ -87,7 +105,7 @@ bool Capture(unsigned char* model, Source& out, std::string& error) {
             source.channels.push_back(std::move(channel));
         }
         if (source.keyCount < 2 || source.first == source.last) {
-            error = "Select expression keys on at least two different frames."; return false;
+            error = "Select bone or expression keys on at least two different frames."; return false;
         }
         out = std::move(source); return true;
     } catch (...) { error = "Not enough memory to read the selected sequence."; return false; }
@@ -96,7 +114,7 @@ bool Capture(unsigned char* model, Source& out, std::string& error) {
 bool Prepare(const Source& source, const Settings& settings, Plan& out, std::string& error) {
     out = {}; error.clear();
     const auto valid = [](double v, double lo, double hi) { return std::isfinite(v) && v >= lo && v <= hi; };
-    if (source.channels.empty() || source.first >= source.last) { error = "Select an expression sequence first."; return false; }
+    if ((source.channels.empty() && source.bones.empty()) || source.first >= source.last) { error = "Select a bone or expression sequence first."; return false; }
     if (settings.first < 0 || settings.last < settings.first || settings.last > frame_limits::maximum ||
         !valid(settings.gapMean, 1, frame_limits::maximum) || !valid(settings.gapVariance, 0, 1e12) ||
         !valid(settings.speedMean, .05, 20) || !valid(settings.speedVariance, 0, 100)) {
@@ -104,12 +122,15 @@ bool Prepare(const Source& source, const Settings& settings, Plan& out, std::str
     }
     try {
         Plan plan;
+        plan.bonePool=source.bonePool;plan.scales=source.scales;
+        std::size_t freeBone=source.model?mdl::Mdl(source.model)->boneCount:0;
         for (const auto& channel : source.channels) plan.tracks.push_back(channel.original);
         std::mt19937 random(settings.seed);
         std::normal_distribution<double> normal(0, 1);
         std::set<int> offsets;
         for (const auto& channel : source.channels) for (const auto& key : channel.clip.keys)
             offsets.insert(key.frame - source.first);
+        for(const auto& channel:source.bones)for(int index:channel.clip)offsets.insert(int(source.bonePool[index].frame)-source.first);
         std::int64_t start = settings.first;
         std::size_t attempts = 0;
         while (start <= settings.last) {
@@ -136,6 +157,7 @@ bool Prepare(const Source& source, const Settings& settings, Plan& out, std::str
                     [](const ac::Key& key, std::int64_t frame) { return key.frame < frame; });
                 if (found != keys.end() && found->frame <= end) conflict = true;
             }
+            for(const auto& channel:source.bones)for(int index:channel.original){const auto frame=source.bonePool[index].frame;if(frame>=start && frame<=end)conflict=true;}
             if (compressed) ++plan.compressed;
             else if (conflict) ++plan.conflicts;
             else {
@@ -156,6 +178,21 @@ bool Prepare(const Source& source, const Settings& settings, Plan& out, std::str
                     copied.front().interpolation = ac::Interpolation::Linear;
                     auto& keys = plan.tracks[c].track.keys;
                     keys.insert(keys.end(), copied.begin(), copied.end());
+                }
+                for(const auto& channel:source.bones)for(int original:channel.clip){
+                    while(freeBone<plan.bonePool.size() && plan.bonePool[freeBone].frame!=0)++freeBone;
+                    if(freeBone>=mdl::kBoneKeyCapacityLimit)throw std::runtime_error("Too many bone keys.");
+                    if(freeBone==plan.bonePool.size())plan.bonePool.emplace_back();
+                    const int index=static_cast<int>(freeBone++);
+                    auto key=source.bonePool[original];key.frame=mapped.at(int(key.frame)-source.first);key.allocated=1;
+                    unsigned previous=channel.bone;
+                    while(plan.bonePool[previous].next && plan.bonePool[plan.bonePool[previous].next].frame<key.frame)previous=plan.bonePool[previous].next;
+                    key.previous=previous;key.next=plan.bonePool[previous].next;
+                    if(key.next)plan.bonePool[key.next].previous=index;
+                    plan.bonePool[previous].next=index;plan.bonePool[index]=key;
+                    plan.scales.keys.erase(index);plan.scales.curves.erase(index);
+                    if(auto it=source.scales.keys.find(original);it!=source.scales.keys.end())plan.scales.keys[index]=it->second;
+                    if(auto it=source.scales.curves.find(original);it!=source.scales.curves.end())plan.scales.curves[index]=it->second;
                 }
                 ++plan.copies; plan.keys += source.keyCount;
             }
@@ -179,7 +216,15 @@ bool Restore(unsigned char* model, const void* snapshot) noexcept {
         morph_curve::AuthoredLayers layers;
         if (!morph_curve::RebuildLayers(model, tracks, layers, error)) return false;
         auto& m = *mdl::Mdl(model);
-        if (!mdl::MorphKeyPoolEnsure(m, h.capacity)) return false;
+        auto* tail=bytes+sizeof(h)+h.capacity*sizeof(mdl::MorphKey)+h.curveBytes;
+        const auto* boneBytes=tail;tail+=h.boneCapacity*sizeof(mdl::BoneKey);
+        bone_scale::Snapshot scales;
+        for(auto* values:{&scales.pose,&scales.keys}){const auto count=values==&scales.pose?h.poses:h.scales;for(std::size_t i=0;i<count;++i){ScaleEntry e;std::memcpy(&e,tail,sizeof(e));tail+=sizeof(e);values->emplace(e.index,e.value);}}
+        for(std::size_t i=0;i<h.scaleCurves;++i){CurveEntry e;std::memcpy(&e,tail,sizeof(e));tail+=sizeof(e);scales.curves.emplace(e.index,e.value);}
+        if (!mdl::MorphKeyPoolEnsure(m, h.capacity) || !mdl::BoneKeyPoolEnsure(m,h.boneCapacity)) return false;
+        if(!bone_scale::Restore(model,std::move(scales)))return false;
+        std::memcpy(m.boneKeys,boneBytes,h.boneCapacity*sizeof(mdl::BoneKey));
+        std::fill(m.boneKeys+h.boneCapacity,m.boneKeys+mdl::BoneKeyCapacity(m),mdl::BoneKey{});
         std::memcpy(m.morphKeys, bytes + sizeof(h), h.capacity * sizeof(mdl::MorphKey));
         std::fill(m.morphKeys + h.capacity, m.morphKeys + mdl::MorphKeyCapacity(m.morphKeys), mdl::MorphKey{});
         m.maxFrame = h.maxFrame; m.searchCursor = h.cursor;
@@ -195,17 +240,20 @@ bool Apply(MMDApp& app, const Source& source, const Plan& plan, std::string& err
     }
     auto& m = *mdl::Mdl(source.model);
     if (source.pool.size() != mdl::MorphKeyCapacity(m.morphKeys) ||
-        std::memcmp(source.pool.data(), m.morphKeys, source.pool.size() * sizeof(mdl::MorphKey))) {
+        std::memcmp(source.pool.data(), m.morphKeys, source.pool.size() * sizeof(mdl::MorphKey)) ||
+        source.bonePool.size()!=mdl::BoneKeyCapacity(m) ||
+        std::memcmp(source.bonePool.data(),m.boneKeys,source.bonePool.size()*sizeof(mdl::BoneKey))) {
         error = "The source keys changed. Close this window and select the sequence again."; return false;
     }
     try {
         auto before = Snapshot(source.model);
-        morph_curve::AuthoredLayers originalLayers;
-        if (!morph_curve::CaptureLayers(source.model, originalLayers, error)) return false;
-        const auto maxFrame = m.maxFrame; const auto cursor = m.searchCursor;
         Buffer after(nullptr, &std::free);
         try {
-            if (!morph_curve::Write(source.model, plan.tracks, error)) throw std::runtime_error(error);
+            if(!mdl::BoneKeyPoolEnsure(m,plan.bonePool.size()))throw std::bad_alloc();
+            if(!bone_scale::Restore(source.model,plan.scales))throw std::bad_alloc();
+            std::copy(plan.bonePool.begin(),plan.bonePool.end(),m.boneKeys);
+            for(const auto& key:plan.bonePool)m.maxFrame=std::max(m.maxFrame,key.frame);
+            if (!plan.tracks.empty() && !morph_curve::Write(source.model, plan.tracks, error)) throw std::runtime_error(error);
             // Preserve old marks, selecting only the new keys in addition to them.
             for (const auto& channel : source.channels) {
                 std::map<unsigned, unsigned char> oldMarks;
@@ -217,8 +265,7 @@ bool Apply(MMDApp& app, const Source& source, const Plan& plan, std::string& err
             }
             after = Snapshot(source.model);
         } catch (...) {
-            RestorePool(source.model, source.pool, maxFrame, cursor);
-            morph_curve::SwapLayers(source.model, originalLayers);
+            Restore(source.model,before.get());
             if (error.empty()) error = "Not enough memory. No keys were inserted.";
             return false;
         }

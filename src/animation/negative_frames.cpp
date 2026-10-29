@@ -676,4 +676,20 @@ bool SelectCell(MMDApp* app,int frame,int row,bool additive) {
     }
     return hit;
 }
+void SelectBox(MMDApp* app,std::int64_t first,std::int64_t last,int top,int bottom,bool selected,bool additive) {
+    auto found=states.find(app);if(found==states.end())return;
+    for(auto& key:found->second.keys)if(Current(*app,key) && (app->CameraMode()?!key.model:key.model==app->SelectedModel())) {
+        const int row=Row(*app,key);
+        const bool visible=row>=0 && (!key.model || key.target<0 || row>0);
+        if(visible && key.frame>=first && key.frame<last && row>=top && row<bottom)key.selected=selected;
+        else if(!additive)key.selected=false;
+    }
+}
+void SelectColumns(MMDApp* app) {
+    auto found=states.find(app);if(found==states.end())return;
+    const auto active=[&](const Key& key){return Current(*app,key) && (app->CameraMode()?!key.model:key.model==app->SelectedModel());};
+    std::vector<int> frames;
+    for(const auto& key:found->second.keys)if(active(key) && key.selected)frames.push_back(key.frame);
+    for(auto& key:found->second.keys)if(active(key) && std::find(frames.begin(),frames.end(),key.frame)!=frames.end())key.selected=true;
+}
 }

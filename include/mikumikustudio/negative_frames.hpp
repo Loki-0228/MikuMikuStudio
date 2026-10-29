@@ -24,6 +24,8 @@ void SelectRange(MMDApp* app,int first,int last);
 bool Command(MMDApp* app,unsigned id);
 void Draw(MMDApp* app,void* dc,void* icons,int columns,int height);
 bool SelectCell(MMDApp* app,int frame,int row,bool additive);
+void SelectBox(MMDApp* app,std::int64_t first,std::int64_t last,int top,int bottom,bool selected,bool additive);
+void SelectColumns(MMDApp* app);
 std::size_t Count(const MMDApp* app);
 int Earliest(const MMDApp* app);
 }

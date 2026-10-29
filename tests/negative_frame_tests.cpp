@@ -70,6 +70,20 @@ int main() {
     Check(app->CurrentFrame()==37,"malformed extension cannot partially restore signed cursor");
     bones[0].trans[0]=0;morphs[1].value=0;negative_frames::EvaluateModel(model,-30);
     Check(bones[0].trans[0]==10 && morphs[1].value==.8f,"roundtrip preserves pasted negative values");
+    std::array<std::uint32_t,2> boneRows{1,3},morphRows{4,2};
+    record->boneKeyIndices=boneRows.data();record->morphKeyIndices=morphRows.data();
+    negative_frames::SelectBox(app.get(),-31,-29,1,2,true,false);
+    negative_frames::SelectColumns(app.get());
+    Check(negative_frames::Command(app.get(),420),"negative marquee and vertical selection produce clipboard");
+    app->CurrentFrame()=-50;negative_frames::Command(app.get(),421);
+    Check(negative_frames::Count(app.get())==8,"vertical selection includes both bone and morph at same negative frame");
+    negative_frames::SelectBox(app.get(),-11,-9,2,3,true,false);
+    negative_frames::Command(app.get(),420);app->CurrentFrame()=-70;negative_frames::Command(app.get(),421);
+    Check(negative_frames::Count(app.get())==9,"replacement marquee selects only matching frame and row");
+    negative_frames::SelectBox(app.get(),-51,1,1,4,true,false);
+    negative_frames::SelectBox(app.get(),-51,-49,1,4,false,true);
+    negative_frames::Command(app.get(),420);app->CurrentFrame()=-100;negative_frames::Command(app.get(),421);
+    Check(negative_frames::Count(app.get())==13,"cross-zero marquee and subtractive marquee retain remaining negative keys");
     negative_frames::Reset(app.get());bone_scale::Forget(model);g_Block=previous;
     std::printf("PASS negative frames checks=%u\n",checks);
 }

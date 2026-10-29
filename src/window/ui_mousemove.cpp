@@ -1,4 +1,5 @@
 #include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/animation_curve_editor.hpp"
 // ===========================================================================
 // VA 0x00444CC0 - HandleMouseMove  (original: sub_444CC0)
@@ -524,6 +525,14 @@ void HandleMouseMove(std::uint32_t lParam, int mouseY) {
             const unsigned char flag = HoverFlag(app);
             // A replacement marquee clears hidden and scrolled-out keys too.
             if (!app->ShiftModifierActive()) ClearTimelineKeySelection(app);
+            const auto trackBound=[](int y,bool end) {
+                int row=(y-kColY0Bone)/kColPitch;
+                if(end ? y-kColPitch*row-kColY0Bone>7 : y-kColPitch*row-kColY0Bone<=7)row+=end?1:-1;
+                return std::clamp(row,0,200);
+            };
+            negative_frames::SelectBox(app,std::int64_t(app->state.timelineStartFrame)+rowStart,
+                std::int64_t(app->state.timelineStartFrame)+rowEnd,trackBound(yTop,false),trackBound(yBottom,true),
+                flag!=0,app->ShiftModifierActive());
             if (app->state.optflag[0] != 0) {
                 // ---- display-mode hover (0x4461B3) ------------------------
                 // hovered-row highlight for the four fixed bands

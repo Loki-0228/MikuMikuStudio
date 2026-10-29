@@ -1,3 +1,4 @@
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 #include <set>
 // MAINTENANCE: integration-manual; purpose and cleanup conditions in tests/README.md.

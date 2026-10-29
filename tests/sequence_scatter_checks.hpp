@@ -57,6 +57,7 @@ void CheckSequenceScatter(MMDApp* app, const std::filesystem::path& output) {
         fixture.push_back(track);
     }
     Check(morph_curve::Write(raw, fixture, error), "install source curves");
+    for (std::size_t i=0;i<mdl::BoneKeyCapacity(m);++i)m.boneKeys[i].allocated=0;
     for (std::size_t i = 0; i < mdl::MorphKeyCapacity(m.morphKeys); ++i) m.morphKeys[i].allocated = 0;
     for (int c = 0; c < 2; ++c) { unsigned index = morphs[c]; do {
         m.morphKeys[index].allocated = m.morphKeys[index].frame >= 10;
@@ -145,6 +146,36 @@ void CheckSequenceScatter(MMDApp* app, const std::filesystem::path& output) {
     ResetAppState(app); wcscpy_s(app->EnvFileName(), 256, path.c_str()); LoadSceneFile();
     Check(morph_curve::Read(app->SelectedModel(), morphs[0], actual, error), "read reopened scatter");
     Check(encoded(std::vector<ac::NamedTrack>{{fixture[0].id, actual}}) == afterCurve, "PMM roundtrip retains retimed authored curves");
+    raw=app->SelectedModel();auto& bonesModel=*mdl::Mdl(raw);
+    std::fill(bonesModel.boneSelection,bonesModel.boneSelection+bonesModel.boneCount,0);
+    bonesModel.boneSelection[0]=bonesModel.boneSelection[1]=1;
+    for(int f:{10,20}){bonesModel.boneTable[0].trans[0]=float(f);RegisterSelectedBoneKeys(raw,f,0);}
+    for(std::size_t i=0;i<mdl::MorphKeyCapacity(bonesModel.morphKeys);++i)bonesModel.morphKeys[i].allocated=0;
+    for(std::size_t i=0;i<mdl::BoneKeyCapacity(bonesModel);++i)bonesModel.boneKeys[i].allocated=0;
+    const auto keyAt=[&](int bone,int f){unsigned i=bone;while(bonesModel.boneKeys[i].frame!=unsigned(f)&&bonesModel.boneKeys[i].next)i=bonesModel.boneKeys[i].next;Check(bonesModel.boneKeys[i].frame==unsigned(f),"find scatter bone key");return i;};
+    for(int b:{0,1})for(int f:{10,20})bonesModel.boneKeys[keyAt(b,f)].allocated=1;
+    const auto original=keyAt(0,20);bonesModel.boneKeys[original].physicsDisabled=1;
+    bonesModel.boneKeys[original].interpolation[0]=37;
+    bone_scale::Matrix scale;scale.v[0]=1.5f;bone_scale::SetKey(raw,original,scale);
+    bone_scale::Curve scaleCurve{30,40,90,100};bone_scale::SetKeyCurve(raw,original,scaleCurve);
+    ss::Source boneSource;Check(ss::Capture(raw,boneSource,error),"capture bone-only sequence");
+    Check(boneSource.keyCount==4&&boneSource.bones.size()==2&&boneSource.channels.empty(),"bone-only selection is supported");
+    settings={};settings.first=200;settings.last=235;settings.gapMean=20;settings.gapVariance=0;settings.speedMean=2;settings.speedVariance=0;
+    ss::Plan bonePlan;Check(ss::Prepare(boneSource,settings,bonePlan,error)&&bonePlan.copies==2&&bonePlan.keys==8,"prepare bone-only retimed copies");
+    const bool boneApplied=ss::Apply(*app,boneSource,bonePlan,error);if(!boneApplied)std::fprintf(stderr,"scatter error: %s\n",error.c_str());Check(boneApplied,"apply bone-only scatter");
+    const auto copied=keyAt(0,205);
+    Check(bonesModel.boneKeys[copied].position[0]==20&&bonesModel.boneKeys[copied].physicsDisabled==1&&bonesModel.boneKeys[copied].interpolation[0]==37,"bone scatter retains position physics and Bezier handles");
+    Check(bone_scale::Key(raw,copied)==scale&&bone_scale::KeyCurve(raw,copied)==scaleCurve,"bone scatter retains scale and its interpolation");
+    UndoModelEdit(raw,&frame);
+    Check(std::memcmp(boneSource.bonePool.data(),bonesModel.boneKeys,boneSource.bonePool.size()*sizeof(mdl::BoneKey))==0,"bone scatter undo restores exact keys and marks");
+    RedoModelEdit(raw,&frame);Check(keyAt(0,205)==copied&&bone_scale::Key(raw,copied)==scale,"bone scatter redo restores keys and scale");
+    UndoModelEdit(raw,&frame);
+    for(int f:{10,20}){unsigned i=morphs[0];while(bonesModel.morphKeys[i].frame!=unsigned(f)&&bonesModel.morphKeys[i].next)i=bonesModel.morphKeys[i].next;bonesModel.morphKeys[i].allocated=1;}
+    ss::Source mixed;Check(ss::Capture(raw,mixed,error)&&mixed.bones.size()==2&&mixed.channels.size()==1,"capture combined bone and expression clip");
+    ss::Plan mixedPlan;Check(ss::Prepare(mixed,settings,mixedPlan,error)&&mixedPlan.keys==12,"combined clip shares the same timing");
+    Check(ss::Apply(*app,mixed,mixedPlan,error),"combined scatter commits atomically");
+    UndoModelEdit(raw,&frame);
+    Check(std::memcmp(mixed.pool.data(),bonesModel.morphKeys,mixed.pool.size()*sizeof(mdl::MorphKey))==0&&std::memcmp(mixed.bonePool.data(),bonesModel.boneKeys,mixed.bonePool.size()*sizeof(mdl::BoneKey))==0,"one undo restores both bone and expression tracks");
     std::puts("PASS scatter: selection, deterministic randomness, gaps, speed, collisions, Bezier, one undo/redo, three-language dialog, cancellation, PMM roundtrip");
 }
 

@@ -240,6 +240,7 @@ static void ClearActiveModelFlags(MMDApp* app) {
 }
 
 void ClearTimelineKeySelection(MMDApp* app) {
+    negative_frames::SelectCell(app,0,-999,false);
     if (app->CameraMode() != 0) ClearGlobalFrameSelection(app);
     else ClearActiveModelFlags(app);
 }
@@ -883,8 +884,13 @@ static void HandleLButtonDown_TimelineAreaHit(MMDApp* app, HWND hwnd,
         return;
     const auto negativeCell=std::int64_t(app->state.timelineStartFrame)+Div13(x-100);
     if(negativeCell<0 && negativeCell>=frame_limits::minimum) {
+        app->TimelineSelectionChanged()=0;
+        app->ClearTimelineRange();
+        if(!app->ShiftModifierActive())ClearTimelineKeySelection(app);
         negative_frames::SelectCell(app,int(negativeCell),Div14(y-160),app->ShiftModifierActive());
-        app->CurrentFrame()=int(negativeCell);RefreshAfterFrameApply(app);PostViewRefresh(app);return;
+        SelectionStats(app,x,y,hwnd);
+        SelectionReeval(app);
+        return;
     }
     if(!app->ShiftModifierActive())negative_frames::SelectCell(app,int(negativeCell),-999,false);
     app->TimelineSelectionChanged() = 0;
@@ -1123,9 +1129,7 @@ static void HandleLButtonDown_FrameStripHit(MMDApp* app, HWND hwnd,
     }
     // scroll clamp + panel repaint (0x44A72D-0x44A766):
     // 0x97C = max(0, 0x980 - (sidebar-0x54)/26) with an unsigned compare
-    const std::int32_t pages = (sidebar - 0x54) / 26;
-    const auto frame=std::int64_t(app->CurrentFrame());
-    app->state.timelineStartFrame=frame<0 ? static_cast<int>((std::max)(std::int64_t(frame_limits::minimum),frame-pages)) : frame<=pages ? 0 : int(frame-pages);
+    // Clicking an already visible frame must not recenter the timeline.
     PanelPaint(app);                                  // 0x414610
     // timeline strip redraw + physics sync (0x44A768-0x44A850)
     if (app->state.waveEnabled != 0) {  // 657100 (0xA06CC)

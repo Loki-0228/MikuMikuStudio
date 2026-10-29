@@ -3301,6 +3301,7 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
         break;
 
     case 416:  // selection-mark sync (0x0048073E) -> Cmd400_SelectionMarkSync
+        negative_frames::SelectColumns(app);
         Cmd400_SelectionMarkSync(app);
         break;
 

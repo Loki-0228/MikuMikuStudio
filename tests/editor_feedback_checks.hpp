@@ -10,6 +10,26 @@ void CheckEditorFeedback(MMDApp* app, const wchar_t* mode, const std::filesystem
         SendMessageW(main, WM_COMMAND, MAKEWPARAM(panel::kMainComboModel, CBN_SELCHANGE),
                      reinterpret_cast<LPARAM>(combo));
     };
+    if(std::wcscmp(mode,L"negative")==0){
+        choose(0);app->SidebarWidth()=600;app->PlaybackActive()=0;
+        negative_frames::RegisterGlobal(app,negative_frames::Global::Camera,-10);
+        negative_frames::RegisterGlobal(app,negative_frames::Global::Light,-10);
+        app->CurrentFrame()=0;app->state.timelineStartFrame=-20;PanelPaint(app);
+        const auto click=[&](int x,int y){app->MouseX()=x;app->MouseY()=y;HandleLButtonDown(app);};
+        click(230,167);
+        Check(app->CurrentFrame()==0&&app->state.timelineStartFrame==-20&&app->SelectionBoxDragging(),"negative cell begins selection without seeking or recentering");
+        HandleLButtonUp(app);SendMessageW(main,WM_COMMAND,416,0);
+        Check(negative_frames::Command(app,420),"vertical selection recognizes a negative cell");
+        app->CurrentFrame()=-30;negative_frames::Command(app,421);
+        Check(negative_frames::Count(app)==4,"vertical selection copies camera and light negative keys together");
+        app->CurrentFrame()=0;app->state.timelineStartFrame=-20;PanelPaint(app);
+        click(230,152);Check(app->CurrentFrame()==-10&&app->state.timelineStartFrame==-20,"negative ruler click seeks without shifting visible range");HandleLButtonUp(app);
+        app->CurrentFrame()=0;click(211,162);HandleMouseMove(237,188);HandleLButtonUp(app);
+        Check(app->state.timelineStartFrame==-20,"negative marquee keeps timeline scroll fixed");
+        Check(negative_frames::Command(app,420),"negative marquee selects keys");app->CurrentFrame()=-50;negative_frames::Command(app,421);
+        Check(negative_frames::Count(app)==6,"drag box selects both negative global tracks");
+        std::puts("PASS negative cell/ruler clicks, stable scroll, vertical selection, and real mouse marquee");return;
+    }
     if (std::wcscmp(mode, L"track") == 0) {
         const int modelCombo = model.comboSelIndex;
         choose(0);
