@@ -4,6 +4,8 @@
 
 ## 记录索引
 
+- [v2026.10.31.1-pre.1 预发布说明](#release-v2026-10-31-1-pre-1)
+
 - [v2026.10.29.2 关键帧拖动修复](#release-v2026-10-29-2)
 
 - [v2026.10.29.1 正式发布说明](#release-v2026-10-29-1)
@@ -27,6 +29,78 @@
 - [v2026.10.11.3 构建与发布记录](#record-release-3)
 - [v2026.10.11.2 构建与发布记录](#record-release-2)
 - [MMS 原生媒体导入与导出](#record-native-media)
+
+<a id="release-v2026-10-31-1-pre-1"></a>
+
+本节为预发布说明。
+
+<!-- release-notes:v2026.10.31.1-pre.1:begin -->
+## MikuMikuStudio v2026.10.31.1-pre.1
+
+Windows x64
+
+[English](#release-v2026-10-31-1-pre-1-en) | [中文](#release-v2026-10-31-1-pre-1-zh) | [日本語](#release-v2026-10-31-1-pre-1-ja)
+
+<a id="release-v2026-10-31-1-pre-1-en"></a>
+
+### English
+
+Changes since the last published release, `v2026.10.29.2`.
+
+#### What's new
+
+- Keyframe paste between different models now matches tracks by bone or morph name, and among tracks that share a name by their order in the model. Copying only the second of two same-named tracks now lands on the corresponding track in the target model instead of always the first one.
+- Opening a project or importing a motion no longer registers the current pose over the keys it just loaded. If the Enter that dismissed the file dialog is still held when the load finishes, that key press is consumed instead of becoming a register command.
+- Selected keyframes are no longer deleted when you switch back to MMS from another application. Keys released while another window had the foreground no longer read as a new press on refocus.
+
+#### Download and use
+
+Choose the full package for MMS's extended editing, antialiasing, and modern media features. The minimal package retains the original MMD feature range and encoding limits. Extract each package into a separate folder and run `MikuMikuDance.exe`. Models, personal settings, MME, MMV, and FFmpeg are not included.
+
+#### Optional NVIDIA fix
+
+Neither application package includes the NVIDIA fix. If needed, download `MMSNvidiaAAFix.dll` separately and place it beside the full build's EXE. Install it from Help, then restart MMS. Use Help to uninstall. Deleting the DLL does not remove an installed setting.
+
+<a id="release-v2026-10-31-1-pre-1-zh"></a>
+
+### 中文
+
+相较上次正式发布 `v2026.10.29.2` 的更新。
+
+#### 更新内容
+
+- 跨模型粘贴关键帧时按骨骼、表情名称匹配轨道；同名轨道按其在模型中的先后顺序对应。只复制两条同名轨道中的第二条时，现在会落到目标模型的对应轨道，而不再总是落到第一条。
+- 打开工程或导入动作后，当前姿势不再被登记到刚载入的关键帧上。若关闭文件对话框的 Enter 在载入结束时仍被按住，该按键会被消耗，不触发登记命令。
+- 从其他程序切回 MMS 时不再删除已选中的关键帧。在其他窗口占据前台期间松开的按键，不会在重新获得焦点时被当作新的按下。
+
+#### 下载与使用
+
+完整包提供 MMS 的扩展编辑、抗锯齿及现代媒体功能。最小包保留原版 MMD 的功能范围及编码限制。分别解压到独立目录后运行 `MikuMikuDance.exe`。模型、个人设置、MME、MMV 和 FFmpeg 需自行准备。
+
+#### NVIDIA 修复安装（可选）
+
+两个主程序包均不附带 NVIDIA 修复插件。需要时单独下载 `MMSNvidiaAAFix.dll`，放到完整版 EXE 同目录，在「帮助」菜单选择安装并重启 MMS。卸载也通过该菜单操作，删除 DLL 不会撤销已安装的设置。
+
+<a id="release-v2026-10-31-1-pre-1-ja"></a>
+
+### 日本語
+
+前回の正式リリース `v2026.10.29.2` からの変更です。
+
+#### 更新内容
+
+- モデルをまたぐキーフレームの貼り付けで、ボーン名・モーフ名によってトラックを対応させ、同名のトラックはモデル内での順序で対応させます。同名の 2 本のうち 2 本目だけをコピーした場合、貼り付け先の対応するトラックに配置され、常に 1 本目へ入ることはなくなりました。
+- プロジェクトを開いたりモーションを読み込んだりした直後、現在のポーズが読み込んだキーへ登録されなくなりました。ファイルダイアログを閉じた Enter が読み込み終了時も押されたままの場合、そのキー入力は消費され、登録コマンドにはなりません。
+- ほかのアプリケーションから MMS に戻ったときに、選択中のキーフレームが削除されなくなりました。別ウィンドウが前面にある間に離したキーは、フォーカスを取り戻したときに新たな押下として扱われません。
+
+#### ダウンロードと使用方法
+
+MMS の拡張編集、アンチエイリアス、各種メディア機能には完全版を選んでください。最小版は元の MMD の機能範囲と文字コードの制限を維持します。それぞれ別のフォルダーに展開して `MikuMikuDance.exe` を実行してください。モデル、個人設定、MME、MMV、FFmpeg は含まれません。
+
+#### NVIDIA 修正の導入（任意）
+
+NVIDIA 修正 DLL は両パッケージに含まれません。必要な場合だけ `MMSNvidiaAAFix.dll` を別途ダウンロードし、完全版の EXE と同じ場所に置いてください。ヘルプからインストールして MMS を再起動します。アンインストールもヘルプから行います。DLL を削除しても適用済みの設定は解除されません。
+<!-- release-notes:v2026.10.31.1-pre.1:end -->
 
 <a id="release-v2026-10-29-2"></a>
 
