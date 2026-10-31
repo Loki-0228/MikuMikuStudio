@@ -140,8 +140,13 @@ void PollKey(MMDApp* app, std::int32_t& keyState, int virtualKey) {
             down = true;
     }
     std::int32_t state = 0;
+    // 0 idle, 1 pressed, 2 released, 3 held.  The press edge is the single
+    // 0 -> 1 transition; every later frame with the key down is held (3), and
+    // the first eligible frame after a foreground loss is held too, never a
+    // new press.  KeyEdgeScan (model_query_gaps.cpp) writes the same cells
+    // with this same rule.
     if (down)
-        state = (oldState == 0 || PollKeyRegained(app)) ? 3 : 1;
+        state = (oldState == 0 && !PollKeyRegained(app)) ? 1 : 3;
     else if (oldState == 1 || oldState == 3)
         state = 2;
     keyState = state;

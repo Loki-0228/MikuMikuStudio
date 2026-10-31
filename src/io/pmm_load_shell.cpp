@@ -139,6 +139,19 @@ void LoadSceneFile(const wchar_t* candidate) {
     const errno_t err =
         _wsopen_s(&fd, app->EnvFileName(), 0x8000, 0x40, 0x80);
 
+    // The Enter that dismissed the open dialog is still physically down when
+    // this returns, and the frame pump would turn it into a register command
+    // over whatever scene is showing. Consume it on every exit, including the
+    // rejected-file returns below: those leave the previous scene in place and
+    // its selection would be registered over just the same. Recent-file and
+    // drop entry points have no open-dialog latch, so this is their only one.
+    struct ConsumeOpenEnter {
+        MMDApp* app;
+        void Consume() const { if (app->MainWindow()) app->state.enterKeyState = 3; }
+        ~ConsumeOpenEnter() { Consume(); }
+    } openEnter{app};
+    openEnter.Consume();
+
     if (err != 0) {
         const wchar_t* format[] = {L"%ls\nエラーコード: %d", L"%ls\nError code: %d", L"%ls\n错误码：%d"};
         wchar_t detail[512]{};
@@ -172,15 +185,6 @@ void LoadSceneFile(const wchar_t* candidate) {
     // An unreadable or unsupported file must not change the current scene's
     // dirty state, path base or MME assignments.
     accepted = true;
-    // Recent-file and drop entry points have no open-dialog Enter latch.
-    // Consume it before load-time repaints and again after any load prompts,
-    // so the frame pump cannot register over the restored key selection.
-    struct ConsumeOpenEnter {
-        MMDApp* app;
-        void Consume() const { if (app->MainWindow()) app->state.enterKeyState = 3; }
-        ~ConsumeOpenEnter() { Consume(); }
-    } openEnter{app};
-    openEnter.Consume();
     cache_manager::BeginProject(app->EnvFileName());
     struct CacheLoadEnd {~CacheLoadEnd(){cache_manager::EndProjectLoad();}} cacheLoadEnd;
     app->AdvanceSceneGeneration();

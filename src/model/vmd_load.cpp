@@ -113,7 +113,11 @@ int MotionMessageBox(MMDApp* app, const wchar_t* body, const wchar_t* caption,
     // The frame loop does not poll keys while a modal dialog owns input.
     // Consume its Enter press so accepting a dropped motion cannot also
     // register the current pose and clear the newly imported key selection.
-    if (result != 0) app->state.enterKeyState = 3;
+    // Only a dialog closed by Enter leaves the key down; a mouse or Escape
+    // dismissal pressed nothing to consume, and latching there would swallow
+    // the user's next real press.
+    if (result != 0 && (GetKeyState(VK_RETURN) & 0x8000) != 0)
+        app->state.enterKeyState = 3;
     return result;
 }
 
