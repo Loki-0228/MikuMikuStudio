@@ -4,7 +4,7 @@
 
 ## 记录索引
 
-- [v2026.10.31.1-pre.1 预发布说明](#release-v2026-10-31-1-pre-1)
+- [v2026.10.31.1 正式发布说明](#release-v2026-10-31-1)
 
 - [v2026.10.29.2 关键帧拖动修复](#release-v2026-10-29-2)
 
@@ -30,18 +30,16 @@
 - [v2026.10.11.2 构建与发布记录](#record-release-2)
 - [MMS 原生媒体导入与导出](#record-native-media)
 
-<a id="release-v2026-10-31-1-pre-1"></a>
+<a id="release-v2026-10-31-1"></a>
 
-本节为预发布说明。
-
-<!-- release-notes:v2026.10.31.1-pre.1:begin -->
-## MikuMikuStudio v2026.10.31.1-pre.1
+<!-- release-notes:v2026.10.31.1:begin -->
+## MikuMikuStudio v2026.10.31.1
 
 Windows x64
 
-[English](#release-v2026-10-31-1-pre-1-en) | [中文](#release-v2026-10-31-1-pre-1-zh) | [日本語](#release-v2026-10-31-1-pre-1-ja)
+[English](#release-v2026-10-31-1-en) | [中文](#release-v2026-10-31-1-zh) | [日本語](#release-v2026-10-31-1-ja)
 
-<a id="release-v2026-10-31-1-pre-1-en"></a>
+<a id="release-v2026-10-31-1-en"></a>
 
 ### English
 
@@ -61,7 +59,7 @@ Choose the full package for MMS's extended editing, antialiasing, and modern med
 
 Neither application package includes the NVIDIA fix. If needed, download `MMSNvidiaAAFix.dll` separately and place it beside the full build's EXE. Install it from Help, then restart MMS. Use Help to uninstall. Deleting the DLL does not remove an installed setting.
 
-<a id="release-v2026-10-31-1-pre-1-zh"></a>
+<a id="release-v2026-10-31-1-zh"></a>
 
 ### 中文
 
@@ -81,7 +79,7 @@ Neither application package includes the NVIDIA fix. If needed, download `MMSNvi
 
 两个主程序包均不附带 NVIDIA 修复插件。需要时单独下载 `MMSNvidiaAAFix.dll`，放到完整版 EXE 同目录，在「帮助」菜单选择安装并重启 MMS。卸载也通过该菜单操作，删除 DLL 不会撤销已安装的设置。
 
-<a id="release-v2026-10-31-1-pre-1-ja"></a>
+<a id="release-v2026-10-31-1-ja"></a>
 
 ### 日本語
 
@@ -100,7 +98,7 @@ MMS の拡張編集、アンチエイリアス、各種メディア機能には�
 #### NVIDIA 修正の導入（任意）
 
 NVIDIA 修正 DLL は両パッケージに含まれません。必要な場合だけ `MMSNvidiaAAFix.dll` を別途ダウンロードし、完全版の EXE と同じ場所に置いてください。ヘルプからインストールして MMS を再起動します。アンインストールもヘルプから行います。DLL を削除しても適用済みの設定は解除されません。
-<!-- release-notes:v2026.10.31.1-pre.1:end -->
+<!-- release-notes:v2026.10.31.1:end -->
 
 <a id="release-v2026-10-29-2"></a>
 
