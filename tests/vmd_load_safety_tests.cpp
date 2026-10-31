@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
@@ -35,6 +36,7 @@
 #include "mikumikustudio/bone_scale_io.hpp"
 #include "mikumikustudio/global_key_layout.hpp"
 #include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/keyboard_input.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/morph_curve.hpp"
@@ -117,8 +119,37 @@ struct Motion {
 struct TempFile {
     char path[MAX_PATH]{};
     TempFile() {
-        char directory[MAX_PATH]{};
-        Check(GetTempPathA(MAX_PATH, directory) != 0 && GetTempFileNameA(directory, "vmd", 0, path) != 0, "create temporary motion");
+        // TEMP is not writable in every runner (a restricted token can deny
+        // creation there while still allowing the test's own directory), so
+        // try the session temp path first and fall back beside the binary.
+        char directories[2][MAX_PATH]{};
+        char module[MAX_PATH]{};
+        const DWORD moduleLength = GetModuleFileNameA(nullptr, module, MAX_PATH);
+        if (moduleLength != 0 && moduleLength < MAX_PATH) {
+            char* slash = std::strrchr(module, '\\');
+            if (slash != nullptr) *(slash + 1) = '\0';
+            std::strncpy(directories[1], module, MAX_PATH - 1);
+        }
+        DWORD tempLength = GetTempPathA(MAX_PATH, directories[0]);
+        if (tempLength == 0 || tempLength >= MAX_PATH) directories[0][0] = '\0';
+        const DWORD processId = GetCurrentProcessId();
+        for (const char* directory : directories) {
+            if (directory[0] == '\0') continue;
+            for (unsigned attempt = 0; attempt < 64; ++attempt) {
+                const int written = std::snprintf(
+                    path, MAX_PATH, "%svmd-test-%lu-%u-%u.tmp",
+                    directory, processId, GetTickCount(), attempt);
+                if (written <= 0 || written >= MAX_PATH) break;
+                const int fd = _open(path, _O_BINARY | _O_WRONLY | _O_CREAT | _O_EXCL, _S_IREAD | _S_IWRITE);
+                if (fd >= 0) {
+                    _close(fd);
+                    return;
+                }
+                if (errno != EEXIST) break;
+            }
+        }
+        path[0] = '\0';
+        Check(false, "create temporary motion");
     }
     ~TempFile() { DeleteFileA(path); }
     void Write(const Bytes& bytes) {
@@ -595,6 +626,11 @@ DWORD WINAPI SelectionAfterModelConfirmationThread(void* parameter) {
         checkSelection();
         auto poll = [&](bool held) {
             SetSelectionTestEnter(held);
+            // The owner lives on an inactive private desktop, which can never
+            // own the foreground. Stand the owner in for the live foreground so
+            // this exercises the eligible branch the real drop path uses,
+            // instead of asserting that an ineligible poll does nothing.
+            mikumikustudio::SetPollKeyForegroundForTests(fixture.app.get(), owner);
             MouseInteractionBegin(fixture.app.get());
             PumpEnterRegisterFrame(fixture.app.get(), owner, true);
         };

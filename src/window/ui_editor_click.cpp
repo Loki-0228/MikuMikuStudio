@@ -598,6 +598,14 @@ static void StageRangeRow(MMDApp* app, std::int32_t type,
         if (!shiftActive)
             ClearActiveModelFlags(app);
         if (!shiftActive) {
+            // The painter resolves a collapsed row into its real keys only
+            // while a selection drag is active (ui_panel_paint.cpp checks
+            // SelectionBoxDragging() before applying the range).  SelectionStats
+            // raises that latch at the end of this click, which is too late for
+            // the resolve below, so raise it here for the one repaint that
+            // needs it.  The release path clears it as usual.
+            app->SelectionBoxDragging() = 1;
+            app->TimelineSelectionChanged() = 0;
             PanelPaint(app); // Resolve the collapsed row into actual selected keys.
             app->ClearTimelineRange();
             app->TimelineSelectionChanged() = 1;

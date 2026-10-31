@@ -74,7 +74,33 @@ bool PollKeyInputEligibleWithForeground(const MMDApp* app, void* foreground) noe
     return fg == main || (floating != nullptr && fg == floating);
 }
 
+namespace {
+// Test seam: a window that should stand in for the live foreground window.
+// The dialog-enter regression creates its owner on an inactive private desktop
+// so real modal dialogs can open without disturbing the user's desktop, but an
+// inactive desktop can never own the foreground - the poll would then be
+// permanently ineligible and the case could only assert that nothing happens.
+// Keyed by app so one case cannot leak into the next.
+struct PollKeyForegroundOverride {
+    const MMDApp* app;
+    void* window;
+};
+PollKeyForegroundOverride& PollKeyForegroundOverrideSlot() {
+    static PollKeyForegroundOverride slot{nullptr, nullptr};
+    return slot;
+}
+}  // namespace
+
+void SetPollKeyForegroundForTests(const MMDApp* app, void* foreground) noexcept {
+    auto& slot = PollKeyForegroundOverrideSlot();
+    slot.app = app;
+    slot.window = foreground;
+}
+
 bool PollKeyInputEligible(const MMDApp* app) noexcept {
+    const auto& slot = PollKeyForegroundOverrideSlot();
+    if (app != nullptr && slot.app == app)
+        return PollKeyInputEligibleWithForeground(app, slot.window);
     return PollKeyInputEligibleWithForeground(app, GetForegroundWindow());
 }
 

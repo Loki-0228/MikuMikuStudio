@@ -62,6 +62,12 @@ void PollLetterHotkeys(MMDApp* app);
 // owning the user's desktop foreground window.
 bool PollKeyInputEligible(const MMDApp* app) noexcept;
 bool PollKeyInputEligibleWithForeground(const MMDApp* app, void* foreground) noexcept;
+// Test seam: substitute the window that stands in for the live foreground.
+// A regression that needs real modal dialogs runs on an inactive private
+// desktop, which can never own the foreground, so the poll would be
+// permanently ineligible and the case could only prove that nothing happens.
+// Pass the app's own window to make the poll eligible, or nullptr to clear it.
+void SetPollKeyForegroundForTests(const MMDApp* app, void* foreground) noexcept;
 
 // Per-frame edge-sampler state shared by every sampler that walks the same key
 // cells (MouseInteractionBegin and PollKeyboardStates can both run in one
