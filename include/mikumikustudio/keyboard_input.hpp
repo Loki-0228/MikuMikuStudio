@@ -45,4 +45,35 @@ bool LetterHotkeyInputAllowed(const MMDApp* app) noexcept;
 // SetFocus(NULL)) is *eligible*, a foreign or text-entry focus is not.
 bool FocusAllowsLetterHotkeys(void* main, void* floating, void* focus) noexcept;
 void PollLetterHotkeys(MMDApp* app);
+
+// The foreground half of the same rule, shared by every per-frame key-edge
+// sampler (frame_modes.cpp PollKey, model_query_gaps.cpp KeyEdgeScan).  Only
+// while our main or floating window owns the foreground does the thread
+// key-state table describe *this* application's keys; while another window owns
+// it, GetKeyState() keeps reporting the last state our thread saw and a key
+// released in the other application never produces a matching key-up here.
+// Sampling edges in that state synthesizes a fresh press on the first frame
+// after the window is re-activated - which is issue #41: selected camera/bone
+// keyframes were deleted the moment MMS regained focus, because a stale
+// VK_DELETE read as a new press edge and PumpDeleteRebuild deleted the marked
+// keys.  The samplers therefore reset their cells while this returns false and
+// latch a still-held key as held (3), never pressed (1), on the first eligible
+// frame.  The injected form exists so tests can drive both branches without
+// owning the user's desktop foreground window.
+bool PollKeyInputEligible(const MMDApp* app) noexcept;
+bool PollKeyInputEligibleWithForeground(const MMDApp* app, void* foreground) noexcept;
+
+// Per-frame edge-sampler state shared by every sampler that walks the same key
+// cells (MouseInteractionBegin and PollKeyboardStates can both run in one
+// pump iteration, so the state cannot live inside either one):
+//   * AdvancePollKeyEligibility  latches this frame's eligibility and returns
+//     true on the first eligible frame after a non-eligible stretch.  A held
+//     key on that frame must become 3 (held), never 1 (pressed).
+//   * PollKeyEligible            the latched value current samplers should use.
+// Keyed by the app so two windows (main + floating) and tests never share it.
+bool AdvancePollKeyEligibility(const MMDApp* app, bool eligible) noexcept;
+bool PollKeyEligible(const MMDApp* app) noexcept;
+// True on the first eligible frame after a non-eligible stretch, i.e. the frame
+// on which a held key must be latched as 3 (held) instead of 1 (pressed).
+bool PollKeyRegained(const MMDApp* app) noexcept;
 }

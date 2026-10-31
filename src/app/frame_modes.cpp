@@ -52,6 +52,7 @@
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/globals.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/keyboard_input.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/runtime_log.hpp"
@@ -107,6 +108,23 @@ namespace {
 bool g_viewportPressHandled = false;
 
 void PollKey(MMDApp* app, std::int32_t& keyState, int virtualKey) {
+    // Issue #41: the thread key-state table is frozen while another window owns
+    // the foreground - a key released in the other application never produces a
+    // matching key-up here.  Sampling edges in that state synthesized a fresh
+    // 0 -> 1 press on the first frame after MMS was re-activated, and a stale
+    // VK_DELETE deleted the selected keyframes.  The cells are therefore reset
+    // while this process is not eligible (keyboard_input.cpp owns the shared
+    // latch) and a still-held key on the first eligible frame becomes 3, never
+    // 1.  The mouse buttons keep their old path: their presses are only acted on
+    // behind the ViewportInputActive() foreground gate at the end of
+    // MouseInteractionBegin, and gating them here would also freeze the release
+    // edges that gate depends on.
+    const bool keyboardCell = virtualKey != VK_LBUTTON && virtualKey != VK_RBUTTON &&
+                              virtualKey != VK_MBUTTON;
+    if (keyboardCell && !PollKeyEligible(app)) {
+        keyState = 0;
+        return;
+    }
     const std::int32_t oldState = keyState;
     bool down = (GetKeyState(virtualKey) & 0x8000) != 0;
     if (!down) {
@@ -123,7 +141,7 @@ void PollKey(MMDApp* app, std::int32_t& keyState, int virtualKey) {
     }
     std::int32_t state = 0;
     if (down)
-        state = oldState == 0 ? 1 : 3;
+        state = (oldState == 0 || PollKeyRegained(app)) ? 3 : 1;
     else if (oldState == 1 || oldState == 3)
         state = 2;
     keyState = state;
@@ -1019,6 +1037,12 @@ void MouseInteractionBegin(MMDApp* app) {
         {221, &MMDAppState::keyState221},
         {226, &MMDAppState::keyState226},
     };
+    // Issue #41: latch this frame's foreground eligibility before sampling any
+    // cell.  PollKey resets the keyboard cells while it is false and treats a
+    // still-held key on the first eligible frame as held (3), so re-activating
+    // MMS cannot synthesize a press edge - in particular a stale VK_DELETE that
+    // used to purge the selected keyframes.  PollKeyboardStates shares the latch.
+    AdvancePollKeyEligibility(app, PollKeyInputEligible(app));
     for (const KeySlot& slot : kKeySlots)
         PollKey(app, app->state.*slot.state, slot.key);
 

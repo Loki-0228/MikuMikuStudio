@@ -659,6 +659,83 @@ void FrameLineInsertDelete() {
     std::puts("PASS defect 7: I/K insert and delete a keyed frame line");
 }
 
+// ---------------------------------------------------------------------------
+// Issue #41 - re-activating the window must not synthesize a key press
+// ---------------------------------------------------------------------------
+// Field report: with keyframes selected (red), switching focus to another
+// application and clicking back into MMS deleted them immediately - no keyboard
+// input, no Delete button.  The per-frame edge samplers read GetKeyState(),
+// which is frozen while another window owns the foreground, so a VK_DELETE that
+// had been released in that other window still read as down while the cell was
+// 0 and produced a fresh 0 -> 1 press edge.
+//   Covered here: the samplers share one foreground latch.  While the process
+//   does not own the foreground the keyboard cells reset to 0 (no press edge
+//   ever survives), and the first eligible frame after that stretch reports
+//   "regained", which makes a still-held key latch as held (3) instead of
+//   pressed (1).  The Del gate therefore never sees deleteKeyState == 1 from a
+//   refocus, while a genuine press while eligible still reaches it.
+void RefocusDoesNotPressDelete() {
+    auto app = std::make_unique<MMDApp>();
+    std::memset(&app->state, 0, sizeof(app->state));
+    HWND main = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(0x1001));
+    HWND other = reinterpret_cast<HWND>(static_cast<std::uintptr_t>(0x1002));
+    app->state.hwnd = main;
+
+    // Foreground rule: ours is eligible, a foreign window is not.
+    Check(mikumikustudio::PollKeyInputEligibleWithForeground(app.get(), main),
+          "refocus: the main window owns the foreground");
+    Check(!mikumikustudio::PollKeyInputEligibleWithForeground(app.get(), other),
+          "refocus: another application's window is not eligible");
+    Check(!mikumikustudio::PollKeyInputEligibleWithForeground(app.get(), nullptr),
+          "refocus: a cleared foreground is not eligible");
+    Check(!mikumikustudio::PollKeyInputEligibleWithForeground(nullptr, main),
+          "refocus: null app is rejected");
+
+    // First eligible frame for this app: like a regain, a key that was already
+    // down when polling started must not fire a shortcut.
+    Check(mikumikustudio::AdvancePollKeyEligibility(app.get(), true),
+          "refocus: the first eligible frame latches held keys, not presses");
+    Check(mikumikustudio::PollKeyEligible(app.get()), "refocus: latch records eligibility");
+    Check(!mikumikustudio::AdvancePollKeyEligibility(app.get(), true),
+          "refocus: the second eligible frame is ordinary");
+    app->state.deleteKeyState = 1;
+    Check(mikumikustudio::DeleteShortcutAllowed(app.get(), true, false),
+          "refocus: a genuine Del press still reaches the deletion gate");
+
+    // Focus lost: the sampler resets the cell (frame_modes.cpp PollKey /
+    // model_query_gaps.cpp KeyEdgeScan both key off this latch).
+    Check(!mikumikustudio::AdvancePollKeyEligibility(app.get(), false),
+          "refocus: losing the foreground is not a regain");
+    Check(!mikumikustudio::PollKeyEligible(app.get()), "refocus: latch records the loss");
+    app->state.deleteKeyState = 0;   // what the sampler writes while ineligible
+    Check(!mikumikustudio::DeleteShortcutAllowed(app.get(), true, false),
+          "refocus: the reset cell does not delete anything");
+
+    // Focus back: VK_DELETE still reads down from the stale thread table.  The
+    // regain frame latches held (3), never pressed (1).
+    Check(mikumikustudio::AdvancePollKeyEligibility(app.get(), true),
+          "refocus: returning to the window is a regain frame");
+    Check(mikumikustudio::PollKeyRegained(app.get()),
+          "refocus: the samplers can see the held-key rule this frame");
+    app->state.deleteKeyState = 3;
+    Check(!mikumikustudio::DeleteShortcutAllowed(app.get(), true, false),
+          "refocus: a held key on the regain frame does not delete selected keys");
+
+    // The next frame is ordinary again: still held, still not a press.
+    Check(!mikumikustudio::AdvancePollKeyEligibility(app.get(), true),
+          "refocus: only the first eligible frame is a regain");
+    app->state.deleteKeyState = 3;
+    Check(!mikumikustudio::DeleteShortcutAllowed(app.get(), true, false),
+          "refocus: a held key never becomes a press");
+
+    // Release, then a real press: the shortcut works exactly as before.
+    app->state.deleteKeyState = 0;
+    app->state.deleteKeyState = 1;
+    Check(mikumikustudio::DeleteShortcutAllowed(app.get(), true, false),
+          "refocus: pressing Del after the window is active still deletes");
+    std::puts("PASS issue 41: refocus latches held keys instead of pressing them");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -670,16 +747,18 @@ int main(int argc, char** argv) {
         return 0;
     }
     std::puts("panel_key_tests: start");
-    std::puts("  case 1/5 FOV data flow");
+    std::puts("  case 1/6 FOV data flow");
     FovDataFlow();
-    std::puts("  case 2/5 Delete preconditions");
+    std::puts("  case 2/6 Delete preconditions");
     DeleteShortcutPreconditions();
-    std::puts("  case 3/5 selected-bone key removal");
+    std::puts("  case 3/6 selected-bone key removal");
     SelectedBoneKeyRemoval();
-    std::puts("  case 4/5 初期化 selection set");
+    std::puts("  case 4/6 初期化 selection set");
     InitializeSelectionSet();
-    std::puts("  case 5/5 frame-line insert/delete");
+    std::puts("  case 5/6 frame-line insert/delete");
     FrameLineInsertDelete();
+    std::puts("  case 6/6 issue 41 refocus");
+    RefocusDoesNotPressDelete();
     std::puts("Panel and key regressions passed");
     return 0;
 }

@@ -1,6 +1,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/keyboard_input.hpp"
 #include <cwchar>
+#include <vector>
 
 namespace mikumikustudio {
 namespace {
@@ -60,6 +61,76 @@ bool LetterHotkeyInputAllowed(const MMDApp* app) noexcept {
     const HWND floating = app->state.floatingWindow;
     if (!foreground || (foreground != main && foreground != floating)) return false;
     return FocusAllowsLetterHotkeys(main, floating, GetFocus());
+}
+
+bool PollKeyInputEligibleWithForeground(const MMDApp* app, void* foreground) noexcept {
+    if (!app) return false;
+    // The samplers run between messages, so this is the same test
+    // LetterHotkeyInputAllowed applies to the letter ladder.
+    const HWND fg = static_cast<HWND>(foreground);
+    if (fg == nullptr) return false;
+    const HWND main = app->state.hwnd;
+    const HWND floating = app->state.floatingWindow;
+    return fg == main || (floating != nullptr && fg == floating);
+}
+
+bool PollKeyInputEligible(const MMDApp* app) noexcept {
+    return PollKeyInputEligibleWithForeground(app, GetForegroundWindow());
+}
+
+namespace {
+// One entry per live app.  The samplers run from the frame driver (UI thread),
+// so a plain vector is enough; two apps in one process (the tests create one
+// per case) each keep their own latch, and the entry is dropped on reset.
+struct PollKeyEligibility {
+    const MMDApp* app;
+    void* hwnd;      // the main window this latch was taken for
+    bool eligible;
+    bool regained;
+};
+std::vector<PollKeyEligibility>& PollKeyEligibilityTable() {
+    static std::vector<PollKeyEligibility> table;
+    return table;
+}
+}  // namespace
+
+bool AdvancePollKeyEligibility(const MMDApp* app, bool eligible) noexcept {
+    if (app == nullptr) return false;
+    auto& table = PollKeyEligibilityTable();
+    const void* hwnd = app->state.hwnd;
+    for (auto& entry : table) {
+        if (entry.app != app || entry.hwnd != hwnd) continue;
+        entry.regained = eligible && !entry.eligible;
+        entry.eligible = eligible;
+        return entry.regained;
+    }
+    // A new app (or a re-created main window): its first eligible frame counts as
+    // a regain, so a key held at start-up cannot read as a new press either.
+    // Reuse a dead entry instead of growing the table forever.
+    for (auto& entry : table) {
+        if (entry.app == app) {
+            entry = {app, const_cast<void*>(hwnd), eligible, eligible};
+            return eligible;
+        }
+    }
+    table.push_back({app, const_cast<void*>(hwnd), eligible, eligible});
+    return eligible;
+}
+
+bool PollKeyEligible(const MMDApp* app) noexcept {
+    if (app == nullptr) return false;
+    for (const auto& entry : PollKeyEligibilityTable())
+        if (entry.app == app && entry.hwnd == app->state.hwnd) return entry.eligible;
+    // No latch yet (a sampler ran before MouseInteractionBegin): use the live
+    // foreground rule rather than freezing the cells off.
+    return PollKeyInputEligible(app);
+}
+
+bool PollKeyRegained(const MMDApp* app) noexcept {
+    if (app == nullptr) return false;
+    for (const auto& entry : PollKeyEligibilityTable())
+        if (entry.app == app && entry.hwnd == app->state.hwnd) return entry.regained;
+    return false;
 }
 
 void PollLetterHotkeys(MMDApp* app) {

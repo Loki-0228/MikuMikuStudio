@@ -38,6 +38,7 @@
 #include <cstdio>
 
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/keyboard_input.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/panel_controls.hpp"
@@ -85,8 +86,17 @@ inline HWND AppHwnd(MMDApp* app) {
 // (its only caller).  State cells hold 0=up, 1=just pressed, 3=held,
 // 2=just released; any 0->1 / active->2 transition latches app+658796=1.
 inline void KeyEdgeScan(MMDApp* app, int vk, std::uint32_t* cell) {
+    // Issue #41: same rule as frame_modes.cpp PollKey - while another window
+    // owns the foreground the thread key-state table is stale, so the cell is
+    // reset and the first eligible frame latches a held key as 3, never 1.
+    // Both samplers share the latch through keyboard_input.hpp, so running this
+    // one after MouseInteractionBegin cannot re-create a press edge.
+    if (!PollKeyEligible(app)) {
+        *cell = 0;
+        return;
+    }
     if ((GetKeyState(vk) & 0x8000) != 0) {
-        if (*cell != 0u) {
+        if (*cell != 0u || PollKeyRegained(app)) {
             *cell = 3;                               // 0x40E401 held repeat
         } else {
             *cell = 1;                               // 0x40E3ED press edge
