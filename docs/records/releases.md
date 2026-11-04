@@ -95,7 +95,7 @@
 
 [下载最新发布包](https://github.com/Loki-0228/MikuMikuStudio/releases/latest)。这里说明当前包的安装方式和功能边界；历史版本说明见 [GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases)。源码能力的完整入口见[功能文档](../README.md)。
 
-<!-- release-notes:v2026.10.31.1:begin -->
+<!-- release-notes:v2026.11.04.1:begin -->
 ## 中文
 
 ### 选择与安装
@@ -105,6 +105,8 @@
 主程序包包含程序与许可文件。模型、个人设置、MME、MMV、FFmpeg 和 NVIDIA 辅助 DLL 需另行准备。保留含有现有配置与素材的安装目录。
 
 ### 动画与文件
+
+PMX 中手动添加的表情显示组会按模型定义显示，支持展开、折叠及骨骼与表情混合分组。同一表情可以出现在多个组中，各处引用共用同一条表情轨道，关键帧显示与选择保持同步。
 
 跨模型粘贴按骨骼、表情名称匹配，同名轨道按模型内的先后顺序对应。打开工程或动作后，关闭对话框时仍按住的 Enter 不会登记当前姿态；从其他程序返回时不会把已松开的按键作为新按下而删除选中帧。
 
@@ -126,6 +128,8 @@ Application packages include the executable and licenses. Models, user settings,
 
 ### Animation and files
 
+Custom morph display groups authored in PMX files retain their membership and support expanding, collapsing, and mixed bone/morph groups. A morph may appear in multiple groups; all references share one morph track and keep keyframe display and selection synchronized.
+
 Cross-model keyframe paste matches bone and morph names, using model order for duplicate names. A held Enter after a file dialog does not register a pose over loaded motion. Returning from another application does not treat released keys as new presses or delete selected keys.
 
 PMM stores projects; VMD stores motion. Original MMD cannot restore MMS-only extensions, and re-saving in original MMD or the minimal build discards them. Extended PMM `0003` requires the full build. Keep separate copies when exchanging files.
@@ -145,6 +149,8 @@ Download `MMSNvidiaAAFix.dll` separately, place it beside the full build, instal
 
 ### アニメーションとファイル
 
+PMX で手動追加したモーフ表示枠をモデルの定義どおりに表示し、展開・折りたたみとボーン・モーフ混在の枠に対応します。同じモーフを複数の枠に表示でき、各参照は同じトラックを共有し、キー表示と選択が同期します。
+
 モデル間のキー貼り付けはボーン名・モーフ名で対応させ、同名の場合はモデル内の順序で対応します。読み込み後に Enter が押されたままでも姿勢を登録せず、他のアプリから戻った際も離したキーを新たな押下として扱いません。
 
 PMM はプロジェクト、VMD はモーションを保存します。従来の MMD や最小版で再保存すると MMS 拡張は失われます。拡張 PMM `0003` は完全版が必要です。交換時は別のコピーを残してください。
@@ -153,4 +159,4 @@ PMM はプロジェクト、VMD はモーションを保存します。従来の
 ### NVIDIA 修正の導入（任意）
 
 `MMSNvidiaAAFix.dll` を別途取得し、完全版の横に配置してヘルプから導入後、MMS を再起動してください。従来の MSAA での NVIDIA 両面描画を対象とし、導入した EXE のフルパスに適用します。移動後は再導入してください。削除はヘルプから行い、DLL の削除だけでは設定は解除されません。
-<!-- release-notes:v2026.10.31.1:end -->
+<!-- release-notes:v2026.11.04.1:end -->
