@@ -110,6 +110,7 @@ NativeLoader::NativeLoader(bool forceFallback) {
     if (!n || n >= 32768) throw std::runtime_error("cannot locate system directory"); system_ = std::wstring(system, n);
 }
 LoadedPackage NativeLoader::Load(const Manifest& manifest, const Log& log) {
+    if (manifest.kind != Manifest::Kind::Native) throw std::invalid_argument("legacy MME is loaded only during graphics startup");
     if (WindowsVersion() < manifest.minWindows) throw std::invalid_argument("minimum Windows version is not met");
     std::map<std::wstring, fs::path> declared;
     for (auto path : manifest.nativeDependencies) if (!declared.emplace(Lower(path.filename().native()), path).second) throw std::invalid_argument("duplicate native DLL basename");

@@ -1,6 +1,7 @@
 #include "window_settings.hpp"
 #include "mikumikustudio/pmm_paths.hpp"
 #include "mikumikustudio/local_data_path.hpp"
+#include "mikumikustudio/legacy_mme_bootstrap.hpp"
 #include "mikumikustudio/mmv4mms.hpp"
 #include "mikumikustudio/plugin_menu.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
@@ -111,7 +112,8 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
     // Set the wait policy before a renderer or optional plugin can load VCOMP.
     // GeometryWorkerCount also covers consumers that run without a window.
     InitializeGeometryWorkers();
-    PrepareEffectDefaults();
+    if (!plugins::BootstrapLegacyMme()) return false;
+    InstallEffectPathCompatibility();
     HINSTANCE hInstance = static_cast<HINSTANCE>(hInstanceIn);
     auto& s = *app;
 

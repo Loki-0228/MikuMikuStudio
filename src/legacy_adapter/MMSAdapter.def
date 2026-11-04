@@ -1,0 +1,49 @@
+; MMSAdapter.dll - 37 host Exp* export thunks.
+;
+; Names and ordinals are copied from exports/MikuMikuDance.def (ordinal base 1)
+; and must keep the host numbering. adapter.cpp generates the matching wrappers
+; from exports.inc, which lists the same 37 entries with the host prototypes of
+; src/exports/effect_api.cpp.
+;
+; The host executable is found at load time; this module holds no host import.
+
+LIBRARY MMSAdapter
+
+EXPORTS
+    ExpGetFrameTime            @21
+    ExpGetPmdNum               @33
+    ExpGetPmdFilename          @26
+    ExpGetPmdOrder             @34
+    ExpGetPmdMatNum            @28
+    ExpGetPmdMaterial          @29
+    ExpGetPmdBoneNum           @23
+    ExpGetPmdBoneName          @22
+    ExpGetPmdBoneWorldMat      @24
+    ExpGetPmdMorphNum          @31
+    ExpGetPmdMorphName         @30
+    ExpGetPmdMorphValue        @32
+    ExpGetPmdDisp              @25
+    ExpGetPmdID                @27
+    ExpGetAcsNum               @6
+    ExpGetPreAcsNum            @35
+    ExpGetAcsFilename          @2
+    ExpGetAcsOrder             @7
+    ExpGetAcsWorldMat          @13
+    ExpGetAcsX                 @14
+    ExpGetAcsY                 @15
+    ExpGetAcsZ                 @16
+    ExpGetAcsRx                @8
+    ExpGetAcsRy                @9
+    ExpGetAcsRz                @10
+    ExpGetAcsSi                @11
+    ExpGetAcsTr                @12
+    ExpGetAcsID                @3
+    ExpGetAcsMatNum            @4
+    ExpGetAcsMaterial          @5
+    ExpGetAcsDisp              @1
+    ExpGetCurrentObject        @18
+    ExpGetCurrentMaterial      @17
+    ExpGetCurrentTechnic       @19
+    ExpGetEnglishMode          @20
+    ExpGetRenderRepeatCount    @36
+    ExpSetRenderRepeatCount    @37

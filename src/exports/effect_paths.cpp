@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <Windows.h>
 #include "mikumikustudio/legacy_mme.hpp"
+#include "mikumikustudio/legacy_mme_bootstrap.hpp"
 #include <d3d9.h>
 
 #include "mikumikustudio/effect_api.hpp"
@@ -12,11 +13,14 @@
 #include "effect_compile_cache.hpp"
 #include <atomic>
 #include <cstring>
+#include <cwchar>
 #include <string>
 #include <filesystem>
 #include <mutex>
 #include <vector>
 #include <algorithm>
+#include <set>
+#include <limits>
 
 namespace mikumikustudio {
 namespace {
@@ -27,18 +31,64 @@ struct RelativeAssignment {
 };
 std::mutex assignmentMutex;
 std::vector<RelativeAssignment> assignments;
+// MMHack consumes notifications on a later frame. Never recycle a published
+// alias for another project while that notification may still be queued.
+// Refuse new aliases at the bound instead of retaining unbounded session data.
+constexpr std::size_t kMaxProjectAliases = 4096;
 std::vector<RelativeAssignment> projectAliases;
+std::uint64_t projectAliasSequence = 0;
 
-bool ProjectAlias(const wchar_t* filename, std::wstring& result) {
-    if (!filename || !*filename) return false;
+struct PreserveLastError {
+    DWORD value = GetLastError();
+    ~PreserveLastError() { SetLastError(value); }
+};
+bool AvailableAlias(const fs::path& path) {
+    return GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES &&
+        GetLastError() == ERROR_FILE_NOT_FOUND;
+}
+enum class AliasResult { None, Mapped, Conflict };
+AliasResult ProjectAlias(const wchar_t* filename, std::wstring& result) {
+    if (!filename || !*filename) return AliasResult::None;
+    const wchar_t* leaf = filename;
+    for (const wchar_t* p = filename; *p; ++p) if (*p == L'\\' || *p == L'/') leaf = p + 1;
+    if (_wcsnicmp(leaf, L"~mms-", 5) != 0) return AliasResult::None;
     const auto path = fs::absolute(filename).lexically_normal();
     std::lock_guard<std::mutex> lock(assignmentMutex);
     for (const auto& entry : projectAliases) {
         if (_wcsicmp(path.c_str(), entry.legacy.c_str()) == 0) {
-            result = entry.local.wstring(); return true;
+            auto notification = entry.legacy;
+            notification.replace_extension(L".pmm");
+            // A file created under a formerly virtual name must not make a
+            // delayed notification overwrite either that file or its effects.
+            if (!AvailableAlias(entry.legacy) || !AvailableAlias(notification)) return AliasResult::Conflict;
+            result = entry.local.wstring();
+            return AliasResult::Mapped;
         }
     }
-    return false;
+    return AliasResult::None;
+}
+AliasResult ProjectAliasBytes(const char* filename, std::wstring& result, UINT* codePage = nullptr) {
+    if (!filename || !*filename) return AliasResult::None;
+    // Published aliases have an ASCII basename. This is only a negative
+    // filter; decode the full path before interpreting any path separator.
+    bool candidate = false;
+    for (const char* p = filename; *p; ++p)
+        if (*p == '~' && _strnicmp(p, "~mms-", 5) == 0) { candidate = true; break; }
+    if (!candidate) return AliasResult::None;
+    {
+        std::lock_guard<std::mutex> lock(assignmentMutex);
+        if (projectAliases.empty()) return AliasResult::None;
+    }
+    for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
+        std::wstring decoded;
+        if (!text_encoding::Decode(filename, cp, decoded)) continue;
+        const auto found = ProjectAlias(decoded.c_str(), result);
+        if (found != AliasResult::None) {
+            if (codePage) *codePage = cp;
+            return found;
+        }
+    }
+    return AliasResult::None;
 }
 
 bool RegularFile(const fs::path& path) {
@@ -57,19 +107,78 @@ std::string Trim(std::string text) {
     return text;
 }
 
-void ReadAssignments(const fs::path& emm) {
+bool ReadAssignmentBytes(HANDLE file, bool preservePosition, std::string& bytes,
+                         DWORD& restoreFailure) {
+    LARGE_INTEGER size{}, saved{}, zero{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 || size.QuadPart > 16 * 1024 * 1024)
+        return false;
+    // Allocate before changing a handle that has not yet been returned to MME.
+    std::string next(static_cast<std::size_t>(size.QuadPart), '\0');
+    if (preservePosition && !SetFilePointerEx(file, zero, &saved, FILE_CURRENT)) return false;
+    struct RestorePosition {
+        HANDLE file;
+        LARGE_INTEGER offset;
+        DWORD& failure;
+        bool pending;
+        bool Apply() noexcept {
+            if (!pending) return true;
+            pending = false;
+            if (SetFilePointerEx(file, offset, nullptr, FILE_BEGIN)) return true;
+            failure = GetLastError();
+            if (!failure) failure = ERROR_SEEK;
+            return false;
+        }
+        ~RestorePosition() { Apply(); }
+    } restore{file, saved, restoreFailure, preservePosition};
+    if (preservePosition && !SetFilePointerEx(file, zero, nullptr, FILE_BEGIN)) return false;
+    DWORD read = 0;
+    const bool complete = ReadFile(file, next.data(), static_cast<DWORD>(next.size()), &read, nullptr) &&
+        read == next.size();
+    if (!restore.Apply() || !complete) return false;
+    bytes.swap(next);
+    return true;
+}
+
+void ReadAssignments(const fs::path& emm, HANDLE opened = INVALID_HANDLE_VALUE,
+                     DWORD* positionFailure = nullptr) {
     std::vector<RelativeAssignment> next;
+    std::set<std::pair<fs::path, fs::path>> seen;
     const auto executable = ExecutableDirectory();
-    HANDLE file = CreateFileW(emm.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // A packaged legacy MME lives in this installation's cache, so its
+    // assignments also expand against the module's own directory. A failed or
+    // truncated module path keeps only the EXE mapping.
+    fs::path moduleDirectory;
+    if (plugins::LegacyMmeStatus().loaded) {
+        if (const HMODULE module = LegacyMmeModule()) {
+            std::vector<wchar_t> filename(32768);
+            const DWORD length = GetModuleFileNameW(module, filename.data(),
+                static_cast<DWORD>(filename.size()));
+            if (length && length < filename.size())
+                moduleDirectory = fs::path(filename.data()).parent_path();
+        }
+    }
+    const bool owned = opened == INVALID_HANDLE_VALUE;
+    HANDLE file = owned ? CreateFileW(emm.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr) : opened;
     if (file != INVALID_HANDLE_VALUE) {
-        struct Close { HANDLE file; ~Close() { CloseHandle(file); } } close{file};
-        LARGE_INTEGER size{};
+        struct Close { HANDLE file; bool owned; ~Close() { if (owned) CloseHandle(file); } } close{file, owned};
         // Bound the compatibility parser; MME retains ownership of its format.
-        if (GetFileSizeEx(file, &size) && size.QuadPart >= 0 && size.QuadPart <= 16 * 1024 * 1024) {
-            std::string bytes(static_cast<std::size_t>(size.QuadPart), '\0');
-            DWORD read = 0;
-            if (ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) && read == bytes.size()) {
+        std::string bytes;
+        DWORD restoreFailure = 0;
+        bool loaded = ReadAssignmentBytes(file, !owned, bytes,
+            positionFailure ? *positionFailure : restoreFailure);
+        if (!loaded && !owned) {
+            // MME can open an EMM with no read right. Parse a private read of
+            // the same path rather than clearing all of its relative aliases.
+            const HANDLE fallback = CreateFileW(emm.c_str(), GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (fallback != INVALID_HANDLE_VALUE) {
+                Close fallbackClose{fallback, true};
+                loaded = ReadAssignmentBytes(fallback, false, bytes, restoreFailure);
+            }
+        }
+        if (loaded) {
                 for (std::size_t offset = 0; offset < bytes.size();) {
                     const auto end = bytes.find('\n', offset);
                     auto line = Trim(bytes.substr(offset, end == std::string::npos ? end : end - offset));
@@ -88,13 +197,14 @@ void ReadAssignments(const fs::path& emm) {
                         if (relative.empty() || relative.has_root_path() || !relative.has_extension()) continue;
                         const auto legacy = (executable / relative).lexically_normal();
                         const auto local = (emm.parent_path() / relative).lexically_normal();
-                        const auto same = [&](const RelativeAssignment& entry) {
-                            return entry.legacy == legacy && entry.local == local;
-                        };
-                        if (std::none_of(next.begin(), next.end(), same)) next.push_back({legacy, local});
+                        if (seen.emplace(legacy, local).second) next.push_back({legacy, local});
+                        if (!moduleDirectory.empty()) {
+                            const auto moduleLegacy = (moduleDirectory / relative).lexically_normal();
+                            if (seen.emplace(moduleLegacy, local).second)
+                                next.push_back({moduleLegacy, local});
+                        }
                     }
                 }
-            }
         }
     }
     std::lock_guard<std::mutex> lock(assignmentMutex);
@@ -116,21 +226,39 @@ bool RelativePath(const wchar_t* filename, std::wstring& resolved) {
     return false;
 }
 
-HANDLE TrackAssignmentRead(HANDLE file, bool readOnly) noexcept {
+HANDLE TrackAssignmentRead(HANDLE file, bool readOnly, DWORD attributes) noexcept {
     if (file == INVALID_HANDLE_VALUE || !readOnly) return file;
     const DWORD error = GetLastError();
+    DWORD positionFailure = 0;
     try {
         // Also cover EMM files opened directly through MME's own Load menu.
         // The handle names the exact file chosen by Windows, independent of ACP.
-        std::vector<wchar_t> filename(32768);
-        const DWORD size = GetFinalPathNameByHandleW(file, filename.data(), static_cast<DWORD>(filename.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        wchar_t filename[32768]{};
+        const DWORD size = GetFinalPathNameByHandleW(file, filename, 32768, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
         if (size && size < 32768) {
-            std::wstring path(filename.data(), size);
+            std::wstring path(filename, size);
             if (path.compare(0, 8, L"\\\\?\\UNC\\") == 0) path = L"\\\\" + path.substr(8);
             else if (path.compare(0, 4, L"\\\\?\\") == 0) path.erase(0, 4);
-            if (_wcsicmp(fs::path(path).extension().c_str(), L".emm") == 0) ReadAssignments(path);
+            if (pmm_paths::IsEffect(path)) {
+                if (attributes & FILE_FLAG_OVERLAPPED) {
+                    // Never issue synchronous reads on an asynchronous handle.
+                    std::lock_guard<std::mutex> lock(assignmentMutex);
+                    assignments.clear();
+                } else ReadAssignments(path, file, &positionFailure);
+            }
         }
-    } catch (...) { /* Preserve the native file operation on compatibility failure. */ }
+    } catch (...) {
+        // An unreadable new assignment must not reuse the previous project.
+        std::lock_guard<std::mutex> lock(assignmentMutex);
+        assignments.clear();
+    }
+    if (positionFailure) {
+        // This newly opened handle is still private to the wrapper. Do not
+        // return it as a successful open after failing to restore its cursor.
+        CloseHandle(file);
+        SetLastError(positionFailure);
+        return INVALID_HANDLE_VALUE;
+    }
     SetLastError(error);
     return file;
 }
@@ -139,13 +267,12 @@ HANDLE TrackAssignmentRead(HANDLE file, bool readOnly) noexcept {
 // Japanese Windows can therefore point at an existing, different Unicode
 // spelling on Chinese Windows. Prefer the current ACP and only fall back to
 // another encoding when that exact decoded file really exists.
-bool ExistingPath(const char* bytes, std::wstring& path, UINT& codePage) {
+bool ExistingPath(const char* bytes, std::wstring& path, UINT& codePage,
+                  bool allowProjectAliases = true) {
     if (!bytes || !*bytes) return false;
-    for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
+    if (allowProjectAliases && ProjectAliasBytes(bytes, path, &codePage) == AliasResult::Mapped) return true;
+    if (allowProjectAliases) for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
         std::wstring decoded;
-        if (text_encoding::Decode(bytes, cp, decoded) && ProjectAlias(decoded.c_str(), path)) {
-            codePage = cp; return true;
-        }
         if (text_encoding::Decode(bytes, cp, decoded) && RelativePath(decoded.c_str(), path)) {
             codePage = cp;
             return true;
@@ -172,18 +299,101 @@ bool MissingPath(DWORD error) {
            error == ERROR_INVALID_NAME || error == ERROR_NO_UNICODE_TRANSLATION;
 }
 
+bool SettingsTarget(LPCWSTR filename, std::wstring& target) {
+    const auto& legacy = plugins::LegacyMmeStatus();
+    if (!filename || !legacy.loaded || legacy.settingsFile.empty()) return false;
+    const auto path = fs::absolute(filename).lexically_normal();
+    bool matches = _wcsicmp(path.c_str(), (legacy.directory / L"MMEffect.ini").c_str()) == 0;
+    // Match the exact ANSI spelling the original module-directory API supplies,
+    // even on systems where its directory contains non-ACP characters.
+    if (!matches) {
+        std::vector<char> name(32768);
+        const auto module = LegacyMmeModule();
+        const DWORD n = module ? GetModuleFileNameA(module, name.data(), DWORD(name.size())) : 0;
+        std::wstring decoded;
+        if (n && n < name.size() && text_encoding::Decode(name.data(), GetACP(), decoded)) {
+            auto expected = fs::path(decoded).parent_path() / L"MMEffect.ini";
+            matches = _wcsicmp(path.c_str(), expected.lexically_normal().c_str()) == 0;
+        }
+    }
+    if (matches) target = legacy.settingsFile.wstring();
+    return matches;
+}
+bool SettingsTarget(LPCSTR filename, std::wstring& target) {
+    if (!filename || !plugins::LegacyMmeStatus().loaded) return false;
+    std::wstring decoded;
+    return text_encoding::Decode(filename, GetACP(), decoded) && SettingsTarget(decoded.c_str(), target);
+}
+HANDLE OpenSettingsFile(const std::wstring& path, DWORD access, DWORD share,
+        LPSECURITY_ATTRIBUTES security, DWORD creation, DWORD attributes, HANDLE templateFile) {
+    // Validate the opened object before truncating an existing preference file.
+    const DWORD actualCreation = creation == CREATE_ALWAYS ? OPEN_ALWAYS :
+        creation == TRUNCATE_EXISTING ? OPEN_EXISTING : creation;
+    HANDLE file = CreateFileW(path.c_str(), access | FILE_READ_ATTRIBUTES, share, security,
+        actualCreation, attributes | FILE_FLAG_OPEN_REPARSE_POINT, templateFile);
+    if (file == INVALID_HANDLE_VALUE) return file;
+    const DWORD error = GetLastError();
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!GetFileInformationByHandle(file, &info) || info.nNumberOfLinks != 1 ||
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY))) {
+        CloseHandle(file); SetLastError(ERROR_ACCESS_DENIED); return INVALID_HANDLE_VALUE;
+    }
+    if ((creation == CREATE_ALWAYS || creation == TRUNCATE_EXISTING) && !SetEndOfFile(file)) {
+        const auto failure = GetLastError(); CloseHandle(file); SetLastError(failure); return INVALID_HANDLE_VALUE;
+    }
+    SetLastError(error); return file;
+}
+std::atomic<decltype(&CreateFileW)> previousEffectFileW{&CreateFileW};
+HANDLE WINAPI OpenEffectFileW(LPCWSTR filename, DWORD access, DWORD share,
+        LPSECURITY_ATTRIBUTES security, DWORD creation, DWORD attributes, HANDLE templateFile) {
+    const DWORD error = GetLastError();
+    try {
+        std::wstring target;
+        if (SettingsTarget(filename, target)) {
+            SetLastError(error); return OpenSettingsFile(target, access, share, security, creation, attributes, templateFile);
+        }
+    } catch (...) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return INVALID_HANDLE_VALUE; }
+    SetLastError(error); return previousEffectFileW.load(std::memory_order_acquire)(filename, access, share, security, creation, attributes, templateFile);
+}
+
 DWORD WINAPI EffectFileAttributes(LPCSTR filename) {
-    std::wstring preferred;
-    UINT preferredCp = 0;
-    if (ExistingPath(filename, preferred, preferredCp))
-        return GetFileAttributesW(preferred.c_str());
+    const DWORD incomingError = GetLastError();
+    try {
+        std::wstring preferred;
+        if (SettingsTarget(filename, preferred)) {
+            SetLastError(incomingError);
+            return GetFileAttributesW(preferred.c_str());
+        }
+        const auto alias = ProjectAliasBytes(filename, preferred);
+        if (alias == AliasResult::Conflict) { SetLastError(ERROR_FILE_EXISTS); return INVALID_FILE_ATTRIBUTES; }
+        if (alias == AliasResult::Mapped) {
+            SetLastError(incomingError);
+            return GetFileAttributesW(preferred.c_str());
+        }
+    } catch (...) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return INVALID_FILE_ATTRIBUTES;
+    }
+    try {
+        std::wstring preferred;
+        UINT preferredCp = 0;
+        if (ExistingPath(filename, preferred, preferredCp)) {
+            SetLastError(incomingError);
+            return GetFileAttributesW(preferred.c_str());
+        }
+    } catch (...) { /* Compatibility preparation must not escape a native API. */ }
+    SetLastError(incomingError);
     const DWORD attributes = GetFileAttributesA(filename);
     if (attributes != INVALID_FILE_ATTRIBUTES) return attributes;
     const DWORD error = GetLastError();
-    std::wstring path;
-    UINT cp = 0;
-    if (MissingPath(error) && ExistingPath(filename, path, cp))
-        return GetFileAttributesW(path.c_str());
+    try {
+        std::wstring path;
+        UINT cp = 0;
+        if (MissingPath(error) && ExistingPath(filename, path, cp)) {
+            SetLastError(error);
+            return GetFileAttributesW(path.c_str());
+        }
+    } catch (...) { /* Retain the original failure and its error code. */ }
     SetLastError(error);
     return attributes;
 }
@@ -191,64 +401,98 @@ DWORD WINAPI EffectFileAttributes(LPCSTR filename) {
 HANDLE WINAPI OpenEffectFile(LPCSTR filename, DWORD access, DWORD share,
                             LPSECURITY_ATTRIBUTES security, DWORD creation,
                             DWORD attributes, HANDLE templateFile) {
-    const bool readOnly = creation == OPEN_EXISTING && (access == GENERIC_READ || access == 0);
-    // Only our explicitly registered notification aliases can redirect writes.
-    // In particular, missing effect/texture files never redirect a write.
-    for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
-        std::wstring decoded, mapped;
-        if (text_encoding::Decode(filename, cp, decoded) && ProjectAlias(decoded.c_str(), mapped))
-            return TrackAssignmentRead(CreateFileW(mapped.c_str(), access, share, security,
-                creation, attributes, templateFile), readOnly);
+    const bool readOnly = creation == OPEN_EXISTING &&
+        (access == GENERIC_READ || access == 0) && !(attributes & FILE_FLAG_DELETE_ON_CLOSE);
+    const DWORD incomingError = GetLastError();
+    try {
+        std::wstring preferred;
+        if (SettingsTarget(filename, preferred)) {
+            SetLastError(incomingError);
+            return OpenSettingsFile(preferred, access, share, security, creation, attributes, templateFile);
+        }
+        const auto alias = ProjectAliasBytes(filename, preferred);
+        if (alias == AliasResult::Conflict) { SetLastError(ERROR_FILE_EXISTS); return INVALID_HANDLE_VALUE; }
+        if (alias == AliasResult::Mapped) {
+            // Writes and creates redirect only through this exact registration,
+            // never through filename/encoding/relative-assignment guesses.
+            SetLastError(incomingError);
+            return TrackAssignmentRead(CreateFileW(preferred.c_str(), access, share, security,
+                creation, attributes, templateFile), readOnly, attributes);
+        }
+    } catch (...) {
+        // Do not fall through to a physical file under a virtual spelling if
+        // allocating the exact mapping failed, for either reads or writes.
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return INVALID_HANDLE_VALUE;
     }
-    std::wstring preferred;
-    UINT preferredCp = 0;
-    if (readOnly && ExistingPath(filename, preferred, preferredCp)) {
-        HANDLE file = CreateFileW(preferred.c_str(), access, share, security, creation, attributes, templateFile);
-        if (file != INVALID_HANDLE_VALUE) return TrackAssignmentRead(file, readOnly);
-    }
+    try {
+        std::wstring preferred;
+        UINT preferredCp = 0;
+        if (readOnly && ExistingPath(filename, preferred, preferredCp)) {
+            SetLastError(incomingError);
+            HANDLE file = CreateFileW(preferred.c_str(), access, share, security, creation, attributes, templateFile);
+            // A selected existing project file is authoritative. A sharing or
+            // access failure must not compile another same-named EXE file.
+            return TrackAssignmentRead(file, readOnly, attributes);
+        }
+    } catch (...) { /* Fall back to the native open if preparation fails. */ }
+    SetLastError(incomingError);
     HANDLE file = CreateFileA(filename, access, share, security, creation,
                               attributes, templateFile);
-    if (file != INVALID_HANDLE_VALUE) return TrackAssignmentRead(file, readOnly);
+    if (file != INVALID_HANDLE_VALUE) return TrackAssignmentRead(file, readOnly, attributes);
     const DWORD error = GetLastError();
-    std::wstring path;
-    UINT cp = 0;
     // A compatibility lookup must never redirect writes or create a new file.
-    if (creation == OPEN_EXISTING && (access == GENERIC_READ || access == 0) &&
-        MissingPath(error) && ExistingPath(filename, path, cp))
-        return TrackAssignmentRead(CreateFileW(path.c_str(), access, share, security, creation,
-                           attributes, templateFile), readOnly);
+    try {
+        std::wstring path;
+        UINT cp = 0;
+        if (readOnly && MissingPath(error) && ExistingPath(filename, path, cp)) {
+            SetLastError(error);
+            return TrackAssignmentRead(CreateFileW(path.c_str(), access, share, security, creation,
+                               attributes, templateFile), readOnly, attributes);
+        }
+    } catch (...) { /* Retain the native open failure. */ }
     SetLastError(error);
     return file;
 }
 
 int WINAPI DecodeEffectPath(UINT codePage, DWORD flags, LPCCH bytes, int byteCount,
                            LPWSTR output, int capacity) {
+    const DWORD incomingError = GetLastError();
+    try {
     if ((codePage == CP_ACP || codePage == CP_THREAD_ACP || codePage == GetACP()) &&
         bytes && (byteCount == -1 || byteCount > 0) &&
         (flags == 0 || flags == MB_ERR_INVALID_CHARS)) {
         std::string bounded = byteCount == -1 ? std::string(bytes)
                                               : std::string(bytes, byteCount);
-        const bool terminated = byteCount == -1 || bounded.back() == '\0';
         if (!bounded.empty() && bounded.back() == '\0') bounded.pop_back();
         std::wstring path;
         UINT resolvedCodePage = 0;
         if (bounded.find('\0') == std::string::npos &&
-            ExistingPath(bounded.c_str(), path, resolvedCodePage)) {
-            const int needed = static_cast<int>(path.size()) + (terminated ? 1 : 0);
-            if (capacity == 0) return needed;
-            if (!output || capacity < 0) {
-                SetLastError(ERROR_INVALID_PARAMETER);
-                return 0;
-            }
-            if (capacity < needed) {
-                SetLastError(ERROR_INSUFFICIENT_BUFFER);
-                return 0;
-            }
-            std::memcpy(output, path.c_str(), needed * sizeof(wchar_t));
-            return needed;
+            ExistingPath(bounded.c_str(), path, resolvedCodePage) &&
+            resolvedCodePage != GetACP()) {
+            // An assignment may identify the byte encoding even when the
+            // EXE-relative file does not exist. Convert the original bytes,
+            // never the alias: subsequent W writes/deletes keep their target.
+            SetLastError(incomingError);
+            return MultiByteToWideChar(resolvedCodePage, flags, bytes, byteCount, output, capacity);
         }
     }
+    } catch (...) { /* Preserve native conversion on compatibility failure. */ }
+    SetLastError(incomingError);
     return MultiByteToWideChar(codePage, flags, bytes, byteCount, output, capacity);
+}
+
+// MMEffect derives its writable files, including MMEffect.ini, from the
+// directory that GetModuleFileNameA(nullptr) reports. A legacy package keeps
+// that module inside the adapter's cache, so report MMEffect's own module while
+// the package is loaded. Every other request forwards unchanged.
+DWORD WINAPI EffectModuleFileNameA(HMODULE module, LPSTR filename, DWORD size) {
+    if (module != nullptr || !plugins::LegacyMmeStatus().loaded)
+        return ::GetModuleFileNameA(module, filename, size);
+    const DWORD incomingError = GetLastError();
+    const HMODULE effect = LegacyMmeModule();
+    SetLastError(incomingError);
+    return ::GetModuleFileNameA(effect, filename, size);
 }
 
 using CreateEffectFile = HRESULT(WINAPI*)(IDirect3DDevice9*, LPCWSTR, const void*, const void*,
@@ -298,7 +542,11 @@ HRESULT WINAPI TraceEffectFile(IDirect3DDevice9* device, LPCWSTR filename, const
         const void* include, DWORD flags, void* pool, void** effect, void** errors) {
     const DWORD incomingError = GetLastError();
     const auto create = originalEffectFile.load(std::memory_order_acquire);
-    runtime_log::WritePath("MME_EFFECT_FILE", filename);
+    std::wstring resolved;
+    const wchar_t* actual = filename;
+    try { if (RelativePath(filename, resolved)) actual = resolved.c_str(); }
+    catch (...) { /* Keep the original compiler input on lookup failure. */ }
+    runtime_log::WritePath("MME_EFFECT_FILE", actual);
     runtime_log::Write("MME_EFFECT_CREATE function=%p device=%p include=%p pool=%p macros=%p flags=0x%08lX",
         create, device, include, pool, macros, flags);
     TraceEffectDispatch("device", device, true);
@@ -311,9 +559,9 @@ HRESULT WINAPI TraceEffectFile(IDirect3DDevice9* device, LPCWSTR filename, const
         // the original entry point, which keeps the HRESULT, diagnostics and
         // output ownership of the native call.
         if (!effect_compile_cache::TryCreateEffect(
-                reinterpret_cast<void*>(create), device, filename, macros, include,
+                reinterpret_cast<void*>(create), device, actual, macros, include,
                 flags, pool, effect, errors, result))
-            result = create(device, filename, macros, include, flags, pool, effect, errors);
+            result = create(device, actual, macros, include, flags, pool, effect, errors);
     }
     const auto error = GetLastError();
     const unsigned long long calls =
@@ -321,8 +569,10 @@ HRESULT WINAPI TraceEffectFile(IDirect3DDevice9* device, LPCWSTR filename, const
     const unsigned long long succeeded = SUCCEEDED(result)
         ? effectFileSucceeded.fetch_add(1, std::memory_order_relaxed) + 1
         : effectFileSucceeded.load(std::memory_order_relaxed);
+    void* returnedEffect = nullptr;
+    ReadDispatchPointer(effect, returnedEffect);
     runtime_log::Write("MME_EFFECT_RESULT hr=0x%08lX effect=%p calls=%llu succeeded=%llu",
-        static_cast<unsigned long>(result), effect ? *effect : nullptr, calls, succeeded);
+        static_cast<unsigned long>(result), returnedEffect, calls, succeeded);
     SetLastError(error);
     return result;
 }
@@ -346,10 +596,13 @@ void PatchImports(HMODULE module) {
     const ImportReplacement replacements[] = {
         {"GetFileAttributesA", reinterpret_cast<void*>(&GetFileAttributesA),
                               reinterpret_cast<void*>(&EffectFileAttributes)},
+        {"CreateFileW", reinterpret_cast<void*>(&CreateFileW), reinterpret_cast<void*>(&OpenEffectFileW)},
         {"CreateFileA", reinterpret_cast<void*>(&CreateFileA),
                         reinterpret_cast<void*>(&OpenEffectFile)},
         {"MultiByteToWideChar", reinterpret_cast<void*>(&MultiByteToWideChar),
                                 reinterpret_cast<void*>(&DecodeEffectPath)},
+        {"GetModuleFileNameA", reinterpret_cast<void*>(&GetModuleFileNameA),
+                               reinterpret_cast<void*>(&EffectModuleFileNameA)},
     };
     const auto* descriptors = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(base + imports.VirtualAddress);
     for (std::size_t i = 0; i < imports.Size / sizeof(*descriptors); ++i) {
@@ -388,13 +641,24 @@ void PatchImports(HMODULE module) {
             }
             if (!kernel) continue;
             for (const auto& entry : replacements) {
-                if (std::strcmp(name, entry.name) != 0 ||
-                    slots[j].u1.Function != reinterpret_cast<ULONG_PTR>(entry.original)) continue;
+                if (std::strcmp(name, entry.name) != 0) continue;
+                auto* previous = reinterpret_cast<void*>(slots[j].u1.Function);
+                if (previous != entry.original) {
+                    if (std::strcmp(name, "CreateFileW") != 0 || previous == entry.replacement ||
+                        !plugins::LegacyMmeStatus().loaded) continue;
+                    HMODULE owner = nullptr;
+                    const auto systemEntry = reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CreateFileW"));
+                    if (previous != systemEntry &&
+                        (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(previous), &owner) || !owner || owner != GetModuleHandleW(L"MMHack.dll"))) continue;
+                }
                 DWORD protection = 0;
                 auto* slot = &slots[j].u1.Function;
                 if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &protection)) continue;
+                if (std::strcmp(name, "CreateFileW") == 0)
+                    previousEffectFileW.store(reinterpret_cast<decltype(&CreateFileW)>(previous), std::memory_order_release);
                 InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(slot),
-                                                  entry.replacement, entry.original);
+                                                  entry.replacement, previous);
                 DWORD ignored = 0;
                 VirtualProtect(slot, sizeof(void*), protection, &ignored);
             }
@@ -409,10 +673,17 @@ void InstallEffectPathCompatibility() {
 }
 
 void PrepareEffectProjectPaths(const wchar_t* project) {
-    if (!project || !*project) return;
+    const PreserveLastError error;
     try {
-        const auto emm = pmm_paths::Effect(fs::absolute(project));
-        ReadAssignments(emm);
+        if (project && *project) {
+            // Model-load notifications share the legacy hook with project opens.
+            // They must not replace the current project's relative assignments.
+            if (!pmm_paths::IsProject(project) && !pmm_paths::IsEffect(project)) return;
+            ReadAssignments(pmm_paths::Effect(fs::absolute(project)));
+        } else {
+            std::lock_guard<std::mutex> lock(assignmentMutex);
+            assignments.clear();
+        }
     } catch (...) {
         std::lock_guard<std::mutex> lock(assignmentMutex);
         assignments.clear();
@@ -420,27 +691,43 @@ void PrepareEffectProjectPaths(const wchar_t* project) {
 }
 
 std::wstring EffectProjectNotificationPath(const wchar_t* project) noexcept {
-    const auto path = fs::absolute(project).lexically_normal();
-    if (!pmm_paths::IsProject(path) || path.extension().wstring().size() == 4) return path.wstring();
-    const auto local = pmm_paths::Effect(path);
-    std::lock_guard<std::mutex> lock(assignmentMutex);
-    for (const auto& entry : projectAliases) {
-        if (_wcsicmp(entry.local.c_str(), local.c_str()) == 0) {
-            auto notification = entry.legacy; notification.replace_extension(L".pmm");
-            return notification.wstring();
+    const PreserveLastError error;
+    try {
+        if (!project || !*project) return {};
+        const auto path = fs::absolute(project).lexically_normal();
+        if (!pmm_paths::IsProject(path) || path.extension().wstring().size() == 4) return path.wstring();
+        const auto local = pmm_paths::Effect(path);
+        std::lock_guard<std::mutex> lock(assignmentMutex);
+        for (const auto& entry : projectAliases) {
+            if (_wcsicmp(entry.local.c_str(), local.c_str()) == 0) {
+                auto notification = entry.legacy;
+                notification.replace_extension(L".pmm");
+                if (AvailableAlias(entry.legacy) && AvailableAlias(notification)) return notification.wstring();
+            }
         }
+        if (projectAliases.size() >= kMaxProjectAliases) {
+            runtime_log::Write("MME project notification alias capacity reached");
+            return {};
+        }
+        // Both virtual spellings must be absent. Bound collision retries and
+        // the old MME filename capacity; never reuse a sequence after wrap.
+        for (unsigned attempt = 0; attempt < 256; ++attempt) {
+            if (projectAliasSequence == std::numeric_limits<std::uint64_t>::max()) break;
+            auto notification = path.parent_path() / (L"~mms-" + std::to_wstring(GetCurrentProcessId()) +
+                L"-" + std::to_wstring(++projectAliasSequence) + L".pmm");
+            auto legacy = notification;
+            legacy.replace_extension(L".emm");
+            if (notification.native().size() >= MAX_PATH) break;
+            if (!AvailableAlias(notification) || !AvailableAlias(legacy)) continue;
+            // Construct the return value before publishing the registration.
+            auto result = notification.wstring();
+            projectAliases.push_back({legacy, local});
+            return result;
+        }
+        runtime_log::Write("MME project notification alias unavailable");
+    } catch (...) {
+        runtime_log::Write("MME project notification alias preparation failed");
     }
-    // A unique virtual filename avoids colliding with a real scene.pmm1.pmm.
-    // MMHack queues notifications before checking whether CreateFile succeeds.
-    static unsigned sequence = 0;
-    for (;;) {
-        auto notification = path.parent_path() / (L"~mms-" + std::to_wstring(GetCurrentProcessId()) +
-            L"-" + std::to_wstring(++sequence) + L".pmm");
-        auto legacy = notification; legacy.replace_extension(L".emm");
-        if (GetFileAttributesW(notification.c_str()) != INVALID_FILE_ATTRIBUTES ||
-            GetFileAttributesW(legacy.c_str()) != INVALID_FILE_ATTRIBUTES) continue;
-        projectAliases.push_back({legacy, local});
-        return notification.wstring();
-    }
+    return {};
 }
 }  // namespace mikumikustudio

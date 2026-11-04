@@ -12,6 +12,8 @@
 #include "mikumikustudio/morph_curve.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/effect_api.hpp"
+#include "mikumikustudio/legacy_mme_bootstrap.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/mmv4mms.hpp"
@@ -1767,9 +1769,10 @@ int wmain(int argc, wchar_t** argv) {
     const bool cameraStartup = argc > 3 && std::wcscmp(argv[3], L"--pmm-camera-startup") == 0;
     const bool cameraLoad = cameraStartup ||
         (argc > 3 && std::wcscmp(argv[3], L"--pmm-camera-load") == 0);
-    HHOOK cameraLoadHook = cameraLoad ? SetWindowsHookExW(WH_CBT,
+    const bool legacyProbe = argc > 3 && std::wcscmp(argv[3], L"--legacy-package") == 0;
+    HHOOK cameraLoadHook = (cameraLoad || legacyProbe) ? SetWindowsHookExW(WH_CBT,
         GuardCameraLoadProbe, nullptr, GetCurrentThreadId()) : nullptr;
-    if (cameraLoad) Check(cameraLoadHook != nullptr, "install hidden camera load guard");
+    if (cameraLoad || legacyProbe) Check(cameraLoadHook != nullptr, "install hidden integration dialog guard");
     const bool menusOnly = std::wcscmp(argv[1], L"--menus-only") == 0;
     HHOOK menuHook = menusOnly ? SetWindowsHookExW(WH_CBT, RejectMenuProbeDialog,
         nullptr, GetCurrentThreadId()) : nullptr;
@@ -1796,6 +1799,167 @@ int wmain(int argc, wchar_t** argv) {
     if (cameraStartup) wcscpy_s(app->EnvFileName(), 256, scenePath);
     if (!InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE)) return 3;
     ShowWindow(app->MainWindow(), SW_HIDE);
+
+    if (argc > 3 && std::wcscmp(argv[3], L"--legacy-package") == 0) {
+        const auto& legacy = plugins::LegacyMmeStatus();
+        if (!legacy.error.empty()) std::printf("legacy startup: %s\n", legacy.error.c_str());
+        Check(legacy.loaded, "packaged original MME/MMHack initialized");
+        Check(GetModuleHandleW(L"MikuMikuDance.exe") == nullptr, "renamed host has no original EXE module alias");
+        Check(!std::filesystem::exists(std::filesystem::path(legacy.directory).parent_path().parent_path().parent_path().parent_path() / L"MMEffect.dll"),
+              "original MME is not installed beside the renamed executable");
+        const auto renderProbe = [&]() {
+            FrameSceneOutputScope output(app);
+            Check(output.Ready(), "hidden legacy output viewport is available");
+            app->state.messageSeen = 10; RenderFrameScene(app);
+        };
+        renderProbe();
+        // Pin the complete old state-query ABI by both name and ordinal.
+        {
+            HMODULE hack = GetModuleHandleW(L"MMHack.dll");
+            Check(hack != nullptr, "MMHack state-query module is loaded");
+            Check(GetProcAddress(hack, "GetAcsAttachedPmd") != nullptr && GetProcAddress(hack, "GetAcsAttachedPmd") == GetProcAddress(hack, MAKEINTRESOURCEA(1)), "MMHack ABI GetAcsAttachedPmd @1");
+            Check(GetProcAddress(hack, "GetBlendMode") != nullptr && GetProcAddress(hack, "GetBlendMode") == GetProcAddress(hack, MAKEINTRESOURCEA(2)), "MMHack ABI GetBlendMode @2");
+            Check(GetProcAddress(hack, "GetClearColor") != nullptr && GetProcAddress(hack, "GetClearColor") == GetProcAddress(hack, MAKEINTRESOURCEA(3)), "MMHack ABI GetClearColor @3");
+            Check(GetProcAddress(hack, "GetCurrentDrawType") != nullptr && GetProcAddress(hack, "GetCurrentDrawType") == GetProcAddress(hack, MAKEINTRESOURCEA(4)), "MMHack ABI GetCurrentDrawType @4");
+            Check(GetProcAddress(hack, "GetCurrentEffect") != nullptr && GetProcAddress(hack, "GetCurrentEffect") == GetProcAddress(hack, MAKEINTRESOURCEA(5)), "MMHack ABI GetCurrentEffect @5");
+            Check(GetProcAddress(hack, "GetCurrentFrameTime") != nullptr && GetProcAddress(hack, "GetCurrentFrameTime") == GetProcAddress(hack, MAKEINTRESOURCEA(6)), "MMHack ABI GetCurrentFrameTime @6");
+            Check(GetProcAddress(hack, "GetCurrentModelID") != nullptr && GetProcAddress(hack, "GetCurrentModelID") == GetProcAddress(hack, MAKEINTRESOURCEA(7)), "MMHack ABI GetCurrentModelID @7");
+            Check(GetProcAddress(hack, "GetCurrentSubsetIndex") != nullptr && GetProcAddress(hack, "GetCurrentSubsetIndex") == GetProcAddress(hack, MAKEINTRESOURCEA(8)), "MMHack ABI GetCurrentSubsetIndex @8");
+            Check(GetProcAddress(hack, "GetDrawnWindow") != nullptr && GetProcAddress(hack, "GetDrawnWindow") == GetProcAddress(hack, MAKEINTRESOURCEA(9)), "MMHack ABI GetDrawnWindow @9");
+            Check(GetProcAddress(hack, "GetLightViewProjMatrix") != nullptr && GetProcAddress(hack, "GetLightViewProjMatrix") == GetProcAddress(hack, MAKEINTRESOURCEA(10)), "MMHack ABI GetLightViewProjMatrix @10");
+            Check(GetProcAddress(hack, "GetMMDMainWindow") != nullptr && GetProcAddress(hack, "GetMMDMainWindow") == GetProcAddress(hack, MAKEINTRESOURCEA(11)), "MMHack ABI GetMMDMainWindow @11");
+            Check(GetProcAddress(hack, "GetMaterialName") != nullptr && GetProcAddress(hack, "GetMaterialName") == GetProcAddress(hack, MAKEINTRESOURCEA(12)), "MMHack ABI GetMaterialName @12");
+            Check(GetProcAddress(hack, "GetSphereMapMode") != nullptr && GetProcAddress(hack, "GetSphereMapMode") == GetProcAddress(hack, MAKEINTRESOURCEA(13)), "MMHack ABI GetSphereMapMode @13");
+            Check(GetProcAddress(hack, "GetSphereMapTexture") != nullptr && GetProcAddress(hack, "GetSphereMapTexture") == GetProcAddress(hack, MAKEINTRESOURCEA(14)), "MMHack ABI GetSphereMapTexture @14");
+            Check(GetProcAddress(hack, "GetTexture") != nullptr && GetProcAddress(hack, "GetTexture") == GetProcAddress(hack, MAKEINTRESOURCEA(15)), "MMHack ABI GetTexture @15");
+            Check(GetProcAddress(hack, "GetToonTexture") != nullptr && GetProcAddress(hack, "GetToonTexture") == GetProcAddress(hack, MAKEINTRESOURCEA(16)), "MMHack ABI GetToonTexture @16");
+            Check(GetProcAddress(hack, "IsDebugMode") != nullptr && GetProcAddress(hack, "IsDebugMode") == GetProcAddress(hack, MAKEINTRESOURCEA(17)), "MMHack ABI IsDebugMode @17");
+            Check(GetProcAddress(hack, "IsEditMode") != nullptr && GetProcAddress(hack, "IsEditMode") == GetProcAddress(hack, MAKEINTRESOURCEA(18)), "MMHack ABI IsEditMode @18");
+            Check(GetProcAddress(hack, "IsEffectFileUsed") != nullptr && GetProcAddress(hack, "IsEffectFileUsed") == GetProcAddress(hack, MAKEINTRESOURCEA(19)), "MMHack ABI IsEffectFileUsed @19");
+            Check(GetProcAddress(hack, "IsToonUsed") != nullptr && GetProcAddress(hack, "IsToonUsed") == GetProcAddress(hack, MAKEINTRESOURCEA(20)), "MMHack ABI IsToonUsed @20");
+            Check(GetProcAddress(hack, "LoadedPMMFile") != nullptr && GetProcAddress(hack, "LoadedPMMFile") == GetProcAddress(hack, MAKEINTRESOURCEA(21)), "MMHack ABI LoadedPMMFile @21");
+            Check(GetProcAddress(hack, "SavedPMMFile") != nullptr && GetProcAddress(hack, "SavedPMMFile") == GetProcAddress(hack, MAKEINTRESOURCEA(22)), "MMHack ABI SavedPMMFile @22");
+            auto effect = reinterpret_cast<void* (__cdecl*)()>(GetProcAddress(hack, "GetCurrentEffect"));
+            Check(effect() != nullptr, "MMHack captured the host standard effect");
+        }
+        // Exercise the actual MMEffect import after the module-directory shim,
+        // using an EMM whose relative FX exists only beside the project.
+        {
+            const auto project = std::filesystem::absolute(scenePath).parent_path() / L"relative-project" / L"scene.emm";
+            PrepareEffectProjectPaths(project.c_str());
+            auto* base = reinterpret_cast<unsigned char*>(GetModuleHandleW(L"MMEffect.dll"));
+            Check(base != nullptr, "real MMEffect is available for relative assignment test");
+            const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+            const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+            const auto imports = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+            const auto* descriptors = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(base + imports.VirtualAddress);
+            decltype(&CreateFileA) open = nullptr;
+            decltype(&CreateFileW) openWide = nullptr;
+            for (std::size_t i = 0; i < imports.Size / sizeof(*descriptors) && descriptors[i].Name; ++i) {
+                const auto& descriptor = descriptors[i];
+                if (!descriptor.OriginalFirstThunk) continue;
+                auto* names = reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor.OriginalFirstThunk);
+                auto* slots = reinterpret_cast<IMAGE_THUNK_DATA*>(base + descriptor.FirstThunk);
+                for (std::size_t j = 0; names[j].u1.AddressOfData; ++j) {
+                    if (IMAGE_SNAP_BY_ORDINAL(names[j].u1.Ordinal)) continue;
+                    auto* name = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(base + names[j].u1.AddressOfData);
+                    if (std::strcmp(reinterpret_cast<const char*>(name->Name), "CreateFileA") == 0)
+                        open = reinterpret_cast<decltype(open)>(slots[j].u1.Function);
+                    if (std::strcmp(reinterpret_cast<const char*>(name->Name), "CreateFileW") == 0)
+                        openWide = reinterpret_cast<decltype(openWide)>(slots[j].u1.Function);
+                }
+            }
+            Check(open != nullptr, "MMEffect supplies its real CreateFileA import");
+            const auto expanded = legacy.directory / L"effects" / L"relative.fx";
+            std::string path;
+            Check(text_encoding::EncodeExact(expanded.c_str(), GetACP(), path), "encode cache-expanded effect path");
+            HANDLE file = open(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            Check(file != INVALID_HANDLE_VALUE, "MMEffect cache-expanded path opens the project effect");
+            char bytes[64]{}; DWORD count = 0;
+            const bool read = ReadFile(file, bytes, sizeof(bytes), &count, nullptr) != FALSE;
+            CloseHandle(file);
+            Check(read && std::string(bytes, count) == "project-relative-effect", "MMEffect import reads exact project-relative content");
+            Check(openWide != nullptr && !legacy.settingsFile.empty(), "MMEffect wide import and stable preferences are available");
+            const auto virtualIni = legacy.directory / L"MMEffect.ini";
+            file = openWide(virtualIni.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file == INVALID_HANDLE_VALUE) {
+                const auto error = GetLastError(); HMODULE owner = nullptr; wchar_t name[32768]{};
+                GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(openWide), &owner);
+                GetModuleFileNameW(owner, name, 32768);
+                std::printf("stable INI open error=%lu owner=%ls exists=%lu\n", error, name, GetFileAttributesW(legacy.settingsFile.c_str()));
+            }
+            Check(file != INVALID_HANDLE_VALUE, "MMEffect wide import opens stable settings");
+            const char marker[] = "\n[MMS_TEST]\nwide=retained\n";
+            DWORD written = 0; LARGE_INTEGER end{};
+            const bool saved = SetFilePointerEx(file, end, nullptr, FILE_END) &&
+                WriteFile(file, marker, sizeof(marker)-1, &written, nullptr) && written == sizeof(marker)-1;
+            CloseHandle(file);
+            Check(saved && !std::filesystem::exists(virtualIni), "MMEffect writes stable settings without creating cache INI");
+            PrepareEffectProjectPaths(nullptr);
+        }
+        HMODULE deviceModule = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>((*reinterpret_cast<void***>(app->Renderer()->device))[41]), &deviceModule);
+        wchar_t devicePath[1024]{}; GetModuleFileNameW(deviceModule, devicePath, 1024);
+        std::printf("legacy device BeginScene module: %ls\n", devicePath);
+        auto mainWindow = reinterpret_cast<HWND(WINAPI*)()>(GetProcAddress(GetModuleHandleW(L"MMHack.dll"), "GetMMDMainWindow"));
+        auto currentEffect = reinterpret_cast<void*(WINAPI*)()>(GetProcAddress(GetModuleHandleW(L"MMHack.dll"), "GetCurrentEffect"));
+        std::printf("legacy main=%p host=%p effect=%p menuItems=%d\n", mainWindow(), app->MainWindow(), currentEffect(), GetMenuItemCount(GetMenu(app->MainWindow())));
+        renderProbe();
+        for (int i = 0; i < GetMenuItemCount(GetMenu(app->MainWindow())); ++i) {
+            wchar_t text[128]{}; GetMenuStringW(GetMenu(app->MainWindow()), i, text, 128, MF_BYPOSITION);
+            std::printf("menu %d %ls %u\n", i, text, GetMenuState(GetSubMenu(GetMenu(app->MainWindow()), i), 40005, MF_BYCOMMAND));
+        }
+        Check(GetMenuState(GetMenu(app->MainWindow()), 40005, MF_BYCOMMAND) != UINT(-1), "real MME menu is installed");
+        LoadAccessoryFile(scenePath);
+        Check(app->AccessorySlot(0) != nullptr, "load real accessory through MMHack hooks");
+        app->GroundGridEnabled() = 0;
+        const auto greenPixels = [&](bool enabled) {
+            const bool current = (GetMenuState(GetMenu(app->MainWindow()), 40006, MF_BYCOMMAND) & MF_CHECKED) != 0;
+            if (current != enabled) SendMessageW(app->MainWindow(), WM_COMMAND, 40006, 0);
+            Check(((GetMenuState(GetMenu(app->MainWindow()), 40006, MF_BYCOMMAND) & MF_CHECKED) != 0) == enabled,
+                  "MME enable toggle responds in renamed host");
+            for (int frame = 0; frame < 3; ++frame) renderProbe();
+            auto* device = app->Renderer()->device;
+            Microsoft::WRL::ComPtr<IDirect3DSurface9> source, resolved, cpu;
+            Check(SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &source)), "legacy get backbuffer");
+            D3DSURFACE_DESC desc{}; source->GetDesc(&desc);
+            Check(SUCCEEDED(device->CreateRenderTarget(desc.Width, desc.Height, D3DFMT_A8R8G8B8,
+                D3DMULTISAMPLE_NONE, 0, FALSE, &resolved, nullptr)), "legacy resolve target");
+            Check(SUCCEEDED(device->StretchRect(source.Get(), nullptr, resolved.Get(), nullptr, D3DTEXF_NONE)), "legacy resolve image");
+            Check(SUCCEEDED(device->CreateOffscreenPlainSurface(desc.Width, desc.Height, D3DFMT_A8R8G8B8,
+                D3DPOOL_SYSTEMMEM, &cpu, nullptr)), "legacy CPU readback");
+            Check(SUCCEEDED(device->GetRenderTargetData(resolved.Get(), cpu.Get())), "legacy read rendered pixels");
+            D3DLOCKED_RECT lock{}; Check(SUCCEEDED(cpu->LockRect(&lock, nullptr, D3DLOCK_READONLY)), "legacy lock pixels");
+            size_t count = 0;
+            for (UINT y = 0; y < desc.Height; ++y) {
+                const auto* row = reinterpret_cast<const uint32_t*>(static_cast<const char*>(lock.pBits) + y * lock.Pitch);
+                for (UINT x = 0; x < desc.Width; ++x) {
+                    const auto c = row[x]; const int r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
+                    if (g > 180 && r < 50 && b < 50) ++count;
+                }
+            }
+            cpu->UnlockRect(); return count;
+        };
+        const auto enabled = greenPixels(true), disabled = greenPixels(false), restored = greenPixels(true);
+        std::printf("legacy effect green pixels enabled=%zu disabled=%zu restored=%zu\n", enabled, disabled, restored);
+        Check(enabled > disabled + 100 && restored > disabled + 100, "real FX rendering changes pixels and restores after toggle");
+        ResetAppState(app);
+        Check(app->AccessorySlot(0) == nullptr, "MMHack accessory deletion completes");
+        ShutdownCleanup(app); delete app; g_Block = nullptr;
+        UnhookWindowsHookEx(cameraLoadHook);
+        std::puts("PASS renamed packaged MME loads draws toggles deletes and exits");
+        return 0;
+    }
+    if (argc > 3 && std::wcscmp(argv[3], L"--bone-gizmo") == 0) {
+        if (_wcsicmp(std::filesystem::path(scenePath).extension().c_str(), L".pmm") == 0) {
+            wcscpy_s(app->EnvFileName(), 256, scenePath); LoadSceneFile();
+        } else {
+            LoadModelFile(app, scenePath, false);
+        }
+        CheckBoneGizmoScene(app);
+        ShutdownCleanup(app); delete app; g_Block = nullptr; return 0;
+    }
     if (argc > 3 && std::wcscmp(argv[3], L"--model-order") == 0) {
         model_order_dialog_checks::Run(app, scenePath);
         ShutdownCleanup(app); delete app; g_Block = nullptr; return 0;

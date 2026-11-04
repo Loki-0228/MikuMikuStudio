@@ -8,7 +8,6 @@ namespace mikumikustudio {
 class MMDApp;
 
 // Repair the legacy MME English menu and preserve its switch across languages.
-void PrepareEffectDefaults();
 void InstallEffectMenuCompatibility(MMDApp* app);
 // Localize the live MME popup only when MMEffect.dll is already loaded.
 void RefreshEffectMenuLanguage(MMDApp* app);

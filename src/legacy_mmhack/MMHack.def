@@ -1,0 +1,24 @@
+LIBRARY MMHack
+EXPORTS
+    GetAcsAttachedPmd @1
+    GetBlendMode @2
+    GetClearColor @3
+    GetCurrentDrawType @4
+    GetCurrentEffect @5
+    GetCurrentFrameTime @6
+    GetCurrentModelID @7
+    GetCurrentSubsetIndex @8
+    GetDrawnWindow @9
+    GetLightViewProjMatrix @10
+    GetMMDMainWindow @11
+    GetMaterialName @12
+    GetSphereMapMode @13
+    GetSphereMapTexture @14
+    GetTexture @15
+    GetToonTexture @16
+    IsDebugMode @17
+    IsEditMode @18
+    IsEffectFileUsed @19
+    IsToonUsed @20
+    LoadedPMMFile @21
+    SavedPMMFile @22

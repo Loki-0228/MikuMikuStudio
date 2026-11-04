@@ -48,7 +48,23 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
     m.id = j.At("id").String(); CheckId(m.id); m.name = j.At("name").String();
     if (m.name.empty()) throw std::invalid_argument("empty name");
     m.version = ParseVersion(j.At("version").String());
-    if (j.At("kind").String() != "native") throw std::invalid_argument("unsupported plugin kind");
+    const auto kind = j.At("kind").String();
+    if (kind == "legacy_mme") {
+        m.kind = Manifest::Kind::LegacyMme; m.major = m.minor = 0;
+        if (j.At("architecture").String() != "x64") throw std::invalid_argument("expected x64");
+        m.minWindows = ParseVersion(j.At("minWindows").String());
+        if (j.At("reloadPolicy").String() != "restart") throw std::invalid_argument("expected restart reloadPolicy");
+        m.entry = PackageFile(m.package, j.At("entry").String());
+        if (j.object.count("hack")) m.legacyHack = PackageFile(m.package, j.At("hack").String());
+        if (SamePath(m.entry, m.legacyHack) || Lower(m.entry.extension().native()) != L".dll" ||
+            (!m.legacyHack.empty() && Lower(m.legacyHack.extension().native()) != L".dll"))
+            throw std::invalid_argument("legacy MME requires two distinct DLLs");
+        for (const auto* field : {"abi", "capabilities", "requiresServices", "dependencies", "nativeDependencies"})
+            if (j.object.count(field)) throw std::invalid_argument(std::string("legacy MME does not use native ABI field: ") + field);
+        Unknown(j, {"schemaVersion", "id", "name", "version", "kind", "entry", "hack", "architecture", "minWindows", "reloadPolicy"}, log);
+        return m;
+    }
+    if (kind != "native") throw std::invalid_argument("unsupported plugin kind");
     const auto& abi = j.At("abi"); m.major = abi.At("major").UInt(); m.minor = abi.At("minMinor").UInt();
     if (m.major != 1 || m.minor != 0) throw std::invalid_argument("unsupported plugin ABI");
     if (j.At("architecture").String() != "x64") throw std::invalid_argument("expected x64");

@@ -96,6 +96,31 @@ static void JsonChecks() {
     CHECK(ParseVersion("1.10.0") > ParseVersion("1.2.99"));
 }
 static void DiscoveryChecks(const fs::path& root) {
+    {
+        const auto legacyRoot = root / "legacy-packages";
+        const auto package = legacyRoot / "effects" / "mme";
+        Write(package / "MMHack.dll", "fixture"); Write(package / "MMEffect.dll", "fixture");
+        const std::string legacy = R"({"schemaVersion":1,"id":"example.legacy","name":"Legacy","version":"0.37.0","kind":"legacy_mme","entry":"MMEffect.dll","hack":"MMHack.dll","architecture":"x64","minWindows":"6.1.0","reloadPolicy":"restart"})";
+        Write(package / "plugin.json", legacy);
+        auto manifest = ReadManifest(package / "plugin.json", {});
+        CHECK(manifest.kind == Manifest::Kind::LegacyMme && manifest.major == 0);
+        CHECK(manifest.legacyHack.filename() == L"MMHack.dll");
+        auto builtin = legacy;
+        builtin.erase(builtin.find("\"hack\":\"MMHack.dll\","), std::strlen("\"hack\":\"MMHack.dll\","));
+        Write(package / "plugin.json", builtin);
+        CHECK(ReadManifest(package / "plugin.json", {}).legacyHack.empty());
+        Write(package / "plugin.json", legacy);
+        CHECK(Discover(legacyRoot).packages.size() == 1);
+        Write(legacyRoot / "config.json", R"({"schemaVersion":1,"maxDepth":1,"disabledPlugins":[]})");
+        CHECK(Discover(legacyRoot).packages.empty());
+        Write(legacyRoot / "config.json", R"({"schemaVersion":1,"maxDepth":2,"disabledPlugins":["example.legacy"]})");
+        auto disabled = Discover(legacyRoot); CHECK(disabled.packages.size() == 1); CHECK(Resolve(disabled, {}).empty());
+        NativeLoader loader; CHECK(Throws([&] { loader.Load(manifest, {}); }));
+        auto bad = legacy; bad.replace(bad.find("MMHack.dll"), std::strlen("MMHack.dll"), "../outside.dll");
+        Write(package / "plugin.json", bad); CHECK(Throws([&] { ReadManifest(package / "plugin.json", {}); }));
+        bad = legacy; bad.insert(bad.size() - 1, ",\"abi\":{\"major\":1,\"minMinor\":0}");
+        Write(package / "plugin.json", bad); CHECK(Throws([&] { ReadManifest(package / "plugin.json", {}); }));
+    }
     fs::path p = root / L"发现测试"; fs::create_directories(p);
     Write(p / "root.dll", "not a PE"); Write(p / "root.plugin.json", ManifestText("example.root", "root.dll"));
     fs::path nested = p;

@@ -1,4 +1,5 @@
 #include "manager.hpp"
+#include "mikumikustudio/legacy_mme_bootstrap.hpp"
 #include "ui_preferences_file.hpp"
 #include "edit_store.hpp"
 #include "ui_refresh_binding.hpp"
@@ -767,6 +768,15 @@ struct Manager::Impl {
         auto order = Resolve(discovered, [&](const std::string& d) { Write(d); }); std::set<std::string> started;
         for (size_t index : order) {
             const auto& m = discovered.packages[index];
+            if (m.kind == Manifest::Kind::LegacyMme) {
+                const auto& legacy = LegacyMmeStatus();
+                const bool loaded = legacy.loaded && legacy.id == m.id;
+                failed.push_back({m.id, loaded ? "legacy-loaded" : "failed",
+                    loaded ? std::string{} : (legacy.error.empty() ? "legacy MME requires graphics startup and restart" : legacy.error), m.package});
+                // Legacy packages do not supply native ABI services or a
+                // hot-unload lifecycle. They cannot satisfy native dependencies.
+                continue;
+            }
             auto instance = std::make_unique<Instance>(); auto& i = *instance; i.host = this; i.ui = {&registry, m.id}; i.render.id = m.id; i.status = {m.id, "validated", {}, m.package};
             i.images.owner = &images;
             i.evaluation.owner = evaluations.get();

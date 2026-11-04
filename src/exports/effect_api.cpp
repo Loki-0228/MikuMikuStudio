@@ -1,5 +1,6 @@
 #include "mikumikustudio/native_mesh.hpp"
 #include "mikumikustudio/legacy_mme.hpp"
+#include "mikumikustudio/legacy_mme_bootstrap.hpp"
 #include "mikumikustudio/effect_display.hpp"
 #include "mikumikustudio/perf_timing.hpp"
 // ===========================================================================
@@ -492,26 +493,6 @@ void RefreshEffectMenuLanguage(MMDApp* app) {
     HMENU menu = EffectMenu(app->MainWindow());
     if (menu != nullptr)
         LocalizeEffectMenu(menu, app->EnglishUI());
-}
-
-// MME reads these [System] settings from MMEffect.ini during initialization.
-// Seed only absent settings before the D3D proxy initializes MME. Its own
-// menu command remains responsible for subsequent user changes and persistence.
-void PrepareEffectDefaults() {
-    wchar_t path[32768]{};
-    const DWORD count = GetModuleFileNameW(nullptr, path, 32768);
-    if (count == 0 || count >= 32768) return;
-    std::wstring directory(path, count);
-    directory.resize(directory.find_last_of(L"\\/") + 1);
-    if (GetFileAttributesW((directory + L"MMEffect.dll").c_str()) == INVALID_FILE_ATTRIBUTES)
-        return;
-    const std::wstring ini = directory + L"MMEffect.ini";
-    for (const auto* key : {L"SkipValidation", L"EMMAutoSave"}) {
-        wchar_t value[32]{};
-        GetPrivateProfileStringW(L"System", key, L"__missing__", value, 32, ini.c_str());
-        if (std::wcscmp(value, L"__missing__") == 0)
-            WritePrivateProfileStringW(L"System", key, L"true", ini.c_str());
-    }
 }
 
 void InstallEffectMenuCompatibility(MMDApp* app) {
@@ -1103,3 +1084,46 @@ __declspec(dllexport) float ExpGetFrameTime() {
 }
 
 }  // extern "C"
+
+// Private MMHack bridge extensions. All returned paths and resources are borrowed.
+extern "C" __declspec(dllexport) void* __cdecl MMSLegacyObjectBacking(
+    int kind, int index, const wchar_t** path, IUnknown** resource) {
+    if (path) *path = nullptr;
+    if (resource) *resource = nullptr;
+    auto* app = mikumikustudio::g_Block;
+    if (!app || index < 0) return nullptr;
+    if (kind == 1) {
+        auto* base = ModelByIndex(app, index);
+        if (!base) return nullptr;
+        auto* model = mikumikustudio::mdl::Mdl(base);
+        if (path) *path = model->path;
+        if (resource) *resource = static_cast<IUnknown*>(model->indexBuffer);
+        return base;
+    }
+    if (kind != 0) return nullptr;
+    auto* accessory = AcsByIndex(app, index);
+    if (!accessory) return nullptr;
+    if (path) *path = accessory->sourcePath;
+    if (resource) *resource = static_cast<IUnknown*>(accessory->mesh);
+    return accessory;
+}
+extern "C" __declspec(dllexport) BOOL __cdecl MMSLegacyAccessoryAttachment(
+    std::uint64_t id, std::uint64_t* modelId, int* bone) {
+    if (!modelId || !bone) return FALSE;
+    *modelId = 0; *bone = -1;
+    auto* app = mikumikustudio::g_Block;
+    if (!app || id == 0 || id > UINT32_MAX) return FALSE;
+    for (int i = 0; i < CountAcs(app); ++i) {
+        auto* accessory = AcsByIndex(app, i);
+        if (static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(accessory)) != id) continue;
+        const int parent = accessory->parentModel;
+        if (parent < 0 || parent >= mikumikustudio::kModelSlotCount) return FALSE;
+        auto* base = mikumikustudio::native_mesh::RenderModel(app->ModelSlot(parent));
+        if (!base || accessory->parentBone < 0 ||
+            static_cast<std::uint32_t>(accessory->parentBone) >= mikumikustudio::mdl::Mdl(base)->boneCount) return FALSE;
+        *modelId = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(base));
+        *bone = accessory->parentBone;
+        return TRUE;
+    }
+    return FALSE;
+}

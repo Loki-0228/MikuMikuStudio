@@ -63,6 +63,11 @@ foreach ($build in $builds) {
     $stage = Join-Path $output $name
     New-Item -ItemType Directory -Path $stage | Out-Null
     Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MikuMikuDance.exe') -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MMSAdapter.dll') -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MMHack.dll') -Destination $stage
+    $pluginRoot = Join-Path $stage 'PLUGINS'
+    New-Item -ItemType Directory -Path $pluginRoot | Out-Null
+    [IO.File]::WriteAllText((Join-Path $pluginRoot 'config.json'), '{"schemaVersion":1,"maxDepth":2,"disabledPlugins":[]}' + "`n")
     Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination $stage
     Copy-Item -LiteralPath (Join-Path $repo 'licenses') -Destination $stage -Recurse
     [IO.File]::WriteAllText((Join-Path $stage 'RELEASE_NOTES.md'), $releaseNotes)

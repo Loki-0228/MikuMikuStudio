@@ -9,7 +9,9 @@ Version ParseVersion(const std::string&);
 struct ServiceRequirement { std::string id; uint32_t major, minor; };
 struct Dependency { std::string id; Version minimum, maximum; };
 struct Manifest {
+    enum class Kind { Native, LegacyMme } kind = Kind::Native;
     fs::path file, package, entry;
+    fs::path legacyHack;
     std::string id, name;
     Version version{}, minWindows{};
     uint32_t major = 1, minor = 0;

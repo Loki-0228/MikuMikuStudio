@@ -1,4 +1,30 @@
 # Native plugin ABI. This target has no renderer, CUDA, NVAPI or DX12 dependency.
+add_subdirectory(src/legacy_adapter)
+add_subdirectory(src/legacy_mmhack)
+set_target_properties(MMSAdapter PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>")
+target_link_options(MMSAdapter PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+add_dependencies(MikuMikuStudio MMSAdapter)
+add_executable(legacy_image_tests EXCLUDE_FROM_ALL
+    tests/plugins/legacy_image_tests.cpp src/plugins/legacy_image.cpp)
+target_compile_features(legacy_image_tests PRIVATE cxx_std_17)
+target_link_options(legacy_image_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(legacy_image_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME legacy_image_contract COMMAND legacy_image_tests)
+add_executable(legacy_adapter_tests EXCLUDE_FROM_ALL
+    tests/plugins/legacy_adapter_tests.cpp exports/MikuMikuDance.def)
+set_target_properties(legacy_adapter_tests PROPERTIES ENABLE_EXPORTS ON)
+add_executable(legacy_adapter_missing_tests EXCLUDE_FROM_ALL tests/plugins/legacy_adapter_tests.cpp)
+target_compile_definitions(legacy_adapter_missing_tests PRIVATE MMS_ADAPTER_MISSING_EXPORTS=1)
+foreach(probe legacy_adapter_tests legacy_adapter_missing_tests)
+    target_compile_features(${probe} PRIVATE cxx_std_17)
+    target_link_options(${probe} PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+    set_target_properties(${probe} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_dependencies(${probe} MMSAdapter)
+endforeach()
+add_test(NAME legacy_adapter_renamed_host COMMAND legacy_adapter_tests $<TARGET_FILE:MMSAdapter>)
+add_test(NAME legacy_adapter_missing_host_exports COMMAND legacy_adapter_missing_tests $<TARGET_FILE:MMSAdapter>)
 enable_language(C)
 add_executable(render_cpp_extension_tests EXCLUDE_FROM_ALL tests/plugins/render_cpp_extension_tests.cpp)
 add_executable(snapshot_cpp_safety_tests EXCLUDE_FROM_ALL tests/plugins/snapshot_cpp_safety_tests.cpp)
@@ -113,6 +139,8 @@ set_target_properties(system_settings_tests PROPERTIES
 add_test(NAME system_settings_store COMMAND system_settings_tests)
 set_tests_properties(system_settings_store PROPERTIES TIMEOUT 60)
 add_library(mms_plugin_runtime STATIC
+    src/plugins/legacy_image.cpp
+    src/plugins/legacy_runtime.cpp
     src/plugins/manifest.cpp
     src/plugins/loader_win32.cpp
     src/plugins/ui_registry.cpp
