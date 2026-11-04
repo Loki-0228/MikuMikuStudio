@@ -7,9 +7,16 @@
 namespace mikumikustudio { LRESULT CALLBACK EditSubclassProc(HWND,UINT,WPARAM,LPARAM); }
 namespace {
 struct PoseNumericFixture {
+    struct AccessoryPoolDeleter {
+        void operator()(mdl::AccessoryKey* keys) const noexcept { mdl::KeyPoolDestroy(keys); }
+    };
     Fixture first,second;
     mdl::AccessoryRecord accessory{};
     std::unique_ptr<MMDApp> app=std::make_unique<MMDApp>();
+    // Keep our allocation separate from the slot: accessory-specific derived
+    // fixtures replace that slot and own their replacement pool themselves.
+    // History is destroyed first if construction of a derived fixture throws.
+    std::unique_ptr<mdl::AccessoryKey,AccessoryPoolDeleter> accessoryKeys;
     plugins::StorageStore storage;
     plugins::SharedHistory history{storage};
     MMDApp* previous=g_Block;
@@ -21,6 +28,13 @@ struct PoseNumericFixture {
         app->SelectedModelSlot()=0;app->WindowLayoutReady()=1;
         app->state.coordinateSystem=1;app->state.globalTrackSelected[1]=1;
         accessory.rowSelected=1;app->AccessorySlot(7)=&accessory;
+        accessoryKeys.reset(mdl::KeyPoolCreate<mdl::AccessoryKey>(1));
+        Check(accessoryKeys&&mdl::KeyPoolIdentity(accessoryKeys.get()),
+            "numeric fixture accessory owns a tracked native key pool");
+        app->AccessoryKeys(7)=accessoryKeys.get();
+        accessoryKeys->parentModel=accessory.parentModel;accessoryKeys->parentBone=accessory.parentBone;
+        accessoryKeys->visible=1;accessoryKeys->scale=accessoryKeys->opacity=1;
+        plugins::SceneObjectIdentity(&accessory);
         for(auto* f:{&first,&second}) {
             f->m->selectedBone=0;f->selected[0]=1;
             for(auto& bone:f->bones)for(int n=0;n<4;++n)bone.matInit[n*5]=1;
@@ -47,7 +61,9 @@ struct PoseNumericFixture {
     ~PoseNumericFixture() {
         history.Reset();history.Collect();
         plugins::ForgetSceneObject(first.raw());plugins::ForgetSceneObject(second.raw());
+        plugins::ForgetSceneObject(&accessory);
         app->ModelSlot(0)=app->ModelSlot(1)=nullptr;app->AccessorySlot(7)=nullptr;
+        app->AccessoryKeys(7)=nullptr;accessoryKeys.reset();
         DestroyWindow(app->MainWindow());app->MainWindow()=nullptr;g_Block=previous;
     }
     HWND Edit(int id)const{return GetDlgItem(app->MainWindow(),id);}

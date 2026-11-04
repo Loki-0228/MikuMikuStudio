@@ -286,7 +286,8 @@ template<class K> struct Registration final:HistoryChange,std::enable_shared_fro
         if(generation==UINT64_MAX)return MMS_E_NOT_READY;
         if(!published&&(!forward||app.CurrentFrame()!=playhead))return MMS_E_STALE;
         return Boundary([&]()->MmsResult{
-            if(app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+            if(app.CurrentFrame()<frame_limits::minimum||app.CurrentFrame()>frame_limits::maximum||
+               (!published&&app.CurrentFrame()<0))return MMS_E_ARGUMENT;
             if(!FinitePose(ReadPose<K>(app)))return MMS_E_ARGUMENT;
             if(app.LastRegisteredFrame()!=(forward?beforeLast:afterLast)||(!published&&!(ReadPose<K>(app)==beforePose)))return MMS_E_STALE;
             auto candidate=std::make_unique<Candidate>(this->shared_from_this(),forward);
@@ -302,6 +303,10 @@ template<class K> struct Registration final:HistoryChange,std::enable_shared_fro
                 return static_cast<const Candidate*>(p)->Target(slot);}};
             candidate->curves=authoring.Prepare(view,registrationFrames,forward);
             if(!published)candidate->after=firstPose;
+            // Negative poses belong to the signed-key evaluator. Replaying a
+            // positive-key edit must not sample an unsigned native track at a
+            // negative frame or overwrite that independently evaluated pose.
+            else if(app.CurrentFrame()<0)candidate->after=candidate->before;
             else if(!candidate->curves->Authored())candidate->after=NativePose<K>(app.CurrentFrame(),[&](unsigned i){return candidate->Target(i);});
             else {std::array<double,12> values{};if(!candidate->curves->Sample(app.CurrentFrame(),values))return MMS_E_ARGUMENT;candidate->after=CurvePose<K>(values);}
             // Finite keys do not guarantee a finite native sample: the light

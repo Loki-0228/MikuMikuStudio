@@ -119,11 +119,22 @@ Report InspectPmm(MMDApp& app){
     signedFrame(app.TimelineStartFrame(),L"timeline start frame");
     if(negative_frames::Count(&app))report.canCopyLegacy=false;
     InspectFrame(report,app.LastRegisteredFrame(),L"last registered frame");
-    for (const auto control : {panel::kPlayStartFrameEdit, panel::kPlayStopFrameEdit}) {
-        char text[256]{}; std::int32_t frame = 0;
-        GetWindowTextA(GetDlgItem(app.MainWindow(), control), text, sizeof text);
-        if(frame_limits::ParsePlaybackBound(text,frame))signedFrame(frame,L"playback range");
-        else Invalid(report,L"playback range");
+    std::int32_t bounds[2]{};bool validBounds=true;
+    for(unsigned i=0;i<2;++i) {
+        char text[256]{};
+        GetWindowTextA(GetDlgItem(app.MainWindow(),i?panel::kPlayStopFrameEdit:panel::kPlayStartFrameEdit),text,sizeof text);
+        if(!frame_limits::ParsePlaybackBound(text,bounds[i])) {
+            Invalid(report,L"playback range");validBounds=false;
+        }
+    }
+    if(validBounds) {
+        std::int32_t from=0,to=0;
+        // An inverted pair uses the right value as a distance from the end.
+        // Ordered negative endpoints still mean literal negative frames.
+        const bool relative=bounds[0]>bounds[1] && frame_limits::ResolveRange(
+            bounds[0],bounds[1],app.LastRegisteredFrame(),from,to);
+        signedFrame(bounds[0],L"playback range");
+        signedFrame(relative?to:bounds[1],L"playback range");
     }
     for(int slot=0;slot<kModelSlotCount;++slot){
         const auto* raw=app.ModelSlot(slot);if(!raw)continue;const auto& m=*mdl::Mdl(raw);

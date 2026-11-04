@@ -1000,7 +1000,11 @@ void BoundsMode(MMDApp* app, unsigned char* raw) {
 
 }  // namespace
 
+#include "negative_cursor_checks.hpp"
+
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && wcscmp(argv[1], L"--negative-cursor-only") == 0)
+        return negative_cursor_checks::Run();
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     INITCOMMONCONTROLSEX controls{sizeof controls, ICC_WIN95_CLASSES};
     InitCommonControlsEx(&controls);

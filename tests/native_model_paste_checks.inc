@@ -46,6 +46,178 @@ struct ModelPasteFixture : DisplayPasteFixture {
         DisplayLegacyFrame(second,unsigned(app->CurrentFrame()));
     }
 };
+struct RealIdentityModelPasteFixture : ModelPasteFixture {
+    std::array<mdl::MorphRecord,2> namedMorphs{};
+    RealIdentityModelPasteFixture() {
+        for(auto& bone:first.bones){std::memset(bone.name,0,sizeof bone.name);std::strcpy(bone.name,"same-bone");}
+        for(auto& morph:namedMorphs){morph=first.morphs[0];std::strcpy(morph.name,"same-morph");}
+        first.m->morphs=namedMorphs.data();first.m->morphCount=unsigned(namedMorphs.size());first.m->physicsMode=2;
+        std::memset(first.m->boneKeys,0,mdl::BoneKeyCapacity(first.m->boneKeys)*sizeof(mdl::BoneKey));
+        std::memset(first.m->morphKeys,0,mdl::MorphKeyCapacity(first.m->morphKeys)*sizeof(mdl::MorphKey));
+        for(unsigned root=0;root<2;++root){
+            first.m->boneKeys[root].rotation[3]=1;first.m->boneKeys[root].next=root+2;
+            first.m->morphKeys[root].next=root+2;
+        }
+        for(unsigned i=0;i<3;++i){
+            const unsigned index=i+2;auto& bone=first.m->boneKeys[index];
+            bone.previous=i==2?3:i;bone.next=i==1?4:0;bone.frame=i==2?14:10;
+            bone.position[0]=3.f*float(index);bone.position[1]=-float(index);bone.rotation[3]=1;
+            bone.physicsDisabled=i==1;
+            for(unsigned lane=0;lane<16;++lane)bone.interpolation[lane]=static_cast<unsigned char>(20+index+lane);
+            auto& morph=first.m->morphKeys[index];morph.previous=bone.previous;morph.next=bone.next;morph.frame=bone.frame;
+            const float values[]={.25f,.75f,.5f};morph.value=values[i];
+        }
+        first.m->maxFrame=30;
+    }
+    ~RealIdentityModelPasteFixture(){
+        history.Reset();history.Collect();
+        first.m->morphs=first.morphs.data();first.m->morphCount=unsigned(first.morphs.size());
+    }
+    void Mark(unsigned families,bool batch=false,unsigned displays=0){
+        ClearRealCopyMarks(first);
+        for(unsigned index=2;index<=4;++index)if(batch||index==3){
+            if(families&1u)first.m->boneKeys[index].allocated=1;
+            if(families&2u)first.m->morphKeys[index].allocated=1;
+        }
+        for(unsigned index=0;index<displays;++index)first.m->displayKeys[index].allocated=1;
+    }
+};
+void RealSameModelIdentityPasteChecks() {
+    using Mode=plugins::SharedHistory::RecordingMode;
+    // Single-family routes must consume the same private resolved-source plan
+    // as the aggregate; the last case includes both duplicate tracks and time offsets.
+    for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly})for(unsigned scenario:{1u,2u,3u,7u}){
+        RealIdentityModelPasteFixture f;RealFrameCopyBuffers buffers(*f.app);plugins::NativePoseTestBinding binding(*f.app,f.history);
+        Check(f.history.SetMode(mode)==MMS_OK,"configure real same-model copy common-history mode");
+        const unsigned families=scenario&3u;const bool batch=(scenario&4u)!=0;f.Mark(families,batch);
+        CmdControl400(f.app.get(),f.app->MainWindow(),420,0);
+        const unsigned count=batch?3:1;
+        Check(f.app->ClipboardCounts().bones==((families&1u)?count:0)&&
+            f.app->ClipboardCounts().morphs==((families&2u)?count:0)&&!f.app->ClipboardCounts().displays,
+            "actual 420 copies only requested bone and morph families");
+        if(families&1u)Check(frame_clipboard::BoneTarget(f.app.get(),f.first.raw(),0)==(batch?0:1),"actual copy records the exact duplicated bone track");
+        if(families&2u)Check(frame_clipboard::MorphTarget(f.app.get(),f.first.raw(),0)==(batch?0:1),"actual copy records the exact duplicated morph track");
+        const ModelKeyState before(f.first);const auto ring=PoseRingDigest(f.first);const auto selection=f.first.selected;
+        f.app->CurrentFrame()=40;CmdControl400(f.app.get(),f.app->MainWindow(),421,0);
+        Check(f.history.UndoCount()==1&&!f.history.RedoCount()&&PoseRingDigest(f.first)==ring&&f.first.selected==selection,
+            "actual same-model identity paste publishes one common-history step and preserves selection and legacy rings");
+        const auto boneCapacity=mdl::BoneKeyCapacity(f.first.m->boneKeys),morphCapacity=mdl::MorphKeyCapacity(f.first.m->morphKeys);
+        for(unsigned i=0;i<3;++i)if(batch||i==1){
+            const unsigned track=i==0?0:1,frame=i==2?44:40;
+            if(families&1u){const int key=FindRealCopyKey(f.first.m->boneKeys,boneCapacity,track,frame);const auto& expected=before.bones[i+2];
+                Check(key>=0&&std::memcmp(f.first.m->boneKeys[key].position,expected.position,sizeof expected.position)==0&&
+                    std::memcmp(f.first.m->boneKeys[key].rotation,expected.rotation,sizeof expected.rotation)==0&&
+                    std::memcmp(f.first.m->boneKeys[key].interpolation,expected.interpolation,sizeof expected.interpolation)==0&&
+                    f.first.m->boneKeys[key].physicsDisabled==expected.physicsDisabled&&f.first.m->boneKeys[key].allocated,
+                    "bound identity paste preserves each bone pose interpolation physics mark and relative frame");}
+            if(families&2u){const int key=FindRealCopyKey(f.first.m->morphKeys,morphCapacity,track,frame);
+                Check(key>=0&&f.first.m->morphKeys[key].value==before.morphs[i+2].value&&f.first.m->morphKeys[key].allocated,
+                    "bound identity paste preserves each morph value selection and relative frame");}
+        }
+        if(!batch)Check(FindRealCopyKey(f.first.m->boneKeys,boneCapacity,0,40)<0&&
+            FindRealCopyKey(f.first.m->morphKeys,morphCapacity,0,40)<0,
+            "copying only second duplicate tracks never writes the first name match");
+        const ModelKeyState after(f.first);
+        // Replace the heap clipboard by copying the other model. Keep this
+        // model's live key marks unchanged so replay checks only clipboard
+        // independence rather than unrelated later selection ownership.
+        ClearRealCopyMarks(f.second);f.second.m->boneKeys[0].allocated=1;f.second.m->morphKeys[0].allocated=1;
+        f.app->SelectedModelSlot()=1;
+        CmdControl400(f.app.get(),f.app->MainWindow(),420,0);
+        Check(frame_clipboard::BoneTarget(f.app.get(),f.second.raw(),0)==0&&frame_clipboard::MorphTarget(f.app.get(),f.second.raw(),0)==0&&
+            frame_clipboard::BoneTarget(f.app.get(),f.first.raw(),0)<0&&frame_clipboard::MorphTarget(f.app.get(),f.first.raw(),0)<0,
+            "real second copy replaces both clipboard identities before replay");
+        f.app->SelectedModelSlot()=0;
+        CmdControl400(f.app.get(),f.app->MainWindow(),400,0);
+        Check(!f.history.UndoCount()&&f.history.RedoCount()==1&&before.Matches(f.first)&&f.first.selected==selection&&PoseRingDigest(f.first)==ring,
+            "actual bound undo restores original mixed keys independently of replaced clipboard");
+        buffers.Clear();
+        CmdControl400(f.app.get(),f.app->MainWindow(),401,0);
+        Check(f.history.UndoCount()==1&&!f.history.RedoCount()&&after.Matches(f.first)&&f.first.selected==selection&&PoseRingDigest(f.first)==ring,
+            "actual bound redo restores all pasted families after heap clipboard destruction");
+    }
+    // Exercise the actual command route, including a destination that cannot
+    // represent the source's second occurrence. A missing target must never
+    // silently fall back to the first same-named track.
+    for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly})for(bool targetExists:{true,false}){
+        RealIdentityModelPasteFixture f;RealFrameCopyBuffers buffers(*f.app);plugins::NativePoseTestBinding binding(*f.app,f.history);
+        Check(f.history.SetMode(mode)==MMS_OK,"configure real cross-model copy common-history mode");
+        for(auto& bone:f.second.bones){std::memset(bone.name,0,sizeof bone.name);std::strcpy(bone.name,"same-bone");}
+        if(!targetExists)std::strcpy(f.second.bones[1].name,"other-bone");
+        f.app->SelectedModelSlot()=0;f.Mark(1,false);
+        const auto sourceKey=f.first.m->boneKeys[3];
+        CmdControl400(f.app.get(),f.app->MainWindow(),420,0);
+        Check(f.app->ClipboardCounts().bones==1 && f.app->ClipboardCounts().morphs==0,
+            "actual cross-model copy contains only the source second bone track");
+        f.app->SelectedModelSlot()=1;
+        Check(frame_clipboard::BoneTarget(f.app.get(),f.second.raw(),0)==
+            (targetExists?1:frame_clipboard::kMissingTarget),
+            "cross-model identity resolves the same-name occurrence or reports it missing");
+        const ModelKeyState before(f.second);const auto ring=PoseRingDigest(f.second);const auto selection=f.second.selected;
+        f.app->CurrentFrame()=40;CmdControl400(f.app.get(),f.app->MainWindow(),421,0);
+        const auto capacity=mdl::BoneKeyCapacity(f.second.m->boneKeys);
+        Check(FindRealCopyKey(f.second.m->boneKeys,capacity,0,40)<0,
+            "cross-model paste never writes the first duplicate bone track");
+        if(!targetExists){
+            Check(!f.history.UndoCount()&&!f.history.RedoCount()&&before.Matches(f.second)&&
+                f.second.selected==selection&&PoseRingDigest(f.second)==ring,
+                "missing duplicate target refuses the entire paste without a history entry");
+            continue;
+        }
+        const int key=FindRealCopyKey(f.second.m->boneKeys,capacity,1,40);
+        Check(key>=0&&std::memcmp(f.second.m->boneKeys[key].position,sourceKey.position,sizeof sourceKey.position)==0&&
+            std::memcmp(f.second.m->boneKeys[key].rotation,sourceKey.rotation,sizeof sourceKey.rotation)==0&&
+            std::memcmp(f.second.m->boneKeys[key].interpolation,sourceKey.interpolation,sizeof sourceKey.interpolation)==0&&
+            f.second.m->boneKeys[key].physicsDisabled==sourceKey.physicsDisabled&&
+            f.history.UndoCount()==1&&!f.history.RedoCount()&&f.second.selected==selection&&PoseRingDigest(f.second)==ring,
+            "cross-model paste writes the second occurrence as one common-history entry");
+        const ModelKeyState after(f.second);
+        buffers.Clear();
+        CmdControl400(f.app.get(),f.app->MainWindow(),400,0);
+        Check(!f.history.UndoCount()&&f.history.RedoCount()==1&&before.Matches(f.second)&&
+            f.second.selected==selection&&PoseRingDigest(f.second)==ring,
+            "cross-model undo restores the target after clipboard destruction");
+        CmdControl400(f.app.get(),f.app->MainWindow(),401,0);
+        Check(f.history.UndoCount()==1&&!f.history.RedoCount()&&after.Matches(f.second)&&
+            f.second.selected==selection&&PoseRingDigest(f.second)==ring,
+            "cross-model redo restores the paste without the clipboard");
+    }
+    std::puts("  real duplicate-track copy/paste uses common history in both recording modes");
+}
+void RealFrameCopyFailureChecks() {
+    RealIdentityModelPasteFixture f;RealFrameCopyBuffers buffers(*f.app);plugins::NativePoseTestBinding binding(*f.app,f.history);
+    unsigned failures=0;bool completed=false;
+    for(long allowance=0;allowance<128;++allowance){
+        // A smaller old display clipboard exercises cleanup when new counts
+        // already exceed the number of old allocated nested records.
+        f.Mark(3,false,1);CmdControl400(f.app.get(),f.app->MainWindow(),420,0);
+        Check(f.app->ClipboardCounts().bones==1&&f.app->ClipboardCounts().morphs==1&&f.app->ClipboardCounts().displays==1&&
+            frame_clipboard::BoneTarget(f.app.get(),f.first.raw(),0)==1,"seed smaller real clipboard before copy failure");
+        f.Mark(3,true,3);const ModelKeyState before(f.first);const auto ring=PoseRingDigest(f.first);
+        failAfter=allowance;
+        try{CmdControl400(f.app.get(),f.app->MainWindow(),420,0);}catch(const std::bad_alloc&){}
+        failAfter=-1;
+        const auto& counts=f.app->ClipboardCounts();
+        if(counts.bones==3&&counts.morphs==3&&counts.displays==3){
+            Check(f.app->BoneClipboard()&&f.app->MorphClipboard()&&f.app->DisplayClipboard()&&
+                frame_clipboard::BoneTarget(f.app.get(),f.first.raw(),0)==0&&frame_clipboard::MorphTarget(f.app.get(),f.first.raw(),0)==0,
+                "successful real copy publishes complete replacement buffers and matching identities");completed=true;break;
+        }
+        ++failures;
+        Check(!counts.bones&&!counts.morphs&&!counts.displays&&!f.app->BoneClipboard()&&!f.app->MorphClipboard()&&!f.app->DisplayClipboard()&&
+            frame_clipboard::BoneTarget(f.app.get(),f.first.raw(),0)<0&&frame_clipboard::MorphTarget(f.app.get(),f.first.raw(),0)<0,
+            "failed actual copy clears counts buffers and old identities together");
+        Check(before.Matches(f.first)&&PoseRingDigest(f.first)==ring&&!f.history.UndoCount()&&!f.history.RedoCount(),
+            "failed copy never edits source keys marks or either history");
+        CmdControl400(f.app.get(),f.app->MainWindow(),420,0);
+        Check(f.app->ClipboardCounts().bones==3&&f.app->ClipboardCounts().morphs==3&&f.app->ClipboardCounts().displays==3&&
+            f.app->BoneClipboard()&&f.app->MorphClipboard()&&f.app->DisplayClipboard()&&
+            frame_clipboard::BoneTarget(f.app.get(),f.first.raw(),0)==0&&frame_clipboard::MorphTarget(f.app.get(),f.first.raw(),0)==0,
+            "next real copy recovers fresh complete identities after allocation failure");
+    }
+    Check(completed&&failures>=2,"bounded real copy allocation sweep reaches failure and complete publication");
+    std::printf("  real clipboard allocation recovery: %u rejected attempts before success\n",failures);
+}
 void ModelPasteCommit(ModelPasteFixture& f,const std::shared_ptr<plugins::HistoryChange>& change) {
     std::unique_ptr<plugins::SharedHistory::NativeTransaction> token;
     Check(change&&f.history.PrepareNative("model mixed paste",change,token,plugins::SharedHistory::NativeIntent::ExplicitCommit)==MMS_OK,"all model paste candidates prepare together");
@@ -191,5 +363,5 @@ void ModelPasteLaterGrowthChecks() {
             "older mixed paste leaves marks outside captured and pasted extents unchanged");
     }
 }
-void NativeModelPasteChecks(){ModelPasteParityChecks();ModelPasteGrowthAndNoopChecks();ModelPasteFailureChecks();ModelPasteZeroBoneChecks();ModelPasteLaterGrowthChecks();}
+void NativeModelPasteChecks(){RealSameModelIdentityPasteChecks();RealFrameCopyFailureChecks();ModelPasteParityChecks();ModelPasteGrowthAndNoopChecks();ModelPasteFailureChecks();ModelPasteZeroBoneChecks();ModelPasteLaterGrowthChecks();}
 }

@@ -43,6 +43,7 @@
 #include <new>
 
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/panel_controls.hpp"
@@ -202,6 +203,7 @@ LRESULT HandleCtlColor(HWND control, HDC dc) {
 // Reference: ../translated/MikuMikuDance/fcn_0044a9a0.cpp
 // =========================================================================//
 void HandleLButtonUp(MMDApp* app) {
+    negative_frames::EndDrag(app);
     // Uncommitted capture loss/cancel restores live sidebar geometry. A normal
     // release retires its session in CommitSidebarResize before reaching here.
     CancelSidebarResize(app);

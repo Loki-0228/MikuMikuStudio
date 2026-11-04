@@ -430,10 +430,8 @@ void RegisterMorphKeyCurrent(unsigned char* model, int morph, int frameArg) {
 // ---- VA 0x0049D880 (was Sub49D880) -----------------------------------------
 bool RegisterBoneKey(unsigned char* model, unsigned char* rec, int frameOffset,
                      unsigned char useSelected) {
+    if (!model || !rec) return false;
     unsigned char* const m = model;
-    // Non-const: a free-slot scan below may grow the pool and move it.
-    mdl::BoneKey* keys = mdl::BoneKeys(m);
-    std::size_t boneKeyCapacity = mdl::BoneKeyCapacity(*mdl::Mdl(m));
     std::uint32_t frame;
     if(!frame_limits::Add(frameOffset, Rd32(rec+32), frame))return false;
 
@@ -453,6 +451,20 @@ bool RegisterBoneKey(unsigned char* model, unsigned char* rec, int frameOffset,
         }
     }
     if (boneIdx == -1) return true;
+    return RegisterBoneKeyAtIndex(model, rec, frameOffset, boneIdx);
+}
+
+bool RegisterBoneKeyAtIndex(unsigned char* model, unsigned char* rec,
+                            int frameOffset, int boneIdx) {
+    if (!model || !rec || boneIdx < 0 ||
+        static_cast<std::uint32_t>(boneIdx) >= mdl::Mdl(model)->boneCount ||
+        !mdl::Bones(model) || !mdl::BoneKeys(model)) return false;
+    unsigned char* const m = model;
+    // Non-const: a free-slot scan below may grow the pool and move it.
+    mdl::BoneKey* keys = mdl::BoneKeys(m);
+    std::size_t boneKeyCapacity = mdl::BoneKeyCapacity(*mdl::Mdl(m));
+    std::uint32_t frame;
+    if(!frame_limits::Add(frameOffset, Rd32(rec+32), frame))return false;
 
     mdl::BoneRecord& bone = mdl::Bones(m)[boneIdx];
     const mdl::BoneType btype = bone.type;

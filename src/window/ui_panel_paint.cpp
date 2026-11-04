@@ -246,7 +246,7 @@ void PanelPaint(MMDApp* app) {
                               &app->state.themeColors[30])[2], 1);
                 color = static_cast<COLORREF>(
                     app->state.themeColors[30]);
-            } else if (static_cast<std::uint32_t>(n) % 5 != 0) {
+            } else if (n % 5 != 0) {
                 color = static_cast<COLORREF>(
                     app->state.themeColors[32]);
             } else {
@@ -324,7 +324,7 @@ void PanelPaint(MMDApp* app) {
     // this+0x9E16C clamp applied only in bone-edit mode; both branches pass
     // it, which is a no-op difference for display mode since a == b there).
     auto FinishPanel = [&](std::uint32_t a, std::uint32_t b) {
-        const std::uint32_t pos = static_cast<std::uint32_t>(scroll);
+        const std::int64_t pos=scroll;
         const int wrapShift = panel::TimelinePanelShift(sidebar);
         // x64 @0x7FF7CB482963：SCROLLINFO 内嵌在 app+0x1430（cbSize=1Ch、
         // fMask=SIF_ALL），nPage/nPos 落在 app+0x1440/0x1444；HandleHScroll

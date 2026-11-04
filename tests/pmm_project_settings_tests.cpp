@@ -882,12 +882,32 @@ void FormatTriggerBoundaries(MMDApp& app) {
         const auto saved=*frame;
         *frame=frame_limits::legacyMaximum;expect(false,"exact legacy UI frame selects v2");
         ++*frame;expect(true,"first extended UI frame selects v3");
-        *frame=-1;Check(save_compatibility::InspectPmm(app).invalidData,"negative UI frame is invalid");
+        *frame=-1;{const auto negative=save_compatibility::InspectPmm(app);Check(!negative.invalidData&&!negative.canCopyLegacy,"negative UI frame is retained by complete MMS projects, not original-MMD copies");}
         *frame=saved;
     }
     const auto last=app.LastRegisteredFrame();
     app.LastRegisteredFrame()=frame_limits::legacyMaximum;expect(false,"exact legacy last frame selects v2");
     ++app.LastRegisteredFrame();expect(true,"extended last frame selects v3");app.LastRegisteredFrame()=last;
+    {
+        char start[256]{},stop[256]{};
+        GetDlgItemTextA(app.MainWindow(),panel::kPlayStartFrameEdit,start,sizeof start);
+        GetDlgItemTextA(app.MainWindow(),panel::kPlayStopFrameEdit,stop,sizeof stop);
+        app.LastRegisteredFrame()=600;
+        for(const auto& range:std::array<std::array<const char*,2>,3>{{{{"0","-1"}},{{"100","-5"}},{{"100","5"}}}}) {
+            SetDlgItemTextA(app.MainWindow(),panel::kPlayStartFrameEdit,range[0]);
+            SetDlgItemTextA(app.MainWindow(),panel::kPlayStopFrameEdit,range[1]);
+            const auto r=save_compatibility::InspectPmm(app);
+            Check(!r.invalidData && !r.needsNewPmm && r.canCopyLegacy,
+                  "end-relative playback range is not a negative-frame compatibility restriction");
+        }
+        SetDlgItemTextA(app.MainWindow(),panel::kPlayStartFrameEdit,"-10");
+        SetDlgItemTextA(app.MainWindow(),panel::kPlayStopFrameEdit,"-1");
+        Check(!save_compatibility::InspectPmm(app).canCopyLegacy,
+              "ordered negative playback bounds retain literal negative-frame semantics");
+        SetDlgItemTextA(app.MainWindow(),panel::kPlayStartFrameEdit,start);
+        SetDlgItemTextA(app.MainWindow(),panel::kPlayStopFrameEdit,stop);
+        app.LastRegisteredFrame()=last;
+    }
     for(auto control:{panel::kPlayStartFrameEdit,panel::kPlayStopFrameEdit}) {
         char saved[256]{};GetDlgItemTextA(app.MainWindow(),control,saved,sizeof saved);
         SetDlgItemTextA(app.MainWindow(),control,"10000000");expect(false,"exact legacy playback bound selects v2");
@@ -990,6 +1010,54 @@ void InvalidFormatEscalation(MMDApp& app, const std::filesystem::path& directory
     std::puts("PASS invalid backup and three-language normal saves refuse serializer capture and preserve project and plugin sidecar bytes");
 }
 
+void SignedCursorRoundtrip(MMDApp& app, const std::filesystem::path& directory) {
+    const std::array<std::array<int,2>,5> cases{{{{-17,-63}},{{-17,0}},{{42,-63}},{{42,12}},
+        {{frame_limits::minimum,frame_limits::minimum}}}};
+    for(std::size_t i=0;i<cases.size();++i) {
+        ResetAppState(&app);
+        SetDlgItemTextA(app.MainWindow(),panel::kPlayStartFrameEdit,"0");
+        SetDlgItemTextA(app.MainWindow(),panel::kPlayStopFrameEdit,"-1");
+        const int frame=cases[i][0],scroll=cases[i][1];
+        app.CurrentFrame()=frame;app.TimelineStartFrame()=scroll;
+        const auto project=directory/(L"signed-cursor-"+std::to_wstring(i)+L".pmm");
+        const auto prefix=directory/(L"signed-cursor-body-"+std::to_wstring(i)+L".pmm");
+        Check(SaveSceneCopy(&app,project.c_str()),"production PMM writer saves signed cursor using standard body plus supported extensions");
+        Check(app.CurrentFrame()==frame&&app.TimelineStartFrame()==scroll,"saving the clamped PMM body never moves the live signed cursor or timeline");
+        std::uint64_t boundary=0;const auto document=Read(project,&boundary);
+        const auto* cursor=ext::Find(document,"org.mikudancestudio.timeline.signed_cursor.v1");
+#if MMD_ORIGINAL_PROFILE
+        Check(cursor==nullptr,"original profile does not promise the full-profile signed cursor extension");
+#else
+        Check(cursor&&cursor->value.size()==8,"full PMM contains an independent signed current-frame and timeline-left extension");
+        std::array<std::int32_t,2> saved{};std::memcpy(saved.data(),cursor->value.data(),sizeof(saved));
+        Check(saved[0]==frame&&saved[1]==scroll,"signed cursor extension retains exact negative values, including the minimum frame");
+#endif
+        // Strip only the extension from an actual saved project. The real PMM
+        // loader then reads the two body fields without a signed-cursor override.
+        std::filesystem::copy_file(project,prefix,std::filesystem::copy_options::overwrite_existing);
+        const int fd=Open(prefix,_O_RDWR);
+        Check(boundary>30&&_chsize_s(fd,boundary)==0,"extract the exact standard body from the real saved PMM");
+        _close(fd);
+        app.CurrentFrame()=91;app.TimelineStartFrame()=27;
+        Load(app,prefix);
+        Check(app.CurrentFrame()==(std::max)(0,frame)&&app.TimelineStartFrame()==(std::max)(0,scroll),
+              "actual PMM standard body reloads nonnegative current-frame and timeline-left fields independently");
+        app.CurrentFrame()=91;app.TimelineStartFrame()=27;
+        Load(app,project);
+#if MMD_ORIGINAL_PROFILE
+        Check(app.CurrentFrame()==(std::max)(0,frame)&&app.TimelineStartFrame()==(std::max)(0,scroll),
+              "original-profile reload follows only the nonnegative standard PMM fields");
+#else
+        Check(app.CurrentFrame()==frame&&app.TimelineStartFrame()==scroll,
+              "full production PMM reload restores the exact signed editing cursor over its safe standard body");
+#endif
+    }
+    ResetAppState(&app);
+    SetDlgItemTextA(app.MainWindow(),panel::kPlayStartFrameEdit,"0");
+    SetDlgItemTextA(app.MainWindow(),panel::kPlayStopFrameEdit,"0");
+    std::puts("PASS real PMM nonnegative body and profile-specific signed cursor roundtrip");
+}
+
 void AutomaticCameraRoundtrip(MMDApp& app, const std::filesystem::path& directory) {
     const auto compact = directory / L"automatic-compact.pmm";
     const auto expanded = directory / L"automatic-expanded.pmm";
@@ -1083,11 +1151,12 @@ int wmain(int argc, wchar_t** argv) {
         if(argc!=2)return 2;
         LegacyBindingMetadata();AutomaticMetadata();return 0;
     }
+    const bool signedCursor=argc>=2 && wcscmp(argv[1],L"--signed-cursor")==0;
     const bool pmxBoundary=argc>=2 && wcscmp(argv[1],L"--pmx-boundary")==0;
     const bool measuredNames=argc>=2 && wcscmp(argv[1],L"--measured-names")==0;
     const bool reversibleEncoding=argc>=2 && wcscmp(argv[1],L"--reversible-encoding")==0;
     const bool pmdIdentity=argc>=2 && wcscmp(argv[1],L"--pmd-identity")==0;
-    if((pmxBoundary || measuredNames || reversibleEncoding || pmdIdentity) && argc!=3)return 2;
+    if((signedCursor || pmxBoundary || measuredNames || reversibleEncoding || pmdIdentity) && argc!=3)return 2;
     if (argc < 2 || argc > 4) return 2;
     const bool capacityOnly = argc == 4 && wcscmp(argv[3], L"--key-capacity") == 0;
     const bool commentsOnly = argc == 4 && wcscmp(argv[3], L"--model-comments") == 0;
@@ -1116,7 +1185,7 @@ int wmain(int argc, wchar_t** argv) {
         return CallNextHookEx(nullptr,code,wp,lp);
     },nullptr,GetCurrentThreadId());
     if(pmdIdentity && (!std::filesystem::path(argv[2]).is_absolute() || std::filesystem::exists(argv[2])))return 2;
-    const auto directory = std::filesystem::absolute(pmxBoundary || measuredNames || reversibleEncoding || pmdIdentity ? argv[2] : argv[1]);
+    const auto directory = std::filesystem::absolute(signedCursor || pmxBoundary || measuredNames || reversibleEncoding || pmdIdentity ? argv[2] : argv[1]);
     std::filesystem::create_directories(directory);
     const auto aaPreference = directory / L"antialias-user.ini";
     SetEnvironmentVariableW(L"MMS_ANTIALIAS_CONFIG", aaPreference.c_str());
@@ -1130,6 +1199,10 @@ int wmain(int argc, wchar_t** argv) {
     app->state = MMDAppState{}; app->InitDefaults();
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize hidden production app");
     ShowWindow(app->MainWindow(), SW_HIDE);
+    if(signedCursor) {
+        SignedCursorRoundtrip(*app,directory);
+        ShutdownCleanup(app);delete app;g_Block=nullptr;return 0;
+    }
 #if !MMD_ORIGINAL_PROFILE
     if (pmdIdentity) {
         pmm_identity_host::Run(*app,directory);
@@ -1164,6 +1237,7 @@ int wmain(int argc, wchar_t** argv) {
     FormatTriggerBoundaries(*app);
     InvalidFormatEscalation(*app,directory);
     AutomaticCameraRoundtrip(*app,directory);
+    SignedCursorRoundtrip(*app,directory);
     const auto a = directory / L"settings-a.pmm";
     const auto b = directory / L"settings-b.pmm";
     const auto legacy = directory / L"legacy.pmm";

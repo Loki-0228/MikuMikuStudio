@@ -194,6 +194,7 @@ static bool MatchText(const char* a, const char* b) {
 // (sub_446A70 @ 0x447460 / 0x447580 / 0x4476A0 / 0x4477C0 / 0x447900 /
 //  0x4479E0 / 0x447A30)
 static void ClearSelectionBitmaps(MMDApp* app) {
+    negative_frames::SelectCell(app,0,-999,false);
     for (std::size_t i = 0, capacity = mdl::KeyPoolCapacity(app->CameraKeys()); i < capacity; ++i)
         app->CameraKeys()[i].selected = 0;
     for (std::size_t i = 0, capacity = mdl::KeyPoolCapacity(app->LightKeys()); i < capacity; ++i)
@@ -219,6 +220,7 @@ static void ClearSelectionBitmaps(MMDApp* app) {
 // Clear the active model's bone and morph key selections, plus the remaining
 // display-key selections.  (sub_446A70 @ 0x447AF0 / 0x447BA0 / 0x447C30 etc.)
 static void ClearActiveModelFlags(MMDApp* app) {
+    negative_frames::SelectCell(app,0,-999,false);
     // The original reaches this helper only while the model-edit context is
     // active.  During a partially completed mode switch MikuMikuStudio can briefly
     // expose the same row with no active slot, so preserve that entrance
@@ -242,6 +244,7 @@ static void ClearActiveModelFlags(MMDApp* app) {
 }
 
 void ClearTimelineKeySelection(MMDApp* app) {
+    negative_frames::SelectCell(app,0,-999,false);
     if (app->CameraMode() != 0) ClearGlobalFrameSelection(app);
     else ClearActiveModelFlags(app);
 }
@@ -494,6 +497,7 @@ static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
             }
         }
     }
+    if(app->TimelineSelectionChanged())negative_frames::BeginDrag(app);
     // loc_44A437
     PanelPaint(app);                               // 0x414610
     SelectionReeval(app);                          // 0x430510
@@ -520,6 +524,7 @@ static void ToggleTimelineCell(MMDApp* app, bool shiftActive,
     } else if (!shiftActive) {
         ClearSelectionBitmaps(app);
         selected = 1;
+        app->TimelineSelectionChanged() = 1;
     } else {
         selected = 1;
     }
@@ -901,10 +906,17 @@ static void HandleLButtonDown_TimelineAreaHit(MMDApp* app, HWND hwnd,
         return;
     const auto negativeCell=std::int64_t(app->state.timelineStartFrame)+Div13(x-100);
     if(negativeCell<0 && negativeCell>=frame_limits::minimum) {
-        negative_frames::SelectCell(app,int(negativeCell),Div14(y-160),app->ShiftModifierActive());
-        app->CurrentFrame()=int(negativeCell);RefreshAfterFrameApply(app);PostViewRefresh(app);return;
+        app->TimelineSelectionChanged()=0;
+        app->ClearTimelineRange();
+        const bool shift=app->ShiftModifierActive();
+        const bool selected=negative_frames::CellSelected(app,int(negativeCell),Div14(y-160));
+        if(!shift && !selected)ClearTimelineKeySelection(app);
+        const bool hit=selected && !shift ? true : negative_frames::SelectCell(app,int(negativeCell),Div14(y-160),shift);
+        app->TimelineSelectionChanged()=hit && !shift;
+        SelectionStats(app,x,y,hwnd);
+        SelectionReeval(app);
+        return;
     }
-    if(!app->ShiftModifierActive())negative_frames::SelectCell(app,int(negativeCell),-999,false);
     app->TimelineSelectionChanged() = 0;
     app->ClearTimelineRange();
     if (app->state.optflag[0] != 0) {  // 760 (0x2F8)
@@ -955,6 +967,7 @@ static void HandleLButtonDown_TimelineAreaHit(MMDApp* app, HWND hwnd,
                 } else if (!shiftActive) {
                     ClearSelectionBitmaps(app);
                     *rec = 1;
+                    app->TimelineSelectionChanged() = 1;
                 } else {
                     *rec = 1;
                 }
@@ -1073,7 +1086,7 @@ static void HandleLButtonDown_FrameStripHit(MMDApp* app, HWND hwnd,
     // (x-100)/13 + scroll offset; EM_SETSEL (0xB1) to the end of the old
     // text, then WM_SETTEXT (0xC2) with the new frame
     const auto clickedFrame=std::int64_t(Div13(x-0x64))+app->state.timelineStartFrame;
-    if(clickedFrame<0||clickedFrame>frame_limits::maximum)return;
+    if(clickedFrame<frame_limits::minimum||clickedFrame>frame_limits::maximum)return;
     app->state.currentFrame=static_cast<std::int32_t>(clickedFrame);
     const LRESULT textLen = GetWindowTextLengthA(GetDlgItem(hwnd, panel::kCurrentFrameEdit));
     SendMessageA(GetDlgItem(hwnd, panel::kCurrentFrameEdit), EM_SETSEL, 0, textLen);
@@ -1139,16 +1152,7 @@ static void HandleLButtonDown_FrameStripHit(MMDApp* app, HWND hwnd,
         EnableWindow(GetDlgItem(hwnd, panel::kUndoButton), TRUE);  // 400
         EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), FALSE); // 401
     }
-    // scroll clamp + panel repaint (0x44A72D-0x44A766):
-    // 0x97C = max(0, 0x980 - (sidebar-0x54)/26) with an unsigned compare
-    const std::int32_t pages = (sidebar - 0x54) / 26;
-    const std::uint32_t frameU =
-        static_cast<std::uint32_t>(app->state.currentFrame);
-    if (frameU <= static_cast<std::uint32_t>(pages))  // unsigned compare (jbe)
-        app->state.timelineStartFrame = 0;
-    else
-        app->state.timelineStartFrame =
-            static_cast<std::int32_t>(frameU - static_cast<std::uint32_t>(pages));
+    // Clicking an already visible ruler frame must not recenter the timeline.
     PanelPaint(app);                                  // 0x414610
     // timeline strip redraw + physics sync (0x44A768-0x44A850)
     if (app->state.waveEnabled != 0) {  // 657100 (0xA06CC)

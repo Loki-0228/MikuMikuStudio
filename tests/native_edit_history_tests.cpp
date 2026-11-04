@@ -727,6 +727,10 @@ int main(int argc,char** argv){
         run("NativeVmdGlobalChecks",NativeVmdGlobalChecks);
         std::printf("PASS native global VMD: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--negative-registration-only")) {
+        run("NegativeRegistrationHistoryChecks",NegativeRegistrationHistoryChecks);
+        std::printf("PASS negative registration history: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--mixed-model-paste-only")) {
         run("NativeMorphPastePartChecks",NativeMorphPastePartChecks);
         run("NativeModelPasteFamilyChecks",NativeModelPasteFamilyChecks);

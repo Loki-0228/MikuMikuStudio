@@ -4,7 +4,9 @@
 #include <set>
 #include <array>
 #include <string>
+#include <string_view>
 #include <memory>
+#include <new>
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/ui_translation.hpp"
@@ -195,6 +197,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
@@ -210,6 +215,7 @@
 #include "mikumikustudio/ui_language.hpp"
 #include "mikumikustudio/plugin_storage.hpp"
 #include "mikumikustudio/frame_scope.hpp"
+#include "mikumikustudio/frame_clipboard.hpp"
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_global_commands.hpp"
 #include "../plugins/native_object_commands.hpp"
@@ -218,6 +224,96 @@
 #include "../plugins/native_key_paste.hpp"
 
 namespace mikumikustudio {
+
+namespace {
+struct CopiedTrack {
+    std::uint32_t index;
+    std::string name;
+    std::uint32_t occurrence = 0;
+};
+template<class Target>
+std::vector<std::uint32_t> TrackOccurrences(const Target* targets, std::uint32_t count) {
+    std::unordered_map<std::string, std::uint32_t> seen;
+    std::vector<std::uint32_t> result(count);
+    for (std::uint32_t i = 0; i < count; ++i)
+        result[i] = seen[std::string(targets[i].name,
+            strnlen_s(targets[i].name, sizeof targets[i].name))]++;
+    return result;
+}
+struct FrameClipboardSource {
+    const unsigned char* model = nullptr;
+    const mdl::BoneRecord* bones = nullptr;
+    const mdl::MorphRecord* morphs = nullptr;
+    std::uint32_t boneCount = 0, morphCount = 0;
+    const mdl::BoneClipboardRecord* boneClipboard = nullptr;
+    const mdl::MorphClipboardRecord* morphClipboard = nullptr;
+    std::vector<CopiedTrack> boneTracks, morphTracks;
+};
+std::unordered_map<const MMDApp*, FrameClipboardSource> frameClipboardSources;
+
+template<class Record, class Target>
+int CopiedTarget(const Record* records, std::uint32_t count,
+                 const Record* copiedRecords, const std::vector<CopiedTrack>& tracks,
+                 const Target* targets, std::uint32_t targetCount, std::size_t index,
+                 bool sameModel) {
+    if (!records || records != copiedRecords || count != tracks.size() ||
+        index >= tracks.size() || !targets) return -1;
+    const auto& track = tracks[index];
+    if (std::string_view(track.name) != std::string_view(records[index].name,
+            strnlen_s(records[index].name, sizeof records[index].name))) return -1;
+    if (!sameModel) {
+        // Ordinals describe the complete source table, not the selected keys:
+        // copying only the second duplicate must still target the second one.
+        std::uint32_t occurrence = 0;
+        for (std::uint32_t i = 0; i < targetCount; ++i)
+            if (std::string_view(track.name) == std::string_view(targets[i].name,
+                    strnlen_s(targets[i].name, sizeof targets[i].name)) &&
+                occurrence++ == track.occurrence) return static_cast<int>(i);
+        return frame_clipboard::kMissingTarget;
+    }
+    if (track.index >= targetCount ||
+        std::string_view(track.name) != std::string_view(targets[track.index].name,
+            strnlen_s(targets[track.index].name, sizeof targets[track.index].name))) return -1;
+    return static_cast<int>(track.index);
+}
+}
+
+namespace frame_clipboard {
+int BoneTarget(const MMDApp* app, const unsigned char* model, std::size_t index) {
+    const auto found = frameClipboardSources.find(app);
+    if (!app || !model || found == frameClipboardSources.end()) return -1;
+    const auto& source = found->second;
+    const auto& target = *mdl::Mdl(model);
+    if (source.model == model && (source.bones != target.boneTable ||
+        source.boneCount != target.boneCount)) return -1;
+    auto* state = const_cast<MMDApp*>(app); // Legacy clipboard accessors are mutable-only.
+    return CopiedTarget(state->BoneClipboard(), state->ClipboardCounts().bones,
+        source.boneClipboard, source.boneTracks, target.boneTable, target.boneCount, index,
+        source.model == model);
+}
+
+int MorphTarget(const MMDApp* app, const unsigned char* model, std::size_t index) {
+    const auto found = frameClipboardSources.find(app);
+    if (!app || !model || found == frameClipboardSources.end()) return -1;
+    const auto& source = found->second;
+    const auto& target = *mdl::Mdl(model);
+    if (source.model == model && (source.morphs != target.morphs ||
+        source.morphCount != target.morphCount)) return -1;
+    auto* state = const_cast<MMDApp*>(app);
+    return CopiedTarget(state->MorphClipboard(), state->ClipboardCounts().morphs,
+        source.morphClipboard, source.morphTracks, target.morphs, target.morphCount, index,
+        source.model == model);
+}
+
+void Reset(const MMDApp* app) { frameClipboardSources.erase(app); }
+
+void ForgetModel(const unsigned char* model) {
+    for (auto it = frameClipboardSources.begin(); it != frameClipboardSources.end();) {
+        if (it->second.model == model) it = frameClipboardSources.erase(it);
+        else ++it;
+    }
+}
+}
 
 // ---------------------------------------------------------------------------
 // App-state offsets used by this family, kept file-local (never
@@ -1649,6 +1745,33 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
     std::uint32_t minFrame = 0xFFFFFFFFu;  // ebx
     if (app->state.optflag[0] == 0) {
         // ---- model mode (loc_483E7C..) ----
+        struct CopyGuard {
+            MMDApp* app;
+            HWND window;
+            std::uint32_t displayCapacity;
+            bool complete = false;
+            ~CopyGuard() {
+                if (complete) return;
+                // Counts may already describe the new selection while the
+                // buffers still belong to the previous copy. Track the actual
+                // display allocation separately so nested arrays are safe.
+                if (auto* records = app->DisplayClipboard())
+                    for (std::uint32_t i = 0; i < displayCapacity; ++i) {
+                        free(records[i].ikStates); free(records[i].selectorStates);
+                    }
+                free(app->BoneClipboard()); app->BoneClipboard() = nullptr;
+                free(app->MorphClipboard()); app->MorphClipboard() = nullptr;
+                free(app->DisplayClipboard()); app->DisplayClipboard() = nullptr;
+                auto& counts = app->ClipboardCounts();
+                counts.bones = counts.morphs = counts.displays = 0;
+                frame_clipboard::Reset(app);
+                EnableWindow(GetDlgItem(window, panel::kPasteButton), FALSE);
+                EnableWindow(GetDlgItem(window, panel::kReversePasteButton), FALSE);
+                EnableMenuItem(GetMenu(window), 0xFA, TRUE);
+            }
+        } guard{app, hwnd, app->ClipboardCounts().displays};
+        try {
+        frame_clipboard::Reset(app);
         // free the previous camera records' sub-buffers (loc_483E7C)
         if (app->DisplayClipboard() != nullptr &&
             app->ClipboardCounts().displays != 0) {
@@ -1686,15 +1809,19 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
         const std::uint32_t camSel = clipboardCounts.displays;
         if (boneSel == 0 && morphSel == 0 && camSel == 0) {
             // loc_48402C..48406D: nothing selected
-            EnableWindow(GetDlgItem(hwnd, panel::kPasteButton), FALSE);
-            EnableWindow(GetDlgItem(hwnd, panel::kReversePasteButton), FALSE);
-            EnableMenuItem(GetMenu(hwnd), 0xFA, TRUE);
             return;  // was: break (switch exit)
         }
-        EnableWindow(GetDlgItem(hwnd, panel::kPasteButton), TRUE);
-        EnableMenuItem(GetMenu(hwnd), 0xFA, FALSE);
-        EnableWindow(GetDlgItem(hwnd, panel::kReversePasteButton),
-                     boneSel != 0 ? TRUE : FALSE);
+        FrameClipboardSource copied;
+        copied.model = ActiveModel(app);
+        const auto& sourceModel = *mdl::Mdl(copied.model);
+        copied.bones = sourceModel.boneTable;
+        copied.morphs = sourceModel.morphs;
+        copied.boneCount = sourceModel.boneCount;
+        copied.morphCount = sourceModel.morphCount;
+        copied.boneTracks.resize(boneSel);
+        copied.morphTracks.resize(morphSel);
+        const auto boneOccurrences = TrackOccurrences(copied.bones, copied.boneCount);
+        const auto morphOccurrences = TrackOccurrences(copied.morphs, copied.morphCount);
         // bone buffer 0x354 (0x54-stride records)
         if (app->BoneClipboard() != nullptr) {
             free(app->BoneClipboard());
@@ -1702,11 +1829,10 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
         }
         if (boneSel != 0) {
             void* p = malloc(boneSel * sizeof(BoneClipboardRecord));
-            if (p != nullptr) {
-                ConstructArrayElements(p, sizeof(BoneClipboardRecord), boneSel,
-                                       reinterpret_cast<void*>(&IdentityCtor));
-            }
+            if (!p) throw std::bad_alloc();
             app->BoneClipboard() = static_cast<BoneClipboardRecord*>(p);
+            ConstructArrayElements(p, sizeof(BoneClipboardRecord), boneSel,
+                                   reinterpret_cast<void*>(&IdentityCtor));
             memset(p, 0, boneSel * sizeof(BoneClipboardRecord));
         }
         // morph buffer 0x358 (0x28-stride records)
@@ -1716,6 +1842,7 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
         }
         if (morphSel != 0) {
             void* p = malloc(morphSel * sizeof(MorphClipboardRecord));
+            if (!p) throw std::bad_alloc();
             app->MorphClipboard() = static_cast<MorphClipboardRecord*>(p);
             memset(p, 0, morphSel * sizeof(MorphClipboardRecord));
         }
@@ -1725,12 +1852,15 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
             free(app->DisplayClipboard());
             app->DisplayClipboard() = nullptr;
         }
+        guard.displayCapacity = 0;
         if (camSel != 0) {
             unsigned char* model = ActiveModel(app);
             void* p = malloc(camSel * sizeof(DisplayClipboardRecord));
+            if (!p) throw std::bad_alloc();
             app->DisplayClipboard() =
                 static_cast<DisplayClipboardRecord*>(p);
             memset(p, 0, camSel * sizeof(DisplayClipboardRecord));
+            guard.displayCapacity = camSel;
             if (mdl::Mdl(model)->ikChainCount > 0 &&
                 camSel != 0) {
                 auto* records = app->DisplayClipboard();
@@ -1738,6 +1868,7 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
                 for (std::uint32_t i = 0; i < camSel; ++i) {
                     records[i].ikStates = static_cast<IkClipboardState*>(
                         malloc(cnt * sizeof(IkClipboardState)));
+                    if (!records[i].ikStates) throw std::bad_alloc();
                 }
             }
             if (mdl::Mdl(model)->boneOrderCount > 0 &&
@@ -1749,6 +1880,7 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
                     records[i].selectorStates =
                         static_cast<SelectorClipboardState*>(
                             malloc(cnt * sizeof(SelectorClipboardState)));
+                    if (!records[i].selectorStates) throw std::bad_alloc();
                 }
             }
         }
@@ -1782,6 +1914,7 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
                                           bone_scale::KeyCurve(model, recordIndex));
                 BoneClipboardRecord& rec = dst[cnt];
                 strcpy_s(rec.name, sizeof(rec.name), bones[idx].name);
+                copied.boneTracks[cnt] = {idx, rec.name, boneOccurrences[idx]};
                 rec.frame = key.frame - minFrame;
                 std::memcpy(rec.rotation, key.rotation,
                             sizeof(rec.rotation));
@@ -1818,6 +1951,7 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
                 }
                 MorphClipboardRecord& rec = dst[cnt];
                 strcpy_s(rec.name, sizeof(rec.name), morphs[idx].name);
+                copied.morphTracks[cnt] = {idx, rec.name, morphOccurrences[idx]};
                 rec.frame = key.frame - minFrame;
                 rec.value = key.value;
                 ++cnt;
@@ -1891,6 +2025,17 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
                 }
                 ++cnt;
             }
+        }
+        copied.boneClipboard = app->BoneClipboard();
+        copied.morphClipboard = app->MorphClipboard();
+        frameClipboardSources[app] = std::move(copied);
+        guard.complete = true;
+        EnableWindow(GetDlgItem(hwnd, panel::kPasteButton), TRUE);
+        EnableMenuItem(GetMenu(hwnd), 0xFA, FALSE);
+        EnableWindow(GetDlgItem(hwnd, panel::kReversePasteButton), boneSel != 0 ? TRUE : FALSE);
+        } catch (const std::exception&) {
+            // The guard leaves no partial or stale model clipboard to paste.
+            return;
         }
     } else {
         // ---- camera mode (loc_4834E2..) ----
@@ -2094,21 +2239,25 @@ bool PrepareFramePaste(MMDApp* app) {
             if(!frames(app->BoneClipboard(),n.bones)||!frames(app->MorphClipboard(),n.morphs)||!frames(app->DisplayClipboard(),n.displays))return false;
             // Only names used by this paste can make a destination ambiguous.
             // Models commonly contain duplicate names on unrelated helper tracks.
-            const auto unambiguous=[](const auto* records,std::uint32_t count,
-                                      const auto* targets,std::uint32_t targetCount) {
+            const auto unambiguous=[&](const auto* records,std::uint32_t count,
+                                      const auto* targets,std::uint32_t targetCount,
+                                      const auto resolve) {
                 if(!count)return true;
                 if(!targets && targetCount)return false;
                 std::set<std::string> wanted,matched;
-                for(std::uint32_t i=0;i<count;++i)
-                    wanted.emplace(records[i].name,strnlen_s(records[i].name,sizeof records[i].name));
+                for(std::uint32_t i=0;i<count;++i) {
+                    const auto target=resolve(app,raw,i);
+                    if(target==frame_clipboard::kMissingTarget)return false;
+                    if(target<0)wanted.emplace(records[i].name,strnlen_s(records[i].name,sizeof records[i].name));
+                }
                 for(std::uint32_t j=0;j<targetCount;++j) {
                     const std::string name(targets[j].name,strnlen_s(targets[j].name,sizeof targets[j].name));
                     if(wanted.count(name) && !matched.emplace(name).second)return false;
                 }
                 return true;
             };
-            if(!unambiguous(app->BoneClipboard(),n.bones,m.boneTable,m.boneCount) ||
-               !unambiguous(app->MorphClipboard(),n.morphs,m.morphs,m.morphCount))return false;
+            if(!unambiguous(app->BoneClipboard(),n.bones,m.boneTable,m.boneCount,frame_clipboard::BoneTarget) ||
+               !unambiguous(app->MorphClipboard(),n.morphs,m.morphs,m.morphCount,frame_clipboard::MorphTarget))return false;
             return mdl::BoneKeyPoolEnsure(m,needed(m.boneKeys,mdl::BoneKeyCapacity(m),m.boneCount,n.bones)) &&
                 mdl::MorphKeyPoolEnsure(m,needed(m.morphKeys,mdl::MorphKeyCapacity(m),m.morphCount,n.morphs)) &&
                 mdl::DisplayKeyPoolEnsure(m,needed(m.displayKeys,mdl::KeyPoolCapacity(m.displayKeys),1,n.displays));
@@ -2186,9 +2335,11 @@ static void Cmd400_FramePaste(MMDApp* app, HWND hwnd) {
                 bone_scale::Clipboard(app, i, false),
                 bone_scale::ClipboardCurve(app, i, false));
                 BoneClipboardRecord rec = src[i];
-                if (RegisterBoneKey(model,
-                              reinterpret_cast<unsigned char*>(&rec),
-                              frame, 0) == 0) {
+                const int target = frame_clipboard::BoneTarget(app, model, i);
+                const bool registered = target >= 0
+                    ? RegisterBoneKeyAtIndex(model, reinterpret_cast<unsigned char*>(&rec), frame, target)
+                    : RegisterBoneKey(model, reinterpret_cast<unsigned char*>(&rec), frame, 0);
+                if (!registered) {
                     break;
                 }
                 ++i;
@@ -2203,9 +2354,11 @@ static void Cmd400_FramePaste(MMDApp* app, HWND hwnd) {
             std::uint32_t i = 0;
             do {
                 const MorphClipboardRecord rec = src[i];
-                if (RegisterMorphKeyFromRecord(model,
-                              reinterpret_cast<const unsigned char*>(&rec),
-                              frame) == 0) {
+                const int target = frame_clipboard::MorphTarget(app, model, i);
+                const bool registered = target >= 0
+                    ? RegisterMorphKeyAtIndex(model, target, std::uint32_t(frame) + rec.frame, rec.value)
+                    : RegisterMorphKeyFromRecord(model, reinterpret_cast<const unsigned char*>(&rec), frame);
+                if (!registered) {
                     break;
                 }
                 ++i;
@@ -2986,7 +3139,11 @@ static void Cmd400_AccessoryEditDialog(MMDApp* app, HWND hwnd) {
 
 void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
                    std::uint16_t notify) {
-    if(id!=420 && negative_frames::Command(app,id))return;
+    bool sharedUndo=false;
+#if !MMD_ORIGINAL_PROFILE
+    sharedUndo=(id==400 || id==401) && plugins::BoundNativePoseHistory(app);
+#endif
+    if(id!=420 && !sharedUndo && negative_frames::Command(app,id))return;
     curve_host::LegacyRegistrationBatch registrationBatch(app);
     switch (id) {
     case 400:  // undo (0x00482766) -> Cmd400_Undo
@@ -3169,8 +3326,10 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
 #if !MMD_ORIGINAL_PROFILE
         if (plugins::TryRegisterBoundDisplay(app)) break;
 #endif
-        app->SceneModified() = 1;
         unsigned char* model = ActiveModel(app);
+        if (!model) break;
+        if (app->CurrentFrame() >= 0 && !BeginModelFramePasteUndo(model, app->CurrentFrame(), 0, false, true)) break;
+        app->SceneModified() = 1;
         ClearModelKeyMarks(mdl::BoneKeys(model),
                            mdl::BoneKeyCapacity(*mdl::Mdl(model)));
         ClearModelKeyMarks(mdl::MorphKeys(model), mdl::MorphKeyCapacity(mdl::MorphKeys(model)));
@@ -3317,6 +3476,7 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
         break;
 
     case 416:  // selection-mark sync (0x0048073E) -> Cmd400_SelectionMarkSync
+        negative_frames::SelectColumns(app);
         Cmd400_SelectionMarkSync(app);
         break;
 

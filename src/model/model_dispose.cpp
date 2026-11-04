@@ -1,4 +1,5 @@
 #include "mikumikustudio/model_import.hpp"
+#include "mikumikustudio/frame_clipboard.hpp"
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
 #include "mikumikustudio/key_pool.hpp"
@@ -136,6 +137,7 @@ void ReleasePhysRigid(void* scene, void* bodyPointer) {
 
 // VA 0x0048F830
 static void DisposeModelResources(unsigned char* m, bool published) {
+    frame_clipboard::ForgetModel(m);
     plugins::ForgetSceneObject(m);
     text_encoding::ForgetMaterialNames(*mdl::Mdl(m));
     mdl::ForgetDisplayCapacity(*mdl::Mdl(m));

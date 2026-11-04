@@ -1,5 +1,6 @@
 #include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/negative_frames.hpp"
+#include "mikumikustudio/frame_clipboard.hpp"
 #include "mikumikustudio/update_coordinator.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/autosave.hpp"
@@ -469,6 +470,7 @@ void TeardownDShowGraphCoUninit(DShowRecorder* rec) {
 void ShutdownCleanup(MMDApp* app) {
     transparent_sort_cache::Release(app);
     negative_frames::Reset(app);
+    frame_clipboard::Reset(app);
     background_save::Shutdown(app);
     updates::Shutdown(app);
     viewport_render_scale::Release(app);

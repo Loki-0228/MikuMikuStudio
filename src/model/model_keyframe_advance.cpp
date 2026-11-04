@@ -1,5 +1,6 @@
 #include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 // ===========================================================================
 // VA 0x004A31D0 - per-model keyframe application  (5754 bytes, 187 blocks)
 // + helpers VA 0x004A05A0 (VMD interpolation easing) and 0x00499B50
@@ -129,6 +130,32 @@ using kfa::WriteBonePrevVerbatim;
 using kfa::MirrorBackupsToWorking;
 using kfa::MirrorBackupsToCurrent;
 
+// Native incremental tracks contain unsigned frames. Negative initialization
+// is a bounded integer seek, not support for continuous negative playback.
+int NegativeCursorFrame(double seconds) noexcept {
+    constexpr double first = double(frame_limits::minimum);
+    if (seconds <= first / 30.0) return frame_limits::minimum;
+    double frame = seconds * 30.0;
+    // Match the existing playback evaluator's half-milliframe carry. In
+    // particular, a floating-point value just below -1 must remain frame -1.
+    const double scaled = frame * 1000.0;
+    if (scaled - std::floor(scaled) >= 0.5)
+        frame = (std::floor(scaled) + 1.0) / 1000.0;
+    // Select the frame containing this negative time, rather than truncating
+    // toward zero. Clamp before conversion, including very large finite input.
+    if (frame <= first) return frame_limits::minimum;
+    if (frame >= 0.0) return 0;
+    return static_cast<int>(std::floor(frame));
+}
+bool NegativeCursorModelReady(unsigned char* model) noexcept {
+    const auto& state = *mdl::Mdl(model);
+    return state.displayKeys &&
+        (!state.boneCount || (state.boneTable && state.boneKeys &&
+            state.boneTrackActive && state.boneKeyCursors)) &&
+        (!state.morphCount || (state.morphs && state.morphKeys &&
+            state.morphTrackActive && state.morphKeyCursors));
+}
+
 // 0x3FF921FB00000000 is (double)3.141592f * 0.5: the x87-era float pi
 // constant 0x40490FD8 promoted to double and halved, which is exactly how
 // the original folded the pi/2 operand.
@@ -257,6 +284,15 @@ void NotifyBonePhysicsMode(unsigned char* model, int boneIdx, unsigned char mode
 // Initializes every per-model animation cursor at playback start.  Unlike
 // SeekModelFrame this preserves the incremental-track state consumed by 0x4A31D0.
 void InitModelTrackCursors(unsigned char* model, double cursor, int physicsMode) {  // was Sub4A2CD0
+    if (!model || !std::isfinite(cursor)) return;
+    if (cursor < 0.0) {
+        if (!NegativeCursorModelReady(model)) return;
+        // A later nonnegative tick must start from valid native cursors rather
+        // than cursors inherited from an unrelated previous playback session.
+        InitModelTrackCursors(model, 0.0, physicsMode);
+        SeekModelFrame(model, NegativeCursorFrame(cursor), physicsMode);
+        return;
+    }
     unsigned char* const m = model;
     const double frame = static_cast<double>(cursor) * 30.0;
 
@@ -353,6 +389,9 @@ void InitModelTrackCursors(unsigned char* model, double cursor, int physicsMode)
 
 // ---- VA 0x004A31D0 --------------------------------------------------------
 void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode) {  // was Sub4A31D0
+    // Keep an explicitly sought negative pose. Never extrapolate the native
+    // zero-frame self-link (which has a zero interpolation denominator).
+    if (!model || !std::isfinite(cursor) || cursor < 0.0) return;
     unsigned char* const m = model;
     mdl::ModelRecord& state = *mdl::Mdl(m);
 

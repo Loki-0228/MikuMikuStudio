@@ -923,8 +923,12 @@ void WritePmmAccessoryBlocks(
 // 7. config block (0x41DB42..0x41DF7C)
 void WritePmmConfigBlock(int fd, MMDApp* s, HWND main, char* text) {
     // ---- 7. config block (0x41DB42..0x41DF7C) ---------------------------
-    W(fd, &s->state.currentFrame, 4);
-    W(fd, &s->state.timelineStartFrame, 4);
+    // The full project's extension retains the signed editing cursor. Keep
+    // the standard PMM fields nonnegative without changing the live view.
+    const auto standardFrame = (std::max)(0, s->CurrentFrame());
+    const auto standardScroll = (std::max)(0, s->state.timelineStartFrame);
+    W(fd, &standardFrame, 4);
+    W(fd, &standardScroll, 4);
     W(fd, &s->state.lastRegisteredFrame, 4);
     const std::int32_t savedEditMode = static_cast<std::int32_t>(s->EditMode());
     W(fd, &savedEditMode, 4);

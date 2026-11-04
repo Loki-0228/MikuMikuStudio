@@ -45,8 +45,8 @@ inline bool ResolveRange(std::int32_t left,std::int32_t right,std::int32_t last,
     to=static_cast<std::int32_t>(end);
     return from<=to;
 }
-// Playback range edits are optional: blank starts at zero, and a zero end
-// selects the last registered frame. Other frame inputs remain strict.
+// Blank playback bounds parse as zero. ResolveRange applies the paired
+// endpoint rules; an ordered 0..0 selects only frame zero.
 inline bool ParsePlaybackBound(const char* value,std::int32_t& result) noexcept {
     if (!value) return false;
     const char* first=value;

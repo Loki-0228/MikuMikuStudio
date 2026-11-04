@@ -384,9 +384,11 @@ void CommitTargetBonePick(MMDApp* app, HWND hDlg) {  // was Sub43D560, VA 0x0043
 // and restore the select records (button id 632)
 // ===========================================================================
 void ResetModelSelection(MMDApp* app) {  // was Sub4256C0, VA 0x004256C0
-    app->SceneModified() = 1;                                       // 0x4256C5
-
     unsigned char* const model = ActiveModel(app);
+    if (!model) return;
+    // Prepare before changing flags or selector records so storage failure is atomic.
+    if (app->CurrentFrame() >= 0 && !BeginModelFramePasteUndo(model, app->CurrentFrame(), 0, false, true)) return;
+    app->SceneModified() = 1;
 
     // The "selection tracks" are the timeline key pools themselves: the
     // x64 twin sub_7FF7CB4BBA80 walks boneKeys (+0x2790) 100000 groups of

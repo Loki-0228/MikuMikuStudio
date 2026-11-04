@@ -92,7 +92,7 @@ struct ModelEdit::Impl {
         if(!beforeDisplay.empty())return;
         const auto& m=*mdl::Mdl(model);
         if(!m.displayKeys||!displayCapacity)throw std::runtime_error("Missing history display keys");
-        DeleteAuxHeader layout{0,displayCapacity,ikCount,selectorCount};
+        DeleteAuxHeader layout{0,displayCapacity,ikCount,selectorCount,newMax,newSearch};
         beforeDisplay.resize(DeleteAuxSize(layout));CaptureDeleteAux(m,layout,beforeDisplay.data());afterDisplay=beforeDisplay;
     }
     void Poses(Step& step,const mdl::UndoRecord& source,int type) {
@@ -100,7 +100,7 @@ struct ModelEdit::Impl {
         if(count>boneCount)throw std::runtime_error("Invalid history pose count");
         // Key-only redo does not use the pose snapshot, except type 5's live
         // physics switch. Native callers evaluate the restored keys afterward.
-        if(redo&&type!=1&&type!=3&&type!=5)return;
+        if(redo&&type!=1&&type!=3&&type!=5&&type!=7)return;
         EnsurePose();CopyBytes(step.sourcePose,source.bonePose,count*sizeof(mdl::BonePoseSnapshot));
         if(!redo)step.pose=Allocate(count*sizeof(mdl::BonePoseSnapshot));
         for(std::size_t i=0;i<count;++i){
@@ -111,7 +111,7 @@ struct ModelEdit::Impl {
                 saved.boneIndex=target.boneIndex;std::memcpy(saved.position,p.position,sizeof(p.position));
                 std::memcpy(saved.rotation,p.rotation,sizeof(p.rotation));saved.physicsDisabled=p.dirty;saved.reserved[0]=p.physics;
             }
-            if(!redo||type==1||type==3){std::memcpy(p.position,target.position,sizeof(p.position));
+            if(!redo||type==1||type==3||type==7){std::memcpy(p.position,target.position,sizeof(p.position));
                 std::memcpy(p.rotation,target.rotation,sizeof(p.rotation));p.dirty=target.physicsDisabled;}
             if(type==5)p.physics=target.reserved[0];
         }
@@ -129,7 +129,13 @@ struct ModelEdit::Impl {
             size=DeleteAuxOffset(source)+DeleteAuxSize(layout);
         }
         CopyBytes(step.sourceAux,source.auxiliaryPose,size);
-        if(!redo)step.aux=Allocate(size);
+        DeleteAuxHeader captured=layout;
+        if(type==7){
+            captured.morphCapacity=layout.morphCapacity?morphCapacity:0;
+            captured.displayCapacity=layout.displayCapacity?displayCapacity:0;
+            captured.maxFrame=newMax;captured.searchCursor=newSearch;
+        }
+        if(!redo)step.aux=Allocate(type==7?DeleteAuxOffset(source)+DeleteAuxSize(captured):size);
         for(int i=0;i<source.dirty;++i){
             mdl::BoneKeySnapshot target;std::memcpy(&target,step.sourceAux.data()+std::size_t(i)*sizeof(target),sizeof(target));
             if(target.keyIndex<0||std::size_t(target.keyIndex)>=keyCapacity)throw std::runtime_error("Invalid history key index");
@@ -142,15 +148,32 @@ struct ModelEdit::Impl {
         const auto offset=DeleteAuxOffset(source);
         const auto* from=step.sourceAux.data()+offset+sizeof(layout);
         auto* capture=redo?nullptr:static_cast<unsigned char*>(step.aux.get())+offset;
-        if(capture){std::memcpy(capture,&layout,sizeof(layout));capture+=sizeof(layout);}
+        if(capture){std::memcpy(capture,&captured,sizeof(captured));capture+=sizeof(captured);}
         const auto morphBytes=layout.morphCapacity*sizeof(mdl::MorphKey);
-        if(morphBytes){EnsureMorph();if(capture)std::memcpy(capture,afterMorph.data(),morphBytes);std::memcpy(afterMorph.data(),from,morphBytes);}
-        from+=morphBytes;if(capture)capture+=morphBytes;
-        if(layout.displayCapacity){
-            EnsureDisplay();const auto displayBytes=DeleteAuxSize(layout)-sizeof(layout)-morphBytes;
-            if(capture)std::memcpy(capture,afterDisplay.data()+sizeof(layout),displayBytes);
-            std::memcpy(afterDisplay.data()+sizeof(layout),from,displayBytes);
+        if(morphBytes){
+            EnsureMorph();
+            if(capture){const auto bytes=captured.morphCapacity*sizeof(mdl::MorphKey);
+                std::memcpy(capture,afterMorph.data(),bytes);capture+=bytes;}
+            std::memcpy(afterMorph.data(),from,morphBytes);
+            std::fill(afterMorph.begin()+layout.morphCapacity,afterMorph.end(),mdl::MorphKey{});
         }
+        from+=morphBytes;
+        if(layout.displayCapacity){
+            EnsureDisplay();
+            const auto stride=sizeof(mdl::DisplayKey)+ikCount+selectorCount*sizeof(mdl::BoneReference);
+            auto* rows=afterDisplay.data()+sizeof(layout);
+            if(capture)std::memcpy(capture,rows,displayCapacity*stride);
+            std::memcpy(rows,from,layout.displayCapacity*stride);
+            for(std::size_t i=layout.displayCapacity;i<displayCapacity;++i){
+                auto* row=rows+i*stride;mdl::DisplayKey old;std::memcpy(&old,row,sizeof(old));
+                mdl::DisplayKey empty{};empty.ikStates=old.ikStates;empty.selectorStates=old.selectorStates;
+                std::memcpy(row,&empty,sizeof(empty));row+=sizeof(empty);
+                std::fill_n(row,ikCount,1);row+=ikCount;
+                const mdl::BoneReference reference{};
+                for(std::size_t n=0;n<selectorCount;++n)std::memcpy(row+n*sizeof(reference),&reference,sizeof(reference));
+            }
+        }
+        newMax=layout.maxFrame;newSearch=layout.searchCursor;
     }
     bool Current(int frame) const noexcept {
         if(!model||published||frame!=oldFrame)return false;
@@ -376,7 +399,7 @@ Result ModelEdit::Prepare(unsigned char* model,std::int32_t frame,bool redo) noe
                     step.replacement.operation=1;
                     if(type==3){p->newFrame=int(source.frame);p->frameChanged=true;}
                 }
-                if(type==7&&!redo){p->refreshSeek=true;p->restorePoseAfterSeek=true;}
+                if(type==7){p->refreshSeek=true;p->restorePoseAfterSeek=true;}
             }
             p->steps.push_back(std::move(step));p->nextCursor=redo?ring:(ring+29)%30;
             if(type==6)break;

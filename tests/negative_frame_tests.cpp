@@ -4,6 +4,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/bone_scale.hpp"
+#include "mikumikustudio/accessory_layout.hpp"
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -13,6 +14,154 @@
 using namespace mikumikustudio;
 static unsigned checks=0;
 void Check(bool value,const char* message){++checks;if(!value){std::fprintf(stderr,"FAIL %s\n",message);std::exit(1);}}
+static void DuplicateCrossModelNegativePaste() {
+    auto app=std::make_unique<MMDApp>();
+    auto source=std::make_unique<mdl::ModelRecord>();
+    auto destination=std::make_unique<mdl::ModelRecord>();
+    auto missing=std::make_unique<mdl::ModelRecord>();
+    std::array<mdl::BoneRecord,2> sourceBones{};
+    std::array<mdl::MorphRecord,2> sourceMorphs{};
+    std::array<mdl::BoneRecord,3> targetBones{};
+    std::array<mdl::MorphRecord,3> targetMorphs{};
+    std::array<mdl::BoneRecord,2> missingBones{};
+    std::array<mdl::MorphRecord,3> missingMorphs{};
+    for(auto& bone:sourceBones) {std::strcpy(bone.name,"duplicate-bone");bone.rotQuat[3]=1;}
+    for(auto& morph:sourceMorphs) std::strcpy(morph.name,"duplicate-morph");
+    for(auto& bone:targetBones) bone.rotQuat[3]=1;
+    for(auto& bone:missingBones) bone.rotQuat[3]=1;
+    std::strcpy(targetBones[0].name,"unrelated");
+    std::strcpy(targetBones[1].name,"duplicate-bone");std::strcpy(targetBones[2].name,"duplicate-bone");
+    std::strcpy(targetMorphs[0].name,"unrelated");
+    std::strcpy(targetMorphs[1].name,"duplicate-morph");std::strcpy(targetMorphs[2].name,"duplicate-morph");
+    std::strcpy(missingBones[0].name,"unrelated");std::strcpy(missingBones[1].name,"duplicate-bone");
+    std::strcpy(missingMorphs[0].name,"unrelated");
+    std::strcpy(missingMorphs[1].name,"duplicate-morph");std::strcpy(missingMorphs[2].name,"duplicate-morph");
+    source->boneCount=2;source->boneTable=sourceBones.data();source->morphCount=2;source->morphs=sourceMorphs.data();
+    destination->boneCount=3;destination->boneTable=targetBones.data();destination->morphCount=3;destination->morphs=targetMorphs.data();
+    missing->boneCount=2;missing->boneTable=missingBones.data();missing->morphCount=3;missing->morphs=missingMorphs.data();
+    auto* src=reinterpret_cast<unsigned char*>(source.get());
+    auto* dst=reinterpret_cast<unsigned char*>(destination.get());
+    auto* incomplete=reinterpret_cast<unsigned char*>(missing.get());
+    app->ModelSlot(0)=src;app->ModelSlot(1)=dst;app->ModelSlot(2)=incomplete;
+    app->SelectedModelSlot()=0;app->CameraMode()=0;
+    auto* previous=g_Block;g_Block=app.get();
+    sourceBones[1].trans[0]=7.0f;
+    Check(negative_frames::RegisterBone(src,1,-10),"duplicate source second bone registers");
+    Check(negative_frames::RegisterMorph(src,1,-10,.75f),"duplicate source second morph registers");
+    negative_frames::SelectRange(app.get(),-10,-10);
+    Check(negative_frames::Command(app.get(),420),"copy only the second duplicate negative tracks");
+    targetBones[1].trans[0]=1.25f;targetMorphs[1].value=.25f;
+    app->SelectedModelSlot()=1;app->CurrentFrame()=-20;
+    Check(negative_frames::Command(app.get(),421),"cross-model duplicate negative paste is handled");
+    negative_frames::EvaluateModel(dst,-20);
+    Check(targetBones[2].trans[0]==7.0f && targetMorphs[2].value==.75f,
+          "negative paste reaches second same-name destination tracks after unrelated entries");
+    Check(targetBones[1].trans[0]==1.25f && targetMorphs[1].value==.25f,
+          "negative paste leaves first same-name destination tracks untouched");
+    missingBones[1].trans[0]=2.0f;missingMorphs[2].value=.125f;
+    const auto before=negative_frames::Count(app.get());
+    app->SelectedModelSlot()=2;app->CurrentFrame()=-30;app->SceneModified()=0;
+    negative_frames::Command(app.get(),421);
+    Check(negative_frames::Count(app.get())==before && app->SceneModified()==0,
+          "missing duplicate target rejects the entire negative paste without a new edit");
+    negative_frames::EvaluateModel(incomplete,-30);
+    Check(missingBones[1].trans[0]==2.0f && missingMorphs[2].value==.125f,
+          "missing duplicate target leaves both bone and valid morph unchanged");
+    negative_frames::Reset(app.get());bone_scale::Forget(src);bone_scale::Forget(dst);bone_scale::Forget(incomplete);
+    g_Block=previous;
+}
+void CheckSelectionPersistence() {
+    constexpr char selectionKey[]="org.mikudancestudio.timeline.negative_selection.v1";
+    auto app=std::make_unique<MMDApp>();auto record=std::make_unique<mdl::ModelRecord>();
+    std::array<mdl::BoneRecord,1> bones{};std::array<mdl::MorphRecord,1> morphs{};
+    std::array<std::uint32_t,1> boneRows{1},morphRows{2};
+    mdl::IkChain ik{};mdl::BoneOrderEntry parent{};mdl::AccessoryRecord accessory{};
+    auto* model=reinterpret_cast<unsigned char*>(record.get());
+    record->boneCount=record->morphCount=1;record->boneTable=bones.data();record->morphs=morphs.data();
+    record->boneKeyIndices=boneRows.data();record->morphKeyIndices=morphRows.data();
+    record->ikChainCount=record->boneOrderCount=1;record->ikChains=&ik;mdl::BoneOrder(model)=&parent;
+    record->loadComplete=ik.enabled=1;parent.linkedModel=-1;
+    std::strcpy(bones[0].name,"bone");std::strcpy(morphs[0].name,"morph");bones[0].rotQuat[3]=1;
+    app->ModelSlot(0)=model;app->AccessorySlot(0)=&accessory;
+    app->state.jointLineMap[0]=0;app->state.jointLineMap[1]=-1;
+    app->CameraFov()=40;app->CameraParentModel()=-1;accessory.parentModel=-1;
+    accessory.scale=accessory.opacity=1;
+    auto* previous=g_Block;g_Block=app.get();
+    for(int frame:{-10,-20}) {
+        Check(negative_frames::RegisterBone(model,0,frame),"selection fixture bone registers");
+        Check(negative_frames::RegisterMorph(model,0,frame,.5f),"selection fixture morph registers");
+        Check(negative_frames::RegisterDisplay(model,frame),"selection fixture visibility, IK and parent register");
+        for(auto kind:{negative_frames::Global::Camera,negative_frames::Global::Light,
+                      negative_frames::Global::Shadow,negative_frames::Global::Gravity})
+            Check(negative_frames::RegisterGlobal(app.get(),kind,frame),"selection fixture global registers");
+        Check(negative_frames::RegisterAccessory(app.get(),0,frame),"selection fixture accessory registers");
+    }
+    for(int mode:{0,1}) {
+        app->CameraMode()=mode;
+        for(int row=0;row<(mode?5:3);++row)
+            Check(negative_frames::SelectCell(app.get(),-10,row,row!=0),"mixed selection covers every negative track type");
+    }
+    const auto checkSelection=[&](bool selected) {
+        for(int mode:{0,1}) {
+            app->CameraMode()=mode;
+            for(int row=0;row<(mode?5:3);++row) {
+                Check(negative_frames::CellSelected(app.get(),-10,row)==selected,"negative track restores selected state");
+                Check(!negative_frames::CellSelected(app.get(),-20,row),"negative track preserves unselected state");
+            }
+        }
+    };
+    checkSelection(true);
+    pmm_extension::Document document;negative_frames::Capture(*app,document);
+    const auto originalKeys=pmm_extension::Find(document,negative_frames::kPmmKey)->value;
+    Check(originalKeys.size()==8+20*164 && originalKeys[0]==1,"selection persistence keeps legacy negative key layout");
+    negative_frames::Reset(app.get());
+    Check(negative_frames::Load(*app,document)&&negative_frames::Count(app.get())==20,"all negative track types roundtrip");
+    checkSelection(true);
+    const auto* selection=pmm_extension::Find(document,selectionKey);
+    Check(selection && selection->value.size()==12+20,"negative selection has an independent versioned extension");
+    const auto selectionBytes=selection->value;
+
+    const auto checkIgnored=[&](const pmm_extension::Document& input) {
+        Check(negative_frames::Load(*app,input)&&negative_frames::Count(app.get())==20,
+              "ignored selection metadata never drops negative keyframes");
+        checkSelection(false);
+    };
+    auto legacy=document;pmm_extension::Erase(legacy,selectionKey);checkIgnored(legacy);
+    auto malformed=document;
+    for(std::size_t offset:{std::size_t(0),std::size_t(4),std::size_t(8),std::size_t(12)}) {
+        auto bytes=selectionBytes;bytes[offset]=offset==12?2:std::uint8_t(bytes[offset]^1);
+        pmm_extension::Set(malformed,selectionKey,std::move(bytes));checkIgnored(malformed);
+    }
+    auto truncated=selectionBytes;truncated.pop_back();
+    pmm_extension::Set(malformed,selectionKey,std::move(truncated));checkIgnored(malformed);
+    auto oversized=selectionBytes;oversized.push_back(0);
+    pmm_extension::Set(malformed,selectionKey,std::move(oversized));checkIgnored(malformed);
+    auto stale=document;auto changedKeys=originalKeys;
+    changedKeys[8+12]=std::uint8_t(changedKeys[8+12]-1); // Same count, first bone moves from -10 to -11.
+    pmm_extension::Set(stale,negative_frames::kPmmKey,std::move(changedKeys));checkIgnored(stale);
+    app->CameraMode()=0;
+    Check(!negative_frames::CellSelected(app.get(),-11,1),"stale metadata cannot select a key moved by an older writer");
+
+    app->ModelSlot(0)=nullptr;
+    Check(negative_frames::Load(*app,document)&&negative_frames::Count(app.get())==10,
+          "missing model skips only its negative keys");
+    app->CameraMode()=1;
+    for(int row=0;row<5;++row) {
+        Check(negative_frames::CellSelected(app.get(),-10,row),"skipped keys do not shift later selection flags");
+        Check(!negative_frames::CellSelected(app.get(),-20,row),"skipped keys do not select later unselected keys");
+    }
+    app->ModelSlot(0)=model;
+    Check(negative_frames::Load(*app,document),"original selection fixture reloads");
+    pmm_extension::Document recaptured;negative_frames::Capture(*app,recaptured);
+    Check(pmm_extension::Find(recaptured,negative_frames::kPmmKey)->value==originalKeys,
+          "selection roundtrip leaves legacy negative key bytes unchanged");
+    Check(pmm_extension::Find(recaptured,selectionKey)->value==selectionBytes,
+          "all visibility, IK and parent flags survive selection roundtrip");
+    negative_frames::Reset(app.get());negative_frames::Capture(*app,recaptured);
+    Check(!pmm_extension::Find(recaptured,negative_frames::kPmmKey) && !pmm_extension::Find(recaptured,selectionKey),
+          "empty negative tracks remove both payload and selection metadata");
+    bone_scale::Forget(model);g_Block=previous;
+}
 int main() {
     int first=0,last=0,value=0;
     Check(frame_limits::ParseSigned("-1",value)&&value==-1,"signed cursor accepts negative frame");
@@ -47,7 +196,7 @@ int main() {
     negative_frames::EvaluateModel(model,-5);
     Check(std::abs(bones[0].trans[0]-5)<1e-5 && std::abs(morphs[1].value-.4f)<1e-5,
         "negative bone and morph interpolate toward the independent frame-zero baseline");
-    app->CameraPositionX()=12;app->CameraFov()=40;
+    app->CameraPositionX()=12;app->CameraFov()=40;app->CameraParentModel()=-1;app->CameraParentBone()=0;app->CameraPerspective()=1;
     Check(negative_frames::RegisterGlobal(app.get(),negative_frames::Global::Camera,-10),"negative camera register");
     app->LightDirection()[0]=.7f;
     Check(negative_frames::RegisterGlobal(app.get(),negative_frames::Global::Light,-10),"negative light register");
@@ -70,6 +219,103 @@ int main() {
     Check(app->CurrentFrame()==37,"malformed extension cannot partially restore signed cursor");
     bones[0].trans[0]=0;morphs[1].value=0;negative_frames::EvaluateModel(model,-30);
     Check(bones[0].trans[0]==10 && morphs[1].value==.8f,"roundtrip preserves pasted negative values");
+    std::array<std::uint32_t,2> boneRows{1,3},morphRows{4,2};
+    record->boneKeyIndices=boneRows.data();record->morphKeyIndices=morphRows.data();
+    negative_frames::SelectBox(app.get(),-31,-29,1,2,true,false);
+    negative_frames::SelectColumns(app.get());
+    Check(negative_frames::Command(app.get(),420),"negative marquee and vertical selection produce clipboard");
+    app->CurrentFrame()=-50;negative_frames::Command(app.get(),421);
+    Check(negative_frames::Count(app.get())==8,"vertical selection includes both bone and morph at same negative frame");
+    negative_frames::SelectBox(app.get(),-11,-9,2,3,true,false);
+    negative_frames::Command(app.get(),420);app->CurrentFrame()=-70;negative_frames::Command(app.get(),421);
+    Check(negative_frames::Count(app.get())==9,"replacement marquee selects only matching frame and row");
+    negative_frames::SelectBox(app.get(),-51,1,1,4,true,false);
+    negative_frames::SelectBox(app.get(),-51,-49,1,4,false,true);
+    negative_frames::Command(app.get(),420);app->CurrentFrame()=-100;negative_frames::Command(app.get(),421);
+    Check(negative_frames::Count(app.get())==13,"cross-zero marquee and subtractive marquee retain remaining negative keys");
+    negative_frames::RegisterBone(model,0,-4);
+    negative_frames::SelectCell(app.get(),-10,1,false);
+    negative_frames::BeginDrag(app.get());negative_frames::Drag(app.get(),100);
+    Check(negative_frames::CellSelected(app.get(),-5,1),"negative drag stops before an unselected key without overwriting it");
+    negative_frames::Drag(app.get(),0);negative_frames::EndDrag(app.get());
+    Check(negative_frames::CellSelected(app.get(),-10,1),"returning to drag anchor restores exact original frame");
+    app->CameraMode()=1;app->CurrentFrame()=0;
+    negative_frames::SelectCell(app.get(),-10,0,false);
+    negative_frames::BeginDrag(app.get());negative_frames::Drag(app.get(),100);negative_frames::EndDrag(app.get());
+    Check(negative_frames::CellSelected(app.get(),-1,0),"signed drag preserves the frame zero boundary");
+    // A drag plan stores positions in the press-time key vector. Commands that
+    // change that vector (delete / undo / redo / clear / restore) must stop the
+    // drag so the next mouse move cannot index a stale or unrelated key.
+    negative_frames::Reset(app.get());
+    app->MainWindow()=nullptr;app->CameraMode()=1;app->CurrentFrame()=-10;
+    Check(negative_frames::RegisterGlobal(app.get(),negative_frames::Global::Camera,-10),"drag guard fixture registers a negative key");
+    negative_frames::SelectCell(app.get(),-10,0,false);
+    negative_frames::BeginDrag(app.get());negative_frames::Drag(app.get(),3);
+    Check(negative_frames::CellSelected(app.get(),-7,0),"ordinary drag still moves the selected key");
+    negative_frames::Drag(app.get(),0);negative_frames::EndDrag(app.get());
+    Check(negative_frames::CellSelected(app.get(),-10,0),"reversing back to the anchor still restores the original frame");
+    Check(negative_frames::Command(app.get(),400)&&negative_frames::Count(app.get())==0,
+          "a cancelled drag still leaves no empty private history record");
+
+    Check(negative_frames::RegisterGlobal(app.get(),negative_frames::Global::Camera,-10),"delete fixture registers the dragged key");
+    Check(negative_frames::RegisterGlobal(app.get(),negative_frames::Global::Camera,-20),"delete fixture registers a bystander key");
+    negative_frames::SelectCell(app.get(),-10,0,false);
+    negative_frames::BeginDrag(app.get());negative_frames::Drag(app.get(),2);
+    Check(negative_frames::CellSelected(app.get(),-8,0),"drag plan is live before delete");
+    Check(negative_frames::Command(app.get(),423),"delete during drag succeeds");
+    Check(negative_frames::Count(app.get())==1,"delete during drag removes only the selected key");
+    negative_frames::Drag(app.get(),6);
+    Check(negative_frames::SelectCell(app.get(),-20,0,false),"stale drag cannot move the bystander key");
+    Check(negative_frames::Count(app.get())==1,"stale drag cannot restore the deleted key");
+    negative_frames::EndDrag(app.get());
+
+    negative_frames::Reset(app.get());
+    Check(negative_frames::RegisterGlobal(app.get(),negative_frames::Global::Camera,-10),"undo fixture registers a negative key");
+    negative_frames::SelectCell(app.get(),-10,0,false);
+    negative_frames::BeginDrag(app.get());negative_frames::Drag(app.get(),2);
+    Check(negative_frames::CellSelected(app.get(),-8,0),"drag plan is live before undo");
+    Check(negative_frames::Command(app.get(),400),"undo during drag succeeds");
+    Check(negative_frames::CellSelected(app.get(),-10,0),"undo during drag restores the pressed frame");
+    negative_frames::Drag(app.get(),4);
+    Check(negative_frames::CellSelected(app.get(),-10,0)&&!negative_frames::CellSelected(app.get(),-6,0),
+          "stale drag after undo cannot overwrite the restored key");
+    Check(negative_frames::Command(app.get(),401),"redo during drag is still available");
+    Check(negative_frames::CellSelected(app.get(),-8,0),"redo restores the dragged frame as one operation");
+    negative_frames::Drag(app.get(),4);negative_frames::EndDrag(app.get());
+    Check(negative_frames::CellSelected(app.get(),-8,0),"stale drag after redo cannot move the key again");
+
+    negative_frames::Reset(app.get());
+    Check(negative_frames::RegisterGlobal(app.get(),negative_frames::Global::Camera,-10),"clear fixture registers a negative key");
+    negative_frames::SelectCell(app.get(),-10,0,false);
+    negative_frames::BeginDrag(app.get());negative_frames::Drag(app.get(),2);
+    negative_frames::Reset(app.get());
+    Check(negative_frames::Count(app.get())==0,"clear drops the dragged key set");
+    negative_frames::Drag(app.get(),5);negative_frames::EndDrag(app.get());
+    Check(negative_frames::Count(app.get())==0,"stale drag after clear cannot index the dropped key set");
+
+    Check(negative_frames::RegisterGlobal(app.get(),negative_frames::Global::Camera,-10),"restore fixture registers a negative key");
+    negative_frames::SelectCell(app.get(),-10,0,false);
+    negative_frames::BeginDrag(app.get());negative_frames::Drag(app.get(),2);
+    pmm_extension::Document empty;
+    Check(negative_frames::Load(*app,empty),"windowless restore replaces the negative tracks");
+    Check(negative_frames::Count(app.get())==0,"restore clears the drag-time key set");
+    negative_frames::Drag(app.get(),5);negative_frames::EndDrag(app.get());
+    Check(negative_frames::Count(app.get())==0,"stale drag after restore cannot index the replaced key set");
+
+    Check(negative_frames::RegisterGlobal(app.get(),negative_frames::Global::Camera,-10),"post-interruption fixture registers a negative key");
+    negative_frames::SelectCell(app.get(),-10,0,false);
+    negative_frames::BeginDrag(app.get());negative_frames::Drag(app.get(),4);
+    Check(negative_frames::CellSelected(app.get(),-6,0),"valid drag still works after every interruption");
+    negative_frames::Drag(app.get(),0);negative_frames::EndDrag(app.get());
+    Check(negative_frames::CellSelected(app.get(),-10,0),"reversing back still restores the frame after interruptions");
+    negative_frames::BeginDrag(app.get());negative_frames::Drag(app.get(),3);negative_frames::EndDrag(app.get());
+    Check(negative_frames::Command(app.get(),400)&&negative_frames::CellSelected(app.get(),-10,0),
+          "one undo reverts a whole drag");
+    Check(negative_frames::Command(app.get(),401)&&negative_frames::CellSelected(app.get(),-7,0),
+          "one redo reapplies the whole drag");
+
     negative_frames::Reset(app.get());bone_scale::Forget(model);g_Block=previous;
+    DuplicateCrossModelNegativePaste();
+    CheckSelectionPersistence();
     std::printf("PASS negative frames checks=%u\n",checks);
 }

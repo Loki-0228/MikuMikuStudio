@@ -196,6 +196,13 @@ class PoseStorageLease {
 public:
     ~PoseStorageLease();
     static std::unique_ptr<PoseStorageLease> Prepare(unsigned char* model);
+    // True while the registry entry captured by Prepare still belongs to this
+    // model. Forget, ExchangeState or a replacement copy gives the model a
+    // different incarnation, so the captured entry may be gone or replaced;
+    // publishing through this lease would then exchange into other storage or
+    // none at all. Read-only, never allocates; a lease without an impl is never
+    // current.
+    bool IsCurrent() const noexcept;
     std::uint64_t RetainedBytes() const noexcept;
 };
 // Independent key authoring snapshots: only scale keys and interpolation

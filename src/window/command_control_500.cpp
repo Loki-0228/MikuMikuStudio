@@ -555,6 +555,13 @@ void CmdControl500(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notif
 #if !MMD_ORIGINAL_PROFILE
         if (plugins::TryRegisterBoundMorph(app, static_cast<unsigned>(lane))) break;
 #endif
+        auto* const active = ActiveModel(app);
+        if (!active) break;
+        const auto& record = *mdl::Mdl(active);
+        const int morph = record.selectedMorphs[lane];
+        if (!record.morphs || morph < 0 || morph >= int(record.morphCount) ||
+            (record.physicsMode != 2 && morph == 0)) break;
+        if (app->CurrentFrame() >= 0 && !BeginModelFramePasteUndo(active, app->CurrentFrame(), 0, true, false)) break;
         app->SceneModified() = 1;
         {
             unsigned char* m = ActiveModel(app);

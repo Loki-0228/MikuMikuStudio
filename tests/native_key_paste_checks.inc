@@ -1,5 +1,6 @@
 // Include after native_bone_registration_checks.inc.
 #include "../src/plugins/native_key_paste.hpp"
+#include "mikumikustudio/frame_clipboard.hpp"
 namespace mikumikustudio {
 bool RegisterBoneKey(unsigned char*, unsigned char*, int, unsigned char);
 bool RegisterMirroredBoneKey(unsigned char*, unsigned char*, int);
@@ -63,8 +64,74 @@ struct NamedBonePasteFixture : KeyPasteFixture {
         first.m->bonePhysicsState=first.dirty.data();first.m->boneSelection=first.selected.data();
     }
 };
+// Existing paste fixtures lend stack/vector buffers to the application. The
+// real copy command owns and frees its previous buffers, so detach those loans
+// before entering 420 and explicitly release only the heap buffers it creates.
+struct RealFrameCopyBuffers {
+    MMDApp& app;
+    explicit RealFrameCopyBuffers(MMDApp& value):app(value) {
+        app.BoneClipboard()=nullptr;app.MorphClipboard()=nullptr;app.DisplayClipboard()=nullptr;
+        app.ClipboardCounts()={};frame_clipboard::Reset(&app);
+    }
+    ~RealFrameCopyBuffers(){Clear();}
+    void Clear() {
+        if(app.DisplayClipboard())for(unsigned i=0;i<app.ClipboardCounts().displays;++i){
+            std::free(app.DisplayClipboard()[i].ikStates);std::free(app.DisplayClipboard()[i].selectorStates);
+        }
+        std::free(app.BoneClipboard());std::free(app.MorphClipboard());std::free(app.DisplayClipboard());
+        app.BoneClipboard()=nullptr;app.MorphClipboard()=nullptr;app.DisplayClipboard()=nullptr;
+        app.ClipboardCounts()={};frame_clipboard::Reset(&app);
+    }
+};
+void ClearRealCopyMarks(Fixture& f) {
+    for(std::size_t i=0;i<mdl::BoneKeyCapacity(f.m->boneKeys);++i)f.m->boneKeys[i].allocated=0;
+    for(std::size_t i=0;i<mdl::MorphKeyCapacity(f.m->morphKeys);++i)f.m->morphKeys[i].allocated=0;
+    for(std::size_t i=0;i<mdl::KeyPoolCapacity(f.m->displayKeys);++i)f.m->displayKeys[i].allocated=0;
+}
+template<class Key> int FindRealCopyKey(const Key* keys,std::size_t capacity,unsigned root,unsigned frame) {
+    for(std::size_t visited=0,index=root;visited<capacity;++visited){
+        Check(index<capacity,"real copied track remains inside its owned key pool");
+        if(keys[index].frame==frame)return int(index);
+        if(keys[index].frame>frame||!keys[index].next)return -1;
+        index=keys[index].next;
+    }
+    Check(false,"real copied track remains acyclic");return -1;
+}
+void RealCopyMirrorIdentityChecks() {
+    using Mode=plugins::SharedHistory::RecordingMode;
+    for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly}) {
+        NamedBonePasteFixture f;RealFrameCopyBuffers buffers(*f.app);plugins::NativePoseTestBinding binding(*f.app,f.history);
+        Check(f.history.SetMode(mode)==MMS_OK,"configure real-copy mirror history mode");
+        ClearRealCopyMarks(f.first);f.first.m->boneKeys[0].next=4;
+        auto& source=f.first.m->boneKeys[4];source={};source.previous=0;source.frame=10;source.rotation[3]=1;
+        source.position[0]=9;source.position[1]=3;source.position[2]=-2;source.allocated=1;
+        for(unsigned lane=0;lane<4;++lane){source.interpolation[lane]=20;source.interpolation[lane+4]=30;
+            source.interpolation[lane+8]=100;source.interpolation[lane+12]=110;}
+        CmdControl400(f.app.get(),f.app->MainWindow(),420,0);
+        Check(f.app->ClipboardCounts().bones==1&&!f.app->ClipboardCounts().morphs&&!f.app->ClipboardCounts().displays&&
+            frame_clipboard::BoneTarget(f.app.get(),f.first.raw(),0)==0,"real left-side copy retains its original index");
+        const auto ring=PoseRingDigest(f.first);const auto selection=f.namedSelection;
+        f.app->CurrentFrame()=40;CmdControl400(f.app.get(),f.app->MainWindow(),422,0);
+        const auto capacity=mdl::BoneKeyCapacity(f.first.m->boneKeys);
+        const int right=FindRealCopyKey(f.first.m->boneKeys,capacity,1,40);
+        Check(right>=0&&f.first.m->boneKeys[right].position[0]==-9&&f.first.m->boneKeys[right].position[1]==3&&
+            FindRealCopyKey(f.first.m->boneKeys,capacity,0,40)<0&&f.history.UndoCount()==1&&
+            PoseRingDigest(f.first)==ring&&f.namedSelection==selection,
+            "actual mirror command ignores same-model source index and maps left to right in one common-history step");
+        // Introduce a second right-side destination while the copied left-side
+        // identity remains valid; mirror must still reject name ambiguity.
+        const auto oldName=f.namedBones[2];std::memcpy(f.namedBones[2].name,f.namedBones[1].name,20);
+        const auto before=RegistrationKeys(f.first);const auto dirty=f.app->SceneModified();
+        f.app->CurrentFrame()=60;CmdControl400(f.app.get(),f.app->MainWindow(),422,0);
+        Check(SameRegistrationKeys(f.first,before)&&f.history.UndoCount()==1&&!f.history.RedoCount()&&
+            PoseRingDigest(f.first)==ring&&f.namedSelection==selection&&f.app->SceneModified()==dirty,
+            "valid same-model source identity never bypasses ambiguous mirrored destination rejection");
+        f.namedBones[2]=oldName;
+    }
+}
 void NativeKeyPasteChecks() {
     using Mode = plugins::SharedHistory::RecordingMode;
+    RealCopyMirrorIdentityChecks();
     std::puts("  key paste: used destination names only");
     for(bool mirror:{false,true})for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly}) {
         NamedBonePasteFixture f;plugins::NativePoseTestBinding binding(*f.app,f.history);

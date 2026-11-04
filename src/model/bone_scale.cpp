@@ -725,6 +725,11 @@ std::unique_ptr<PoseStorageLease> PoseStorageLease::Prepare(unsigned char* model
     next->impl_->identity=inserted.first->second.identity;next->impl_->leased=inserted.second;
     return next;
 }
+bool PoseStorageLease::IsCurrent() const noexcept {
+    if(!impl_)return false;
+    const auto found=states.find(impl_->model);
+    return found!=states.end()&&found->second.identity==impl_->identity;
+}
 void CopyPoseRuntime(const unsigned char* source,unsigned char* destination){
     if(!source||!destination||source==destination)throw std::invalid_argument("bone pose draft identity");
     const auto found=states.find(source);
