@@ -241,10 +241,9 @@ void ScrollDisplayBoneIntoView(MMDApp* app, int boneIdx) {  // was Sub41A280
         if (tbl[k].flags == 0)                                  // 0x41A2FF
             continue;
         const std::uint32_t sep = mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(m));                 // v7
-        if (sep != 0 && k == 2) {                               // 0x41A31A
-            rows += sep;                                        // 0x41A32D
-            continue;
-        }
+        for (std::uint32_t f = 0; f < sep; ++f)
+            if (mdl::FrameGroupIndex(record->displayFrames[f]) + 1 == k)
+                ++rows;
         const int n = static_cast<int>(mdl::Mdl(m)->rigidBodyCount);
         if (n == 0)
             continue;

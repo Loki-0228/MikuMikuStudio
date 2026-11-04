@@ -1,4 +1,6 @@
+#define NOMINMAX
 #include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/d3d_wrapper.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 // MAINTENANCE: regression-keep; malformed PMX text must fail before allocation
 // or string conversion, and partially constructed models must remain disposable.
@@ -13,10 +15,13 @@
 #include <fcntl.h>
 #include <io.h>
 #include <memory>
+#include <utility>
 #include <vector>
 using namespace mikumikustudio;
 namespace {
 using Bytes = std::vector<unsigned char>;
+// Text/display fixtures have no geometry, but texture preparation requires a renderer record.
+D3DRenderer renderer{};
 void Check(bool ok, const char* what) {
     if (!ok) { std::fprintf(stderr, "FAIL %s\n", what); std::exit(1); }
 }
@@ -66,7 +71,7 @@ void Reject(const Bytes& bytes, const wchar_t* boneName = nullptr) {
     auto model = std::make_unique<mdl::ModelRecord>();
     PathResolutionWorkspace paths{};
     auto* raw = reinterpret_cast<unsigned char*>(model.get());
-    Check(!LoadPMX(raw, nullptr, 0, 0, paths, fd), "reject malformed text");
+    Check(!LoadPMX(raw, &renderer, 0, 0, paths, fd), "reject malformed text");
     if (boneName) {
         Check(model->boneTable != nullptr, "valid preceding bone retained");
         Check(wcscmp(model->boneTable[0].jpText, boneName) == 0, "single code unit or empty-name fallback");
@@ -94,11 +99,72 @@ void ExpandedDisplay() {
     fd=_wopen(path,_O_BINARY|_O_RDONLY);_lseek(fd,3,SEEK_SET);
     auto model=std::make_unique<mdl::ModelRecord>();PathResolutionWorkspace paths{};
     auto* raw=reinterpret_cast<unsigned char*>(model.get());
-    Check(LoadPMX(raw,nullptr,0,0,paths,fd),"load expanded display PMX");
+    Check(LoadPMX(raw,&renderer,0,0,paths,fd),"load expanded display PMX");
     Check(mdl::DisplayGroupCount(*model)>=300&&mdl::FacialFrameCount(*model)==600,"all groups and facial display items survive PMX load");
     Check(mdl::FrameTargetIndex(model->displayFrames[599])==0,"last facial item retains its morph index");
+    Check(mdl::FrameGroupIndex(model->displayFrames[599])==299,"last facial item retains its custom display group above the byte limit");
+    Check(text_encoding::DisplayGroupName(mdl::DisplayGroups(raw)[300],false)==L"显示分组_299","custom display groups preserve complete Unicode names");
     Check(text_encoding::BoneName(model->boneTable[0],false)==L"超过十四字符的完整骨骼名称_左侧_\U0001f31f","PMX preserves complete Unicode bone identity");
     ModelDispose(raw);Check(DeleteFileW(path)!=FALSE,"expanded PMX is closed and disposable");
+}
+void CustomMorphDisplay() {
+    auto bytes = AfterBone();
+    Put(bytes, 3u);
+    for (const auto* name : {L"Special", L"Brow", L"Eye"}) {
+        Text(bytes, name); Text(bytes, L"");
+        Put(bytes, static_cast<unsigned char>(1));
+        Put(bytes, static_cast<unsigned char>(1)); Put(bytes, 0u);
+    }
+    Put(bytes, 6u);
+    auto frame = [&](const wchar_t* name, unsigned char special,
+                     const std::vector<std::pair<unsigned char, signed char>>& entries) {
+        Text(bytes, name); Text(bytes, L""); Put(bytes, special);
+        Put(bytes, static_cast<unsigned>(entries.size()));
+        for (const auto& entry : entries) {
+            Put(bytes, entry.first); Put(bytes, entry.second);
+        }
+    };
+    frame(L"Root", 1, {{0, 0}});
+    frame(L"Facial", 1, {{1, 0}});
+    frame(L"手动添加的眉毛显示分组_\U0001f31f", 0, {{1, 1}, {1, 1}});
+    frame(L"混合骨骼和表情", 0, {{0, 0}, {1, 2}, {0, 1}, {1, -1}, {1, 3}});
+    frame(L"空显示组", 0, {});
+    frame(L"重复引用", 0, {{1, 1}});
+    Put(bytes, 0u); Put(bytes, 0u);
+
+    wchar_t directory[MAX_PATH]{}, path[MAX_PATH]{};
+    Check(GetTempPathW(MAX_PATH, directory) &&
+          GetTempFileNameW(directory, L"grp", 0, path), "create grouped PMX fixture");
+    int fd = _wopen(path, _O_BINARY | _O_WRONLY | _O_TRUNC);
+    Check(fd >= 0 && _write(fd, bytes.data(), unsigned(bytes.size())) == bytes.size(),
+          "write grouped PMX fixture");
+    _close(fd); fd = _wopen(path, _O_BINARY | _O_RDONLY);
+    Check(fd >= 0 && _lseek(fd, 3, SEEK_SET) == 3, "open grouped PMX fixture");
+    auto model = std::make_unique<mdl::ModelRecord>(); PathResolutionWorkspace paths{};
+    auto* raw = reinterpret_cast<unsigned char*>(model.get());
+    Check(LoadPMX(raw, &renderer, 0, 0, paths, fd), "load grouped PMX fixture");
+    Check(mdl::DisplayGroupCount(*model) == 7 && mdl::FacialFrameCount(*model) == 5,
+          "custom and empty display groups survive while invalid morph references are dropped");
+    const unsigned expectedGroups[] = {1, 2, 2, 3, 5};
+    const unsigned expectedMorphs[] = {0, 1, 1, 2, 1};
+    for (unsigned i = 0; i < 5; ++i) {
+        Check(mdl::FrameGroupIndex(model->displayFrames[i]) == expectedGroups[i],
+              "each morph reference retains its source display group");
+        Check(mdl::FrameTargetIndex(model->displayFrames[i]) == expectedMorphs[i],
+              "morph order and duplicate references survive display group loading");
+    }
+    const auto* groups = mdl::DisplayGroups(raw);
+    Check(text_encoding::DisplayGroupName(groups[3], false) == L"手动添加的眉毛显示分组_\U0001f31f" &&
+          text_encoding::DisplayGroupName(groups[3], true) == L"手动添加的眉毛显示分组_\U0001f31f",
+          "custom group preserves its Unicode name and empty English name fallback");
+    Check(text_encoding::DisplayGroupName(groups[5], false) == L"空显示组",
+          "empty group keeps its position without shifting later morph groups");
+    const auto* boneFrames = mdl::RigidGroups(raw);
+    Check(model->rigidBodyCount == 1 && mdl::FrameGroupIndex(boneFrames[0]) == 4 &&
+          mdl::FrameTargetIndex(boneFrames[0]) == 0,
+          "mixed display group retains valid bone and morph entries under the same UI group");
+    ModelDispose(raw);
+    Check(DeleteFileW(path) != FALSE, "grouped PMX fixture remains disposable");
 }
 void OwnToonBoundaries() {
     for (const unsigned textures : {0u, 1u}) for (const unsigned char toon : {0, 1, 127, 255}) {
@@ -124,7 +190,7 @@ void OwnToonBoundaries() {
         _close(fd); fd = _wopen(path,_O_BINARY|_O_RDONLY); _lseek(fd,3,SEEK_SET);
         auto model = std::make_unique<mdl::ModelRecord>(); PathResolutionWorkspace paths{};
         auto* raw = reinterpret_cast<unsigned char*>(model.get());
-        Check(LoadPMX(raw,nullptr,0,0,paths,fd),"load model with absent, empty or out-of-range own toon");
+        Check(LoadPMX(raw,&renderer,0,0,paths,fd),"load model with absent, empty or out-of-range own toon");
         const auto* material = mdl::Materials(raw);
         Check(model->materialCount == 1 && material[0].toonReference == 0xFF &&
               material[0].toonPath[0] == L'\0',
@@ -133,11 +199,13 @@ void OwnToonBoundaries() {
     }
 }
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     ExpandedDisplay();
     OwnToonBoundaries();
     unsigned cases = 0;
     for (bool buffered : {false, true}) {
         fileio::bufferedReads = buffered;
+        CustomMorphDisplay();
         for (int name = 0; name < 4; ++name) {
             for (unsigned prefix : {1u, 3u, 2u, 0x80000000u, 0xFFFFFFFEu}) {
                 auto bytes = Header(name); Put(bytes, prefix); Reject(bytes); ++cases;

@@ -1,5 +1,6 @@
 #include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/morph_display_rows.hpp"
 #include <algorithm>
 // ===========================================================================
 // VA 0x00414610 - PanelPaint  (original: sub_414610, ~0x880 bytes)
@@ -487,7 +488,7 @@ void PanelPaint(MMDApp* app) {
         mdl::ModelRecord* modelRecord = mdl::Mdl(model);
         if (static_cast<std::int32_t>(modelRecord->morphCount) > 0) {
             mdl::MorphKey* morphList = mdl::MorphKeys(model);
-            std::uint32_t* morphLinks = modelRecord->morphKeyIndices;
+            const morph_display::Rows morphRows(modelRecord);
             std::int32_t* mapMorph = app->state.rowHitMorph;
             const std::int32_t morphCnt =
                 static_cast<std::int32_t>(modelRecord->morphCount);
@@ -500,17 +501,20 @@ void PanelPaint(MMDApp* app) {
                     const int row =
                         static_cast<std::int32_t>(key.frame) - scroll;
                     if (row >= 0) {
-                        const int link = morphLinks[head];
-                        if (link != 0) {
-                            // visibility flag (+16) maintenance (0x4151B7)
+                        if (morphRows.Any(head, [](int) { return true; })) {
+                            // Resolve selection once for the shared key. A row
+                            // outside the box must not undo another row's hit.
                             if (app->SelectionBoxDragging() != 0 &&
                                 app->TimelineSelectionChanged() == 0 &&
-                                link < 0) {
-                                const int neg = -link;
+                                (morphRows.HasMetadata() ||
+                                 morphRows.Any(head, [](int link) { return link < 0; }))) {
                                 if (app->TimelineRangeFirstOffset() <= row &&
                                     row < app->TimelineRangeLastOffset() &&
-                                    neg < app->TimelineRangeLastBase() &&
-                                    app->TimelineRangeFirstBase() <= neg) {
+                                    morphRows.Any(head, [&](int link) {
+                                        const int trackRow = link < 0 ? -link : link;
+                                        return trackRow < app->TimelineRangeLastBase() &&
+                                            app->TimelineRangeFirstBase() <= trackRow;
+                                    })) {
                                     key.allocated = static_cast<std::uint8_t>(
                                         !app->CtrlModifierActive());
                                 } else if (!app->ShiftModifierActive()) {
@@ -519,40 +523,42 @@ void PanelPaint(MMDApp* app) {
                             }
                             // row drawing (0x415231..0x4154B1)
                             const int x = kRowH * row + kIconLeft;
-                            if (key.allocated != 0) {
-                                if (link >= 0) {
-                                    const int y = kBandH * link + 17;
-                                    BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetMaskX, 0,
-                                           SRCAND);
-                                    BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetOnX, 0,
-                                           SRCPAINT);
-                                } else {
+                            morphRows.ForEach(head, [&](int link) {
+                                if (key.allocated != 0) {
+                                    if (link >= 0) {
+                                        const int y = kBandH * link + 17;
+                                        BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetMaskX, 0,
+                                               SRCAND);
+                                        BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetOnX, 0,
+                                               SRCPAINT);
+                                    } else {
+                                        const int y = 17 - kBandH * link;
+                                        BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetMaskX, 0,
+                                               SRCAND);
+                                        BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetNegX, 0,
+                                               SRCPAINT);
+                                        mapMorph[200 * row - link] = -1;
+                                    }
+                                } else if (link >= 0) {
+                                    if (mapMorph[200 * row + link] >= 0) {
+                                        const int y = kBandH * link + 17;
+                                        BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetMaskX, 0,
+                                               SRCAND);
+                                        BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetOffX, 0,
+                                               SRCPAINT);
+                                    }
+                                } else if (mapMorph[200 * row - link] >= 0) {
                                     const int y = 17 - kBandH * link;
                                     BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetMaskX, 0,
                                            SRCAND);
-                                    BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetNegX, 0,
+                                    BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetAltX, 0,
                                            SRCPAINT);
-                                    mapMorph[200 * row - link] = -1;
+                                    mapMorph[200 * row - link] = -2;
                                 }
-                            } else if (link >= 0) {
-                                if (mapMorph[200 * row + link] >= 0) {
-                                    const int y = kBandH * link + 17;
-                                    BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetMaskX, 0,
-                                           SRCAND);
-                                    BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetOffX, 0,
-                                           SRCPAINT);
-                                }
-                            } else if (mapMorph[200 * row - link] >= 0) {
-                                const int y = 17 - kBandH * link;
-                                BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetMaskX, 0,
-                                       SRCAND);
-                                BitBlt(panel, x, y, kIcon, kIcon, icons, kSheetAltX, 0,
-                                       SRCPAINT);
-                                mapMorph[200 * row - link] = -2;
-                            }
-                            // final map write (0x4154CB)
-                            if (link >= 0)
-                                mapMorph[200 * row + link] = rec != 0 ? rec : -10;
+                                // final map write (0x4154CB)
+                                if (link >= 0)
+                                    mapMorph[200 * row + link] = rec != 0 ? rec : -10;
+                                });
                         }
                     }
                     const int next = static_cast<int>(key.next);

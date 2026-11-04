@@ -7,6 +7,7 @@
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/display_capacity.hpp"
+#include "mikumikustudio/morph_display_rows.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/bone_scale_io.hpp"
@@ -166,6 +167,20 @@ int Row(const MMDApp& app,const Key& key) {
     const auto* rows=key.morph ? record.morphKeyIndices : record.boneKeyIndices;
     if(!rows)return 0;
     return std::abs(reinterpret_cast<const std::int32_t*>(rows)[key.target]);
+}
+template<class Function>
+void ForEachRow(const MMDApp& app,const Key& key,
+                const morph_display::Rows& morphRows,Function function) {
+    if(key.model && key.morph && key.target>=0) {
+        morphRows.ForEach(key.target,[&](int link){function(link<0 ? -link : link);});
+    } else function(Row(app,key));
+}
+template<class Predicate>
+bool AnyRow(const MMDApp& app,const Key& key,
+            const morph_display::Rows& morphRows,Predicate predicate) {
+    bool hit=false;
+    ForEachRow(app,key,morphRows,[&](int row){hit=hit || predicate(row);});
+    return hit;
 }
 Values GlobalPose(MMDApp* app,int kind) {
     Values values{};
@@ -692,27 +707,37 @@ bool Command(MMDApp* app,unsigned id) {
 }
 void Draw(MMDApp* app,void* dc,void* icons,int columns,int height) {
     auto found=states.find(app);if(found==states.end())return;
+    const morph_display::Rows morphRows(app->CameraMode() ? nullptr : mdl::Mdl(app->SelectedModel()));
     for(const auto& key:found->second.keys)if(Current(*app,key) && (app->CameraMode()?!key.model:key.model==app->SelectedModel())) {
-        const auto column=std::int64_t(key.frame)-app->state.timelineStartFrame;const int row=Row(*app,key),y=14*row+17;
-        if(column<0 || column>=columns || row<0 || (key.model && key.target>=0 && row<=0) || y>=height)continue;
+        const auto column=std::int64_t(key.frame)-app->state.timelineStartFrame;
+        if(column<0 || column>=columns)continue;
         const int x=95+13*int(column);
-        BitBlt(HDC(dc),x,y,11,11,HDC(icons),44,0,SRCAND);
-        BitBlt(HDC(dc),x,y,11,11,HDC(icons),key.selected?22:0,0,SRCPAINT);
+        ForEachRow(*app,key,morphRows,[&](int row){
+            const int y=14*row+17;
+            if(row<0 || (key.model && key.target>=0 && row<=0) || y>=height)return;
+            BitBlt(HDC(dc),x,y,11,11,HDC(icons),44,0,SRCAND);
+            BitBlt(HDC(dc),x,y,11,11,HDC(icons),key.selected?22:0,0,SRCPAINT);
+        });
     }
 }
 bool SelectCell(MMDApp* app,int frame,int row,bool additive) {
     auto found=states.find(app);if(found==states.end())return false;bool hit=false;
+    const morph_display::Rows morphRows(app->CameraMode() ? nullptr : mdl::Mdl(app->SelectedModel()));
     for(auto& key:found->second.keys)if(Current(*app,key) && (app->CameraMode()?!key.model:key.model==app->SelectedModel())) {
-        if(key.frame==frame && Row(*app,key)==row){key.selected=additive ? !key.selected : true;hit=true;}
+        if(key.frame==frame && AnyRow(*app,key,morphRows,[&](int keyRow){return keyRow==row;})) {
+            key.selected=additive ? !key.selected : true;hit=true;
+        }
         else if(!additive)key.selected=false;
     }
     return hit;
 }
 bool CellSelected(MMDApp* app,int frame,int row) {
     auto found=states.find(app);if(found==states.end())return false;
+    const morph_display::Rows morphRows(app->CameraMode() ? nullptr : mdl::Mdl(app->SelectedModel()));
     return std::any_of(found->second.keys.begin(),found->second.keys.end(),[&](const Key& key){
         return Current(*app,key) && (app->CameraMode()?!key.model:key.model==app->SelectedModel()) &&
-            key.frame==frame && Row(*app,key)==row && key.selected;
+            key.frame==frame && key.selected &&
+            AnyRow(*app,key,morphRows,[&](int keyRow){return keyRow==row;});
     });
 }
 void BeginDrag(MMDApp* app) {
@@ -761,10 +786,12 @@ void EndDrag(MMDApp* app) {
 }
 void SelectBox(MMDApp* app,std::int64_t first,std::int64_t last,int top,int bottom,bool selected,bool additive) {
     auto found=states.find(app);if(found==states.end())return;
+    const morph_display::Rows morphRows(app->CameraMode() ? nullptr : mdl::Mdl(app->SelectedModel()));
     for(auto& key:found->second.keys)if(Current(*app,key) && (app->CameraMode()?!key.model:key.model==app->SelectedModel())) {
-        const int row=Row(*app,key);
-        const bool visible=row>=0 && (!key.model || key.target<0 || row>0);
-        if(visible && key.frame>=first && key.frame<last && row>=top && row<bottom)key.selected=selected;
+        const bool hit=AnyRow(*app,key,morphRows,[&](int row){
+            return row>=0 && (!key.model || key.target<0 || row>0) && row>=top && row<bottom;
+        });
+        if(hit && key.frame>=first && key.frame<last)key.selected=selected;
         else if(!additive)key.selected=false;
     }
 }
