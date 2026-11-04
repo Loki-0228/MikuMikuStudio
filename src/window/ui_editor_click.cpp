@@ -55,6 +55,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <vector>
 
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
@@ -574,6 +575,7 @@ static void ToggleModelKeyAllocated(MMDApp* app, KeyT& key,
     } else {
         ClearActiveModelFlags(app);
         key.allocated = 1;
+        app->TimelineSelectionChanged() = 1;
     }
 }
 
@@ -592,6 +594,13 @@ static void StageRangeRow(MMDApp* app, std::int32_t type,
                                   frameColumn + 1, trackRow + 1);
         if (!shiftActive)
             ClearActiveModelFlags(app);
+        if (!shiftActive) {
+            app->SelectionBoxDragging() = 1;
+            app->TimelineSelectionChanged() = 0;
+            PanelPaint(app); // Resolve the collapsed row into actual selected keys.
+            app->ClearTimelineRange();
+            app->TimelineSelectionChanged() = 1;
+        }
     }
 }
 
@@ -757,10 +766,12 @@ static void HandleLButtonDown_NameColumnHit(MMDApp* app, HWND hwnd,
                 // morph row found: toggle its flag, then sync the bone
                 // name combo (controls 0x1F8..0x209 by bone row type)
                 mdl::FrameGroup& faceRec = mdl::DisplayFrames(m)[i];
-                if (faceRec.selected != 0) {
-                    faceRec.selected = 0;
-                } else {
-                    faceRec.selected = 1;
+                const bool selected = faceRec.selected == 0;
+                // Repeated display references edit one morph track.
+                for (int f = 0; f < morphCount; ++f)
+                    if (mdl::FrameTargetIndex(mdl::DisplayFrames(m)[f]) == want)
+                        mdl::DisplayFrames(m)[f].selected = selected;
+                if (selected) {
                     const std::int32_t morphIndex = mikumikustudio::mdl::FrameTargetIndex(faceRec);
                     auto& morph = mikumikustudio::mdl::Morphs(m)[morphIndex];
                     const auto panel = morph.panel;
@@ -834,19 +845,25 @@ static void HandleLButtonDown_NameColumnHit(MMDApp* app, HWND hwnd,
             PostLanguageSweep2(app);
             return;
         }
-        if (type == 2) {
-            for (int i = 0;
-                 i < static_cast<int>(mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(m))); ++i) {
-                mdl::FrameGroup& face = mdl::DisplayFrames(m)[i];
-                face.selected = (face.selected == 0) ? 1 : 0;
-            }
-            PostLanguageSweep(app);
-            PostLanguageSweep2(app);
-            return;
-        }
         if (type <= 0) {                                 // jle loc_447384
             PostLanguageSweep2(app);
             return;
+        }
+        auto& model = *mdl::Mdl(m);
+        const auto faceCount = mdl::FacialFrameCount(model);
+        std::vector<unsigned char> selected(model.morphCount, 2);
+        for (std::uint32_t i = 0; i < faceCount; ++i) {
+            const auto& face = model.displayFrames[i];
+            if (mdl::FrameGroupIndex(face) + 1 == type &&
+                mdl::FrameTargetIndex(face) < model.morphCount)
+                selected[mdl::FrameTargetIndex(face)] = face.selected == 0;
+        }
+        for (std::uint32_t i = 0; i < faceCount; ++i) {
+            auto& face = model.displayFrames[i];
+            const auto target = mdl::FrameTargetIndex(face);
+            if (target >= model.morphCount) continue;
+            const auto value = selected[target];
+            if (value != 2) face.selected = value;
         }
         // Rigid-group rows (x86 0x4470FA..0x44718A / x64 0x7FF7CB45A379..):
         // walk the 46-byte (0x2E) FrameGroup records at model+0x26D8, and

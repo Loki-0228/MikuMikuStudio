@@ -1651,12 +1651,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
         }
     }
 
-    // Facial group records (m+9948): morph entries of every display frame.
-    // The reference counts morph entries across all frames (0x1400B0224) and
-    // fills them across all frames (0x1400B0392), so counting and filling cover
-    // the same set; the frame's special byte is read into the stack slot at
-    // 0x1400B0034 and never used again. The port now matches the original.
-    // Defect MB-12.
+    // Keep each custom display frame's morphs under that frame. The two
+    // special PMX frames retain the fixed Facial header; subsequent frame f
+    // has display-group slot f+1, while facial records store slot-1.
     const int morphGroupCount = morphEntryTotal;
     std::uint32_t facialCount = 0;
     if (morphGroupCount != 0) {
@@ -1684,7 +1681,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                 if (entry.index < 0 || entry.index >= morphCount)
                     continue;
                 mdl::FrameGroup& rec = model.displayFrames[w];
-                mdl::SetFrameIndices(rec, 1, entry.index);
+                mdl::SetFrameIndices(rec, f < 2 ? 1 : f, entry.index);
                 const mdl::MorphRecord& morph = mdl::Morphs(m)[entry.index];
                 strcpy_s(rec.name, 0x14, morph.name);
                 strcpy_s(rec.nameEn, 0x14, morph.nameEn);

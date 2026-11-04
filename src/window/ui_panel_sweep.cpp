@@ -255,7 +255,6 @@ void PostLanguageSweep(MMDApp* app) {
         std::uint32_t frameIdx = 1;   // display-frame index
         std::uint32_t frameType = 1;  // frame type carried onto the next line
         int line = 1;                // tree line counter
-        std::uint32_t faceIdx = 0;    // face index (0x430138)
         if (mikumikustudio::mdl::DisplayGroupCount(*mikumikustudio::mdl::Mdl(model)) <= 1) {
             PanelPaint(app);
             return;
@@ -285,14 +284,13 @@ void PostLanguageSweep(MMDApp* app) {
                                       s.state.themeColors[34]);
                         s.PanelRowFlags()[line] = 1;
                     }
-                    if (mikumikustudio::mdl::FacialFrameCount(*record) != 0 && frameType == 2) {
-                        // frame 2: highlight when any face flag (+44) is
-                        // set - first face with a live flag (0x42FC57,
-                        // LABEL_76 skipped when none is live).
+                    if (mikumikustudio::mdl::FacialFrameCount(*record) != 0) {
+                        // A collapsed header reflects only its own morphs.
                         bool anyFaceSelected = false;
                         for (unsigned int f = 0;
                              f < mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(model)); ++f) {
-                            if (faces[f].selected != 0) {
+                            if (mdl::FrameGroupIndex(faces[f]) + 1 == frameNo &&
+                                faces[f].selected != 0) {
                                 anyFaceSelected = true;
                                 break;
                             }
@@ -329,7 +327,8 @@ void PostLanguageSweep(MMDApp* app) {
                     for (std::uint32_t j = 0;
                          j < mikumikustudio::mdl::FacialFrameCount(*mikumikustudio::mdl::Mdl(model)); ++j) {
                         const mdl::FrameGroup& face = faces[j];
-                        if (mikumikustudio::mdl::FrameGroupIndex(face) + 1 == frameNo)
+                        if (mikumikustudio::mdl::FrameGroupIndex(face) + 1 == frameNo &&
+                            morphLineByIndex[mdl::FrameTargetIndex(face)] <= 0)
                             morphLineByIndex[mikumikustudio::mdl::FrameTargetIndex(face)] = -line;
                     }
                     if (groupCnt) {
@@ -364,17 +363,17 @@ void PostLanguageSweep(MMDApp* app) {
                 ++record->boneListRows;
                 if (frameIdx == 1) {
                     record->boneListSelLine = line - 1;
-                } else if (mikumikustudio::mdl::FacialFrameCount(*record) != 0 && frameIdx == 2) {
-                    // face section (frame 2) - list the frame's face records
-                    // (0x430153..0x43030B; LABEL_122/123/139 were the skip /
-                    // advance / exhausted edges of this loop).
-                    faceIdx = 0;  // 0x430138
+                } else {
+                    // Custom PMX frames can contain both morphs and bones.
                     int recOff = line;  // index into boneListRowRecord
                     int rowY = 14 * line + 17;
-                    for (;;) {
+                    for (std::uint32_t faceIdx = 0;
+                         faceIdx < mdl::FacialFrameCount(*record); ++faceIdx) {
+                        const mdl::FrameGroup& face = faces[faceIdx];
+                        if (mdl::FrameGroupIndex(face) + 1 != frameNo)
+                            continue;
                         if (record->boneListRows > record->boneListPos &&
                             line < 200) {
-                            const mdl::FrameGroup& face = faces[faceIdx];
                             DrawRecordName(app, *record, face, true, panel, rowY,
                                 s.state.themeColors[face.selected != 0 ? 34 : 33]);
                             if (face.selected != 0)  // LABEL_122 skip
@@ -386,10 +385,9 @@ void PostLanguageSweep(MMDApp* app) {
                             rowY += 14;
                         }
                         ++record->boneListRows;  // LABEL_123
-                        if (++faceIdx >= mikumikustudio::mdl::FacialFrameCount(*record))
-                            break;               // LABEL_139
                     }
-                } else if (groupCnt) {
+                }
+                if (frameIdx != 1 && groupCnt) {
                     // rigid-group section (0x43031D..0x4304D8)
                     int recOff = line;  // index into boneListRowRecord
                     int rowY = 14 * line + 17;

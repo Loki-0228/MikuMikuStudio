@@ -1424,6 +1424,15 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     set_target_properties(hidden_morph_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     # Requires the separately supplied Rou PMX sample; run explicitly with --model.
+    add_executable(pmx_display_group_tests EXCLUDE_FROM_ALL tests/pmx_display_group_tests.cpp
+        res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+    target_link_libraries(pmx_display_group_tests PRIVATE mikumikustudio_core winmm dsound)
+    target_link_options(pmx_display_group_tests PRIVATE "/MANIFEST:NO"
+        "${MIKUMIKUSTUDIO_GEN_RES}")
+    set_target_properties(pmx_display_group_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME pmx_display_group_regressions COMMAND pmx_display_group_tests)
+    set_tests_properties(pmx_display_group_regressions PROPERTIES TIMEOUT 60)
 endif()
 # Exercise the actual embedded model effects in the occlusion regression.
 if(TARGET model_alpha_occlusion_tests)
