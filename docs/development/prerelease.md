@@ -3,15 +3,15 @@
 使用 PowerShell 7、CMake 和已配置的 Windows x64 Release 构建目录。完整包的构建档为 `full`，最小包为 `mmd932`。两个目录的源码都必须指向当前仓库。
 
 1. 检查工作区改动，运行相关测试。保留测试与基线日志，发布说明只写影响用户的使用限制。
-2. 在[发布记录](../records/releases.md)补充三语说明，用 `release-notes:<版本号>:begin` 和 `release-notes:<版本号>:end` HTML 注释标记该版本的范围。
+2. 在[包说明](../records/releases.md)更新三语功能和限制，用 `release-notes:<版本号>:begin` 和 `release-notes:<版本号>:end` HTML 注释标记该版本的范围。
 3. 提交源码和说明。打包脚本要求暂存区与工作区干净，本地日志、截图、模型和构建目录应由 `.git/info/exclude` 排除。
 4. 运行打包脚本，将参数替换为实际路径。输出目录必须尚不存在。
 
 ```powershell
-	./scripts/package_release.ps1 -Version v2026.10.15.1 -FullBuild D:/builds/mms-full -MinimalBuild D:/builds/mms-minimal -OutputDirectory D:/releases/v2026.10.15.1
+	./scripts/package_release.ps1 -Version $releaseVersion -FullBuild D:/builds/mms-full -MinimalBuild D:/builds/mms-minimal -OutputDirectory (Join-Path D:/releases $releaseVersion)
 ```
 
-正式版使用 `vYYYY.MM.DD.N`，预发布版在末尾加 `-pre.N`。脚本按版本号生成包内说明和 `Prerelease` 字段，也支持旧的 `prerelease-notes` 注释标记。
+`$releaseVersion` 填写本次实际版本号，并与说明中的机器标记一致。正式版使用 `vYYYY.MM.DD.N`，预发布版在末尾加 `-pre.N`。脚本按版本号生成包内说明和 `Prerelease` 字段，也支持旧的 `prerelease-notes` 注释标记。
 
 脚本重新构建两个档位，确认源码未变化，然后只复制程序、许可证和发布说明。许可证保留在 ZIP 内，不单独上传 LICENSE 或 SHA256SUMS。Release 附件只上传完整包、最小包及可选的 `MMSNvidiaAAFix.dll`；简短的三语安装方法写在 Release Notes 中。构建清单保留源码提交、文件哈希及可选组件信息，用于本地核对，不单独上传。不包含模型、设置、MME、MMV、FFmpeg 或调试符号。
 

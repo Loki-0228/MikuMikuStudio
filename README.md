@@ -2,15 +2,13 @@
 
 [English](#english) | [中文](#中文) | [日本語](#日本語)
 
-[Release notes / 发布日志 / リリースノート](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.20.1)
+[Downloads / 下载 / ダウンロード](https://github.com/Loki-0228/MikuMikuStudio/releases/latest)
 
 [Documentation / 文档导航 / ドキュメント](docs/README.md)
 
-[v2026.10.20.1 Release / 正式版 / 正式版](docs/records/releases.md#release-v2026-10-20-1)
-
 ## Downloads and package differences
 
-[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.20.1) provides Windows x64 packages with `full` or `minimal` in the filename and lists their contents in the release notes. The table below describes the released build profiles. The minimal build uses the `mmd932` build profile:
+[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/latest) provides Windows x64 packages with `full` or `minimal` in the filename and lists their contents in the release notes. The table below describes the current main-branch build profiles. Published packages are defined by their accompanying notes. The minimal build uses the `mmd932` build profile:
 
 | Area | Full `full` | Minimal `minimal` |
 | --- | --- | --- |
@@ -28,7 +26,7 @@
 | Media | Modern imports and MP4/MOV export through Windows media components | WAV audio, AVI backgrounds and AVI export |
 | PMM, VMD, VPD saving | Can include MMS extensions | Standard data only; imported MMS extensions are ignored |
 
-Both application ZIPs contain `MikuMikuDance.exe` and licenses. Neither includes models, user settings, MME, or the NVIDIA fix DLL. Starting with `v2026.10.15.1`, `MMSNvidiaAAFix.dll` is a separate optional release asset with [installation instructions in the release notes](docs/records/releases.md#optional-nvidia-fix).
+Both application ZIPs contain `MikuMikuDance.exe` and licenses. Neither includes models, user settings, MME, or the NVIDIA fix DLL. `MMSNvidiaAAFix.dll` is a separate optional release asset with [installation instructions in the release notes](docs/records/releases.md#optional-nvidia-fix).
 
 The minimal build retains the original feature range with selected fixes; it is not an unchanged copy of original MMD. PMX models can be animated, but model editing supports PMD only. Import success does not guarantee lossless saving in legacy formats. Save extended projects as separate copies, since the minimal build drops MMS extensions. See [minimal build limits](docs/reference/minimal-build.md) and [tested legacy boundaries](docs/reference/legacy-mmd-limits.md).
 
@@ -45,7 +43,7 @@ PMM saves a project, including models, media references, scene settings, and key
 | Negative keyframes | The full build saves them in the `MMSXPMM2` extension of PMM `0002` or `0003`. Negative frames alone do not require `0003`. Original MMD cannot restore them; standard VMD export contains only nonnegative keyframes. |
 | Bone scale, free curves, and mesh caches | MMS extensions require MMS. Original MMD reads only standard data and cannot reproduce these additions unchanged. |
 | FXAA, TAA, SMAA, and other MMS display settings | Apply in MMS. Original MMD uses its own rendering settings. |
-| Extended PMM `0003` | Original MMD and the minimal build cannot open it. Actual excess keyframes, display counts, or frame numbers, can require this format. Reference paths use a reversible byte encoding when they fit the field. |
+| Extended PMM `0003` | Original MMD and the minimal build cannot open it. Actual excess keyframes, display counts, or frame numbers can require this format. Reference paths use a reversible byte encoding when they fit the field. |
 
 The full build prefers `0002` when the standard project data still fits. Empty reserved capacity, name extensions, and negative keyframes alone do not select `0003`. When usable, a legacy-name copy is generated automatically as `.compat.pmm` or `.compat.vmd`; excess capacity or conflicting short names can prevent it. A standard-only PMM copy is not generated when it would discard negative-frame data. These copies cannot add MMS-only features to original MMD.
 
@@ -53,7 +51,7 @@ Re-saving in original MMD or the minimal build discards MMS extensions. Keep a s
 
 ## 下载与版本区别
 
-[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.20.1) 同时提供 Windows x64 完整包和最小包，实际收录内容见发布页面的日志。需要 MMS 新增功能时选择文件名含 `full` 的 ZIP；主要使用 MMD 原有功能时选择含 `minimal` 的 ZIP。下表描述已发布的两种构建档，两档均保留 `MikuMikuDance.exe` 文件名。
+[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/latest) 同时提供 Windows x64 完整包和最小包，实际收录内容见发布页面的日志。需要 MMS 新增功能时选择文件名含 `full` 的 ZIP；主要使用 MMD 原有功能时选择含 `minimal` 的 ZIP。下表描述 main 分支的两种构建档，发布包范围以随附说明为准。两档均保留 `MikuMikuDance.exe` 文件名。
 
 | 项目 | 完整包 `full` | 最小包 `minimal`（构建档 `mmd932`） |
 | --- | --- | --- |
@@ -73,7 +71,7 @@ Re-saving in original MMD or the minimal build discards MMS extensions. Keep a s
 | PMM、VMD、VPD 保存 | 可写 MMS 扩展数据 | 仅写标准内容，忽略读取到的 MMS 扩展 |
 | MME | 保留原生 DX9 接口，插件需另行安装 | 保留原生 DX9 接口，插件需另行安装 |
 
-完整包和最小包 ZIP 均包含 `MikuMikuDance.exe` 与许可文件，不附带用户配置、模型、MME 或 NVIDIA 修复 DLL。从 `v2026.10.15.1` 起，`MMSNvidiaAAFix.dll` 作为独立附件按需下载，见[Release Notes 中的安装说明](docs/records/releases.md#nvidia-修复安装可选)。
+完整包和最小包 ZIP 均包含 `MikuMikuDance.exe` 与许可文件，不附带用户配置、模型、MME 或 NVIDIA 修复 DLL。`MMSNvidiaAAFix.dll` 作为独立附件按需下载，见[Release Notes 中的安装说明](docs/records/releases.md#nvidia-修复安装可选)。
 
 最小包保留原版功能范围及部分修复，不等同于原版程序。PMX 可用于动画场景，模型编辑仅支持 PMD。导入成功不代表能以旧格式无损保存。最小包保存时会丢弃 MMS 扩展，请将扩展工程另存为副本。具体限制见[最小包范围](docs/reference/minimal-build.md)及[原版限制实测](docs/reference/legacy-mmd-limits.md)。
 
@@ -90,7 +88,7 @@ PMM 保存工程，包括模型与媒体引用、场景设置和关键帧。VMD 
 | 负数关键帧 | 完整包保存到 PMM `0002` 或 `0003` 的 `MMSXPMM2` 扩展区。负帧本身不要求 `0003`。原版无法恢复负帧，标准 VMD 导出只包含非负关键帧。 |
 | 骨骼缩放、自由曲线、网格缓存 | 依赖 MMS 扩展。原版只读取标准部分，不能原样还原这些新增效果。 |
 | FXAA、TAA、SMAA 等新增显示设置 | 只在 MMS 中生效，原版使用自己的渲染设置。 |
-| 扩展 PMM `0003` | 原版 MMD 和最小包均不能打开。实际关键帧数量、显示项数量、帧号超限，时，可能需要此格式。引用路径在字段可容纳时采用可还原的字节编码。 |
+| 扩展 PMM `0003` | 原版 MMD 和最小包均不能打开。实际关键帧数量、显示项数量或帧号超限时，可能需要此格式。引用路径在字段可容纳时采用可还原的字节编码。 |
 
 完整包在标准部分符合原版限制时优先保存为 `0002`。仅预留更多空容量、增加名称扩展或负数关键帧，不会切换到 `0003`。能够生成可用的旧名称副本时，自动写入 `.compat.pmm`、`.compat.vmd`；超容量或短名称冲突时可能无法生成。含负帧数据时不生成会丢失该数据的标准部分 PMM 副本。这些副本不能让原版获得 MMS 专有功能。
 
@@ -98,7 +96,7 @@ PMM 保存工程，包括模型与媒体引用、场景设置和关键帧。VMD 
 
 ## ダウンロードとパッケージの違い
 
-[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/tag/v2026.10.20.1) では、ファイル名に `full` または `minimal` を含む Windows x64 パッケージを配布しています。収録内容は公開ページのリリースノートを参照してください。下表は公開済みのビルド構成です。最小版は `mmd932` ビルドプロファイルを使用します。
+[GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases/latest) では、ファイル名に `full` または `minimal` を含む Windows x64 パッケージを配布しています。収録内容は公開ページのリリースノートを参照してください。下表は main ブランチのビルド構成です。公開パッケージは付属説明を参照してください。最小版は `mmd932` ビルドプロファイルを使用します。
 
 | 項目 | 完全版 `full` | 最小版 `minimal` |
 | --- | --- | --- |
@@ -116,7 +114,7 @@ PMM 保存工程，包括模型与媒体引用、场景设置和关键帧。VMD 
 | 音声・動画 | Windows メディアコンポーネントによる各種形式の読み込みと MP4・MOV 出力 | WAV 音声、AVI 背景、AVI 出力 |
 | PMM・VMD・VPD 保存 | MMS 拡張を保存可能 | 標準データのみ保存。読み込んだ MMS 拡張は無視 |
 
-両方のアプリ ZIP に `MikuMikuDance.exe` とライセンスを含みます。モデル、ユーザー設定、MME、NVIDIA 修正 DLL は同梱しません。`v2026.10.15.1` 以降、`MMSNvidiaAAFix.dll` は任意の独立ダウンロードです。[リリースノートの導入手順](docs/records/releases.md#nvidia-修正の導入任意)を参照してください。
+両方のアプリ ZIP に `MikuMikuDance.exe` とライセンスを含みます。モデル、ユーザー設定、MME、NVIDIA 修正 DLL は同梱しません。`MMSNvidiaAAFix.dll` は任意の独立ダウンロードです。[リリースノートの導入手順](docs/records/releases.md#nvidia-修正の導入任意)を参照してください。
 
 最小版は従来の機能範囲と一部の修正を保持しますが、オリジナル MMD そのものではありません。PMX はアニメーションに使えますが、モデル編集は PMD のみです。読み込みに成功しても旧形式で無損失に保存できるとは限りません。MMS 拡張は最小版で保存すると失われるため、別名で保存してください。[最小版の範囲](docs/reference/minimal-build.md)と[MMD の実測記録](docs/reference/legacy-mmd-limits.md)を参照してください。
 
@@ -151,12 +149,13 @@ MikuMikuStudio (MMS) is a Windows desktop application for creating and editing M
 - **Bone scaling**: Uniform and per-axis bone scaling for local, global, and view coordinates. Scale data requires MMS extensions; original MMD does not apply it. [Bone scaling](docs/guides/bone-scaling.md).
 - **Editing capacity**: Keyframes and display lists grow as needed, within memory and save-format limits. Full Unicode names are preserved in MMS extensions. PMM projects beyond original MMD's limits cannot be opened there. [File compatibility](#pmm-and-vmd-files).
 - **Physics**: Rigid-body simulation, constraints, and baking to bone motion. Supports frame ranges, presets, undo, and cancellation. [Physics baking](docs/guides/physics-baking.md).
-- **Mesh baking and export**: Export captured MME vertex deformation to Alembic or bake it into the project. Clear a bake to return to live deformation. [Mesh export and baking](docs/guides/mesh-export.md).
+- **Mesh baking and export**: Export captured MME vertex deformation to Alembic, or cache native geometry in the project. MMV layer baking is unavailable in the current host. [Mesh export and baking](docs/guides/mesh-export.md).
 - **Rendering**: MME effects, GPU skinning, and optional DX12 preview, with DX9 and CPU paths for unsupported hardware. Rendering and vertex processing can use separate devices.
 - **Anti-aliasing**: Choose original MSAA, FXAA, TAA, or SMAA to balance smoothing and preview performance. Includes outline softening and AA for still images and image sequences. [Display settings](docs/guides/rendering.md).
 - **Viewport and shadows**: Adjust preview resolution without changing export size. Dynamic shadow precision, a wider self-shadow range, optional filtering, and transparency sorting provide scene-specific controls. [Display settings](docs/guides/rendering.md).
 - **Media**: Audio and video import, AVI and MP4/H.264 export, transparent MOV, and image sequences. PNG and DDS exports choose transparent backgrounds automatically. Available media formats depend on Windows components.
 - **Saving and backups**: Background project saving, scheduled backups, and optional `.pmm1` version retention. Fatal errors save a report and attempt recovery. Error logs use the configured backup folder, which defaults to `backups` beside the EXE.
+- **Optional renderer**: The full build can load `MMV4MMS.dll` for scene rendering. It runs separately from the MME proxy and is not included in the application package. [Plugin setup](docs/records/extensions/usage.md).
 - **UI**: English, Chinese, and Japanese UI, Unicode file paths, recent projects, undo and redo, and shortcuts that work with an IME outside text fields.
 
 ### Building from Source
@@ -283,12 +282,13 @@ MikuMikuStudio（MMS）是用于制作和编辑 MMD 舞蹈动画的 Windows 桌�
 - **骨骼缩放**：支持整体及 XYZ 缩放，可选择局部、全局和视图坐标系。缩放依赖 MMS 扩展，原版 MMD 不应用这些数据。见[骨骼缩放](docs/guides/bone-scaling.md)。
 - **编辑容量**：关键帧和显示项按需扩容，完整 Unicode 名称通过 MMS 扩展保留。扩容仍受内存和保存格式限制，超出原版范围的 .pmm 工程不能在原版 MMD 打开。见[格式兼容说明](#pmm-与-vmd-的区别和兼容性)。
 - **物理**：支持刚体与约束模拟，可将结果烧录为骨骼动作，支持帧范围、预设、撤销和取消。见[物理烧录](docs/guides/physics-baking.md)。
-- **网格烧录与导出**：可将捕获到的 MME 顶点变形导出为 Alembic，或烧录到工程；清除烧录后恢复实时变形。见[网格导出与烧录](docs/guides/mesh-export.md)。
+- **网格烧录与导出**：支持把 MME 顶点变形捕获为 Alembic，或把原生几何缓存到工程；当前宿主不支持 MMV 分层烘焙。见[网格导出与烧录](docs/guides/mesh-export.md)。
 - **渲染**：支持 MME 特效、GPU 蒙皮和可选 DX12 预览，硬件不支持时使用 DX9、CPU 路径；可分别选择主渲染和顶点计算设备。
 - **抗锯齿**：原版 MSAA 与 FXAA、TAA、SMAA 可选，便于平衡画面平滑度和预览性能，支持描边柔化及静帧、图片序列抗锯齿。见[画面设置](docs/guides/rendering.md)。
 - **视口与阴影**：可调整预览分辨率而不改变导出尺寸，并按场景选择阴影动态精度、扩展自阴影范围、滤波和透明排序。见[画面设置](docs/guides/rendering.md)。
 - **多媒体**：支持音视频导入、AVI、MP4/H.264、透明 MOV 和图片序列输出；PNG、DDS 按格式自动导出透明背景。可用音视频格式取决于 Windows 媒体组件。
 - **保存与备份**：支持后台保存、定时备份和可选 `.pmm1` 旧版本保留。致命错误会记录报告并尝试备份；错误日志写入设置的备份目录，默认是程序旁的 `backups`。
+- **可选渲染插件**：完整包可加载独立的 `MMV4MMS.dll` 接管场景，不与 MME 代理同时启用，主程序包不附带插件。见[安装说明](docs/records/extensions/usage.md)。
 - **界面**：英中日三语界面、Unicode 路径、最近工程、撤销与重做；在文本框外，开启输入法也可使用字母快捷键。
 
 ### 从源码构建
@@ -409,12 +409,13 @@ MikuMikuStudio（MMS）は、MMD のダンスアニメーションを制作・�
 - **ボーンスケール**：ボーンを一括または XYZ 軸ごとに拡大縮小でき、ローカル・グローバル・ビュー座標を選べます。スケールは MMS 拡張で保存し、オリジナル MMD には適用されません。[ボーンスケール](docs/guides/bone-scaling.md)。
 - **編集容量**：メモリと保存形式の範囲内でキーフレームと表示項目の容量を拡張し、完全な Unicode 名を MMS 拡張に保持します。従来の制限を超えた PMM はオリジナル MMD で開けません。[形式の互換性](#pmm-と-vmd-の違いと互換性)。
 - **物理**：剛体と拘束のシミュレーションに対応し、結果をボーンモーションにベイクできます。範囲、プリセット、元に戻す操作、キャンセルに対応します。[物理ベイク](docs/guides/physics-baking.md)。
-- **メッシュベイクと出力**：取得した MME の頂点変形を Alembic に出力、またはプロジェクトにベイクできます。ベイクを消すとリアルタイム変形に戻ります。[メッシュ出力とベイク](docs/guides/mesh-export.md)。
+- **メッシュのベイクと書き出し**：MME の頂点変形を Alembic に書き出し、標準ジオメトリをプロジェクトにキャッシュできます。現在のホストでは MMV レイヤーのベイクに対応しません。[メッシュ書き出し](docs/guides/mesh-export.md)。
 - **描画**：MME、GPU スキニング、任意の DX12 プレビューに対応します。非対応環境では DX9・CPU を使い、描画と頂点処理のデバイスを別々に選べます。
 - **アンチエイリアス**：従来の MSAA と FXAA・TAA・SMAA を、滑らかさとプレビュー負荷に応じて選べます。輪郭線の平滑化と、静止画・連番画像の AA にも対応します。[画面設定](docs/guides/rendering.md)。
 - **ビューポートと影**：出力サイズを変えずにプレビュー解像度を調整できます。影の動的精度、セルフシャドウ範囲の拡張、フィルター、透明ソートをシーンに合わせて選べます。[画面設定](docs/guides/rendering.md)。
 - **メディア**：音声・動画の読み込み、AVI・MP4/H.264・透明 MOV・連番画像の出力に対応します。PNG・DDS は形式に応じて透明背景を使います。利用可能なメディア形式は Windows の構成に依存します。
 - **保存とバックアップ**：バックグラウンド保存、定期バックアップ、任意の `.pmm1` 履歴保存に対応します。致命的エラーでは報告を記録してバックアップを試みます。ログの保存先は指定したバックアップフォルダーで、初期設定は EXE 横の `backups` です。
+- **任意のレンダラ**：完全版は `MMV4MMS.dll` によるシーン描画に対応します。MME プロキシとは同時に使えず、パッケージに同梱しません。[導入](docs/records/extensions/usage.md)。
 - **UI**：英語・中国語・日本語 UI、Unicode パス、最近使ったプロジェクト、元に戻す・やり直す操作に対応します。文字入力欄以外では IME 使用中も英字ショートカットを使えます。
 
 ### ソースからのビルド

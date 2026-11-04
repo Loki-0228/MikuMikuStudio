@@ -2,14 +2,17 @@
 
 | 工作 | 文档 |
 | --- | --- |
-| 配置依赖并构建程序 | [仓库构建说明](../../README.md#从源码构建)、[最小构建档](../reference/minimal-build.md#构建) |
-| 按固定 Win7 x64 基础配置构建 | [Win7 构建与验收边界](win7-build.md) |
-| 找到源码、产物与本地证据 | [工作区布局](workspace.md) |
-| 选择适用的回归测试 | [测试与验收](testing.md) |
-| 检查提交并生成完整、最小预发布包 | [整理预发布包](prerelease.md) |
-| 测量顶点阶段或整帧耗时 | [帧基准](benchmarks.md) |
-| 注册原生插件菜单 | [插件菜单接口](plugin-menus.md) |
-| 修改工程文件格式 | [PMM 扩展参考](../reference/pmm-extensions.md) |
-| 更新文档 | [文档组织规则](documentation.md) |
+| 配置依赖并构建程序 | [源码构建](../../README.md#从源码构建)、[最小构建档](../reference/minimal-build.md#构建) |
+| 固定 Win7 x64 基础配置 | [Win7 构建与验收边界](win7-build.md) |
+| 定位源码、产物及本地数据 | [工作区布局](workspace.md)、[本地数据](../reference/local-data-storage.md) |
+| 选择回归与集成检查 | [测试与验收](testing.md)、[运行与恢复机制](runtime-reliability.md) |
+| 比较帧耗时与设备表现 | [帧基准](benchmarks.md)、[测量口径](../records/performance/benchmarks.md) |
+| 制作完整包和最小包 | [整理发布包](prerelease.md) |
+| 注册原生插件菜单 | [菜单接口](plugin-menus.md) |
+| 对接可选 MMV 插件 | [宿主接口](../records/extensions/host.md)、[SDK](../../sdk/mmv4mms/README.md) |
+| 修改文件格式 | [PMM 扩展](../reference/pmm-extensions.md)、[名称与标识](../records/development/mds-naming-audit.md) |
+| 审查边界与跨模块行为 | [代码约束](../records/development/audits.md)、[集成边界](../records/development/integration.md) |
+| 核对原版行为 | [二进制核验方法](../records/development/reference-audit.md) |
+| 更新文档 | [组织规则](documentation.md) |
 
-历史设计和验证按专题保存在[记录索引](../records/README.md)，包括原版核验、跨模块集成、缺陷审查与可选扩展接口。历史方案不自动表示当前已实现或已发布。
+实现细节按[功能参考目录](../records/README.md)查阅。未接入的设计不属于 main 可用功能；平台支持范围须由对应系统及设备的实际运行验证。

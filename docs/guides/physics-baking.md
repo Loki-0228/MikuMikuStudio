@@ -2,7 +2,7 @@
 
 物理烧录是原版 MMD 之外的新增功能。入口为 **烘焙 → 烧录关键帧…**（English: **Baking → Bake keyframes…**；日本語：**ベイク → キー焼き込み…**）。先选择模型并停止播放或录制，再打开窗口。同一菜单下的[网格导出与烧录](mesh-export.md)保存最终顶点，使用独立的网格缓存，不覆盖骨骼关键帧。
 
-「烘焙方式」默认是「原生」，加载 MMV 或拥有第 0 层不会自动触发删除 FX。原生物理烘焙允许部分骨骼和部分帧范围，不要求表情通道或 MMV 截层接口。只有主动选择 MMV 层时才应用完整输出与删除检查，见[警告逻辑验收](../records/animation/baking.md#record-bake-warning-logic)。
+「烘焙方式」默认是「原生」，支持部分骨骼和部分帧范围。当前 main 未接通 MMV 分层采样，不能通过此入口烧录指定 MMV 层或自动删除效果。
 
 ## 使用方法
 
@@ -81,7 +81,7 @@
 - 三语 Win32 对话框：[physics_bake_dialog.cpp](../../src/window/physics_bake_dialog.cpp)。
 - 预设读写：[physics_bake_settings.cpp](../../src/physics/physics_bake_settings.cpp)。
 - 回归测试：[physics_bake_tests.cpp](../../tests/physics_bake_tests.cpp)、[physics_bake_settings_tests.cpp](../../tests/physics_bake_settings_tests.cpp)。
-- 本次实际执行的场景、测试、构建与性能对照记录：[物理烧录验收](../records/animation/baking.md#record-physics-baking-validation)。
+- 功能和提交边界：[烘焙说明](../records/animation/baking.md)。
 
 
 ## 通道选择、稀疏采样与容量
@@ -90,8 +90,6 @@
 
 - 相机/灯光/附件主页：选择相机、灯光、自阴影、重力和每个 `.x` 的原生通道及子参数，不要求 MMV。
 - 模型页：只列当前模型，可逐骨骼、表情、显示/IK 选择。物理开启时骨骼选择仍有效；其他模型参与碰撞，不写入其他模型的轨道。
-- 起止帧与步长控制采样；总会包含结束帧。骨骼稀疏烘焙替换区间内旧键，物理键携带原生禁用物理标记，边界恢复原状态。MMV FX 网格物理使用「烘焙网格…」及实例启停键，见 [网格说明](mesh-export.md)。
+- 起止帧与步长控制采样；总会包含结束帧。骨骼稀疏烘焙替换区间内旧键，物理键携带原生禁用物理标记，边界恢复原状态。MMV4MMS 分层结果尚未接到此入口，参见[网格说明](mesh-export.md)。
 - 骨骼关键帧池按需扩容，保留槽位、MME 模型布局和原有文件格式。容量受内存及索引表示范围约束，分配失败不提交半段结果。PMM/VMD 保存、读取、编辑、撤销与重做使用实际容量。
 - 新通道重采样保留未选轨道与区间外曲线。贝塞尔边界通过曲线分割保存形状；无法用当前手柄格式精确表示时拒绝操作并提示，避免静默修改区间外动画。
-
-MMV 参数区位于默认配置与项目文件按钮下方，分隔线和留白区分两部分；窄窗使用参数区内部滚动。

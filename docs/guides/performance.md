@@ -4,7 +4,7 @@
 
 ## 选择运算器
 
-打开「帮助 → 运算器」，分别设置主渲染设备和顶点计算设备。主渲染决定最终绘制设备，顶点计算决定模型顶点由 CPU 或可用 GPU 处理。修改按 Windows 用户保存，下次启动生效，不写入工程。
+打开「帮助 → 运算器」，分别设置主渲染设备和顶点计算设备。主渲染决定最终绘制设备，顶点计算决定模型顶点由 CPU 或可用 GPU 处理。修改保存在程序旁的 `data/processor.ini`，跨工程使用，下次启动生效，不写入工程。
 
 顶点计算的自动模式会比较完整顶点阶段的耗时，并检查结果。它的排名不是整帧性能排名。D3D9 没有提供的设备显示为不可选信息项；DXGI 能检测到显卡不等于该显卡能作为当前 D3D9 主渲染设备。
 
@@ -21,10 +21,10 @@
 
 当前完整包和最小包会缓存未变化的模型结果。CPU 蒙皮下，如果只有镜头或描边参数变化，只更新必要的描边数据；动作、表情、物理或源几何变化仍正常计算。完整包还对适用的大模型减少 GPU 读回字节数，该路径仍经过 CPU 和 D3D9 上传。
 
-StageNoRay 与 ray 的测量条件、有效结果和排除记录见[预览与缓存专题](../records/performance/preview.md)。这些固定姿态测试不能代替动作与物理播放帧率。
+缓存范围和预览开销见[预览与缓存专题](../records/performance/preview.md)。固定姿态吞吐率不能代替动作与物理播放帧率。
 
 ## 采集可比较的结果
 
 开发测量使用[帧基准说明](../development/benchmarks.md)和[测试入口](../../tests/README.md)。记录 EXE 哈希、构建选项、设备、工程、预览尺寸、预热与采样范围。分别报告 CPU 提交、GPU 排空、顶点阶段和整帧耗时，不把嵌套计时相加。
 
-其他专题包括[启动初始化](../records/performance/startup.md)、[CPU 等待](../records/performance/cpu.md)和[历史场景测量](../records/performance/benchmarks.md)。
+其他专题包括[启动初始化](../records/performance/startup.md)、[CPU 等待](../records/performance/cpu.md)和[测量口径](../records/performance/benchmarks.md)。

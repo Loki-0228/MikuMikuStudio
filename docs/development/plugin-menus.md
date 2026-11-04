@@ -31,12 +31,10 @@ if (get && get(MMS_MENU_ABI_VERSION, &host)) {
 }
 ```
 
-旧版 MME/MMHack 自行通过 Win32 插入菜单的行为保持兼容；本次没有修改这些第三方 DLL。MMV4MMS 已采用此接口，菜单实现位于其独立仓库的 `src/mms/runtime_menu.inl`，ABI 快照位于 `include/mms/plugin_menu.h`。
+旧版 MME/MMHack 自行通过 Win32 插入菜单的行为保持兼容，不修改第三方 DLL 文件。MMV4MMS 已采用此接口，菜单实现位于其独立仓库的 `src/mms/runtime_menu.inl`，ABI 快照位于 `include/mms/plugin_menu.h`。
 
-## 验证
+## 验证入口
 
-Release x64 隐藏窗口检查覆盖：缺失和损坏 DLL 不显示入口、公开导出和版本检查、三个独立注册者的命令隔离、旧 MME 菜单共存、三语菜单、快捷键、菜单资源替换、重复注册、回调内注销、过期命令和窗口销毁。
+`mmv4mms_menu_tests` 检查缺失或损坏插件、公开导出、版本、命令隔离、语言切换、快捷键、重复注册、注销与窗口销毁。原生 MME 的 Win32 菜单路径也需保持有效。
 
-无 DLL 的同条件基线显示 2 个顶层菜单（原有 File 加错误的 MMV），修复后仅显示原有 File。对应测试 EXE SHA-256 分别为 `28f73f54245138669aad524df8a74b0a78d4005687c528f9f339f82aa62a81e1`、`bc79746381981474aff0c49b26939fe50997036fbc7cd8ed3e3c95921654b43f`。源码基线为 `d8d4277`，使用相同 Release x64 配置、隐藏 640×480 窗口和相同断言。
-
-扩展后的真实 DLL 回归检查了三语标签、启用及自动重载开关、`Ctrl+Shift+E`、菜单替换和卸载。日志和运行目录保留于 `.local/artifacts/plugin-owned-menus/`。未测 FPS 或 GPU 时间；菜单验证不代表 FX 画质、性能或所有第三方 DLL 已适配。
+测试须记录实际 EXE 和 DLL 身份。菜单检查不代表 FX 画质、性能或所有第三方插件已兼容，具体运行条件见[测试说明](../../tests/README.md)。

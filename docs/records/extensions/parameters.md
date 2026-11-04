@@ -1,17 +1,12 @@
-# 可选网格插件参数界面参考
+# 外置参数界面 UIFX
 
-本页按功能归并实现、诊断与验收资料。各记录中的「当前」「已完成」只适用于其注明的源码、构建和测试条件；当前使用入口见[文档导航](../../README.md)。
-
-## 记录索引
-- [为现有 FX 添加外置参数界面](#record-mmv-ui-guide)
-- [MMV 外置 UI 描述参考](#record-mmv-ui-reference)
+本页是可选插件的参数描述协议。界面和变量绑定由插件实现，主程序通过[宿主接口](host.md)提供场景。
 
 <a id="record-mmv-ui-guide"></a>
 ## 为现有 FX 添加外置参数界面
 
-原始记录：`MMV_UI_GUIDE.md`。其中的版本、日期和验证范围沿用原记录。
 
-本教程为一个已有 FX 添加中文、英文、日文参数界面和关键帧。原 FX 不需要写入 GUI 注解，也不需要改动算法。配套示例是 `assets/MMV/examples/AnimatedOffset_mmv.fx` 和同名 `.uifx`；语法选项见 [外置 UI 描述参考](parameters.md#record-mmv-ui-reference)。
+本教程为一个已有 FX 添加中文、英文、日文参数界面和关键帧。原 FX 不需要写入 GUI 注解，也不需要改动算法。示例效果和 `.uifx` 随外部插件提供；语法选项见 [外置 UI 描述参考](parameters.md#record-mmv-ui-reference)。
 
 <a id="record-mmv-ui-guide-在-fx-旁创建描述文件"></a>
 ### 在 FX 旁创建描述文件
@@ -141,7 +136,6 @@ float Strength <
 <a id="record-mmv-ui-reference"></a>
 ## MMV 外置 UI 描述参考
 
-原始记录：`MMV_UI_REFERENCE.md`。其中的版本、日期和验证范围沿用原记录。
 
 `.uifx` 使用 FX 变量声明、注解、注释、宏和 `include` 语法。它描述 GUI 与参数绑定，不包含效果算法；加载器只解析元数据，不执行其中的 shader。原 `.fx` 和其 include 文件不被改写。
 
@@ -220,11 +214,11 @@ float MMVUIGroup_camera <
 
 `t` 是归一化时间，插值模式属于前一关键帧。整数、枚举、布尔使用 Step；向量各分量共享时间和模式。没有关键帧时使用基础值；首键前保持首键，末键后保持末键。`MMVKeyable=false` 的变量不能包含轨道。
 
-采样不修改基础值或关键帧。暂停、跳帧及重复绘制按当前动画时间重新采样。K 轨道保存在 `.vmm/.vem` 的 `Parameters.<效果实例ID>` 分段，格式 `Version=1`。未知变量字段保留；已知非法数据导致整个加载事务失败。
+采样不修改基础值或关键帧。暂停、跳帧及重复绘制按当前动画时间重新采样。K 轨道保存在 `.vmm` 的 `Parameters.<效果实例ID>` 分段，格式 `Version=1`。未知变量字段保留；已知非法数据导致整个加载事务失败。
 
 <a id="record-mmv-ui-reference-后端与原文件"></a>
 ### 后端与原文件
 
 旧 DX9/MME FX 保持原源文本交给 D3DX Effect 编译，运行时按原变量名称提交参数。原生 DX12 FX 的内存编译副本自动生成 `MMVUserParameters : register(b1)`，每个参数占 16 字节寄存器；不向磁盘写回转换后的源码。作者不另行声明 b1。内置 `Perspective1` 由参数适配器生成它的既有常量块。
 
-GUI 描述不改变 FX 后端。纯 DX12 版保留旧 DX9 FX 的分配与参数，但不能执行旧 shader。具体控件、后端写入与宿主验收状态以实现报告为准。
+GUI 描述不改变 FX 后端。纯 DX12 版保留旧 DX9 FX 的分配与参数，但不能执行旧 shader。具体后端能力由所安装插件决定，MMS 主程序不解析或执行 UIFX。

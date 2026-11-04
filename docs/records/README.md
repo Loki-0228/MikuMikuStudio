@@ -1,82 +1,60 @@
-# 专题记录
+# 功能实现参考
 
-这些资料按功能归并，保留原实现、失败、限制及验证条件。原始记录名和日期只用于追溯；使用说明见[文档导航](../README.md)。本地证据路径不保证随仓库提供。
+这些页面说明 main 的当前功能、实现机制与边界。操作步骤见[使用文档](../README.md)，目录名 `records` 保留以兼容已有引用；正文按功能维护，不累积开发日志。
 
-## 画面与渲染
+## 画面与媒体
 
-- [抗锯齿实现与验证记录](rendering/anti-aliasing.md)
-- [材质、光照与描边记录](rendering/materials.md)
-- [阴影实现与验证记录](rendering/shadows.md)
-- [透明排序与合成记录](rendering/transparency.md)
-- [背景媒体导入与操作记录](rendering/background-media.md)
-
-## 性能与设备
-
-- [场景性能测量记录](performance/benchmarks.md)
-- [CPU 等待与查找优化记录](performance/cpu.md)
-- [运算器与 GPU 蒙皮记录](performance/devices.md)
-- [预览缩放与模型缓存记录](performance/preview.md)
-- [启动与资源初始化记录](performance/startup.md)
+- [抗锯齿与描边平滑](rendering/anti-aliasing.md)
+- [材质、光照与描边](rendering/materials.md)
+- [自阴影覆盖、精度与滤波](rendering/shadows.md)
+- [透明排序与合成](rendering/transparency.md)
+- [背景媒体与音视频](rendering/background-media.md)
+- [MME 对象、分配与兼容](effects/compatibility.md)
 
 ## 动画与物理
 
-- [烘焙与导出验证记录](animation/baking.md)
-- [骨骼、曲线与镜头编辑记录](animation/editing.md)
-- [物理状态与关节验证记录](animation/physics.md)
+- [动画轨道与编辑机制](animation/editing.md)
+- [物理状态、缩放与关节](animation/physics.md)
+- [通道烘焙与网格缓存](animation/baking.md)
 
-## 载入、保存与格式
+## 文件与界面
 
-- [模型载入与格式验证记录](formats/models.md)
-- [工程、动作与容量验证记录](formats/projects.md)
+- [模型载入与资源准备](formats/models.md)
+- [工程与动作读写](formats/projects.md)
+- [界面、输入与编辑操作](interface/controls.md)
+- [界面语言、名称与路径](interface/languages.md)
+- [本地设置、备份与缓存](../reference/local-data-storage.md)
 
-## 特效兼容
+## 性能与设备
 
-- [MME 兼容与分配记录](effects/compatibility.md)
+- [运算器选择与回退](performance/devices.md)
+- [预览比例与模型缓存](performance/preview.md)
+- [启动与资源准备](performance/startup.md)
+- [CPU、线程等待与查找](performance/cpu.md)
+- [性能测量口径与原始数据](performance/benchmarks.md)
 
-## 界面与语言
+## 可选 MMV4MMS 插件
 
-- [视口与编辑控件记录](interface/controls.md)
-- [语言、名称与界面编码记录](interface/languages.md)
+- [安装、分配与存档](extensions/usage.md)
+- [宿主与渲染接口](extensions/host.md)
+- [分配与参数界面](extensions/interface.md)
+- [FX 作者接口](extensions/effects.md)
+- [外置参数描述 UIFX](extensions/parameters.md)
+- [原生形变与物理模块](extensions/physics.md)
+- [插件性能与有效性](extensions/performance.md)
 
-## 开发与维护
+外部插件能力由实际安装版本决定。主程序包不附带插件；当前 main 不加载旧 `MMV.dll`，MMV4MMS 与 MME 代理不能同时启用，分层烘焙尚未接通。
 
-- [main 源码审查与本地验收记录（2026-10-17）](main-source-review-2026-10-17.md)
-- [代码审查与缺陷记录](development/audits.md)
-- [历史功能范围审计](development/features.md)
-- [跨模块集成与兼容记录](development/integration.md)
-- [原版二进制核验记录](development/reference-audit.md)
-- [用户问题与回归记录](development/user-reports.md)
-- [工作区快照与清理记录](development/workspace.md)
+## 开发与发布
 
-## 可选扩展的独立资料
+- [功能与构建档范围](development/features.md)
+- [代码边界与审查要点](development/audits.md)
+- [宿主、插件与模块集成](development/integration.md)
+- [输入与编辑问题排查](development/user-reports.md)
+- [命名与兼容标识](development/mds-naming-audit.md)
+- [原版行为核验方法](development/reference-audit.md)
+- [工作区与产物管理](development/workspace.md)
+- [运行、备份与故障恢复](../development/runtime-reliability.md)
+- [安装与发布包说明](releases.md)
 
-- [可选网格插件 FX 参考](extensions/effects.md)
-- [可选网格插件宿主与渲染记录](extensions/host.md)
-- [可选网格插件界面与分配记录](extensions/interface.md)
-- [可选网格插件参数界面参考](extensions/parameters.md)
-- [可选网格插件性能记录](extensions/performance.md)
-- [可选网格插件形变与物理参考](extensions/physics.md)
-- [可选网格插件安装与存档参考](extensions/usage.md)
-
-## 发布
-
-[发布说明与构建记录](releases.md)保留各版本的原始说明。实际可下载版本见仓库首页的发布链接。
-
-## 原始测量数据
-
-下列数据对应专题记录中的特定样本与版本，不代表当前构建的通用性能。
-
-- [pmx-loading](formats/data/pmx-loading.json)
-- [mme-frame-performance](performance/data/mme-frame-performance.json)
-- [mme-preview-performance](performance/data/mme-preview-performance.json)
-- [model-vertex-cache](performance/data/model-vertex-cache.json)
-- [performance-d3dx](performance/data/performance-d3dx.json)
-- [performance-phases](performance/data/performance-phases.json)
-- [performance-pmd](performance/data/performance-pmd.json)
-- [performance-sort](performance/data/performance-sort.json)
-- [performance](performance/data/performance.json)
-- [pmm-frame-performance](performance/data/pmm-frame-performance.json)
-- [reverse-performance-evidence](performance/data/reverse-performance-evidence.txt)
-- [stage-frame-performance](performance/data/stage-frame-performance.json)
-- [stage-no-ray-gpu-timing](performance/data/stage-no-ray-gpu-timing.json)
-- [stage-no-ray-performance](performance/data/stage-no-ray-performance.json)
+构建、测试、打包及维护方法统一从[开发入口](../development/README.md)查阅。历史版本说明在 [GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases)与 Git 历史中保留。

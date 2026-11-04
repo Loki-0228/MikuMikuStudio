@@ -1,27 +1,26 @@
-# 可选网格插件 FX 参考
+# 可选插件 FX 作者接口
 
-本页按功能归并实现、诊断与验收资料。各记录中的「当前」「已完成」只适用于其注明的源码、构建和测试条件；当前使用入口见[文档导航](../../README.md)。
-
-## 记录索引
-- [MMV FX 接口](#record-mmv-fx)
-- [MMV 旧版 FX 全局变量兼容修复](#record-mmv-fx-globals)
-- [MMV：卡通透视修正与夸张透视](#record-mmv-perspective)
-
+<!-- 保留已有文档链接的定位入口。 -->
 <a id="record-mmv-fx"></a>
-## MMV FX 接口
-
-原始记录：`MMV_FX.md`。其中的版本、日期和验证范围沿用原记录。
-
-本文定义 MMV 1 的作者接口。实现与验收进度见 [实现记录](host.md#record-mmv-implementation)。
-MME 语义依据仓库外 `refs/MME中文参考手册.pdf` 和 `refs/MME-Reference翻译版.pdf`；
-以 `MMV` 开头的语义、注解、资源及查询函数属于本项目扩展。
-
 <a id="record-mmv-fx-数据与作用范围"></a>
+<a id="record-mmv-fx-globals"></a>
+<a id="record-mmv-fx-globals-验收范围"></a>
+<a id="record-mmv-fx-globals-构建来源与限制"></a>
+<a id="record-mmv-fx-globals-同条件计时"></a>
+<a id="record-mmv-fx-globals-证据与复跑"></a>
+<a id="record-mmv-perspective"></a>
+<a id="record-mmv-perspective-适用范围"></a>
+<a id="record-mmv-perspective-dx12-计算结果绘制回归"></a>
+<a id="record-mmv-perspective-参考资料"></a>
+
+本文保留配套 MMV 效果的声明、数据和求值约定。算法、FX 编译器和示例效果由外部插件提供，主程序包不包含；当前 MMS 仅通过 [MMV4MMS 宿主接口](host.md)接管渲染，不能把作者接口的全部能力视为主程序内置功能。
+
+公共结构以[接口头文件](../../../sdk/mmv4mms/include/mmv/mmv.h)及所安装插件支持的能力为准。MME 语义和 MMV 扩展分别使用，MMV4MMS 不与外部 MME 代理同时启用。
+
 ### 数据与作用范围
 
-层按数字从大到小执行，附件层为正数，MMV 自带层固定为 0，MME 固定为 -1。
-非零层的完整输出成为下一层输入。第 0 层也接收完整结构，但到 -1 层仍使用原有
-`MmvObjectOutput` 网格交接；不改变 DX9/MME 的最终输出布局。
+层按数字从大到小执行，附件层为正数，自带层固定为 0。
+非零层的完整输出成为下一层输入。第 0 层也接收完整结构。MMS 的最终图像交接使用独立的 `MmvMmsOutput` 契约，见[宿主接口](host.md)。
 层输出不直接改写宿主模型定义、关键帧或原生物理世界。只有明确的烘焙提交才写入宿主数据。
 
 同层所有效果读取该层开始时冻结的输入，彼此不读取输出。后绘制的效果覆盖前者，
@@ -126,7 +125,7 @@ mesh pass 使用 `cs_5_1`，原生纹理 pass 使用 `vs_5_1` 和 `ps_5_1`。
 <a id="record-mmv-fx-目标页签与依赖"></a>
 ### 目标、页签与依赖
 
-层页签、骨骼／材质展开规则及附件声明，见 页签展开与附件关联（`docs/MMV_PAGES_AND_ACCESSORIES.md`，历史引用文件不在当前仓库中）。参数 GUI 的分组不等于这里的目标页签。
+层页签及骨骼／材质展开规则见[分配界面](interface.md)。参数 GUI 的分组不等于这里的目标页签。
 
 HLSL 的 `MMVInput="Source"` 是历史目标名称，现在读取当前层的冻结上游输入。
 它与下文原生计算 ABI 中表示宿主原始数据的 `input.source` 不同。
@@ -186,7 +185,7 @@ float NewMaterial : MMVMATERIAL <
 ### 原生结构与状态循环
 
 本节合并 [循环接口契约](physics.md#record-mmv-deformer-interface-contract) 的作者接口。
-二进制字段以 mmv_deformer.h（`include/mmv/mmv_deformer.h`，历史引用文件不在当前仓库中） 为准。
+二进制字段以 [mmv_deformer.h](../../../sdk/mmv4mms/include/mmv/mmv_deformer.h) 为准。
 这里的循环包含同帧逐层传递和跨模拟步反馈，不允许循环依赖反复执行效果图。
 
 | 通道 | 内容与生命周期 |
@@ -216,9 +215,9 @@ float MMVConfig <
 未注册值、缺失 DLL、错误导出或不支持的能力均报告错误，不回退到另一求解器。
 声明可用不等于算法 DLL 已安装；算法模块各自提供构建与验收。
 
-`MMVDeformerLibrary` 相对入口 FX 文件所在目录解析。原生计算 DLL 随 FX 打包，放在同目录或子目录；例如同目录写 `"MMVDDM.dll"`，子目录写 `"modules/MMVDDM.dll"`。未声明时，默认读取 FX 同目录的 `MMV<类别>.dll`，不再从宿主 EXE 或 `MMV.dll` 所在目录查找计算 DLL。DLL 缺失或 ABI 不兼容时报告该路径的错误，不回退到别处的同名计算模块。DLL 自身的私有依赖放在该 DLL 同目录。
+`MMVDeformerLibrary` 相对入口 FX 文件所在目录解析。原生计算 DLL 随 FX 打包，放在同目录或子目录；例如同目录写 `"MMVDDM.dll"`，子目录写 `"modules/MMVDDM.dll"`。未声明时，默认读取 FX 同目录的 `MMV<类别>.dll`，不再从宿主 EXE 或 主插件所在目录查找计算 DLL。DLL 缺失或 ABI 不兼容时报告该路径的错误，不回退到别处的同名计算模块。DLL 自身的私有依赖放在该 DLL 同目录。
 
-`MMV.dll` 是宿主插件本体，仍放在宿主运行目录。上述规则适用于 Bullet3、DDM、AVBD、SDS、VBD 等 FX 附属原生模块。
+`MMV4MMS.dll` 是当前 MMS 渲染插件本体，放在宿主运行目录。上述规则适用于 Bullet3、DDM、AVBD、SDS、VBD 等 FX 附属原生模块。
 `MMVDeformerDomain` 指定共享求解域。同类物理默认共享一个域，保留组间碰撞；
 DDM 默认每个效果实例独立。共享域必须位于同一层，移层时该域成员一起移动。
 `selections` 为每项分配保留对象、骨骼或材质键、效果实例键及参数区间；
@@ -362,7 +361,7 @@ joint 局部框架是定义，世界锚点由 `frameA * bodyWorldA` 和 `frameB 
 <a id="record-mmv-fx-只读查看与零层例外"></a>
 #### 只读查看与零层例外
 
-MMV.dll 可选导出 `MMVGetDeformerInspectionApi`。调用 `querySnapshot` 时指定层、阶段，
+插件可选导出 `MMVGetDeformerInspectionApi`。调用 `querySnapshot` 时指定层、阶段，
 可再限定效果实例、域及对象。阶段为 `Source`、`Upstream`、`PreviousCommitted` 或 `Output`。
 `Output` 只表示最近成功输出；没有阶段数据时返回 `STALE_INPUT`，不自动运行求解器。
 成功查询获得独立 lease，直到 `releaseSnapshot` 前保持有效，即使运行时已经发布下一帧。
@@ -380,7 +379,7 @@ MMV.dll 可选导出 `MMVGetDeformerInspectionApi`。调用 `querySnapshot` 时�
 ### 分层存档与截层烘焙
 
 层号由 VMM 保存，`.x` 的 `MMVAccessory` 声明不规定层号。
-VMM 保存层、绘制顺序、展开许可、展开状态和骨骼/材质模式；宿主保存时自动保存同名 VMM。
+VMM 保存层、绘制顺序、展开许可、展开状态和骨骼/材质模式；启用插件自动保存时，在宿主 PMM 保存成功后写同名 VMM。
 对象行右键的层号设置旁，以及顶部层页签右键菜单，都提供「层内描绘顺序」。
 使用上移／下移调整当前层的效果；列表靠后的效果优先覆盖。0 层也可调整内部顺序。
 顺序改动随窗口顶部「应用」保留；关闭分配窗口会回退上次应用之后的改动。
@@ -390,10 +389,10 @@ VMM 保存层、绘制顺序、展开许可、展开状态和骨骼/材质模式
 不强行按旧编号套用。格式细节见 [存储格式](usage.md#record-mmv-storage)。
 
 分层烘焙的独立可选导出为 `MMVGetLayerBakeApi`，定义在
-mmv_layer_bake.h（`include/mmv/mmv_layer_bake.h`，历史引用文件不在当前仓库中）。它使用现有插件实例，不另建宿主插件。
+[mmv_layer_bake.h](../../../sdk/mmv4mms/include/mmv/mmv_layer_bake.h)。它使用现有插件实例，不另建宿主插件。
 加载支持此接口的 DLL 后，可选择最高层到 0 之间的烘焙终点 x；MME -1 不可选。
 计算范围是最高层到 x，包含 x，各层内部仍从最后绘制项开始。
-开始前必须告知用户：将批量取消 x 层及数字大于 x 的层中，被烘焙对象的 MMV FX 赋予。
+当前 main 未接通以下截层采样和删除事务；本节仅说明可选接口的契约，不作为可操作功能。
 
 `beginSampling(x)` 建立独立采样状态；结束时 `endSampling` 恢复交互求解器。
 `stageRemoval` 仅在 `MMV_MESH_BAKE_BEGIN` 到 `COMMIT/CANCEL` 事务内有效，
@@ -427,130 +426,17 @@ mmv_layer_bake.h（`include/mmv/mmv_layer_bake.h`，历史引用文件不在当�
 修改待生效设置不影响当前实例。回调失败、结构长度不足、未知模式或
 模式与 LUID 不匹配时，创建失败并报告原因。
 
-该选择属于本机用户设置，不写入 PMM、VMM、VEM 或附件。
+该接口描述插件可选的设备服务，不写入 PMM、VMM、VEM 或附件。当前 main 的 MMV4MMS 创建路径未提供该回调，不应据此认为帮助菜单已控制插件内部设备。
 物理 FX 的求解算法与分组继续由效果配置决定。CPU 求解器不会因为选择显卡
 而自动获得 GPU 实现。主渲染、顶点计算和 MMV 处理的分工见
-[通用运算器设置方案](../performance/devices.md#record-processor-settings-proposal)。该扩展仍在整合验收，
-已执行结果见实现记录。
+[运算器设置](../performance/devices.md)。
 
 <a id="record-mmv-fx-接口验证"></a>
-### 接口验证
 
-`structureVersion` 跟踪连接关系和绑定定义：三角形索引、材质稳定身份、骨骼/刚体/joint、
-权重和形状内容改变时递增。只移动顶点、骨骼姿态或速度不触发结构重建。
-`meshVersion` 跟踪网格与材质值；相同内容跨帧保留版本，不能每帧归零或无条件递增。
-同层独立候选分别相对冻结输入校验，再为合并结果生成版本，避免两个合法结构输出相互误判。
+## 透视修正与夸张透视
 
-最小确定性计算模块位于 mmv_deformer_fixture.cpp（`tests/mmv_deformer_fixture.cpp`，历史引用文件不在当前仓库中），
-仅供测试，不随生产插件安装，也不代替真实物理算法。
-`mmv_deformer_engine_tests` 验证候选与历史生命周期；`mmv_runtime_tests` 验证层合并、
-共享域回滚和编辑事务；`mmv_dx12_tests` 通过真实 GPU 回读验证只读结构布局。
-具体执行结果与尚未验收项见 [实现记录](host.md#record-mmv-implementation)，不把构建成功视为算法或性能验收。
+以下效果需在配套插件中提供，处理当帧网格，不修改源模型、骨骼、IK 或原生物理。每次从当前快照求值，暂停重绘不累积变形。
 
-<a id="record-mmv-fx-globals"></a>
-## MMV 旧版 FX 全局变量兼容修复
-
-原始记录：`MMV_FX_GLOBALS_2026-09-28.md`。其中的版本、日期和验证范围沿用原记录。
-
-PowerShader v3.2 二影対応版的 `Shader/Shader_Main.fx` 在 MMV 中分配失败，
-诊断指向 `Common_Shader.fxsub:292`。该行在像素着色器中改写 `EdgeColor.rgb`，
-D3DX 编译器返回 `X3025: global variables are implicitly constant`。
-
-共用的 DX9 FX 编译入口现增加 `D3DXSHADER_ENABLE_BACKWARDS_COMPATIBILITY`，
-保留原有行主序矩阵选项。兼容版和 CPU＋DX9 版均包含此修复。
-此选项对应 `/Gec`；微软的 [HLSL 变量说明](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx-graphics-hlsl-variable-syntax)
-明确说明它允许改写默认视为常量的全局变量。
-
-<a id="record-mmv-fx-globals-验收范围"></a>
-### 验收范围
-
-使用本机原始 PowerShader 文件及其 include，未修改第三方 FX。
-通过独立隐藏测试进程调用生产 `LoadEffect`、`Legacy::ValidateEffect` 和实际
-DLL 的 `setBinding`。此次验证覆盖编译、分配及合成场景的像素结果；
-未验收 PowerShader 整套场景与原 MME 的画面一致性，也不代表所有 MME FX 均已兼容。
-
-| 检查 | 修复前 | 修复后 |
-| --- | --- | --- |
-| 原始 PowerShader，兼容版 DLL 分配 | `X3025`，`setBinding=2` | `setBinding=0`，`Ready` |
-| 原始 PowerShader，CPU＋DX9 DLL 分配 | `X3025`，`setBinding=2` | `setBinding=0`，`Ready` |
-| DX9 后端回归，含原始 PowerShader | 166 项，2 项失败 | 171 项，0 项失败 |
-| 兼容版实际 DLL 回归 | 本轮未重复运行完整旧版插件套件 | 89 项通过 |
-| CPU＋DX9 实际 DLL 回归 | 本轮未重复运行完整旧版插件套件 | 93 项通过 |
-
-新增合成 FX 同时改写顶点和像素着色器的全局变量。红、绿材质交替绘制三轮，
-回读颜色分别为 `(0.5, 0, 0, 1)` 和 `(0, 0.75, 0, 1)`，验证每次调用的计算
-及宿主参数更新，防止全局变量改写影响后续绘制。原有编译失败后保留旧程序、
-材质语义、矩阵、HDR、脚本、设备重置和处理器选择测试继续通过。
-CPU＋DX9 DLL 的 PowerShader 分配探针确认 `d3d9=1, d3d12=0`。
-
-<a id="record-mmv-fx-globals-构建来源与限制"></a>
-### 构建来源与限制
-
-基线 Git 提交为 `ee631bcff3241fff2d8a8808e1ba676c1dc1fe35`。
-工作区原有未提交的 CPU＋DX9 等改动保持原样，未纳入本次提交。
-两侧测试使用相同驱动与相同已编译依赖，生产兼容层唯一差异为编译选项。
-测试按 Visual Studio 2022、x64、Release 构建。
-
-原构建缓存引用 `D:/MMD-Next/MMV-Bullet3`，但该目录的源码和头文件缺失。
-因此本轮完整依赖构建失败，不能声称通过干净全量构建。后续单独编译
-`mmv_legacy` 与 `mmv_compat_tests`，保留已有其他库和插件目标文件，
-用 MSBuild `LibLinkOnly` 重新链接两个 DLL。现有 Bullet3 功能未通过关闭
-构建选项绕过。正式运行目录 `build/Release/MMV.dll` 更新为本次兼容版，
-CPU＋DX9 版输出在 `build/mmv/dx9/Release/MMV.dll`。
-
-<a id="record-mmv-fx-globals-同条件计时"></a>
-### 同条件计时
-
-相同驱动以 ABBA、ABBA 顺序运行。计时区间为已有的 64×64 双材质夹具，
-连续 120 次绘制与回读，包含 CPU 工作和等待回读的时间；不含效果编译。
-各样本的像素稳定性检查均通过。没有模型动作或物理计算。
-
-| 顺序 | 版本 | 120 次绘制与回读耗时，毫秒 |
-| --- | --- | --- |
-| 0 | 前 | 40.96 |
-| 1 | 后 | 40.72 |
-| 2 | 后 | 37.88 |
-| 3 | 前 | 91.96 |
-| 4 | 前 | 37.25 |
-| 5 | 后 | 39.09 |
-| 6 | 后 | 40.60 |
-| 7 | 前 | 43.07 |
-
-前版均值 53.31 毫秒，范围 37.25～91.96；后版均值 39.57 毫秒，
-范围 37.88～40.72。前版较慢样本原因未确定，保留全部样本，未排除。
-这组小场景数据未见后版耗时增加，但波动不足以支持性能提升结论。
-未测完整播放 FPS、独立 CPU 提交时间或 GPU 时间。
-
-<a id="record-mmv-fx-globals-证据与复跑"></a>
-### 证据与复跑
-
-全部原始日志在 `.local/artifacts/mmv-fx-globals-20260928/`。
-`before/` 和 `after/` 保存测试 EXE、兼容层源码、像素回读与运行日志；
-`abba.json` 保存原始计时。`manifest.json` 记录最终提交、EXE/DLL 哈希及构建方式；
-原有工作树差异、构建配置、依赖和目标文件哈希另行保留。
-初次依赖构建失败、未实际链接的 `Link` 调用，以及缺少 ABI 版本字段的初版
-探针日志均保留。有效 DLL 分配证据使用 `*-assignment-fixed.log`。
-
-DX9 后端默认回归不依赖 PowerShader。指定真实文件时可以设置：
-
-```powershell
-$env:MMV_COMPAT_EFFECT_PATH = 'D:\BaiduNetdiskDownload\MMD\0-MME\PowerShader v3.2_二影対応版\Shader\Shader_Main.fx'
-$env:MMV_COMPAT_READBACK = '.local\artifacts\mmv-fx-globals-20260928\rerun-readback.txt'
-& '.\build\tests\Release\mmv_compat_tests.exe' '.local\artifacts\mmv-fx-globals-20260928\fixtures'
-```
-
-DSH 宿主状态检查返回 `fetch failed`，本轮停止委派，由 Codex 本地完成修复与验收。
-
-<a id="record-mmv-perspective"></a>
-## MMV：卡通透视修正与夸张透视
-
-原始记录：`MMV_PERSPECTIVE.md`。其中的版本、日期和验证范围沿用原记录。
-
-这两个效果修改当帧已蒙皮网格，供宿主继续绘制阴影、描边和 MME 材质效果。源模型、骨骼、IK、刚体和 joint 不变。每次求值从 MMS 的当帧快照开始，暂停重绘和跳帧不会累积变形。
-
-两种 MMV 版本共用原生 DX12 计算代码。纯 DX12 版也能使用这两个效果；它们不需要传统 DX9 FX 兼容模块。MMV 不会因为附件存在同名 `.fx` 就自动加载它，应在分配窗口或 `.vem/.vmm` 中显式分配。
-
-<a id="record-mmv-perspective-适用范围"></a>
 ### 适用范围
 
 | 场景 | 建议分配 | 预期结果 |
@@ -645,7 +531,7 @@ output = p + a(s − 1)(p − pivot)
 <a id="record-mmv-perspective-作者接口"></a>
 #### 作者接口
 
-`include/mmv/perspective.hpp` 定义 CPU 设置、控制物与 `b1` 常量布局。公共 C ABI 不传递这些 C++ 容器。`Prepare` 只读取 `MmvFrame`，输出独立常量与状态；设置验证、反序列化和标量修改失败时保留旧设置。
+插件的 `perspective.hpp` 定义 CPU 设置、控制物与 `b1` 常量布局。公共 C ABI 不传递这些 C++ 容器。`Prepare` 只读取 `MmvFrame`，输出独立常量与状态；设置验证、反序列化和标量修改失败时保留旧设置。
 
 FX 明确声明参数模式：
 
@@ -662,59 +548,3 @@ float MMVConfig <
 范围最多声明 64 个根骨骼；控制物最多 128 项。指数范围为 0–64，最大倍率为 1–1024。载入越界参数失败，运行时控制值失效则跳过受影响效果并返回原因。界面必须显示这些原因，而不能把跳过当成执行成功。
 
 <a id="record-mmv-perspective-实现与验收记录"></a>
-### 实现与验收记录
-
-本模块位于 `feat/mmv-perspective`，与 `feat/mmv-native` 核心实现协调。已提供 CPU/HLSL 数学、参数适配、三个 FX、运行时 `b1` 注入、存档实例克隆和原生参数窗口。最终两版发布 DLL 另行验收，不能把独立测试通过当成主宿主验收完成。
-
-| 检查 | 记录 |
-| --- | --- |
-| 参数、控制物、无累积输入、`.vmm/.vem` 中文路径往返 | `tests/mmv_perspective_settings_tests.cpp`，64 项通过 |
-| CPU 投影、近裁面导数、法线、骨骼权重与组合 | `tests/mmv_perspective_math_tests.cpp`，1278 项通过；5 种故意引入的数学错误全部被测试检出 |
-| 三个 FX 的真实 `cs_5_1` 编译、反射布局 | `tests/mmv_perspective_shader_tests.cpp`；416 字节 `b1` 及各字段偏移匹配 |
-| 真实 GPU 与 CPU 对照 | 16 组参数、21,195 项检查通过，含偏心镜头、近裁面、子骨骼开关、非均匀对象变换与法线 |
-| 原生 DX12 计算输出直接绘制 | 回读发现旧输入绑定缺陷并修复；两轮独立前后构建对照，见下节 |
-| `b1` 后端及现有 DX12 功能 | 262 项 GPU 检查通过，包含清零、连续参数更新、跨 256 字节边界、纹理 pass、重置 |
-| 参数配置、存档实例克隆、重开后读取 | 97 项运行时配置测试通过；此套测试使用明确标注的 GPU 替身 |
-| 原生参数窗口 | 三语言隐藏窗口 838 项检查通过；覆盖应用/取消、未解析分配保留、控制物增益/偏移、96/144/240 DPI 布局与滚动裁剪 |
-| 两种正式 DLL 的透视参数与执行 | 各 108 项检查通过；三个 FX 输出的顶点 CSV 哈希一致，覆盖重开、设备重建、材质隔离及源快照不变 |
-| 主宿主 DX9/MME 着色/阴影 | 由核心整合任务验收，此独立模块记录不代替主宿主结果 |
-
-测试产物保留在此工作树 `.local/artifacts/mmv-perspective/`。完成 GPU 验收时，应补录前后构建、源码版本、哈希、输入与相机、原始回读画面，以及计算、回读、上传分别耗时；未测量的指标不推算为 FPS。
-
-窗口检查使用 `tests/mmv_perspective_editor_tests.cpp` 创建隐藏的实际 Win32 控件，发送编辑、提交、滚动和 DPI 消息；不改变桌面设置，也不显示窗口。`editor-07/` 保留 96/144 DPI 的原始 DIB 回读。隐藏控件的 `WM_PRINT` 未完整画出单行编辑框与组合框文本，所以这些回读只用于布局检查，不能替代完整可见界面外观验收。后续 `editor-08/` 记录骨骼索引文案修正后的最终运行。
-
-`production-01/` 保留两版正式 DLL、配套 FX、存档、执行日志和哈希。纯版 DLL SHA-256 为 `91920E5C9CB8B4C30CC44DF5B7B32A0A4DC7FF18D7B1EB5F6D153D3D5CBFB6FD`，兼容版为 `EC96ACE41C693A0BCDD07B180DAA8B6957B310FAE333A8622C293CB4E3DFA4A2`。两版 `vertices.csv` 均为 `B2C1C35D4C4EE36C016FB9EDF41C244E3A2E743ED2F4BAFF3439B1D72F12E3AA`。这是通用作者 UI 与 K 扩展之前的 DLL 快照；新参数系统另行验收。
-
-<a id="record-mmv-perspective-dx12-计算结果绘制回归"></a>
-#### DX12 计算结果绘制回归
-
-GPU 网格回读正确、离屏画面却完全没变。原因是 `Dx12::Render` 的 SRV 绑定读取 `mesh.vertices/triangles/materials`，这些是该计算 pass 的旧输入；当前结果位于 `outVertices/outTriangles/outMaterials`。修复让图形 pass 读取当前输出，并把查询缓冲转换到 VS 与 PS 都可读的状态，结束后恢复状态。没有依赖 CPU 网格重新上传来掩盖问题。
-
-同条件对照脚本：
-
-```powershell
-./scripts/verify_mmv_perspective.ps1 -BeforeRef b0a22ce -Rounds 2
-```
-
-记录目录：`.local/artifacts/mmv-perspective/compare-01/`。两侧均为 VS 2022 x64 Release `/MD`；仅生产 `dx12.cpp` 分别取修复前后版本，使用相同测试、FX、SDK、参数适配和效果编译器。显卡为 NVIDIA GeForce RTX 4070 Laptop GPU。测试使用 221 个顶点、384 个三角形的合成网格和 256×256 DX12 离屏目标；其权重故意不连续以覆盖边界，图像不代表真实角色的美术验收。
-
-| 构建 | 生产源码 | EXE SHA-256 | 两轮结果 |
-| --- | --- | --- | --- |
-| 修复前 | `b0a22ce` 的 `src/mmv/dx12.cpp` | `756E750B049CE050888BCD535CFB6787A0D99C7216FB8EC6AD951AD22D969EBA` | 两轮都在画面变化断言失败；数学/网格检查此前通过 |
-| 修复后 | `683ab8e` | `75C5A0EBCF10FFCBD54DAE90360011E071C26DAD6A98E0C8669F17E09033B22C` | 两轮各通过 21,195 项，画面变化像素数均为 59,511 |
-
-保留了 `manifest.json`、构建日志、工作树补丁、每次执行日志、各参数组的 `timings.csv` 与原始 `before.ppm/after.ppm`。32 个短样本的计算 GPU 时间与回读调用时间分别如下；回读包含同步等待与 CPU 映射开销。
-
-| 构建 | 计算中位数 / 范围，ms | 回读中位数 / 范围，ms |
-| --- | --- | --- |
-| 修复前 | 0.074752 / 0.055296–0.088064 | 4.18215 / 2.2858–13.639 |
-| 修复后 | 0.05888 / 0.009216–0.084992 | 2.84965 / 0.5927–13.6918 |
-
-这些是正确性运行中的短样本，波动明显，没有预热与长时间负载统计，不据此宣称提速。主宿主 DX9 上传、MME 绘制、播放 FPS 和最终角色画面尚未包含在此对照中。
-
-<a id="record-mmv-perspective-参考资料"></a>
-### 参考资料
-
-- [Reiware：Fixing anime face perspective in Unity](https://dev.reiware.com/tutorials/fixing-anime-face-perspective-in-unity)：相机驱动、稳定头部参考点与局部遮罩的实现参考。其深度变形方式与本文保留深度的映射不同。
-- [Microsoft：XMMatrixPerspectiveFovLH](https://learn.microsoft.com/en-us/windows/win32/api/directxmath/nf-directxmath-xmmatrixperspectivefovlh)：左手坐标系、垂直 FOV 和近远裁面定义；函数角度单位为弧度。
-- [Guilty Gear Xrd 制作演讲](https://www.ggxrd.com/Motomura_Junya_GuiltyGearXrd.pdf)，第 28–29 页：通过骨骼缩放及四肢、手脚的尺度变化表现夸张透视。本文缩放源网格，不改写源骨骼。

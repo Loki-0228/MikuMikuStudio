@@ -77,14 +77,8 @@ viewport 是 `0 0 14 14`。
 
 ## 来源
 
-同排按钮高度 18、20、22、24 见 `src/window/ui_windowsize.cpp`。现有参数面板在 `src/mmv/parameter_editor.cpp`。
+同排按钮高度 18、20、22、24 见 `src/window/ui_windowsize.cpp`。参数面板由外部 MMV4MMS 插件实现，主程序不包含该编辑器源码。
 
-## 验证状态
+## 使用边界
 
-已经做完：
-
-- 两个 SVG 通过 XML 结构解析，`index.html` 的内联图标与它们的路径数据、笔画宽度和端头逐字一致。
-- HTML 标签开闭配对，`aria-controls` 指向存在的元素，页面不引用外部资源。
-- 主 agent 在后台 Edge 里检查过预览页。960 宽和 375 宽都没有横向溢出，点击、Space、Esc 和焦点保留都通过，没有 JS 异常。截图和记录在 `.local/artifacts/mmv-curve-launcher/`。
-
-没有做：没有在 Windows 上用真实主题绘制过这个按钮，没有截取实际 Win32 按钮截图，没有做高 DPI 验收，没有接入生产代码。
+这些文件仅为离线设计资产，未接入 Win32 生产界面。SVG 和 HTML 预览不代表实际主题、高 DPI 或宿主按钮已经完成验收。

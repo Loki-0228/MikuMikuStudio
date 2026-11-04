@@ -1,107 +1,34 @@
-# 工作区快照与清理记录
+# 工作区与产物管理
 
-本页按功能归并实现、诊断与验收资料。各记录中的「当前」「已完成」只适用于其注明的源码、构建和测试条件；当前使用入口见[文档导航](../../README.md)。
-
-## 记录索引
-- [本地工作区布局](#record-local-workspace-layout)
-- [清理记录与后续候选](#record-cleanup-inventory)
-
+<!-- 保留已有文档链接的定位入口。 -->
 <a id="record-local-workspace-layout"></a>
-## 本地工作区布局
-
-原始记录：`LOCAL_WORKSPACE_LAYOUT.md`。其中的版本、日期和验证范围沿用原记录。
-
-当前 `build/Release/MikuMikuDance.exe` 为物理模型编辑页编码修复版，EXE SHA-256 为 `f1b2e4be4d20de3cbade3118511492a7f867af6e3e5a86b5c264436934b6bddb`。实现工作树 `.local/worktrees/physics-editor-encoding/` 合入后作为验收参考保留；复用的基线工作树 `.local/worktrees/goldboom-mme-before/` 仍保留实验测试文件。独立构建为 `.local/builds/physics-editor-encoding-after/` 和 `.local/builds/goldboom-mme-before/`，证据位于 `.local/artifacts/physics-editor-encoding-20261011/01/`。新运行目录快照位于 `.local/releases/physics-editor-encoding-20261011/Release/`，旧 EXE 备份位于 `.local/archives/physics-editor-encoding-20261011/`。详见[编辑页编码验收](../interface/languages.md#record-physics-editor-encoding)。
-
-第一批审查修复的前后工作树为两仓各自 `.local/worktrees/repair-b1-before/` 和 `.local/worktrees/repair-b1-integration/`，构建为 `.local/builds/repair-b1-before/` 和 `.local/builds/repair-b1-after/`，作为验收参考保留。实现工作树 `repair-b1-vmd`、`repair-b1-physics-input`、`repair-b1-render-contract` 合入后记为冗余保留，不删除。证据集中在 MMS 的 `.local/artifacts/repair-b1-20261011/01/`，详见[第一批验收](integration.md#record-repair-batch1)。本批没有替换正式 `build/Release/`。
-
-此前正式目录采用本地 CPU 忙等待修复版（源码 `6ca7c98`），该版本未发布到 GitHub。前后工作树为 `.local/worktrees/cpu-wait-before/` 和 `.local/worktrees/cpu-wait-after/`，构建为 `.local/builds/cpu-wait-before/` 和 `.local/builds/cpu-wait-after/`，证据在 `.local/artifacts/cpu-wait-fix-20261011/01/`。新版快照位于 `.local/releases/cpu-wait-fix-20261011/`，被替换的完整运行目录位于 `.local/archives/cpu-wait-fix-20261011/Release/`。这些目录作为验收参考保留，见[修复记录](../performance/cpu.md#record-cpu-wait-fix)。
-
-`v2026.10.11.3` 是此前正式发布版本。固定源码、构建和发布验证位于 `.local/artifacts/github-release/v2026.10.11.3/`，独立构建为 `.local/builds/names-release-20261011/`，发布包位于 `.local/releases/v2026.10.11.3/`。旧程序备份在 `.local/archives/japanese-name-gaps-20261011/`。这些目录保留为验收参考，见[发布记录](../releases.md#record-release-3)。
-
-日区名称边界修复的基线工作树为 `.local/worktrees/japanese-name-before/`（`b3cfb98`，保留同一份新增回归测试及行为不变的测试入口提取）。前后构建分别位于 `.local/builds/japanese-name-before/` 与 `.local/builds/japanese-name-after/`。测试、补丁与版本清单位于 `.local/artifacts/japanese-name-gaps-20261011/01/`；替换前的正式程序备份位于 `.local/archives/japanese-name-gaps-20261011/`，新程序快照位于 `.local/releases/v2026.10.11.3/`。测试与备份作为验收参考保留，不随安装包上传。详见[日区名称修复记录](../interface/languages.md#record-japanese-name-gaps)。
-
-原生媒体与透明 MOV 的历史快照和构建记录位于 `.local/releases/` 与 `.local/artifacts/`。模型模式光照前后验证位于 `.local/artifacts/model-view-light/20261007/`，详见[光照修复记录](../rendering/materials.md#record-model-view-lighting)。这些历史资料不随应用发布。当前 MMS 发布目录为 `build/Release/`。
-
-阴影、录制预览与 MME 显示修复的基线工作树为 `.local/worktrees/shadow-preview-before/`（`d1e88fb`），独立基线构建为 `.local/builds/shadow-preview-before/`。它们作为本次验收参考保留。更早的构建快照位于 `.local/releases/shadow-preview-before/`，开发构建为 `.local/builds/mme-926-profile/`。原始采样、失败记录、版本与哈希清单位于 `.local/artifacts/shadow-preview-20261010/01/`，见[验收说明](../rendering/shadows.md#record-shadow-preview-mme)。这些目录不进入发布包。
-
-`v2026.10.11.1` 使用独立发布工作树 `.local/worktrees/shadow-preview-release/` 与构建目录 `.local/builds/shadow-preview-release/`，关闭诊断和阶段计时。发布 EXE 与来源清单存放于 `.local/releases/v2026.10.11.1/`；上传、公开下载核验和旧版本归档记录位于 `.local/artifacts/github-release/v2026.10.11.1/`。替换正式目录前的程序备份位于 `.local/archives/shadow-preview-release/`。工作树作为已验收的发布参考保留。
-
-空场景默认着色器后台编译的源码快照、前后启动对照和隐藏窗口测试记录位于 `.local/artifacts/deferred-effect-20261011/`。独立构建为 `.local/builds/deferred-effect-x64-20261011/`，最终验证包为 `.local/releases/deferred-effect-20261011-integrated/`，性能对照包为 `.local/releases/deferred-effect-20261011/`。这些版本作为验收参考保留，不替换正式发布包。见[启动验收记录](../performance/startup.md#record-startup-deferred-effect)。
-
-`v2026.10.11.2` 已正式发布并更新 `build/Release/`。独立源码与发布记录位于 `.local/artifacts/github-release/v2026.10.11.2/`，构建在 `.local/builds/startup-release-20261011/`，发布文件在 `.local/releases/v2026.10.11.2/`。正式程序的六次启动对照位于 `.local/artifacts/release-startup-20261011/`，替换前程序备份在 `.local/archives/startup-release-20261011/`。这些目录保留为验收参考。此前 `v2026.10.11.1` 未完成公开发布，仍为空草稿。旧正式版因删除审批未通过而保留。见[本次发布及启动测量](../releases.md#record-release-2)。
-
 <a id="record-cleanup-inventory"></a>
-## 清理记录与后续候选
+<a id="record-cleanup-inventory-清理状态"></a>
+<a id="record-cleanup-inventory-本次清理验证"></a>
+<a id="record-cleanup-inventory-应保留的测试工具与布局信息"></a>
+<a id="record-cleanup-inventory-仍需后续审计的代码"></a>
+<a id="record-cleanup-inventory-2026-09-全量审查的交接"></a>
 
-原始记录：`CLEANUP_INVENTORY.md`。其中的版本、日期和验证范围沿用原记录。
+## 目录职责
 
-核对日期：2026-09-20。标记时的完整版本已保存在提交 `99c3c19`。**该提交不在本仓库**：本仓库从当前工作树起始，只有 `ba6b269` 与 `e3ad30d` 两个提交，因此「删除的脚本可从该提交恢复」在本仓库无法兑现。本轮删除了已满足条件的候选，完成情况见下表；保留项仍需满足各自条件后才能清理。删除的脚本只能从父工程取得，不再另存一份到工程目录。
+源码、构建、运行与证据目录的约定见[工作区布局](../../development/workspace.md)。正式本地产物位于 `build/Release/`；独立实验使用 `.local/builds/` 与 `.local/worktrees/`，不据目录名推断它已合入或发布。
 
-后续源码候选使用 `CLEANUP(C编号)` 定位；文件使用 `MAINTENANCE: 分类` 标记用途。已删除代码的标记一并移除。查找入口：
+## 程序身份
+
+复现前确认运行程序的绝对路径、文件哈希、源码提交和构建选项。插件还要确认实际加载的 DLL。安装目录中的旧二进制可能与当前源码不一致，不能引用某篇文档中的旧哈希当作当前程序身份。
+
+## 保留与清理
+
+[测试用途表](../../../tests/README.md)记录测试与工具的目的。构建目录、PDB、基线、失败日志、截图和原始测量按其用途决定保留；被 Git 忽略不意味着可删除。用户模型、舞台和参考二进制不属于自动清理对象。
+
+生产实现、资源生成器、布局断言和文件格式尺寸不能仅因名称含 `stub`、`unported` 或固定数字而删除。移动文件前核对 CMake、声明和所有调用。
 
 ```powershell
 rg -n 'CLEANUP\(|MAINTENANCE:' src include tests scripts tools
 ```
 
-<a id="record-cleanup-inventory-清理状态"></a>
-### 清理状态
+标记仅供定位，清理前重新检查调用、构建输入、文档引用及活跃进程。移除工具后应确保替代入口可用，不能依赖本仓库中不存在的提交恢复文件。
 
-| 编号 | 位置 | 证据与用途 | 状态与后续条件 |
-| --- | --- | --- | --- |
-| C01 | `src/render/accessory.cpp`、`src/render/debug_geometry.cpp`、`src/window/accessory_paste.cpp` 中的 `At` 模板 | 文件内只有模板定义，没有调用；各 1、2、2 个重载，是字段迁移后的冗余辅助函数。 | **已删除** 5 个定义及对应标记，保留源文件。删除前复查无调用。 |
-| C02 | `scripts/promote.py` | 旧 raw/offsets 迁移工具；`ledger` / `apply` 读取的 `include/mikudancestudio/offsets.hpp` 已不存在。 | **已删除**；无构建依赖，历史版本保存在 Git。 |
-| C03 | `scripts/regen_layout_pins.py` | 一次性 Wave5-A 转换，期望旧版手写断言墙、旧成员名；当前布局头已是宏表。 | **已删除**；现有 `layout_pins.hpp` 与布局断言继续保留。 |
-| C04 | `tools/wave3_*`、`tools/wave4a_*`、`tools/wave5c_*`、`tools/wave5d2_*` | 一次性迁移/验收脚本，依赖旧源码快照、当时 HEAD 或原作者机器路径。 | **已删除** 11 个已标记 `one-shot` 的脚本；删除前核对无调用或构建依赖。 |
-| C05 | `MMDApp::BoneFrameScratch()` 及其 x64 镜像 | 当前源码没有调用；相邻 `CameraFrameScratch()` 仍被地面阴影颜色访问使用。 | **已删除** accessor 和 x64 末尾的 140 字节镜像；保留 `MMDAppState` 中全部占位及布局断言，Win32/x64 布局编译通过。 |
-| C06 | `src/unported/stubs.cpp`、`src/window/wndproc_stubs.cpp` 的历史命名/重复沿革注释 | 前者包含录像收尾等正式实现，后者含控件回调。 | **保留**。只有重新归类并更新 CMake、声明、引用后才能移动；不能按名称删除。 |
-| C07 | `tools/strcheck2_result.json`、`docs/*PERFORMANCE*.json`、`docs/records/formats/data/pmx-loading.json` | 某一版本/设备/素材上的结果快照，不能当最新结果；相邻报告依赖这些证据。 | **保留**。已确认性能及 PMX 报告引用对应 JSON；报告归档或重测后再处理。 |
-| C08 | `build/`、`build-*/`、`out/` 中的日志、探针、测试可执行文件等 | 本地构建/验证产物，当时由 `.gitignore` 排除；2026-10-11 移除该文件后，本机改用 `.git/info/exclude` 保留忽略规则。`build/Release` 同时包含用户运行的程序。 | **部分清理**：双 ABI 检查后删除 `build/layout-probe/` 及下列 5 份旧日志；保留正式程序、测试程序、符号和其他构建目录。 |
-| C09 | `src/io/vsq_load.cpp` 的 `if (j == 0xae) {}` | 仅保留原反编译的自赋值说明，无实际语句。 | **已删除**空分支及其标记。 |
+## 原始数据
 
-C08 本次删除的旧日志：`asan-followup-tests-build.log`、`build-asan-offset-followup.log`、`build-offset-followup.log`、`followup-tests-build.log`、`offset-followup-build.log`，均原位于 `build/`。
-
-<a id="record-cleanup-inventory-本次清理验证"></a>
-### 本次清理验证
-
-- 临时探针包含 `mmd_app.hpp` 和 `model.hpp`，按正式工程的 `/utf-8 /permissive-` 配置分别编译 x64、Win32，全部布局断言通过。探针完成使命后已删除。
-- 正式程序及 19 个 CTest 目标的 Release 重建成功；`ctest --test-dir build -C Release --output-on-failure --timeout 40`：19/19 通过。测试在可创建 Win32 窗口及 D3D 设备的本机环境运行。
-- 删除后复查：除本清单的历史记录外，无已删除脚本或 accessor/镜像的残留引用；`git diff --check` 通过。
-
-<a id="record-cleanup-inventory-应保留的测试工具与布局信息"></a>
-### 应保留的测试、工具与布局信息
-
-- [测试用途表](../../../tests/README.md) 给出全部测试源文件的定位和清理条件。长期回归测试标为 `regression-keep`，不是发布包内容；CMake 仍以 `EXCLUDE_FROM_ALL` 显式构建。
-- `src/unported/stubs.cpp` 等生产实现，不能因名字像临时文件而删。
-- `scripts/gen_resources.py`、`scripts/dialog_rc.py` 是资源维护工具；CMake 链接的 `.res`、`.rc` 和导出表是实际产品输入。
-- `tools/inspect_reference_pe.py`、`mdump2.py`、`mdiff.py`、`x64_ref_scan.py`、`x64_disasm_case498.py`、`strcheck2.py`、`resolve_addr.cpp` 是手动参考/故障分析工具。原版进程读取中的固定地址是版本专用证据，不属于本机 C++ 运行时成员引用；复用前必须核对原版版本。
-- `tools/pmxlib.py`、`make_pmd_perf_fixture.py` 用于模型数据处理/可再生性能样本，当前无证据证明冗余。
-- `offsetof`、`sizeof`、RawPad、ABI 断言、二进制文件字段大小不是“残留偏移 bug”的充分证据；先确认数据语义。
-- 用户的 `ref/`、舞台、模型和 MME 文件不是本清单的删除候选。
-
-<a id="record-cleanup-inventory-仍需后续审计的代码"></a>
-### 仍需后续审计的代码
-
-| 范围 | 当前判断 | 后续核对 |
-| --- | --- | --- |
-| `features/dialog_gaps.cpp`、`query_audio_gaps.cpp`、`app/oni_skeleton_pump.cpp` 的 308 字节追踪记录 | 无指针的 77 浮点记录；仍手算通道位置。 | 可以引入具名记录统一生产/回放，但须核对 OpenNI 输入、镜像和全部关节通道；不能只替换写端。 |
-| `model/key_registrars.cpp`、`model/vmd_load.cpp`、`window/frame_range_apply.cpp` | 部分剪贴板/文件记录仍按固定字节访问。 | 在已有 clipboard 类型覆盖下继续迁移，并检查短读、异常长度和文件字节兼容性。 |
-| `MMDApp::GravityNoiseModeWord()`、`RecordedFrameCountByte1()`、`GroundShadowColor()` | 仍有跨字段或共享存储视图；未在本轮更改其行为。 | 根据所有读写点核对别名语义，再决定拆字段或具名 union；不可机械挪动。 |
-| `io/vsq_load.cpp` | `99c3c19` 修复歌词覆盖时间、单事件区段误匹配和速度记录容量，仍有旧版顺序文本扫描。 | 缺失段、截断 MIDI、复杂速度变化的错误处理应专项检查；已有的有效合成 VSQ 不覆盖所有损坏文件。 |
-
-没有标记的代码不代表已经证明无冗余或无偏移问题。每次清理后应更新对应条目的状态和验证结果。
-
-<a id="record-cleanup-inventory-2026-09-全量审查的交接"></a>
-### 全量审查的交接
-
-全量代码审查（199 个文件、从零重建、22/22 回归）的结果与缺陷清单见
-[代码审查报告](audits.md#record-full-review) 与 [缺陷清单](audits.md#record-code-review-findings)。
-与本清单直接相关的结论：
-
-- 本清单上表「仍需后续审计的代码」四行，审查中各自有对应的具体条目：
-  308 字节追踪记录的通道约定（`FB-01`、`FB-02`）、固定字节访问的记录迁移
-  （`B3-22`、`B3-25`）、跨字段别名语义（`HB-01` 的 x64 别名冲突、`HB-08`）、
-  `vsq_load.cpp` 的缺失段与截断处理（`B3-16` 至 `B3-19`、`B3-23`）。
-- 本节开头提到的 `99c3c19` 不在本仓库，C02/C03/C04 的「可从该提交恢复」需要改口径。
-- 新增：`docs/PORTING_STATUS.md`（源码引用 12 处）与 `docs/ARCHITECTURE.md`
-  （15 处）、`translated/` 语料（37 处）在本仓库均不存在，注释里的依据无法追溯。
+专题 `data/` 文件保留固定样本的测量事实。它们不代表当前构建的普遍性能；分析时核对源码、设备、素材和口径。新测量单独保存原始输入与日志，不覆盖旧样本以冒充复测。

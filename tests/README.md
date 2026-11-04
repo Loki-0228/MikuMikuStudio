@@ -1,6 +1,6 @@
-# 测试保留与清理说明
+# 按功能选择测试
 
-核对日期：2026-09-20。所有测试源文件均在首行用 `MAINTENANCE:` 标记。测试源码不进入发布目录，目标使用 `EXCLUDE_FROM_ALL`；编译后的测试程序位于 `build/tests/`。不要因为测试不随正式程序发布就删除源码。
+测试按功能保留。多数目标使用 `EXCLUDE_FROM_ALL`，须显式构建；输出路径以当前 CMake 配置为准。测试不随主程序发布，不能因此删除源码。
 
 ## 曲线、备份及崩溃日志回归
 
@@ -30,8 +30,6 @@
 
 提供输出目录时，还会通过七份独立 PMM 副本检查第 0 帧、帧间插值、有无父骨骼、自由视角，以及相机面板中未登记的编辑。输出文件名必须尚不存在，测试不覆盖输入工程。`scene_lifecycle_mme_tests` 支持同一参数，须在测试程序目录安装本地 MME；该模式验证插件接入后的镜头矩阵，不执行整套特效画质对比。
 
-2026-10-15 的 QSPEED 工程回归记录见 [PMM 启动追踪镜头修复](../docs/records/formats/projects.md#record-pmm-camera-load)。
-
 ## 长期回归：`regression-keep`
 
 `curve_sync_tests` 验证密集曲线的双向选区同步、批量表情读取、无通知的原生改值与恢复、乱序及重复帧、循环链表拒绝，以及连续通知的合并。测试只创建隐藏窗口，不创建 D3D 设备。输出的毫秒数用于比较同机同配置的同步开销，不代表工程播放帧率。性能记录见[曲线同步开销](../docs/records/animation/editing.md#record-curve-sync-performance)。
@@ -40,14 +38,14 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `pmd_selection_render_tests.cpp`、`pmd_selection_fixtures.py` | 真实 PMD 加载与「选择」、模型、相机模式切换的贴图回读。生成器覆盖共享 toon 文件表重排、缺失 toon 回退、自定义与无 toon、背光面，并比较等价文件表的采样颜色。需 D3D9，显式运行；可放入隔离的 MME 或 MMV 插件。命令见下方「PMD 贴图选择模式回归」。 |
+| `pmd_selection_render_tests.cpp`、`pmd_selection_fixtures.py` | 真实 PMD 加载与「选择」、模型、相机模式切换的贴图回读。生成器覆盖共享 toon 文件表重排、缺失 toon 回退、自定义与无 toon、背光面，并比较等价文件表的采样颜色。需 D3D9，显式运行；可在独立目录验证 MME；MMV4MMS 需使用其专用接管测试。命令见下方「PMD 贴图选择模式回归」。 |
 | `optional_graphics_imports.py` | 检查正式 EXE 的普通与延迟导入表，防止可选 DX12、DXGI、编译器 DLL 再次成为启动依赖。只用 Python 标准库，注册 CTest。 |
 | `graphics_runtime_tests.cpp` | 隐藏 DX9 设备上注入可选 DLL 或入口缺失，验证 CPU 蒙皮回退、描边、Present 和像素回读。标记为 hardware-manual，需 DX9、DX12 硬件，逐场景注册 CTest。 |
 | `native_shadow_tests.cpp` | 隐藏 D3D9 设备上的原生 SM3 阴影回读，覆盖两种模式、接收面修正、斜边平滑、贴图边界与缩小采样。 |
 | `keyboard_input_tests.cpp` | 快捷键与输入分发。 |
 | `mesh_bake_cache_tests.cpp` | Ogawa 采样、区间钳制、替换、清除、PMM 配套文件往返、畸形记录、提交前回调取消、临时文件跨进程归属。独立 CPU/文件测试，注册 CTest。 |
 | `vertex_capture_tests.cpp` | 隐藏 D3D9 HAL 设备上重放 VS 1.1/2.0/3.0，检查 GPU 位置回读、分块、状态恢复与不支持路径拒绝。注册 CTest。 |
-| `alembic_export_tests.cpp` | 隐藏生产窗口内生成 PMX，核对骨骼动画、MME/MMV 叠加、生成与消失的材质/拓扑、Unicode ABC、取消、三语条件警告、烧录回工程、PMM 保存重开和清除后恢复。需要按模式准备 Data/插件，显式运行。 |
+| `alembic_export_tests.cpp` | 隐藏生产窗口内生成 PMX，核对原生与 MME 捕获、Unicode ABC、取消、三语条件警告、工程缓存、PMM 保存重开和清除后恢复。需要按模式准备 Data/插件，显式运行。 |
 | `sequential_file_reader_tests.cpp` | 顺序文件读取、边界和回退。 |
 | `d3dx_import_tests.cpp` | D3DX 导入与 ABI；需要本机 DirectX 运行库。 |
 | `effect_api_tests.cpp` | 效果接口、对象导出及材质名称双向回退；无 MME 时安全跳过。 |
@@ -59,7 +57,7 @@
 | `model_alpha_tests.cpp` | 材质透明度与绘制行为。 |
 | `model_alpha_occlusion_tests.cpp` | GPU 像素回读的透明叠层回归，覆盖固定管线与内置效果资源两条路径（效果路径含两个着色器变体）。场景含半透明双层叠加、两个模型与单模型内两种材质提交顺序互换、PMD 与 PMX 两种 ABI、PMX 双面材质、材质 Diffuse.a 由 1.0 变 0.5 的对照，以及几何交错模型的相机变换采样；并断言绘制后恢复调用方的 `D3DRS_ALPHAREF`。 |
 | `transparent_material_order_tests.cpp` | 纯 CPU 的透明材质依赖排序与三角形分批，不建 D3D 设备、不启窗口。覆盖深度依赖排序与冲突循环的判定、退化与非法输入、三角形预算、以及用独立采样合成器对随机几何逐像素验证分批结果。 |
-| `transparent_geometry_tests.cpp` | 纯 CPU 的透明几何排序，不建 D3D 设备、不启窗口。标准档按三角形中心深度稳定排序、以 ordinal 破同深度；低档用 64 个远到近计数桶，同桶保持输入顺序；两档都只重排，每个有效输入面恰好返回一次、顶点分量不变。分割回归在最高档运行，核对分片保留来源 draw/ordinal、分割顶点插值，以及同一屏幕点沿结果的深度不递增。 |
+| `transparent_geometry_tests.cpp` | 纯 CPU 的透明几何排序，不建 D3D 设备、不启窗口。低、标准、高分别使用 16、64、256 个稳定深度桶，保留全部有效三角形；最高档的完整三角形排序与几何回退分别检查。分割回归在最高档运行，核对分片保留来源 draw/ordinal、分割顶点插值，以及同一屏幕点沿结果的深度不递增。 |
 | `capture_downsample_tests.cpp` | 用独立面积重叠算法核验真实 D3D9 缩放像素；检查逐行水平相位、非整数比例及无效目标尺寸。 |
 | `pmx_text_tests.cpp` | 缓冲与直接读取两种模式下的 98 个异常 PMX 文本样本；检查截断、奇数字节长度、过大前缀、贴图表清理、单字符及空名称回退。 |
 | `model_edge_tests.cpp` | 轮廓宽度与镜头坐标空间、PMD/PMX 膨胀及 GPU 输入。 |
@@ -107,28 +105,20 @@
 | `integration-manual` | `hidden_morph_tests.cpp` | 显式 `--model` 指定 Rou PMX 样本；隐藏生产窗口中验证时间轴隐藏表情的单击/双击/Shift、四栏隔离与普通权重/关键帧登记、组合动画的顶点/UV/材质结果。`--mode bounds` 独立验证内存面板值 0/5/255，不保存模型。需本机 D3D9 与 Data，不加入默认 CTest；仅在等效实际交互回归替代后移除。命令与证据见 [隐藏表情验收](../docs/records/animation/editing.md#record-hidden-morph-panel-safety)。 |
 | `integration-manual` | `physics_scene_tests.cpp` | 传入现有 PMM 或 PMD 路径推进真实物理场景，逐帧断言全部骨骼姿态与刚体变换为有限值，覆盖跳帧与反复跳转；用于修复前后同条件对照，不注册进 CTest 默认回归集。 |
 
-## 本地临时验证产物
+## ABC 导出与工程缓存
 
-### ABC 与网格烧录回归
-
-构建 `alembic_export_tests`、`vertex_capture_tests`、`mesh_bake_cache_tests`、`mmv_fixture`、`mmv_dx12`、`mmv_compat` 和 `mmv_runtime_tests`。ABC 测试程序名保留为 `MikuMikuDance.exe`，位于 `build/tests/alembic/Release`；从各自独立运行目录执行：
+显式构建 `alembic_export_tests`、`vertex_capture_tests` 和 `mesh_bake_cache_tests`。ABC 宿主以 `MikuMikuDance.exe` 输出到独立测试目录，每个运行目录准备对应 `Data` 资源。
 
 ```text
-MikuMikuDance.exe <测试输出绝对路径> native
-MikuMikuDance.exe <测试输出绝对路径> mme
-MikuMikuDance.exe <测试输出绝对路径> combined
-MikuMikuDance.exe <测试输出绝对路径> extra
-MikuMikuDance.exe <测试输出绝对路径> varying
+MikuMikuDance.exe <尚不存在的测试输出目录> native
+MikuMikuDance.exe <尚不存在的测试输出目录> mme
 ```
 
-每个运行目录需要 `Data`。`native` 不放插件；`mme` 放 MME 的 `d3d9.dll`、`MMEffect.dll`、`MMHack.dll`；`combined` 再放正式 `MMV.dll` 与 `MMV` 资源目录。`extra`、`varying` 使用 `build/tests/mmv-fixture/Release/MMV.dll`，分别验证追加几何与逐帧拓扑出现/消失。夹具 DLL 只用于测试，不放入正式运行目录。测试自行隐藏窗口，不读取桌面画面。
+`native` 不安装插件；`mme` 使用独立目录中的 MME 三个 DLL。旧 `MMV.dll`、网格插件夹具及 combined 模式不能用于当前 MMV4MMS 接管验收。当前宿主不支持分层烘焙，见[功能边界](../docs/records/animation/baking.md)。
 
-2026-09-20 已在 Win32/x64 布局编译通过后删除临时 `build/layout-probe/`，同时清理 5 份旧 followup 日志，具体文件见清理清单 C08。正式布局约束保留在头文件断言中，测试源文件及现有测试构建目标全部保留（数量以实际文件与 CTest 清单为准，见上节）。之后产生的本地探针和迭代日志仍不应补加入 Git；清理前确认无需符号、失败日志和探针证据。
+## 临时产物与保留
 
-2026-09 全量审查复核（命令与结果见 [代码审查报告](../docs/records/development/audits.md#record-full-review)）：`ctest --test-dir build -C Release -N` 报 22 项注册测试，`ctest -C Release` 22/22 通过。`tests/*.cpp` 实际有 26 个文件，其中 22 个对应 CTest 注册目标，另 4 个是 `d3d12_interop_tests`、`d3d12_skinning_tests`、`frame_benchmark`、`scene_lifecycle_tests`（需设备或本地素材，不在默认回归集）。该轮同时发现 CTest 覆盖不到的两条相机/视图缺陷——`--playback-view` 与 `--view-tools` 在真实工程上失败，逐条见 [缺陷清单](../docs/records/development/audits.md#record-code-review-findings)。
-
-全工程候选与条件见 [清理清单](../docs/records/development/workspace.md#record-cleanup-inventory)。新增测试时更新本表；不要把一次性调试输出留在测试断言之外。
-
+基线、失败日志、符号、探针和截图放在本地独立目录。源码、长期回归、资源生成器和布局断言按用途保留；清理前核对构建输入与引用。规则见[产物管理](../docs/records/development/workspace.md)。
 
 ## EMM 自动保存回归
 
@@ -159,7 +149,6 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 
 普通遮挡场景默认显式选择标准档，`--precision low|standard|high|maximum` 可分别验证四档；不能与专项模式混用。产品默认仍为关闭，原始提交顺序由独立的 `--sort-off` 及 MME 模块存在用例验证。完整档注册上述开启排序的 GPU 用例；最小档仅注册此测试程序的两项关闭排序用例，并在创建窗口前拒绝开启排序的参数。测试直接发布纹理池条目时必须使查询缓存失效，并检查路径确实解析到预期槽位和纹理；清理时先清空条目、失效缓存，再释放纹理。
 
-
 ## 五档透明排序上限与 PMM v2
 
 `pmm_project_settings_tests <新输出目录> [PMX绝对路径]` 使用隐藏的生产窗口，核对五档（低、标准、高、最高、关闭）、真实保存/重开/另存、单一档位字段、关闭覆盖旧档、菜单三语言、未知档位字节保留与显式替换、旧开关记录原样写回且不参与档位判断，以及 CRC 异常隔离。调用真实菜单、写入器和加载器；夹具直接通过扩展 codec 构造，不经新写入器预先迁移。
@@ -174,7 +163,7 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 
 `bone_key_pool_tests` 和 `bone_registration_tests` 验证超过旧池边界的增长与登记。`physics_bake_tests --capacity` 验证大槽位、撤销和 VMD；`physics_bake_tests --capacity-scene <PMM或PMX> <新输出目录>` 运行真实场景和 PMM/VMD 往返，输出目录须为新的测试位置。
 
-`channel_bake_tests` 不依赖 MMV，覆盖场景/模型通道选择、附件子参数、范围外曲线和中途提交失败恢复。`mmv_binding_animation_tests` 覆盖独立原生效果启停轨道；`mmv_ui_integration <PMX> <FX> <新输出目录>` 通过实际 DLL 和隐藏窗口核对三语、缩放、拖动和连续帧下拉框。`alembic_export_tests <新输出目录> native|mme|combined` 验证对应运行目录下的源网格与渲染缓存。实际执行结果及失败记录见 [验收说明](../docs/records/animation/baking.md#record-baking-channels-validation)。
+`channel_bake_tests` 覆盖场景和模型通道、附件子参数、范围外曲线及提交失败恢复，不依赖 MMV。原生和 MME 几何导出使用各自独立目录；MMV4MMS 分层采样未接通，不能把旧插件的启停轨道或 UI 用例作为当前宿主结果。
 
 ## MMDModern 查找优化验证
 
@@ -186,7 +175,7 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 
 低 CPU 预算对照同时传入 `--cpu-percent 2 --logical-cpus 4,6`。百分比按全机 CPU 预算计算；逻辑核心编号须先核对当前机器。`tools/limited_process.py` 挂起创建测试进程，设置并回读 Job Object 硬上限和亲和性后恢复执行。它只管理新建的测试子进程，记录进程及全系统 CPU 时间；显卡共享负载另存 `*-gpu.csv`。限制不预留核心，不限制 GPU，也不改变正式程序的运行设置。该辅助模块随资源限制测试入口保留或一并删除。
 
-本轮后续按用户要求固定 `--cpu-percent 2 --seconds 45 --logical-cpus 4,6`。长采样统一排除前 5 秒，并要求余下首末帧区间达到目标区间的 90%，即至少 36 秒。原始 15 秒短采样保留，不与长采样混算。资源限制工具在退出或超时时清理自身作业中的子进程，不留下后台构建进程。
+限核长采样可使用 `--cpu-percent 2 --seconds 45 --logical-cpus 4,6`。长采样统一排除前 5 秒，并要求余下首末帧区间达到目标区间的 90%，即至少 36 秒。原始 15 秒短采样保留，不与长采样混算。资源限制工具在退出或超时时清理自身作业中的子进程，不留下后台构建进程。
 
 用户要求同时比较两个 MMS 版本时，使用 `tools/run_lookup_simultaneous.py`。此脚本仅用于该并行测评：前后版本分别限为 1% CPU，合计预算为 2%；分别使用逻辑处理器 4、6，并在四轮中交换核心。两进程都完成限制回读后由同一启动屏障放行。每轮采样 90 秒，排除前 5 秒后逐版本计算帧率；保留各自绘制计数、CPU 记录和全显卡共享负载。采样重叠区间根据结果文件完成时间估算，不能视为逐帧同步。删除并行测评入口时一并删除此脚本。
 
@@ -273,8 +262,6 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 
 `native_shadow_tests <着色器> --bands-only` 检查放大的低精度斜平面：不启用滤波，不添加投影物，解析预期为全亮，避免硬件插值量化制造假阴影。`--detail-only` 同样包含此检查。`native_shadow_cycle.py` 还检查动态开关关→开→关时固定模式无细节图、动态模式有细节图、关闭后阴影数据恢复一致。
 
-2026-10-29 扩展 `--bands-only`：加强滤波增加两种模式、大覆盖盒、不同深度平移、正负斜率及轮廓开关的 48 组无遮挡斜平面检查，不能用扩大阴影偏置或放宽颜色误差掩盖假阴影。
-
 - `bone_registration_tests --auxiliary-undo`：issue #40 的表情和显示／IK／外亲登记撤销。覆盖四个面板按钮、全部表情单次历史、已有键覆盖、0 帧、负数表情独立历史、混合骨骼历史、重做分支截断，以及表情／显示池扩展后正确恢复链接与负载；默认完整测试也包含这些检查。修改撤销记录或登记入口时保留。
 
 ### 大场景中的人物固定阴影
@@ -286,3 +273,9 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 `frame_benchmark --fixed-model-shadows 0|1` 用于关闭/开启固定人物图的对照，默认开启；这不是用户设置。普通截图和相机扫掠 JSON 的 `self_shadow.fixed_model_shadows` 按模型槽记录有效性、尺寸、密度和矩阵。动态模式仍只使用原有相机分层。
 
 `shadow_filter_tests` 的隐藏宿主支持在原参数后加 `--fixed-model-only`，单独检查固定图的分配复用、当前帧有效性、接收模型隔离、动态开关与阴影关闭释放、卸载清理、设备资源释放、分配失败回退及恢复。输出目录必须全新；示例：`MikuMikuDance.exe <无FX模型.pmx> <新输出目录> --mme 0 --fixed-model-only`。它用进程内失败注入测试，不修改模型文件。实际工程对照保存在 `build/Release/Cache/FixedModelShadow-20261029/`。
+
+## MMV4MMS 接管
+
+当前完整包使用 `MMV4MMS.dll`，与 MME 代理分别运行。`mmv4mms_menu_tests` 检查加载和菜单生命周期，`mmv4mms_physics_input_tests` 检查只读物理输入，`mmv_material_pass_tests` 与 `mmv_native_shadow_bridge_tests` 检查材质及原生阴影交接。构建与运行条件以当前 CMake 目标及测试源文件为准。
+
+确认实际插件路径、帧号、尺寸和成功输出，失败不能通过重复使用上一帧纹理计为有效结果。接口检查不替代全部传统效果、真实工程或视频导出的完整对照。
