@@ -303,18 +303,81 @@ void MenuEntryTests(MMDApp* app) {
 fs::path stillPath;
 bool cancelStill = false;
 unsigned stillPickers = 0;
-BOOL WINAPI StillSaveDialog(LPOPENFILENAMEW parameters) {
-    ++stillPickers;
+unsigned stillSetup = 0;
+UINT selectedStillType = 1;
+HRESULT (STDMETHODCALLTYPE* originalStillTypes)(IFileSaveDialog*, UINT, const COMDLG_FILTERSPEC*);
+HRESULT (STDMETHODCALLTYPE* originalStillExtension)(IFileSaveDialog*, LPCWSTR);
+HRESULT (STDMETHODCALLTYPE* originalStillTitle)(IFileSaveDialog*, LPCWSTR);
+HRESULT STDMETHODCALLTYPE StillTypes(IFileSaveDialog* picker, UINT count, const COMDLG_FILTERSPEC* types) {
+    const wchar_t* expected[] = {L"*.png", L"*.jpg;*.jpeg", L"*.bmp", L"*.dds", L"*.dib", L"*.pfm", L"*.hdr"};
+    Check(count == std::size(expected), "modern still-image picker retains all seven image types");
+    for (UINT i = 0; i < count; ++i)
+        Check(std::wcscmp(types[i].pszSpec, expected[i]) == 0, "image filter order and JPEG aliases are retained");
+    stillSetup |= 1;
+    return originalStillTypes(picker, count, types);
+}
+HRESULT STDMETHODCALLTYPE StillExtension(IFileSaveDialog* picker, LPCWSTR extension) {
+    Check(std::wcscmp(extension, L"png") == 0, "default extension enables shell file-type extension switching");
+    stillSetup |= 2;
+    return originalStillExtension(picker, extension);
+}
+HRESULT STDMETHODCALLTYPE StillTitle(IFileSaveDialog* picker, LPCWSTR title) {
     const wchar_t* expected = g_Block->EnglishUI() == 2 ? L"导出图片" :
         g_Block->EnglishUI() == 1 ? L"render to picture file" : L"画像ファイル出力";
-    Check(std::wcscmp(parameters->lpstrTitle, expected) == 0, "still-image save dialog title follows the UI language");
-    if (cancelStill) return FALSE;
-    wcscpy_s(parameters->lpstrFile, parameters->nMaxFile, stillPath.c_str());
-    return TRUE;
+    Check(std::wcscmp(title, expected) == 0, "still-image save dialog title follows the UI language");
+    stillSetup |= 4;
+    return originalStillTitle(picker, title);
 }
+HRESULT STDMETHODCALLTYPE StillSaveDialog(IFileSaveDialog* picker, HWND owner) {
+    ++stillPickers;
+    Check(owner == g_Block->MainWindow() && stillSetup == 7, "modern save picker is fully configured before Show");
+    stillSetup = 0;
+    DWORD options = 0;
+    const DWORD required = FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR;
+    Check(SUCCEEDED(picker->GetOptions(&options)) && (options & required) == required,
+        "modern save picker preserves overwrite confirmation and filesystem paths");
+    UINT type = 0;
+    Check(SUCCEEDED(picker->GetFileTypeIndex(&type)) && type == 1, "still-image picker starts with PNG selected");
+    if (cancelStill) return HRESULT_FROM_WIN32(ERROR_CANCELLED);
+    Check(SUCCEEDED(picker->SetFileTypeIndex(selectedStillType)) &&
+        SUCCEEDED(picker->GetFileTypeIndex(&type)) && type == selectedStillType,
+        "modern save picker accepts a different image type");
+    // Only replace user input; the production code receives a real filesystem shell item.
+    std::ofstream placeholder(stillPath, std::ios::binary);
+    Check(bool(placeholder), "create shell result fixture");
+    return S_OK;
+}
+HRESULT STDMETHODCALLTYPE StillSaveResult(IFileSaveDialog*, IShellItem** item) {
+    const HRESULT hr = SHCreateItemFromParsingName(stillPath.c_str(), nullptr, IID_PPV_ARGS(item));
+    Check(fs::remove(stillPath), "remove shell placeholder before the production capture starts");
+    return hr;
+}
+struct StillSaveDialogProbe {
+    Microsoft::WRL::ComPtr<IFileSaveDialog> picker;
+    void* hooks[5]{};
+    StillSaveDialogProbe() {
+        cancelStill = false; stillSetup = 0; selectedStillType = 1;
+        Check(SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&picker))), "create modern save picker for still-image regression");
+        auto** table = *reinterpret_cast<void***>(picker.Get());
+        void* show = table[3]; void* types = table[4]; void* title = table[17];
+        void* result = table[20]; void* extension = table[22];
+        Check(MH_CreateHook(show, &StillSaveDialog, nullptr) == MH_OK &&
+            MH_CreateHook(result, &StillSaveResult, nullptr) == MH_OK &&
+            MH_CreateHook(types, &StillTypes, reinterpret_cast<void**>(&originalStillTypes)) == MH_OK &&
+            MH_CreateHook(title, &StillTitle, reinterpret_cast<void**>(&originalStillTitle)) == MH_OK &&
+            MH_CreateHook(extension, &StillExtension, reinterpret_cast<void**>(&originalStillExtension)) == MH_OK,
+            "control modern still-image save selection");
+        hooks[0] = show; hooks[1] = result; hooks[2] = types; hooks[3] = title; hooks[4] = extension;
+        for (void* hook : hooks)
+            Check(MH_EnableHook(hook) == MH_OK, "enable modern still-image dialog probe");
+    }
+    ~StillSaveDialogProbe() {
+        for (void* hook : hooks) { MH_DisableHook(hook); MH_RemoveHook(hook); }
+    }
+};
 void StillImageLanguageTests(MMDApp* app) {
-    Check(MH_CreateHook(reinterpret_cast<void*>(&GetSaveFileNameW), &StillSaveDialog, nullptr) == MH_OK &&
-        MH_EnableHook(reinterpret_cast<void*>(&GetSaveFileNameW)) == MH_OK, "control still-image save selection");
+    StillSaveDialogProbe probe;
     const int language = app->EnglishUI(), frame = app->CurrentFrame();
     const int width = app->RenderWidth(), height = app->RenderHeight();
     app->RenderWidth() = 64; app->RenderHeight() = 48;
@@ -323,7 +386,9 @@ void StillImageLanguageTests(MMDApp* app) {
         app->EnglishUI() = mode;
         for (int current : {0, 137}) {
             app->CurrentFrame() = current; stillPickers = 0;
-            stillPath = output / (L"单张_" + std::to_wstring(mode) + L"_" + std::to_wstring(current) + L".png");
+            selectedStillType = current ? static_cast<UINT>(mode + 1) : 1;
+            const wchar_t* suffix = selectedStillType == 2 ? L".jpeg" : selectedStillType == 3 ? L".bmp" : L".png";
+            stillPath = output / (L"单张_" + std::to_wstring(mode) + L"_" + std::to_wstring(current) + suffix);
             SendMessageW(app->MainWindow(), WM_COMMAND, 276, 0);
             const HWND window = app->RecordingWindow();
             Check(stillPickers == 1 && window && IsWindowUnicode(window), "still-image menu creates a Unicode export window");
@@ -341,8 +406,8 @@ void StillImageLanguageTests(MMDApp* app) {
                 app->state.messageSeen = 1; FrameDriver(app);
             }
             Check(!app->RecordingWindow() && fs::is_regular_file(stillPath) && fs::file_size(stillPath) > 0,
-                "localized still-image export completes and writes a PNG");
-            std::printf("PASS still-image language=%d frame=%d Unicode caption and PNG output\n", mode, current);
+                "localized still-image export completes with the chosen file type");
+            std::printf("PASS still-image language=%d frame=%d type=%u Unicode caption and output\n", mode, current, selectedStillType);
         }
         cancelStill = true; stillPickers = 0;
         SendMessageW(app->MainWindow(), WM_COMMAND, 276, 0);
@@ -351,7 +416,6 @@ void StillImageLanguageTests(MMDApp* app) {
     }
     app->EnglishUI() = language; app->CurrentFrame() = frame;
     app->RenderWidth() = width; app->RenderHeight() = height;
-    MH_DisableHook(reinterpret_cast<void*>(&GetSaveFileNameW)); MH_RemoveHook(reinterpret_cast<void*>(&GetSaveFileNameW));
 }
 std::vector<unsigned char> ImagePixels(const fs::path& path,UINT* width=nullptr,UINT* height=nullptr) {
     using Microsoft::WRL::ComPtr;

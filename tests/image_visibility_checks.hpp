@@ -38,9 +38,15 @@ void PrepareImageVisibilityScene(MMDApp* app) {
     if (VisibilityOptions().selfShadow >= 0) RegisterSelfShadowState(app, 0);
     if (VisibilityOptions().hasTargetY) app->CameraPositionY() = VisibilityOptions().targetY;
 }
-BOOL WINAPI SelectVisibilityImage(LPOPENFILENAMEW dialog) {
-    wcscpy_s(dialog->lpstrFile, dialog->nMaxFile, visibilityImage.c_str());
-    return TRUE;
+HRESULT STDMETHODCALLTYPE SelectVisibilityImage(IFileSaveDialog*, HWND) {
+    std::ofstream placeholder(visibilityImage, std::ios::binary);
+    Check(bool(placeholder), "create visibility save-result fixture");
+    return S_OK;
+}
+HRESULT STDMETHODCALLTYPE VisibilityImageResult(IFileSaveDialog*, IShellItem** item) {
+    const HRESULT result = SHCreateItemFromParsingName(visibilityImage.c_str(), nullptr, IID_PPV_ARGS(item));
+    Check(std::filesystem::remove(visibilityImage), "remove visibility placeholder before capture");
+    return result;
 }
 void CheckVisibleImage(const std::filesystem::path& path, bool alpha) {
     using Microsoft::WRL::ComPtr;
@@ -90,8 +96,16 @@ void CheckImageVisibility(MMDApp* app, const std::filesystem::path& directory) {
         Check(antialias::Select(app, static_cast<antialias::Algorithm>(_wtoi(aa)), error), "select image-export AA mode");
     }
     ApplyImageVisibilitySelfShadow(app);
-    Check(MH_CreateHook(reinterpret_cast<void*>(&GetSaveFileNameW), &SelectVisibilityImage, nullptr) == MH_OK &&
-        MH_EnableHook(reinterpret_cast<void*>(&GetSaveFileNameW)) == MH_OK, "select disposable still-image outputs");
+    Microsoft::WRL::ComPtr<IFileSaveDialog> picker;
+    Check(SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&picker))), "create modern visibility save picker");
+    auto** table = *reinterpret_cast<void***>(picker.Get());
+    void* show = table[3]; void* result = table[20];
+    Check(MH_CreateHook(show, &SelectVisibilityImage, nullptr) == MH_OK &&
+        MH_CreateHook(result, &VisibilityImageResult, nullptr) == MH_OK,
+        "select disposable still-image outputs");
+    Check(MH_EnableHook(show) == MH_OK && MH_EnableHook(result) == MH_OK,
+        "enable modern visibility save selection");
     for (int warm : {0, 1}) {
         if (warm) for (int i = 0; i < 3; ++i) {
             ApplyImageVisibilitySelfShadow(app);
@@ -136,7 +150,6 @@ void CheckImageVisibility(MMDApp* app, const std::filesystem::path& directory) {
             CheckVisibleImage(sequence::FramePath(options, 2), sequence::SupportsAlpha(format));
         }
     }
-    MH_DisableHook(reinterpret_cast<void*>(&GetSaveFileNameW));
-    MH_RemoveHook(reinterpret_cast<void*>(&GetSaveFileNameW));
+    for (void* hook : {show, result}) { MH_DisableHook(hook); MH_RemoveHook(hook); }
     Check(invisibleImages == 0, "all exports retain visible model geometry");
 }

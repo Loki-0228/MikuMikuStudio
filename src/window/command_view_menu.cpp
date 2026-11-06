@@ -229,6 +229,8 @@
 #include <Windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <ShObjIdl.h>
+#include <wrl/client.h>
 
 #include <cmath>
 #include <cctype>
@@ -1862,20 +1864,46 @@ bool StoredLimitNeedsRewrite(const MMDApp& app,
             limit->value[0] != static_cast<std::uint8_t>(selected));
 }
 
-UINT_PTR CALLBACK ImageSaveTypeHook(HWND dialog,UINT message,WPARAM,LPARAM lp) {
-    if(message==WM_NOTIFY && lp) {
-        auto* notice=reinterpret_cast<OFNOTIFYW*>(lp);
-        if(notice->hdr.code==CDN_TYPECHANGE && notice->lpOFN) {
-            constexpr int formats[]={2,1,0,3,4,5,6};
-            const auto selected=notice->lpOFN->nFilterIndex;
-            if(selected>0 && selected<=std::size(formats)) {
-                const auto* extension=image_sequence::kFormats[formats[selected-1]].extension+1;
-                notice->lpOFN->lpstrDefExt=extension;
-                SendMessageW(GetParent(dialog),CDM_SETDEFEXT,0,reinterpret_cast<LPARAM>(extension));
-            }
-        }
+HRESULT ChooseStillImagePath(MMDApp* app, HWND owner, wchar_t* file, std::size_t capacity) {
+    Microsoft::WRL::ComPtr<IFileSaveDialog> picker;
+    HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&picker));
+    if (FAILED(hr)) return hr;
+    DWORD options = 0;
+    hr = picker->GetOptions(&options);
+    if (SUCCEEDED(hr)) hr = picker->SetOptions(options | FOS_FORCEFILESYSTEM |
+        FOS_OVERWRITEPROMPT | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR);
+    const COMDLG_FILTERSPEC types[] = {
+        {L"PNG (*.png)", L"*.png"}, {L"JPEG (*.jpg;*.jpeg)", L"*.jpg;*.jpeg"},
+        {L"BMP (*.bmp)", L"*.bmp"}, {L"DDS (*.dds)", L"*.dds"},
+        {L"DIB (*.dib)", L"*.dib"}, {L"PFM (*.pfm)", L"*.pfm"},
+        {L"HDR (*.hdr)", L"*.hdr"},
+    };
+    if (SUCCEEDED(hr)) hr = picker->SetFileTypes(static_cast<UINT>(std::size(types)), types);
+    if (SUCCEEDED(hr)) hr = picker->SetFileTypeIndex(1);
+    // Set before Show so the shell updates the extension when the file type changes.
+    if (SUCCEEDED(hr)) hr = picker->SetDefaultExtension(L"png");
+    if (SUCCEEDED(hr)) hr = picker->SetTitle(LocalizedUiTextW(
+        app->EnglishUI() ? L"render to picture file" : kTitleRenderJp));
+    const std::wstring directory = (GetMenuState(GetMenu(owner), 0x12D, 0) & 8) != 0
+        ? app->DirUser() : std::wstring(app->ExeDir()) + L"\\UserFile";
+    Microsoft::WRL::ComPtr<IShellItem> folder;
+    if (SUCCEEDED(hr) && SUCCEEDED(SHCreateItemFromParsingName(directory.c_str(),
+            nullptr, IID_PPV_ARGS(&folder))))
+        hr = picker->SetFolder(folder.Get());
+    if (SUCCEEDED(hr)) hr = picker->Show(owner);
+    if (FAILED(hr)) return hr;
+    Microsoft::WRL::ComPtr<IShellItem> result;
+    hr = picker->GetResult(&result);
+    PWSTR path = nullptr;
+    if (SUCCEEDED(hr)) hr = result->GetDisplayName(SIGDN_FILESYSPATH, &path);
+    if (SUCCEEDED(hr)) {
+        // The capture pipeline still stores paths in a fixed-size field.
+        if (std::wcslen(path) >= capacity) hr = HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE);
+        else wcscpy_s(file, capacity, path);
     }
-    return 0;
+    CoTaskMemFree(path);
+    return hr;
 }
 
 }  // namespace
@@ -2386,32 +2414,15 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
         app->state.dialogFlags[6] = 1;
         app->state.enterKeyState = 1;
         SetCurrentDirectoryW(app->ExeDir());
-        wchar_t fileBuf[0x100];
-        fileBuf[0] = L'\0';
-        OPENFILENAMEW ofn;
-        std::memset(&ofn, 0, sizeof(ofn));
-        ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = hwnd;
-        ofn.lpstrFilter = L"PNG (*.png)\0*.png\0JPEG (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0"
-            L"BMP (*.bmp)\0*.bmp\0DDS (*.dds)\0*.dds\0DIB (*.dib)\0*.dib\0"
-            L"PFM (*.pfm)\0*.pfm\0HDR (*.hdr)\0*.hdr\0";
-        ofn.lpstrFile = fileBuf;
-        ofn.nFilterIndex = 1;
-        ofn.nMaxFile = 0x100;
-        ofn.Flags = (OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY);
-        if ((GetMenuState(GetMenu(hwnd), 0x12D, 0) & 8) != 0) {
-            ofn.lpstrInitialDir = app->DirUser();
-        } else {
-            ofn.lpstrInitialDir = L"UserFile";
-        }
-        ofn.lpstrDefExt = L"png";
-        ofn.Flags |= OFN_EXPLORER | OFN_ENABLEHOOK;
-        ofn.lpfnHook=ImageSaveTypeHook;
-        wchar_t fileTitle[0x100];
-        ofn.nMaxFileTitle = 0x100;
-        ofn.lpstrFileTitle = fileTitle;
-        ofn.lpstrTitle = english ? L"render to picture file" : kTitleRenderJp;
-        if (!GetUiSaveFileNameW(&ofn)) {
+        wchar_t fileBuf[0x100]{};
+        const HRESULT picked = ChooseStillImagePath(app, hwnd, fileBuf, std::size(fileBuf));
+        if (FAILED(picked)) {
+            if (picked != HRESULT_FROM_WIN32(ERROR_CANCELLED))
+                MessageBoxW(hwnd, image_sequence::Text(app,
+                    L"无法选择图片保存路径。请重试，或选择较短的路径。",
+                    L"Could not select the image output path. Please retry or choose a shorter path.",
+                    L"画像の保存先を選択できません。再試行するか、短いパスを選択してください。"),
+                    L"MMS", MB_OK | MB_ICONWARNING);
             return;
         }
         if ((GetMenuState(GetMenu(hwnd), 0x12D, 0) & 8) != 0) {

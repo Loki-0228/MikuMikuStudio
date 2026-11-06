@@ -110,15 +110,33 @@ void HandleWindowSize(MMDApp* app) {
     }
 
     // Ordinary-window layout remains in its original 96-DPI coordinates.
-    RECT wr;
-    GetWindowRect(hwnd, &wr);
-    if (wr.right - wr.left > 2560)
-        SetWindowPos(hwnd, nullptr, wr.left, wr.top, 2560,
-                     wr.bottom - wr.top, SWP_NOZORDER);
-    GetWindowRect(hwnd, &wr);
-    if (wr.bottom - wr.top > 1920)
-        SetWindowPos(hwnd, nullptr, wr.left, wr.top, wr.right - wr.left,
-                     1920, SWP_NOZORDER);
+    // D3D limits apply to the client surface, not the title bar and borders.
+    // Before device initialization, allow modern desktop sizes as well.
+    LONG maxClientWidth = 16384, maxClientHeight = 16384;
+    if (const D3DRenderer* renderer = app->Renderer()) {
+        if (renderer->maxTextureWidth > 0) maxClientWidth = renderer->maxTextureWidth;
+        if (renderer->maxTextureHeight > 0) maxClientHeight = renderer->maxTextureHeight;
+        // Ordinary rendering uses a backbuffer sized to the largest monitor.
+        // During capture, its saved dimensions still describe the editor window.
+        const UINT backingWidth = app->RecordingWindow()
+            ? static_cast<UINT>(std::max(0, app->state.recRTW))
+            : renderer->presentParameters.BackBufferWidth;
+        const UINT backingHeight = app->RecordingWindow()
+            ? static_cast<UINT>(std::max(0, app->state.recRTH))
+            : renderer->presentParameters.BackBufferHeight;
+        if (backingWidth) maxClientWidth = std::min<UINT>(maxClientWidth, backingWidth);
+        if (backingHeight) maxClientHeight = std::min<UINT>(maxClientHeight, backingHeight);
+    }
+    RECT wr{}, client{};
+    if (GetWindowRect(hwnd, &wr) && GetClientRect(hwnd, &client)) {
+        const LONG width = wr.right - wr.left;
+        const LONG height = wr.bottom - wr.top;
+        const LONG excessWidth = std::max(0L, client.right - client.left - maxClientWidth);
+        const LONG excessHeight = std::max(0L, client.bottom - client.top - maxClientHeight);
+        if (excessWidth || excessHeight)
+            SetWindowPos(hwnd, nullptr, 0, 0, width - excessWidth, height - excessHeight,
+                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 
     // --- sidebar width (0x4433A4..0x4433F2) --------------------------------
     RECT cr1;

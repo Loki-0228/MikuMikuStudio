@@ -95,8 +95,13 @@
 
 [下载最新发布包](https://github.com/Loki-0228/MikuMikuStudio/releases/latest)。这里说明当前包的安装方式和功能边界；历史版本说明见 [GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases)。源码能力的完整入口见[功能文档](../README.md)。
 
-<!-- release-notes:v2026.11.04.1:begin -->
+<!-- release-notes:v2026.11.06.1:begin -->
 ## 中文
+
+### 本次更新
+
+- 修复 [#43](https://github.com/Loki-0228/MikuMikuStudio/issues/43)：完整包和最小包均解除主窗口 2560×1920 的固定上限，支持超宽屏和 4K 窗口。窗口客户区仍受显卡能力及当前渲染缓冲区尺寸限制。
+- 修复 [#44](https://github.com/Loki-0228/MikuMikuStudio/issues/44)：导出单张图片改用现代 Windows 保存对话框，保留七种图片格式、随格式切换的默认扩展名和覆盖确认。
 
 ### 选择与安装
 
@@ -120,6 +125,11 @@ PMM 保存工程，VMD 保存动作。完整包扩展不能由原版 MMD 完整�
 
 ## English
 
+### Changes in this release
+
+- Fix [#43](https://github.com/Loki-0228/MikuMikuStudio/issues/43): remove the fixed 2560×1920 main-window limit in both full and minimal packages, supporting ultrawide and 4K windows. The client area remains bounded by GPU capabilities and the current rendering buffer dimensions.
+- Fix [#44](https://github.com/Loki-0228/MikuMikuStudio/issues/44): use the modern Windows save dialog for still-image export, retaining all seven image formats, automatic default-extension changes and overwrite confirmation.
+
 ### Packages and installation
 
 The `full` package provides extended editing, anti-aliasing, modern media and baking. The `minimal` package uses the `mmd932` profile, retaining original MMD features and shared fixes while saving standard data only. Extract the packages into separate folders and run `MikuMikuDance.exe`.
@@ -141,6 +151,11 @@ Download `MMSNvidiaAAFix.dll` separately, place it beside the full build, instal
 
 ## 日本語
 
+### 今回の更新
+
+- [#43](https://github.com/Loki-0228/MikuMikuStudio/issues/43) を修正：完全版・最小版ともにメインウィンドウの 2560×1920 固定上限を解除し、ウルトラワイドと 4K のウィンドウに対応しました。クライアント領域は GPU の能力と現在の描画バッファーの大きさに制限されます。
+- [#44](https://github.com/Loki-0228/MikuMikuStudio/issues/44) を修正：静止画出力にモダンな Windows 保存ダイアログを使用します。7 種類の画像形式、形式に応じた既定の拡張子の切り替え、上書き確認を保持します。
+
 ### パッケージと導入
 
 完全版 `full` は拡張編集、アンチエイリアス、各種メディアとベイクに対応します。最小版 `minimal` は `mmd932` 構成で、従来の MMD 機能と共通修正を保持し、標準データのみ保存します。別々のフォルダーへ展開し、`MikuMikuDance.exe` を実行してください。
@@ -159,4 +174,4 @@ PMM はプロジェクト、VMD はモーションを保存します。従来の
 ### NVIDIA 修正の導入（任意）
 
 `MMSNvidiaAAFix.dll` を別途取得し、完全版の横に配置してヘルプから導入後、MMS を再起動してください。従来の MSAA での NVIDIA 両面描画を対象とし、導入した EXE のフルパスに適用します。移動後は再導入してください。削除はヘルプから行い、DLL の削除だけでは設定は解除されません。
-<!-- release-notes:v2026.11.04.1:end -->
+<!-- release-notes:v2026.11.06.1:end -->

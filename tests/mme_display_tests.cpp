@@ -32,6 +32,7 @@
 #include <atomic>
 #include <MinHook.h>
 #include <commctrl.h>
+#include <ShObjIdl.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>

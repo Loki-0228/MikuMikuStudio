@@ -6,6 +6,7 @@
 #include "mikumikustudio/frame_presentation.hpp"
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 #include <utility>
 #include <MinHook.h>
@@ -25,10 +26,97 @@ static int WINAPI UnexpectedW(HWND, LPCWSTR text, LPCWSTR, UINT) {
 static bool VisibleStyle(HWND window) {
     return (GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != 0;
 }
+// Keep the fixture independent of the test machine's desktop track limits.
+static WNDPROC sizeTestWindowProc = nullptr;
+static LRESULT CALLBACK SizeTestWindowProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    const auto result = CallWindowProcW(sizeTestWindowProc, window, message, wp, lp);
+    if (message == WM_GETMINMAXINFO) {
+        auto* limits = reinterpret_cast<MINMAXINFO*>(lp);
+        limits->ptMaxTrackSize = {32767, 32767};
+    }
+    return result;
+}
+static void CheckWindowSizeLimits(MMDApp* app) {
+    const HWND window = app->MainWindow();
+    auto* renderer = app->Renderer();
+    const auto originalParameters = renderer->presentParameters;
+    const int originalWidth = renderer->screenWidth, originalHeight = renderer->screenHeight;
+    const int maxWidth = renderer->maxTextureWidth, maxHeight = renderer->maxTextureHeight;
+    RECT originalBounds{}; GetWindowRect(window, &originalBounds);
+    const HWND foreground = GetForegroundWindow();
+    Check(maxWidth >= 3840 && maxHeight >= 2400, "test device supports ultrawide and tall window fixtures");
+    renderer->screenWidth = renderer->presentParameters.BackBufferWidth = 3840;
+    renderer->screenHeight = renderer->presentParameters.BackBufferHeight = 2400;
+    Check(PostDeviceReset(app), "create actual backing surface for ultrawide window fixtures");
+    sizeTestWindowProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(window, GWLP_WNDPROC,
+        reinterpret_cast<LONG_PTR>(&SizeTestWindowProc)));
+    Check(sizeTestWindowProc != nullptr, "allow hidden fixture to exceed the physical desktop");
+    auto resize = [&](int width, int height) {
+        Check(SetWindowPos(window, nullptr, 80, 80, width, height,
+            SWP_NOZORDER | SWP_NOACTIVATE) != FALSE, "resize hidden production window");
+        HandleWindowSize(app);
+        RECT outer{}; GetWindowRect(window, &outer);
+        return outer;
+    };
+    auto outer = resize(3440, 1440);
+    Check(outer.right - outer.left == 3440 && outer.bottom - outer.top == 1440,
+          "ultrawide window is not capped at 2560 pixels");
+    outer = resize(3840, 2160);
+    Check(outer.right - outer.left == 3840 && outer.bottom - outer.top == 2160,
+          "4K window is not capped at 1920 pixels tall");
+    RECT client{}; GetClientRect(window, &client);
+    const auto viewport = app->ViewportRect();
+    Check(app->SidebarWidth() >= 250 && app->SidebarWidth() < client.right &&
+          viewport.left >= app->SidebarWidth() && viewport.right <= client.right &&
+          viewport.top >= 0 && viewport.bottom <= client.bottom && !IsRectEmpty(&viewport),
+          "wide layout keeps sidebar and viewport within the client surface");
+    renderer->maxTextureWidth = 1280;
+    outer = resize(2000, 1200);
+    GetClientRect(window, &client);
+    Check(client.right == 1280 && outer.bottom - outer.top == 1200 && outer.left == 80 && outer.top == 80,
+          "width cap limits client pixels while preserving height and position");
+    renderer->maxTextureWidth = maxWidth;
+    renderer->maxTextureHeight = 900;
+    outer = resize(2000, 1200);
+    GetClientRect(window, &client);
+    Check(client.bottom == 900 && outer.right - outer.left == 2000,
+          "height cap limits client pixels while preserving width");
+    renderer->maxTextureWidth = 1280;
+    outer = resize(2000, 1200);
+    GetClientRect(window, &client);
+    Check(client.right == 1280 && client.bottom == 900 &&
+          outer.right - outer.left > 1280 && outer.bottom - outer.top > 900,
+          "simultaneous limits retain the complete client surface plus window frame");
+    const auto limited = outer;
+    HandleWindowSize(app); GetWindowRect(window, &outer);
+    Check(EqualRect(&limited, &outer), "repeated layout converges without further window resizing");
+    renderer->maxTextureWidth = maxWidth;
+    renderer->maxTextureHeight = maxHeight;
+    resize(4200, 2700); GetClientRect(window, &client);
+    Check(client.right == 3840 && client.bottom == 2400,
+          "window cannot exceed the actual editor backing surface");
+    renderer->maxTextureWidth = renderer->maxTextureHeight = 0;
+    resize(4200, 2700); GetClientRect(window, &client);
+    Check(client.right == 3840 && client.bottom == 2400,
+          "missing texture caps still respect initialized backing dimensions");
+    renderer->maxTextureWidth = maxWidth;
+    renderer->maxTextureHeight = maxHeight;
+    Check(!IsWindowVisible(window) && GetForegroundWindow() == foreground,
+          "size limits keep the hidden host invisible without stealing activation");
+    SetWindowPos(window, nullptr, originalBounds.left, originalBounds.top,
+        originalBounds.right - originalBounds.left, originalBounds.bottom - originalBounds.top,
+        SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(sizeTestWindowProc));
+    renderer->presentParameters = originalParameters;
+    renderer->screenWidth = originalWidth; renderer->screenHeight = originalHeight;
+    Check(PostDeviceReset(app), "restore original backing surface after size checks");
+    HandleWindowSize(app);
+}
 int main(int argc, char** argv) {
     if (argc > 3) SetProcessDPIAware();
-    const int width = argc > 1 ? std::atoi(argv[1]) : 1000;
-    const int height = argc > 2 ? std::atoi(argv[2]) : 740;
+    const bool limitsOnly = argc > 1 && std::strcmp(argv[1], "--window-size-only") == 0;
+    const int width = !limitsOnly && argc > 1 ? std::atoi(argv[1]) : 1000;
+    const int height = !limitsOnly && argc > 2 ? std::atoi(argv[2]) : 740;
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     MH_Initialize();
     MH_CreateHook(reinterpret_cast<void*>(&MessageBoxA), reinterpret_cast<void*>(&UnexpectedA), nullptr);
@@ -41,6 +129,12 @@ int main(int argc, char** argv) {
     Check(InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE), "initialize hidden production host");
     HWND window = app->MainWindow();
     Check(!IsWindowVisible(window), "host stays hidden");
+    CheckWindowSizeLimits(app);
+    if (limitsOnly) {
+        ShutdownCleanup(app); g_Block = nullptr; delete app;
+        std::puts("Window size regressions passed");
+        return 0;
+    }
     SetWindowPos(window, nullptr, 80, 80, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
     HWND extra = CreateWindowW(L"STATIC", L"visible extension", WS_CHILD | WS_VISIBLE,
         3, 3, 20, 20, window, reinterpret_cast<HMENU>(9001), nullptr, nullptr);
