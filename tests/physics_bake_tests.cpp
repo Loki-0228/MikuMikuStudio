@@ -37,6 +37,9 @@
 #include <string>
 #include <vector>
 using namespace mikumikustudio;
+namespace mikumikustudio {
+void StepFrame(MMDApp* app, bool forward);
+}
 namespace {
 int failures=0,dialogs=0,language=0;bool inspect=false;std::filesystem::path images;MMDApp* inspectApp=nullptr;
 // One real bake is driven through the hidden dialog to observe the interface
@@ -275,6 +278,83 @@ struct Fixture {
     ~Fixture(){bone_scale::Forget(raw());for(auto& ring:model->undoRings)for(auto& slot:ring.slots){mikumikustudio::undo_storage::Free(slot.bonePose);mikumikustudio::undo_storage::Free(slot.auxiliaryPose);}}
     unsigned char* raw(){return reinterpret_cast<unsigned char*>(model.get());}
 };
+void TraceFrameStep() {
+    Fixture fixture;
+    mdl::BoneOrderEntry order{};
+    mdl::BoneReference attachment{-1, -1};
+    fixture.model->boneOrderTable = &order;
+    fixture.model->boneOrderCount = 1;
+    fixture.displayKeys[0].selectorStates = &attachment;
+    auto app = std::make_unique<MMDApp>();
+    app->state = MMDAppState{};
+    auto renderer = std::make_unique<D3DRenderer>();
+    app->Renderer() = renderer.get();
+    app->SidebarWidth() = 0;  // No timeline surface in this fixture.
+    app->ModelSlot(0) = fixture.raw();
+    app->SelectedModelSlot() = -1;
+    app->PlaybackPhysicsMode() = 3;
+    app->state.messageSeen = 1;
+
+    btDefaultCollisionConfiguration configuration;
+    btCollisionDispatcher dispatcher(&configuration);
+    btDbvtBroadphase broadphase;
+    btSequentialImpulseConstraintSolver solver;
+    btDiscreteDynamicsWorld world(&dispatcher, &broadphase, &solver, &configuration);
+    PhysicsScene physics{};
+    physics.world = &world;
+    app->Physics() = &physics;
+    fixture.model->scenePtr = &physics;
+
+    btSphereShape shape(1);
+    btVector3 inertia;
+    shape.calculateLocalInertia(1, inertia);
+    btDefaultMotionState motion(btTransform(btQuaternion::getIdentity(), btVector3(10, 0, 0)));
+    btRigidBody body(btRigidBody::btRigidBodyConstructionInfo(1, &motion, &shape, inertia));
+    world.addRigidBody(&body);
+    body.setCollisionFlags(body.getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
+
+    mdl::RigidRecord rigid{};
+    rigid.body = &body;
+    rigid.boneIndex = 0;
+    fixture.model->rigidTable = &rigid;
+    fixture.model->rigidCount = 1;
+    for (int i = 0; i < 16; i += 5) rigid.invTransform[i] = 1.0f;
+    for (auto& bone : fixture.bones) {
+        bone.type = mdl::BoneType::RotateMove;
+        bone.parent = bone.slotIndex = bone.tailIdx = -1;
+        bone.rotQuat2[3] = bone.ikBackup[6] = 1.0f;
+        for (int i = 0; i < 16; i += 5) bone.matInit[i] = bone.matWorld[i] = bone.matLocal[i] = 1.0f;
+    }
+    auto& bone = fixture.bones[0];
+    bone.hasRigidBody = bone.physicsDisabled = 1;
+    fixture.keys[0].physicsDisabled = 1;
+    fixture.keys[0].next = 2;
+    fixture.keys[2].frame = 1;
+    fixture.keys[2].position[0] = 4.0f;
+    fixture.keys[2].rotation[3] = 1.0f;
+
+    auto* previousApp = g_Block;
+    g_Block = app.get();
+    StepFrame(app.get(), true);
+    Check(app->CurrentFrame() == 1 && !bone.physicsDisabled && rigid.mode == 1 && !body.isKinematicObject(),
+          "right arrow applies the enabled physics key in trace mode");
+    body.setLinearVelocity(btVector3(60, 0, 0));
+    PhysicsFrame(app.get(), 0);
+    const float position = body.getWorldTransform().getOrigin().x();
+    Check(position > 10.0f && std::fabs(bone.ikBackup[0] - position) < 0.001f,
+          "right arrow advances the existing rigid body and reads its pose back into the bone");
+
+    StepFrame(app.get(), false);
+    Check(app->CurrentFrame() == 0 && bone.physicsDisabled && rigid.mode == 0 && body.isKinematicObject(),
+          "left arrow applies the disabled physics key in trace mode");
+    Check(app->PhysicsResetPending(), "left arrow requests a physics reset in trace mode");
+    StepFrame(app.get(), true);
+    Check(app->PhysicsResetPending(), "right arrow preserves an already pending physics reset");
+
+    g_Block = previousApp;
+    world.removeRigidBody(&body);
+}
+
 void ScenePhysicsUnit(){
     Fixture a,b;auto app=std::make_unique<MMDApp>();std::memset(&app->state,0,sizeof app->state);
     app->ModelSlot(0)=a.raw();app->ModelSlot(1)=b.raw();app->SelectedModelSlot()=0;app->state.optflag[0]=1;
@@ -1578,6 +1658,7 @@ int wmain(int argc,wchar_t** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);INITCOMMONCONTROLSEX cc{sizeof cc,ICC_WIN95_CLASSES};InitCommonControlsEx(&cc);
     auto hide=SetWindowsHookExW(WH_CBT,HideHook,nullptr,GetCurrentThreadId());auto hook=SetWindowsHookExW(WH_CALLWNDPROCRET,DialogHook,nullptr,GetCurrentThreadId());
     if(argc==2&&!wcscmp(argv[1],L"--dense-playback"))DenseKeyframeChecks();
+    else if(argc==2&&!wcscmp(argv[1],L"--trace-frame-step"))TraceFrameStep();
     else if(argc==2&&!wcscmp(argv[1],L"--select-all"))AllChannelPicker();
     else if(argc==2&&!wcscmp(argv[1],L"--scene-physics")){
 #if !MMD_ORIGINAL_PROFILE
@@ -1589,6 +1670,6 @@ int wmain(int argc,wchar_t** argv){
     else if(argc==2&&!wcscmp(argv[1],L"--warnings"))WarningLogic();
     else if(argc==4&&!wcscmp(argv[1],L"--capacity-scene")){growCapacity=true;Scene(argv[2],argv[3]);}
     else if(argc==3&&!wcscmp(argv[1],L"--ui")){images=argv[2];std::filesystem::create_directories(images);Unit();}
-    else if(argc==3)Scene(argv[1],argv[2]);else {LayerUnit();Unit();}
+    else if(argc==3)Scene(argv[1],argv[2]);else {TraceFrameStep();LayerUnit();Unit();}
     UnhookWindowsHookEx(hook);UnhookWindowsHookEx(hide);std::printf("failures=%d\n",failures);return failures?1:0;
 }
