@@ -316,6 +316,7 @@ add_library(mikumikustudio_core STATIC
     src/window/ui_message.cpp
     src/window/wndproc_stubs.cpp
     src/window/command_dispatch.cpp
+    src/window/playback_timing_ui.cpp
     src/window/frame_line_edit.cpp
     src/window/accessory_paste.cpp
     src/media/wave_audio.cpp
@@ -1221,6 +1222,11 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     set_target_properties(coordinate_axis_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_test(NAME coordinate_axis_regressions COMMAND coordinate_axis_tests)
+    add_executable(playback_timing_tests EXCLUDE_FROM_ALL tests/playback_timing_tests.cpp)
+    target_link_libraries(playback_timing_tests PRIVATE mikumikustudio_core winmm dsound)
+    set_target_properties(playback_timing_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME playback_timing_tests COMMAND playback_timing_tests)
     # Optional real-scene stress runner. No user assets are distributed with it.
     add_executable(physics_scene_tests EXCLUDE_FROM_ALL tests/physics_scene_tests.cpp
         res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})

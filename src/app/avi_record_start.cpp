@@ -301,7 +301,7 @@ bool StartRecordGraph(MMDApp* app, std::int32_t outW, std::int32_t outH) {
     // 0x52BA68 is a qword double (30.0) in .rdata; the port keeps the
     // float mirror g_FrameScale (exactly 30.0 until the config loader
     // rewrites it).
-    const float seconds = static_cast<float>(f / g_FrameScale);
+    const float seconds = static_cast<float>(f / s.PlaybackTiming().playbackFps);
 
     float fpsF;
     std::memcpy(&fpsF, &s.AviRecordFps(), sizeof fpsF);

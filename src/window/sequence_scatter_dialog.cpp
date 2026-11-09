@@ -143,9 +143,11 @@ void RefreshMenu(MMDApp* app) {
     const HMENU edit = GetSubMenu(GetMenu(app->MainWindow()), 1);
     if (!edit) return;
     if (GetMenuState(edit, kMenuCommand, MF_BYCOMMAND) == UINT(-1)) {
-        // Insert after the existing expression multiplier, using its command ID.
+        // Keep the bone and morph adjustments together above the scatter group.
         for (int i = 0; i < GetMenuItemCount(edit); ++i) if (GetMenuItemID(edit, i) == 252) {
-            InsertMenuW(edit, i + 1, MF_BYPOSITION | MF_STRING, kMenuCommand, Tr(app->EnglishUI(), title)); return;
+            InsertMenuW(edit, i + 1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+            InsertMenuW(edit, i + 2, MF_BYPOSITION | MF_STRING, kMenuCommand, Tr(app->EnglishUI(), title));
+            return;
         }
         AppendMenuW(edit, MF_STRING, kMenuCommand, Tr(app->EnglishUI(), title));
     } else ModifyMenuW(edit, kMenuCommand, MF_BYCOMMAND | MF_STRING, kMenuCommand, Tr(app->EnglishUI(), title));

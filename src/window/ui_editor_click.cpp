@@ -1186,7 +1186,7 @@ static void HandleLButtonDown_FrameStripHit(MMDApp* app, HWND hwnd,
                 if (t < 0.0)                          // fldz/fcom clamp
                     t = 0.0;
                 // original: sub_4C3530(ecx = app+0xCC subsystem, t)
-                WaveRestartAt(app->Audio(), t);
+                WaveRestartAt(app->Audio(), t / playback_timing::Speed(app->PlaybackTiming()));
             }
         }
     }

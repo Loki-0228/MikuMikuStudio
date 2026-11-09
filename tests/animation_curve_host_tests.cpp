@@ -10,6 +10,7 @@
 #include <cmath>
 #include <commctrl.h>
 using namespace mikumikustudio;
+namespace mikumikustudio { void SampleGlobalPlaybackTracks(MMDApp*); }
 static void Check(bool b,const char*s){if(!b){std::fprintf(stderr,"FAIL: %s\n",s);std::exit(1);}}
 static void CheckScaleLabelRepaint(MMDApp& app,HWND parent){
     const auto panels=FramePanelLayout(&app);
@@ -131,10 +132,63 @@ static void CheckCameraHoldSamples() {
     for (double frame : {13.0, 13.5, 29.999})
         Check(step.sample(step, frame).value == 11.0, "authored camera Step retains its discontinuous hold");
     Check(step.sample(step, 30).value == 17.0, "authored camera Step reaches the terminal key exactly");
+    app->PlaybackTiming().interpolate = true;
+    curve_host::Apply(app.get(), curve_host::Kind::Camera, 12.5);
+    const double eased = (channels[0].sample(channels[0], 21.5).value - 11.0) / 6.0;
+    Check(std::abs(app->CameraPositionX() - (5.0 + 6.0 * eased)) < 1e-5,
+          "continuous playback uses the authored native timing on adjacent camera frames");
+    check();
+    app->PlaybackTiming().interpolate = false;
+    curve_host::Apply(app.get(), curve_host::Kind::Camera, 12.5);
+    Check(app->CameraPositionX() == 5.f, "disabling continuous playback restores the native camera cut");
+    channels[0].track.keys[2].interpolation = animation_curve::Interpolation::Step;
+    Check(curve_host::Write(*app, curve_host::Kind::Camera, 0, channels, error),
+          "write an explicitly authored adjacent Step interval");
+    app->PlaybackTiming().interpolate = true;
+    curve_host::Apply(app.get(), curve_host::Kind::Camera, 12.5);
+    Check(app->CameraPositionX() == 5.f, "continuous playback preserves an explicitly authored Step interval");
     curve_host::Reset(app.get()); app->CameraKeys() = nullptr;
 }
 #include "camera_subdivision_checks.hpp"
-int main(){
+#include "playback_ruler_checks.hpp"
+static void CheckContinuousAccessorySamples() {
+    auto app = std::make_unique<MMDApp>();
+    app->state = {};
+    mdl::AccessoryRecord accessory{};
+    mdl::AccessoryKey keys[2]{};
+    keys[0].next = 1; keys[1].frame = 1;
+    keys[0].visible = 1; keys[0].parentModel = -1; keys[1].parentModel = 2;
+    keys[0].position[0] = 2; keys[1].position[0] = 6;
+    keys[0].rotation[1] = .2f; keys[1].rotation[1] = .6f;
+    keys[0].scale = 1; keys[1].scale = 2;
+    mdl::SelfShadowKey shadow[2]{};
+    shadow[0].next = 1; shadow[1].frame = 1;
+    shadow[0].mode = 1; shadow[1].mode = 2;
+    shadow[0].distance = .04f; shadow[1].distance = .08f;
+    app->ShadowKeys() = shadow; app->ShadowTrackActive() = 1;
+    app->AccessorySlot(0) = &accessory;
+    app->AccessoryKeys(0) = keys;
+    app->AccessoryTrackActive(0) = 1;
+    app->PlaybackCursorSeconds() = .5 / 30;
+    SampleGlobalPlaybackTracks(app.get());
+    Check(accessory.position[0] == 2 && accessory.scale == 1.5f,
+          "native accessory translation holds while scale interpolates by default");
+    Check(app->ShadowMode() == 1 && app->ShadowDistance() == .04f,
+          "native self-shadow keeps its preceding distance by default");
+    app->PlaybackTiming().interpolate = true;
+    SampleGlobalPlaybackTracks(app.get());
+    Check(accessory.position[0] == 4 && std::abs(accessory.rotation[1] - .4f) < 1e-6,
+          "continuous playback interpolates adjacent native accessory transforms");
+    Check(accessory.visible == 1 && accessory.parentModel == -1,
+          "continuous accessory interpolation preserves discrete attachment and visibility");
+    Check(app->ShadowMode() == 1 && std::abs(app->ShadowDistance() - .06f) < 1e-6,
+          "continuous self-shadow interpolates distance while its mode remains discrete");
+    app->AccessorySlot(0) = nullptr; app->AccessoryKeys(0) = nullptr;
+    app->ShadowKeys() = nullptr;
+}
+int main(int argc, char** argv){
+    CheckPlaybackRuler(argc > 1 ? argv[1] : nullptr);
+    CheckContinuousAccessorySamples();
     CheckCameraSubdivision();
     CheckCrossedCameraEndpoints();
     CheckCameraHoldSamples();

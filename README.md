@@ -144,8 +144,9 @@ MikuMikuStudio (MMS) is a Windows desktop application for creating and editing M
 ### Features
 
 - **Models**: PMD and PMX models with bone, IK, morph, and toon rendering support.
-- **Animation**: VMD motion and VPD poses, multitrack keyframe editing, playback with physics preview, and project frame-rate correction, plus VSQ and Kinect input.
+- **Animation**: VMD motion and VPD poses, multitrack keyframe editing, playback with physics preview, and project-wide frame rate scaling, plus VSQ and Kinect input.
 - **Curve editor**: Edit nine bone channels, morphs, camera, lighting, self-shadow, gravity, and accessories. Adjust handles, insert keys along a curve, and seek with the main timeline. [Curve editing](docs/guides/animation-curves.md).
+- **Bone box selection**: In the full build, the former Box-sel button is now Scale. To box-select bones, switch to Select mode, then hold Shift and drag with the left mouse button in the viewport.
 - **Bone scaling**: Uniform and per-axis bone scaling for local, global, and view coordinates. Scale data requires MMS extensions; original MMD does not apply it. [Bone scaling](docs/guides/bone-scaling.md).
 - **Editing capacity**: Keyframes and display lists grow as needed, within memory and save-format limits. Full Unicode names are preserved in MMS extensions. PMM projects beyond original MMD's limits cannot be opened there. [File compatibility](#pmm-and-vmd-files).
 - **Physics**: Rigid-body simulation, constraints, and baking to bone motion. Supports frame ranges, presets, undo, and cancellation. [Physics baking](docs/guides/physics-baking.md).
@@ -277,8 +278,9 @@ MikuMikuStudio（MMS）是用于制作和编辑 MMD 舞蹈动画的 Windows 桌�
 ### 功能
 
 - **模型**：PMD、PMX 模型载入，支持骨骼、IK、表情和 toon 渲染。
-- **动画**：VMD 动作与 VPD 姿态、多轨道关键帧编辑、物理预览及工程帧率修正，也支持 VSQ、Kinect 输入。
+- **动画**：VMD 动作与 VPD 姿态、多轨道关键帧编辑、物理预览及全工程帧率缩放，也支持 VSQ、Kinect 输入。
 - **曲线编辑器**：支持骨骼位移、XYZ 旋转和缩放九通道，以及表情、镜头、灯光、自阴影、重力和附件曲线。可调整手柄、沿曲线插帧，并与主时间轴联动。见[曲线编辑](docs/guides/animation-curves.md)。
+- **骨骼框选**：完整版的「框选」按钮现为「缩放」。要框选骨骼，请切换到「选择」模式，按住 Shift 并在视口内用鼠标左键拖动。
 - **骨骼缩放**：支持整体及 XYZ 缩放，可选择局部、全局和视图坐标系。缩放依赖 MMS 扩展，原版 MMD 不应用这些数据。见[骨骼缩放](docs/guides/bone-scaling.md)。
 - **编辑容量**：关键帧和显示项按需扩容，完整 Unicode 名称通过 MMS 扩展保留。扩容仍受内存和保存格式限制，超出原版范围的 .pmm 工程不能在原版 MMD 打开。见[格式兼容说明](#pmm-与-vmd-的区别和兼容性)。
 - **物理**：支持刚体与约束模拟，可将结果烧录为骨骼动作，支持帧范围、预设、撤销和取消。见[物理烧录](docs/guides/physics-baking.md)。
@@ -404,8 +406,9 @@ MikuMikuStudio（MMS）は、MMD のダンスアニメーションを制作・�
 ### 機能
 
 - **モデル**：PMD・PMX モデルの読み込み、ボーン、IK、モーフ、toon 描画に対応します。
-- **アニメーション**：VMD モーションと VPD ポーズ、複数トラックのキー編集、物理プレビュー、プロジェクトのフレームレート修正、VSQ・Kinect 入力に対応します。
+- **アニメーション**：VMD モーションと VPD ポーズ、複数トラックのキー編集、物理プレビュー、プロジェクト全体のフレームレート拡縮、VSQ・Kinect 入力に対応します。
 - **曲線エディタ**：ボーンの位置・XYZ 回転・スケールの 9 チャンネルに加え、モーフ、カメラ、照明、セルフシャドウ、重力、アクセサリを曲線で編集できます。ハンドル編集、曲線上へのキー挿入、メインタイムラインとの同期に対応します。[曲線編集](docs/guides/animation-curves.md)。
+- **ボーンの範囲選択**：完全版では従来の「BOX選択」ボタンが「拡縮」になりました。「選択」モードで Shift を押しながら、ビューポート上でマウスの左ボタンをドラッグすると範囲選択できます。
 - **ボーンスケール**：ボーンを一括または XYZ 軸ごとに拡大縮小でき、ローカル・グローバル・ビュー座標を選べます。スケールは MMS 拡張で保存し、オリジナル MMD には適用されません。[ボーンスケール](docs/guides/bone-scaling.md)。
 - **編集容量**：メモリと保存形式の範囲内でキーフレームと表示項目の容量を拡張し、完全な Unicode 名を MMS 拡張に保持します。従来の制限を超えた PMM はオリジナル MMD で開けません。[形式の互換性](#pmm-と-vmd-の違いと互換性)。
 - **物理**：剛体と拘束のシミュレーションに対応し、結果をボーンモーションにベイクできます。範囲、プリセット、元に戻す操作、キャンセルに対応します。[物理ベイク](docs/guides/physics-baking.md)。

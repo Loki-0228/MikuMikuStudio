@@ -491,7 +491,10 @@ void Apply(MMDApp*app,Kind kind,double frame,int slot){
     if(!app||!std::isfinite(frame)||states.empty())return;
     State*s=Current(*app,kind,slot);if(!s)return;
     double v[12]{};const auto&fields=Fields(kind);
-    for(size_t c=0;c<s->channels.size();++c){v[c]=SampleValue(s->channels[c],frame);
+    for(size_t c=0;c<s->channels.size();++c){
+        v[c]=kind==Kind::Camera && app->PlaybackTiming().interpolate
+            ? curve_motion::SampleCameraChannelContinuous(s->channels[c],frame).value
+            : SampleValue(s->channels[c],frame);
         if(!std::isfinite(v[c]))return;v[c]=std::clamp(v[c],fields[c].minimum,fields[c].maximum);}
     switch(kind){
     case Kind::Camera:

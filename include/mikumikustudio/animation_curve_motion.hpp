@@ -28,6 +28,7 @@ struct Motion {
 // Shared with the native host: fixed-step playback values and smooth graph
 // derivatives, with exact key values and native one-frame camera cuts.
 animation_curve::Sample SampleCameraChannel(const curve_editor::Channel&, double frame);
+animation_curve::Sample SampleCameraChannelContinuous(const curve_editor::Channel&, double frame);
 // Copy only valid native handle geometry, preserving the actual sampler for
 // standard VMD proxies. Restore replaces stale channel metadata on import.
 Motion CaptureChannels(Kind, const std::vector<curve_editor::Channel>&);

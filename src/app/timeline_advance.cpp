@@ -358,7 +358,7 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled) 
                 s.CameraParentBone() = current.parentBone;
             } else {
                 const mdl::CameraKey& previous = keys[current.previous];
-                if (frameCur - 1 == previous.frame) {
+                if (frameCur - 1 == previous.frame && !s.PlaybackTiming().interpolate) {
                     CopyCameraKey(app, previous);         // 0x4177F1
                 } else {
                     const std::uint32_t framePrev = previous.frame;
@@ -499,6 +499,10 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled) 
                 s.ShadowMode() =
                     static_cast<signed char>(previous.mode);
                 s.ShadowDistance() = previous.distance;
+                if (s.PlaybackTiming().interpolate && frameCur - previous.frame == 1) {
+                    const float t = static_cast<float>(frame - previous.frame);
+                    s.ShadowDistance() += t * (current.distance - previous.distance);
+                }
             }
         }
     }
@@ -625,6 +629,14 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled) 
             accessory.opacity =
                 t * (recCur.opacity - recPrev.opacity) + recPrev.opacity;
             applyDiscreteState(recPrev);
+            if (s.PlaybackTiming().interpolate && frameCur - framePrev == 1) {
+                for (int axis = 0; axis < 3; ++axis) {
+                    accessory.position[axis] = recPrev.position[axis] +
+                        t * (recCur.position[axis] - recPrev.position[axis]);
+                    accessory.rotation[axis] = recPrev.rotation[axis] +
+                        t * (recCur.rotation[axis] - recPrev.rotation[axis]);
+                }
+            }
         }
     }
 }

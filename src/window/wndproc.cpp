@@ -37,6 +37,7 @@
 #define NOMINMAX
 #include <Windows.h>
 #include "mikumikustudio/frame_rate_correction.hpp"
+#include "playback_timing_ui.hpp"
 #include <stdio.h>
 #include <cstdlib>
 
@@ -153,6 +154,7 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             (hasAccessory ? MF_ENABLED : MF_GRAYED));
         RefreshSkinningMenu(app); bake::RefreshMenu(app);
         frame_rate_correction::RefreshMenu(app);
+        playback_timing_ui::RefreshMenu(app);
         // Keep the Help menu's current dock-corner label and UI language fresh.
         viewport_corner_menu::EnsureItem(app);
     }

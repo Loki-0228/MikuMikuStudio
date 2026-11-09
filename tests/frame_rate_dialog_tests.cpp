@@ -1,4 +1,4 @@
-// MAINTENANCE: regression-keep; the "Correct by frame rate..." floating window
+// MAINTENANCE: regression-keep; the project-wide frame rate scaling window
 // (include/mikumikustudio/frame_rate_correction.hpp,
 //  src/window/frame_rate_dialog.cpp).
 //
@@ -88,6 +88,7 @@ std::wstring g_prepareError = L"stub refused the preview";
 std::wstring g_applyError = L"stub refused the apply";
 Report g_report;
 Rates g_lastRates;
+Rates g_appliedRates;
 // Set by the test to observe the window state at the moment Save As is asked
 // for, which is how the report-before-save ordering is checked.
 void (*g_onSaveAs)() = nullptr;
@@ -115,6 +116,7 @@ bool Apply(MMDApp&, const PlanPtr& plan, std::wstring& error) {
         error = L"stub received no plan";
         return false;
     }
+    g_appliedRates = plan->rates;
     if (g_applyFails) {
         error = g_applyError;
         return false;
@@ -495,29 +497,30 @@ struct Language {
     unsigned code;
     const wchar_t* originalLabel;
     const wchar_t* currentLabel;
+    const wchar_t* directAdjacentLabel;
     const wchar_t* previewLabel;
     const wchar_t* applyLabel;
     const wchar_t* copyLabel;
     const wchar_t* closeLabel;
     const wchar_t* menuNeedle;
-    const wchar_t* topNeedle;         // scope line: whole project + frame 0
+    const wchar_t* topNeedle;         // removed frame-0 scaling description
     const wchar_t* hintApplyNeedle;   // hint line: Save As opens after applying
-    const wchar_t* hintMergeNeedle;   // hint line: same-frame keys merge
+    const wchar_t* hintLossNeedle;    // hint line: compression may lose motion
     const wchar_t* title;
 };
 
 const Language kLanguages[3] = {
-    {0, L"元のFPS", L"現在のFPS", L"プレビュー", L"適用", L"レポートをコピー",
-     L"閉じる", L"フレームレート", L"プロジェクト全体",
-     L"自動で「名前を付けて保存」", L"同じフレームのキーは統合",
-     L"フレームレートで補正"},
-    {1, L"Original FPS", L"Current FPS", L"Preview", L"Apply", L"Copy report",
-     L"Close", L"Correct by frame rate", L"Converts the whole project",
-     L"Save As opens automatically", L"keys on the same frame merge",
-     L"Correct by frame rate"},
-    {2, L"原帧率", L"现帧率", L"预览", L"应用", L"复制报告", L"关闭",
-     L"根据帧率修正", L"换算整个工程", L"应用后自动另存为",
-     L"同帧关键帧会合并", L"根据帧率修正"},
+    {0, L"元のFPS", L"現在のFPS", L"連続フレームを直接切り替える", L"プレビュー", L"適用", L"レポートをコピー",
+     L"閉じる", L"フレームレート", L"フレーム 0",
+     L"「名前を付けて保存」を自動で開きます", L"圧縮すると動きが失われる場合があります",
+     L"プロジェクト全体のフレームレートを拡縮"},
+    {1, L"Original FPS", L"Current FPS", L"Switch adjacent frames directly", L"Preview", L"Apply", L"Copy report",
+     L"Close", L"Project-wide frame rate scaling", L"Scales around frame 0",
+     L"Save As opens for the project after applying", L"Compression may lose motion detail",
+     L"Project-wide frame rate scaling"},
+    {2, L"原帧率", L"现帧率", L"连续帧直接切换", L"预览", L"应用", L"复制报告", L"关闭",
+     L"全工程帧率缩放", L"以第 0 帧为中心缩放", L"应用后自动另存为",
+     L"压缩可能造成动作损失", L"全工程帧率缩放"},
 };
 
 HWND EditBesideLabel(HWND dialog, const wchar_t* labelText) {
@@ -591,12 +594,11 @@ void CheckLayout(HWND dialog, const Language& language,
             Note(line);
         }
     }
-    // The two short lines are visible, carry the required wording and fit.
+    // The title already states the scope; only the concise bottom hint remains.
     HWND top = FindContaining(dialog, language.topNeedle);
-    Check(top != nullptr, "the scope line states the whole project and frame 0");
-    CheckStaticFits(top, "the scope line is not clipped in this language");
-    HWND hint = FindContaining(dialog, language.hintMergeNeedle);
-    Check(hint != nullptr, "the hint line states that same-frame keys merge");
+    Check(top == nullptr, "the redundant scope line has been removed");
+    HWND hint = FindContaining(dialog, language.hintLossNeedle);
+    Check(hint != nullptr, "the hint explains potential motion loss from compression");
     CheckStaticFits(hint, "the hint line is not clipped in this language");
     Check(hint != nullptr &&
               Text(hint).find(language.hintApplyNeedle) != std::wstring::npos,
@@ -620,6 +622,21 @@ void CheckLayout(HWND dialog, const Language& language,
     // room that the widest number the dialog formats never touches the frame.
     HWND originalField = EditBesideLabel(dialog, language.originalLabel);
     HWND currentField = EditBesideLabel(dialog, language.currentLabel);
+    HWND directAdjacent = FindByText(dialog, language.directAdjacentLabel);
+    Check(directAdjacent != nullptr, "the adjacent-frame checkbox follows the language");
+    if (directAdjacent != nullptr) {
+        const RECT option = InClient(dialog, directAdjacent);
+        Check(MeasureWidth(directAdjacent, language.directAdjacentLabel) +
+                  GetSystemMetrics(SM_CXMENUCHECK) + 4 <= option.right - option.left,
+              "the adjacent-frame checkbox has room for its glyph and label");
+        if (currentField != nullptr) {
+            const RECT current = InClient(dialog, currentField);
+            Check(option.left > current.right && option.top == current.top,
+                  "the adjacent-frame checkbox shares the current rate row");
+        }
+        Check(SendMessageW(directAdjacent, BM_GETCHECK, 0, 0) == BST_CHECKED,
+              "the adjacent-frame checkbox starts checked");
+    }
     Check(originalField != nullptr && currentField != nullptr,
           "both rate fields are found for the style checks");
     if (originalField != nullptr && currentField != nullptr) {
@@ -793,6 +810,7 @@ void CheckBackendBehaviour(HWND dialog, HWND owner, MMDApp& app) {
     HWND close = FindByText(dialog, L"Close");
     HWND original = EditBesideLabel(dialog, L"Original FPS");
     HWND current = EditBesideLabel(dialog, L"Current FPS");
+    HWND directAdjacent = FindByText(dialog, L"Switch adjacent frames directly");
     HWND report = MultilineEdit(dialog);
     HWND status = StatusEdit(dialog, original, current);
     Check(preview != nullptr && apply != nullptr && copy != nullptr &&
@@ -803,7 +821,7 @@ void CheckBackendBehaviour(HWND dialog, HWND owner, MMDApp& app) {
     Check(report != nullptr && status != nullptr,
           "the result area and the status line are found");
     if (preview == nullptr || apply == nullptr || copy == nullptr ||
-        close == nullptr || original == nullptr || current == nullptr ||
+        close == nullptr || original == nullptr || current == nullptr || directAdjacent == nullptr ||
         report == nullptr || status == nullptr)
         return;
 
@@ -836,6 +854,7 @@ void CheckBackendBehaviour(HWND dialog, HWND owner, MMDApp& app) {
     Check(std::fabs(frc::g_lastRates.originalFPS - 29.97) < 1e-9 &&
               std::fabs(frc::g_lastRates.currentFPS - 30.0) < 1e-9,
           "the fractional original rate reaches the backend unchanged");
+    Check(frc::g_lastRates.directAdjacentFrames, "Preview uses direct adjacent frames by default");
     Check(frc::g_applyCalls == 0, "Preview never applies");
     Check(frc::g_saveAsCalls == 0, "Preview never asks for Save As");
     Check(IsWindowEnabled(apply), "a successful Prepare arms Apply");
@@ -893,6 +912,14 @@ void CheckBackendBehaviour(HWND dialog, HWND owner, MMDApp& app) {
     // still never asks for Save As.
     ClickButton(dialog, preview);
     Check(IsWindowEnabled(apply), "a new Prepare arms Apply again");
+    ClickButton(dialog, directAdjacent);
+    Check(SendMessageW(directAdjacent, BM_GETCHECK, 0, 0) == BST_UNCHECKED,
+          "the adjacent-frame option can be turned off");
+    Check(!IsWindowEnabled(apply) && !IsWindowEnabled(copy) && Text(report).empty(),
+          "changing the adjacent-frame option invalidates the preview");
+    ClickButton(dialog, preview);
+    Check(IsWindowEnabled(apply) && !frc::g_lastRates.directAdjacentFrames,
+          "a fresh Preview uses the unchecked option");
     frc::g_applyFails = true;
     ClickButton(dialog, apply);
     Check(frc::g_applyCalls == 1, "Apply calls the backend once");
@@ -916,6 +943,8 @@ void CheckBackendBehaviour(HWND dialog, HWND owner, MMDApp& app) {
     frc::g_applyFails = false;
     ClickButton(dialog, apply);
     Check(frc::g_applyCalls == 2, "the retry reaches the backend");
+    Check(!frc::g_appliedRates.directAdjacentFrames,
+          "Apply uses the adjacent-frame option captured by Preview");
     Check(frc::g_saveAsCalls == 1,
           "a successful Apply asks for Save As exactly once");
     Check(!IsWindowEnabled(apply), "a successful Apply disarms Apply");
@@ -1059,11 +1088,15 @@ void CheckBackendBehaviour(HWND dialog, HWND owner, MMDApp& app) {
     Check((GetMenuState(edit, frc::kMenuCommand, MF_BYCOMMAND) & MF_GRAYED) != 0,
           "the menu command is greyed while the backend is unavailable");
     Check(!IsWindowEnabled(preview), "Preview is disabled while unavailable");
+    Check(!IsWindowEnabled(directAdjacent), "the adjacent-frame checkbox is disabled while unavailable");
     frc::g_available = true;
     frc::RefreshMenu(&app);
     Check((GetMenuState(edit, frc::kMenuCommand, MF_BYCOMMAND) & MF_GRAYED) == 0,
           "the menu command is enabled again when available");
     Check(IsWindowEnabled(preview), "Preview is enabled again");
+    Check(IsWindowEnabled(directAdjacent) &&
+              SendMessageW(directAdjacent, BM_GETCHECK, 0, 0) == BST_UNCHECKED,
+          "the adjacent-frame checkbox is enabled again with its prior selection");
 
     // Cancel only closes: it must not apply or save anything.
     const int applyCalls = frc::g_applyCalls;
@@ -1091,6 +1124,7 @@ int main() {
     HMENU bar = CreateMenu();
     HMENU file = CreatePopupMenu();
     HMENU edit = CreatePopupMenu();
+    AppendMenuW(edit, MF_STRING, 219, L"Apply center position bias");
     AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"File");
     AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(edit), L"Edit");
     SetMenu(owner, bar);
@@ -1108,6 +1142,8 @@ int main() {
     const int editCount = GetMenuItemCount(edit);
     Check(GetMenuItemID(edit, editCount - 1) == frc::kMenuCommand,
           "the command is the last item of the Edit menu");
+    Check(editCount == 3 && (GetMenuState(edit, editCount - 2, MF_BYPOSITION) & MF_SEPARATOR) != 0,
+          "one separator precedes the final command");
     for (const Language& language : kLanguages) {
         app->state.englishUI = static_cast<unsigned char>(language.code);
         frc::RefreshMenu(app.get());
@@ -1176,7 +1212,12 @@ int main() {
     HWND fresh = FindOwnedWindow(owner);
     Check(fresh != nullptr,
           "the module builds a new window after the old one closed");
-    if (fresh != nullptr) DestroyWindow(fresh);
+    if (fresh != nullptr) {
+        HWND option = FindByText(fresh, L"Switch adjacent frames directly");
+        Check(option && SendMessageW(option, BM_GETCHECK, 0, 0) == BST_CHECKED,
+              "a new window restores the default checked option");
+        DestroyWindow(fresh);
+    }
 #endif
 
     DestroyWindow(owner);

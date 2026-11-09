@@ -11,6 +11,7 @@
 #include "mikumikustudio/ui_translation.hpp"
 #include "mikumikustudio/native_mesh.hpp"
 #include "mikumikustudio/frame_rate_correction.hpp"
+#include "playback_timing_ui.hpp"
 #include "mikumikustudio/sequence_scatter.hpp"
 #include "viewport_corner_menu.hpp"
 // ===========================================================================
@@ -1384,6 +1385,7 @@ void RefreshMenuLanguage(MMDApp* app) {  // was Sub40B5A0, VA 0x0040B5A0
     bake::RefreshMenu(app);
     frame_rate_correction::RefreshMenu(app);
     sequence_scatter::RefreshMenu(app);
+    playback_timing_ui::RefreshMenu(app);
     RemoveLegacyAutoSortingMenuItem(app);
     RefreshTransparentSortPrecisionMenu(app);
     // Refresh the Help menu's corner label along with the interface language.

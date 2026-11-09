@@ -55,6 +55,9 @@ namespace frame_rate_correction {
 struct Rates {
     double originalFPS = 30.0;
     double currentFPS = 30.0;
+    // Preserve adjacent camera cuts when expanding time. Authored Step
+    // intervals remain Step with either value; ordinary motion is unaffected.
+    bool directAdjacentFrames = true;
 };
 
 // One key the conversion affected, for the detailed report.  The conventions,
@@ -123,6 +126,7 @@ struct FrameChange {
 struct Report {
     std::uint64_t inputKeys = 0;
     std::uint64_t outputKeys = 0;
+    std::uint64_t insertedHoldKeys = 0;
     std::uint64_t mergeGroups = 0;
     std::uint64_t mergedKeys = 0;
     std::uint64_t roundedKeys = 0;

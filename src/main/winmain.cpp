@@ -186,7 +186,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
             // v14 = 1/fpsLimit - delta (divss + subss, both float);
             // Sleep when cap enabled and positive.
-            float sleepSec = 1.0f / app->FpsLimit() - delta;
+            const float displayLimit = app->PlaybackTiming().displayFollowsPlaybackFps
+                ? static_cast<float>(app->PlaybackTiming().playbackFps) : app->FpsLimit();
+            float sleepSec = 1.0f / displayLimit - delta;
             if (app->RecordingWindow() == nullptr && sleepSec > 0.0f) {
                 DWORD pre = timeGetTime();
                 Sleep(static_cast<DWORD>(sleepSec * 1000.0f));

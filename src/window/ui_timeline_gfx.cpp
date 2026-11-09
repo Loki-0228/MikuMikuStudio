@@ -43,6 +43,7 @@
 #define NOMINMAX
 #include <Windows.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 
@@ -59,7 +60,8 @@ void TimelineDrawTicks(int frameOffset, int width) {
     MMDApp* app = g_Block;
     WaveAudioContext* audio = app->Audio();
 
-    int sampleCursor = 13 * frameOffset - 101;  // 13 samples per frame, -101 offset
+    const double firstColumn = 13.0 * frameOffset - 101.0;
+    const double samplesPerColumn = 30.0 / app->PlaybackTiming().playbackFps;
     int xMax = width - 10;
 
     HDC strip = audio->timelineDC;
@@ -78,17 +80,26 @@ void TimelineDrawTicks(int frameOffset, int width) {
     // --- phase 2: red per-column bars (loop) --------------------------------
     HPEN redPen = CreatePen(PS_SOLID, 1, 0xFF0000);         // red
     SelectObject(strip, redPen);                            // result discarded (old pen still in oldPen)
-    int xa = 0;                                             // xa = column from previous iteration (v9-register twin)
-    int columnX = 0;                                        // current column (eax)
-    for (xa = 0; columnX < xMax; xa = columnX) {            // loop bound columnX < width-10
-        if (sampleCursor >= 0 && sampleCursor < audio->waveformColumns) {
-            // vertical bar at column columnX (xa == columnX here): y from bufA[sampleCursor] to bufB[sampleCursor]
-            MoveToEx(strip, columnX, bufA[sampleCursor], nullptr);   // y = (signed char)bufA[sampleCursor]
-            LineTo(strip, xa, bufB[sampleCursor]);           // y = (signed char)bufB[sampleCursor]
-            columnX = xa;
+    for (int columnX = 0; columnX < xMax; ++columnX) {
+        // The cache contains 390 columns per audio second. Keep the audio
+        // aligned to playback time and retain peaks when several samples
+        // collapse into one timeline pixel.
+        const auto sampleBegin = static_cast<std::int64_t>(
+            std::floor((firstColumn + columnX) * samplesPerColumn));
+        const auto sampleEnd = static_cast<std::int64_t>(
+            std::ceil((firstColumn + columnX + 1) * samplesPerColumn));
+        int top = 50, bottom = 0;
+        bool found = false;
+        for (auto sample = (std::max)(std::int64_t(0), sampleBegin);
+             sample < sampleEnd && sample < audio->waveformColumns; ++sample) {
+            top = (std::min)(top, int(bufA[sample]));
+            bottom = (std::max)(bottom, int(bufB[sample]));
+            found = true;
         }
-        ++columnX;
-        ++sampleCursor;
+        if (found) {
+            MoveToEx(strip, columnX, top, nullptr);
+            LineTo(strip, columnX, bottom);
+        }
     }
     SelectObject(strip, oldPen);
     DeleteObject(redPen);

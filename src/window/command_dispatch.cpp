@@ -10,6 +10,7 @@
 #include "mikumikustudio/native_mesh.hpp"
 #include "mikumikustudio/animation_curve_editor.hpp"
 #include "mikumikustudio/frame_rate_correction.hpp"
+#include "playback_timing_ui.hpp"
 #include "mikumikustudio/sequence_scatter.hpp"
 #include "mikumikustudio/native_media.hpp"
 // ===========================================================================
@@ -416,6 +417,7 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
     if (ctrl == nullptr && notification == 0 && bake::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification == 0 && frame_rate_correction::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification == 0 && sequence_scatter::HandleCommand(app, id)) return;
+    if (ctrl == nullptr && notification == 0 && playback_timing_ui::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification == 0 && HandleSkinningCommand(app, id)) return;
     // MMS addition: the Help menu's dock-corner item (command 32810) cycles
     // one corner on each ordinary menu click.

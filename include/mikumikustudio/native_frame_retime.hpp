@@ -42,9 +42,12 @@
 // the group holding the original frame-zero key keeps frame 0 and its baseline
 // value.
 //
-// A track with no collision keeps every record byte for byte - value, the
-// sixteen interpolation bytes, `allocated`, `physicsDisabled` - and only its
-// `frame` field changes.  A merged in/out interval is re-quantised into the
+// A track with no collision keeps each existing record's value and native
+// interpolation bytes, `allocated`, and `physicsDisabled`; frame and chain
+// links change. With directAdjacentFrames, expanded adjacent camera cuts also
+// get a duplicate holding key before the destination and explicit Step
+// authoring, preserving the cut at integer frames and subframes.
+// A merged in/out interval is re-quantised into the
 // native 0..127 control tuples.  That domain is not closed under clipping, so a
 // merged interval can be representable only approximately: the module then keeps
 // the closest expressible tuple, counts the record as approximated in the
@@ -72,8 +75,10 @@
 //   * A model's bone pool capacity is dynamic (`mdl::BoneKeyCapacity(model)`),
 //     so it is resolved once per model and never assumed to be the initial
 //     600000 slots.
-//   * The global and accessory tables are 10000-slot linked pools whose frames
-//     run to 10000000; they are not indexed by frame and are never resized.
+//   * Global and accessory table capacity comes from KeyPoolCapacity. They
+//     are linked slot pools, not indexed by frame. Camera hold keys use a
+//     detached replacement pool, grown when necessary and installed only at
+//     commit; rollback restores the original pointer and bytes.
 //   * A display key owns two heap payloads (`ikStates`, `selectorStates`).  The
 //     conversion preserves per-slot ownership: a surviving slot keeps its own
 //     payloads, a merged-away slot's payloads are released exactly once, and a
@@ -102,8 +107,8 @@
 //      edited curve, a different object at a recycled address - fails the commit
 //      and leaves the project untouched.
 //   2. Writes the prebuilt candidates.  Only the slots that are actually
-//      occupied are patched; an empty slot of a 600000-slot pool is never
-//      written.
+//      occupied are patched, except new camera hold slots in the replacement
+//      pool; an empty slot of a 600000-slot bone pool is never written.
 //   3. Calls `beforeFinalize` when one was supplied.  A callback that returns
 //      false, or that leaves a message in its argument, rolls the whole
 //      conversion back: the native pools, the side tables, `maxFrame` and the

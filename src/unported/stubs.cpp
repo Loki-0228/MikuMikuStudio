@@ -89,7 +89,8 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
     if (flag != nullptr)
         *flag = 1;                                          // 0x464A28
     const auto expectedFrames = recording_state::OutputFrameCount(
-        s.AviRecordStartFrame(), s.AviRecordEndFrame(), s.AviRecordFps());
+        s.AviRecordStartFrame(), s.AviRecordEndFrame(), s.AviRecordFps(),
+        s.PlaybackTiming().playbackFps);
     const bool mfRecording = IsBuiltInH264Recording(s.Recorder());
     std::wstring sequenceError;
     const bool sequenceComplete = image_sequence::Finish(app, reachedRequestedEnd, sequenceError);

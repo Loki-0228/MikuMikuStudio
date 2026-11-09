@@ -266,20 +266,21 @@ void AviBgOverlayRefresh(MMDApp* app) {
     };
     LONG sample;
     if (s.PlaybackActive() == 0) {
-        if (s.AviUsesThirtyFpsTiming() == 0) {
+        if (s.AviUsesThirtyFpsTiming() == 0 || s.PlaybackTiming().playbackFps != 30) {
             sample = stream != nullptr
                 ? AVIStreamTimeToSample(
-                      stream, milliseconds(s.state.currentFrame / 30.0))                       // 0x416B27
+                      stream, milliseconds(double(s.state.currentFrame) / s.PlaybackTiming().playbackFps))
                 : 0;
         } else {
             sample = s.state.currentFrame;
         }
     } else if (s.FrameStepPlayback() == 0 ||
                s.AviUsesThirtyFpsTiming() == 0 ||
-               s.state.aviRecordFps != g_FrameScale) {
+               s.state.aviRecordFps != g_FrameScale ||
+               s.PlaybackTiming().playbackFps != 30) {
         // 0x416ADE: wall-clock driven sample from the seconds field
         // (9E64C is the frameB float copy; 0x52BA60 = double 1000.0).
-        const double secondsF = s.PlaybackCursorSeconds();
+        const double secondsF = s.PlaybackCursorSeconds() / playback_timing::Speed(s.PlaybackTiming());
         const LONG t = milliseconds(secondsF);
         sample = boundedSample(std::int64_t(stream != nullptr ? AVIStreamTimeToSample(stream, t) : 0) +
                  static_cast<std::int32_t>(s.state.a0B10));
@@ -294,10 +295,10 @@ void AviBgOverlayRefresh(MMDApp* app) {
         sample = last;
 
     std::wstring decodeError;
-    double videoSeconds = s.state.currentFrame / 30.0;
+    double videoSeconds = double(s.state.currentFrame) / s.PlaybackTiming().playbackFps;
     if (s.PlaybackActive() != 0) {
-        const double cursor = s.PlaybackCursorSeconds();
-        videoSeconds = cursor + static_cast<std::int32_t>(s.state.a0B10) / 30.0;
+        const double cursor = s.PlaybackCursorSeconds() / playback_timing::Speed(s.PlaybackTiming());
+        videoSeconds = cursor + double(static_cast<std::int32_t>(s.state.a0B10)) / s.PlaybackTiming().playbackFps;
     }
     const auto previousRevision = media::VideoFrameRevision(app);
     void* bits = media::HasVideo(app) ? media::VideoFrame(app, videoSeconds, decodeError, s.RecordingWindow() != nullptr)

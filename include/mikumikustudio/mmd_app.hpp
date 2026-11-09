@@ -20,6 +20,7 @@
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/antialias.hpp"
 #include "mikumikustudio/frame_rate.hpp"
+#include "mikumikustudio/playback_timing.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -1130,6 +1131,10 @@ public:
         return state.aviRecordEndFrame;
     }
     float& AviRecordFps() { return state.aviRecordFps; }
+    float& LastVideoExportFps() { return m_lastVideoExportFps; }
+    playback_timing::Settings& PlaybackTiming() { return m_playbackTiming; }
+    const playback_timing::Settings& PlaybackTiming() const { return m_playbackTiming; }
+    playback_timing::Clock& PlaybackPhysicsClock() { return m_playbackPhysicsClock; }
     std::uint8_t& AviIncludeWave() {
         return state.aviIncludeWave;
     }
@@ -1701,6 +1706,11 @@ public:
         Target target = Target::Camera;
         double x = 0, y = 0;
     } backgroundGesture;
+
+private:
+    float m_lastVideoExportFps = 30.0f;
+    playback_timing::Settings m_playbackTiming;
+    playback_timing::Clock m_playbackPhysicsClock;
 };
 
 static_assert(sizeof(MMDApp) >= sizeof(MMDAppState),

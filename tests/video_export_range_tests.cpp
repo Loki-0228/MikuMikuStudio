@@ -1,5 +1,5 @@
 // MAINTENANCE: regression-keep; video export must not append defaults to frame ranges.
-// Real dialog resources and AviOutDlgProc run on a runner-owned private desktop.
+// Real dialog resources and AviOutDlgProc run on an inactive private desktop.
 // Only codec enumeration is replaced; no GPU, recording graph or file is created.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -68,21 +68,26 @@ template<class F> void Hook(F target, F replacement) {
 
 struct RangeCase {
     const char* name;
+    const wchar_t* mainStart;
     const wchar_t* mainEnd;
     unsigned lastFrame;
     int audioBytes;
     unsigned audioBytesPerSecond;
-    unsigned expected;
+    int expectedStart;
+    int expectedEnd;
 };
 const RangeCase cases[] = {
-    {"reported-1100-plus-1", L"1100", 1, 0, 0, 1100},
-    {"explicit-plus-zero", L"1100", 0, 0, 0, 1100},
-    {"explicit-short-range", L"120", 3000, 60000, 300, 120},
-    {"zero-falls-back-to-motion", L"0", 1100, 0, 0, 1100},
-    {"empty-falls-back-to-motion", L"", 42, 0, 0, 42},
-    {"audio-rounded-up", L"0", 5, 1001, 300, 101},
-    {"motion-longer-than-audio", L"0", 300, 1001, 300, 300},
-    {"invalid-audio-rate", L"0", 7, 1001, 0, 7},
+    {"reported-1100-plus-1", L"0", L"1100", 1, 0, 0, 0, 1100},
+    {"explicit-plus-zero", L"", L"1100", 0, 0, 0, 0, 1100},
+    {"explicit-short-range", L"35", L"120", 3000, 60000, 300, 35, 120},
+    {"relative-stop", L"35", L"-2", 120, 0, 0, 35, 119},
+    {"negative-start-clamps-to-zero", L"-10", L"120", 0, 0, 0, 0, 120},
+    {"zero-falls-back-to-motion", L"10", L"0", 1100, 0, 0, 10, 1100},
+    {"empty-falls-back-to-motion", L"3", L"", 42, 0, 0, 3, 42},
+    {"audio-rounded-up", L"5", L"0", 5, 1001, 300, 5, 101},
+    {"motion-longer-than-audio", L"0", L"0", 300, 1001, 300, 0, 300},
+    {"invalid-audio-rate", L"0", L"0", 7, 1001, 0, 0, 7},
+    {"start-past-fallback-end", L"10", L"", 7, 0, 0, 10, 10},
 };
 
 struct Context {
@@ -90,6 +95,8 @@ struct Context {
     const RangeCase* range;
     unsigned opening;
     bool cancel;
+    const wchar_t* expectedFps;
+    const wchar_t* enteredFps;
     bool initialized = false;
 };
 std::wstring Text(HWND dialog, int id) {
@@ -106,17 +113,20 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
     AviOutDlgProc(dialog, WM_INITDIALOG, wp, 0);
     context->initialized = true;
     const auto actual = Text(dialog, panel::kAviEndFrameEdit);
-    std::printf("CASE language=%u name=%s opening=%u end='%ls' expected=%u action=%s\n",
+    std::printf("CASE language=%u name=%s opening=%u end='%ls' expected=%d action=%s\n",
                 unsigned(context->app->EnglishUI()), context->range->name,
-                context->opening, actual.c_str(), context->range->expected,
+                context->opening, actual.c_str(), context->range->expectedEnd,
                 context->cancel ? "cancel" : "ok");
     std::printf("DIMENSIONS render=%dx%d width='%ls' height='%ls' fps='%ls'\n",
                 context->app->RenderWidth(), context->app->RenderHeight(),
                 Text(dialog, panel::kAviWidthEdit).c_str(),
                 Text(dialog, panel::kAviHeightEdit).c_str(),
                 Text(dialog, panel::kAviFpsEdit).c_str());
-    Check(actual == std::to_wstring(context->range->expected), "default end is one complete range value");
-    Check(Text(dialog, panel::kAviStartFrameEdit) == L"0", "default start remains zero");
+    Check(actual == std::to_wstring(context->range->expectedEnd), "default end is one complete range value");
+    Check(Text(dialog, panel::kAviStartFrameEdit) == std::to_wstring(context->range->expectedStart),
+          "default start uses the current playback range");
+    Check(Text(dialog, panel::kAviFpsEdit) == context->expectedFps,
+          "default FPS uses the last confirmed video frame rate");
     Check(Text(dialog, panel::kAviWidthEdit) == std::to_wstring(context->app->RenderWidth()) &&
           Text(dialog, panel::kAviHeightEdit) == std::to_wstring(context->app->RenderHeight()),
           "initial dimensions match the render size without inserted digits");
@@ -128,6 +138,8 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
         SetDlgItemInt(dialog, panel::kAviStartFrameEdit, 22, FALSE);
         SetDlgItemInt(dialog, panel::kAviEndFrameEdit, 99999, FALSE);
         SetDlgItemTextW(dialog, panel::kAviFpsEdit, L"99");
+    } else if (context->enteredFps) {
+        SetDlgItemTextW(dialog, panel::kAviFpsEdit, context->enteredFps);
     }
     // EndDialog runs inside initialization, before the modal loop can show it.
     // No menu 223 continuation is invoked, so no recorder or output file starts.
@@ -135,7 +147,8 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
     return TRUE;
 }
 
-void Run(MMDApp* app, const RangeCase& range, unsigned opening, bool cancel) {
+void Run(MMDApp* app, const RangeCase& range, unsigned opening,
+         const wchar_t* expectedFps, const wchar_t* enteredFps = nullptr, bool cancel = false) {
     // Reopening also covers an even output size with a nonstandard aspect ratio.
     app->RenderWidth() = opening == 1 ? 1918 : 1920;
     app->RenderHeight() = 1080;
@@ -145,13 +158,14 @@ void Run(MMDApp* app, const RangeCase& range, unsigned opening, bool cancel) {
     wcscpy_s(audio.path, L"fixture.wav");
     app->Audio() = range.audioBytes ? &audio : nullptr;
     app->LastRegisteredFrame() = range.lastFrame;
+    SetDlgItemTextW(app->MainWindow(), panel::kPlayStartFrameEdit, range.mainStart);
     SetDlgItemTextW(app->MainWindow(), panel::kPlayStopFrameEdit, range.mainEnd);
     app->AviRecordStartFrame() = 303;
     app->AviRecordEndFrame() = 404;
     app->AviRecordFps() = 24;
     wcscpy_s(app->AviOutputPath(), 256, L"video-export-range-test.avi");
     const std::wstring oldPath = app->AviOutputPath();
-    Context context{app, &range, opening, cancel};
+    Context context{app, &range, opening, cancel, expectedFps, enteredFps};
     // These are the production JP / EN resources; Chinese uses the EN template
     // and the actual dialog's LocalizeChineseDialog call, as menu 223 does.
     const auto resource = MAKEINTRESOURCEA(app->EnglishUI() ? 654 : 608);
@@ -164,10 +178,12 @@ void Run(MMDApp* app, const RangeCase& range, unsigned opening, bool cancel) {
               app->AviRecordFps() == 24 && oldPath == app->AviOutputPath(),
               "cancel preserves committed range, FPS and output path");
     } else {
-        std::printf("COMMIT start=%d end=%d fps=%.0f\n", app->AviRecordStartFrame(),
+        std::printf("COMMIT start=%d end=%d fps=%g\n", app->AviRecordStartFrame(),
                     app->AviRecordEndFrame(), app->AviRecordFps());
-        Check(app->AviRecordStartFrame() == 0 && app->AviRecordEndFrame() == static_cast<int>(range.expected) &&
-              app->AviRecordFps() == 30, "IDOK reads the displayed range without extra digits");
+        Check(app->AviRecordStartFrame() == range.expectedStart &&
+              app->AviRecordEndFrame() == range.expectedEnd &&
+              app->AviRecordFps() == std::wcstof(enteredFps ? enteredFps : expectedFps, nullptr),
+              "IDOK reads the displayed range and selected FPS");
         Check(app->AviOutputWidth() == app->RenderWidth() && app->AviOutputHeight() == app->RenderHeight(),
               "IDOK reads the original render dimensions without inserted digits");
         Check(std::wstring(app->AviOutputPath()) == (MMD_ORIGINAL_PROFILE
@@ -178,16 +194,10 @@ void Run(MMDApp* app, const RangeCase& range, unsigned opening, bool cancel) {
           app->Recorder()->framePush == nullptr, "range test creates no GPU or recording graph");
     app->Audio() = nullptr;
 }
-}
 
-int main() {
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
-    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
-    wchar_t desktopName[256]{};
-    DWORD needed = 0;
-    Require(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME,
-        desktopName, sizeof desktopName, &needed) && desktopName[0] && _wcsicmp(desktopName, L"Default") != 0,
-        "run only on a runner-owned private desktop; never switch the input desktop");
+DWORD WINAPI RunOnDesktop(void* desktop) {
+    Require(SetThreadDesktop(static_cast<HDESK>(desktop)) != FALSE,
+            "attach the dialog thread to the inactive private desktop");
     Require(MH_Initialize() == MH_OK, "initialize test hooks");
     Hook(&FillCodecCombo, &FixtureCodec);
     Hook(&MessageBoxA, &UnexpectedMessageA);
@@ -206,17 +216,25 @@ int main() {
         WS_POPUP, 0, 0, 400, 200, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Require(owner != nullptr, "create hidden owner");
     app->MainWindow() = owner;
-    Require(CreateWindowExW(0, L"EDIT", L"0", WS_CHILD, 0, 0, 50, 20, owner,
-        reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kPlayStopFrameEdit)),
-        GetModuleHandleW(nullptr), nullptr) != nullptr,
-        "create the main playback-range control");
+    for (const int id : {panel::kPlayStartFrameEdit, panel::kPlayStopFrameEdit}) {
+        Require(CreateWindowExW(0, L"EDIT", L"0", WS_CHILD, 0, 0, 50, 20, owner,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+            GetModuleHandleW(nullptr), nullptr) != nullptr,
+            "create a main playback-range control");
+    }
+    const wchar_t* expectedFps = L"30";
     for (unsigned language = 0; language != 3; ++language) {
         app->EnglishUI() = static_cast<unsigned char>(language);
-        for (const auto& range : cases)
-            for (unsigned opening = 0; opening != 2; ++opening) Run(app.get(), range, opening, false);
-        Run(app.get(), cases[0], 2, true);
+        for (const auto& range : cases) {
+            Run(app.get(), range, 0, expectedFps, L"60");
+            Run(app.get(), range, 1, L"60", L"29.97");
+            expectedFps = L"29.97";
+        }
+        Run(app.get(), cases[0], 2, expectedFps, nullptr, true);
+        Run(app.get(), cases[0], 3, expectedFps);
     }
-    Check(codecCalls == 51, "all languages and repeated openings initialize through the real production callback");
+    Check(codecCalls == 3 * (2 * std::size(cases) + 2),
+          "all languages and repeated openings initialize through the real production callback");
     Check(!IsWindowVisible(owner), "owner remains hidden");
     DestroyWindow(owner);
     app->MainWindow() = nullptr;
@@ -226,6 +244,27 @@ int main() {
     g_FrameScale = savedFrameScale;
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();
+    return 0;
+}
+}
+
+int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    wchar_t desktopName[80]{};
+    swprintf_s(desktopName, L"MMS-video-export-range-%lu", GetCurrentProcessId());
+    const HDESK desktop = CreateDesktopW(desktopName, nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+    Require(desktop != nullptr, "create an inactive video-export desktop");
+    const HANDLE thread = CreateThread(nullptr, 0, RunOnDesktop, desktop, 0, nullptr);
+    Require(thread && WaitForSingleObject(thread, 30000) == WAIT_OBJECT_0,
+            "run the dialog regression within thirty seconds");
+    DWORD exitCode = 1;
+    Require(GetExitCodeThread(thread, &exitCode) && exitCode == 0,
+            "complete the private dialog thread");
+    CloseHandle(thread);
+    // Windows input helpers can keep the inactive desktop open until process exit.
+    Check(CloseDesktop(desktop) != FALSE || GetLastError() == ERROR_BUSY,
+          "release the inactive video-export desktop");
     std::printf("video-export-range profile=%s checks=%u failures=%u dialogs=%u\n",
                 MMD_ORIGINAL_PROFILE ? "mmd932" : "full", checks, failures, codecCalls);
     return failures ? 1 : 0;

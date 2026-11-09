@@ -83,6 +83,7 @@
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/bone_pose_safety.hpp"
 #include "mikumikustudio/dynamics_world.hpp"
+#include "playback_constraint.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "../app/frame_state_dump.hpp"
 
@@ -951,13 +952,72 @@ void ModelPhysicsReadback(unsigned char* m) {
     physics_scale::FinishReadback(m);
 }
 
+namespace {
+void EvaluatePhysicsPose(MMDApp* app, int afterPhysics, int mode) {
+    auto** models = app->ModelSlots();
+    for (int order = 0; order < kModelSlotCount; ++order) {
+        for (int slot = 0; slot < kModelSlotCount; ++slot) {
+            auto* model = models[slot];
+            if (!model || mdl::Mdl(model)->comboSelIndex2 != order) continue;
+            ModelApplyMorphs(model);
+            SetPhysicsMode(model, afterPhysics, models, mode);
+        }
+    }
+}
+}
+
+void ResetPlaybackPhysics(MMDApp* app) {
+    auto* scene = app->Physics();
+    if (!scene || !scene->world || app->NativePhysicsMode() == 0) return;
+    auto* world = scene->world;
+    PlaybackPoseAdvance(app, 0);
+    EvaluatePhysicsPose(app, 0, 0);
+    for (int slot = 0; slot < kModelSlotCount; ++slot) {
+        auto* model = app->ModelSlot(slot);
+        if (!model) continue;
+        ModelDynamicReseat(model);
+        ModelKinematicSync(model);
+    }
+    for (int i = 0; i < world->getNumCollisionObjects(); ++i) {
+        auto* body = btRigidBody::upcast(world->getCollisionObjectArray()[i]);
+        if (!body) continue;
+        if (body->isKinematicObject() && body->getMotionState())
+            body->getMotionState()->getWorldTransform(body->getWorldTransform());
+        body->setInterpolationWorldTransform(body->getWorldTransform());
+        body->setLinearVelocity(btVector3(0, 0, 0));
+        body->setAngularVelocity(btVector3(0, 0, 0));
+        body->setInterpolationLinearVelocity(btVector3(0, 0, 0));
+        body->setInterpolationAngularVelocity(btVector3(0, 0, 0));
+        body->clearForces();
+        body->activate(true);
+    }
+    for (int i = 0; i < world->getDispatcher()->getNumManifolds(); ++i)
+        world->getDispatcher()->clearManifold(world->getDispatcher()->getManifoldByIndexInternal(i));
+    world->getConstraintSolver()->reset();
+    static_cast<DynamicsWorld*>(world)->ResetLocalTime();
+    world->updateAabbs();
+    app->PhysicsResetPending() = 0;
+    app->state.physicsBodiesMoved = 0;
+    app->state.gravityNoiseTimer = 0;
+    for (int slot = 0; slot < kModelSlotCount; ++slot)
+        if (auto* model = app->ModelSlot(slot)) ModelPhysicsReadback(model);
+    EvaluatePhysicsPose(app, 1, app->NativePhysicsMode());
+}
+
 // Physics section of the FrameDriver (original 0x46F0D0..0x46FEB8 core).
-// One shared Bullet world steps at a fixed 1/60 with a 10-substep cap;
-// kinematic bodies are pushed from the bones before the step and the
-// dynamic result is read back after the settle iterations.
+// PlaybackCatchup invokes this at configured fixed simulation ticks.
+// Display-only passes reuse the last dynamic pose without mutating Bullet.
+// Idle editing keeps the original interaction and settling workflow.
 void PhysicsFrame(MMDApp* app, unsigned char selActive) {
+    const int trackedSlot = app->PlaybackActive() && selActive &&
+        app->state.optflag[0] == 0 && !app->FrameStepPlayback()
+        ? app->SelectedModelSlot() : -1;
     for (int slot=0; slot<kModelSlotCount; ++slot)
-        if (auto* model=app->ModelSlot(slot)) { bone_scale::RestoreTransforms(model); physics_scale::Sync(model); }
+        if (auto* model=app->ModelSlot(slot)) {
+            bone_scale::RestoreTransforms(model);
+            if (slot != trackedSlot && (!app->PlaybackActive() || app->PlaybackPhysicsClock().stepping))
+                physics_scale::Sync(model);
+        }
     // Bisect switch for the crash investigation: with MIKUMIKUSTUDIO_SKIP_PHYSICS
     // set, this frame's whole physics update (kinematic sync, stepSimulation and
     // readback) is a no-op.  If the heap-corruption crashes disappear, the
@@ -1002,6 +1062,27 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     if (world == nullptr)
         return;
     const int count = s.NativePhysicsMode();
+    const bool fixedPlaybackStep = s.PlaybackActive() && s.PlaybackPhysicsClock().stepping;
+    if (s.PlaybackActive() && !fixedPlaybackStep) {
+        EvaluatePhysicsPose(app, 0, count);
+        // The newly received live skeleton is input to the next fixed tick.
+        // Ordinary display sampling still leaves the physics world untouched.
+        if (trackedSlot >= 0 && count > 0)
+            if (auto* model = s.ModelSlot(trackedSlot)) ModelKinematicSync(model);
+        EvaluatePhysicsPose(app, 1, count);
+        return;
+    }
+    const auto& settings = s.PlaybackTiming().physics;
+    world->getSolverInfo().m_erp = settings.erp;
+    world->getSolverInfo().m_globalCfm = settings.cfm;
+    for (int i = 0; i < world->getNumConstraints(); ++i)
+        if (auto* joint = dynamic_cast<PlaybackSpringConstraint*>(world->getConstraint(i)))
+            joint->Configure(settings.erp, settings.cfm);
+    const float fixedDt = static_cast<float>(1.0 / playback_timing::PhysicsRate(s.PlaybackTiming()));
+    const auto random = [&]() {
+        return fixedPlaybackStep ? s.PlaybackPhysicsClock().Random() : std::rand();
+    };
+
     // ---- random-wind / gravity-noise block (0x46F582..0x46F6B4) ----------
     // With the noise mode byte 0xA0CD4 set, this REPLACES the normal
     // per-pass gravity apply (both branches jump to 0x46F7DB, right past
@@ -1043,8 +1124,8 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
             static const double kRandMax = 32767.0;     // dbl_52E9F8
             static const double kNoise = 0.20000000298023224;   // 52E9F0
             static const double kOffset = 0.10000000149011612;  // 52BEA8
-            int rStrength = std::rand(), rX = std::rand(),
-                rY = std::rand(), rZ = std::rand();
+            int rStrength = random(), rX = random(),
+                rY = random(), rZ = random();
             float strengthF, e0, e1, e2;
             const float dirX = s.GravityX(),
                         dirY = s.GravityY(),
@@ -1087,7 +1168,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
             // axis mulss 0.2f / divss 32767.0f / subss 0.1f / addss dir /
             // mulss strength.  The strength stays a float value end to
             // end (no double round-trip).
-            const int rStrength = std::rand();
+            const int rStrength = random();
             const float noise =
                 static_cast<float>(s.GravityNoise());
             const float gravmag = s.GravityMagnitude();
@@ -1095,13 +1176,13 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
                 ((static_cast<float>(rStrength) * 10.0f) / 32767.0f) *
                     noise + gravmag;
             const float e0 =
-                ((static_cast<float>(std::rand()) * 0.2f) / 32767.0f -
+                ((static_cast<float>(random()) * 0.2f) / 32767.0f -
                  0.1f + s.GravityX()) * strength;
             const float e1 =
-                ((static_cast<float>(std::rand()) * 0.2f) / 32767.0f -
+                ((static_cast<float>(random()) * 0.2f) / 32767.0f -
                  0.1f + s.GravityY()) * strength;
             const float e2 =
-                ((static_cast<float>(std::rand()) * 0.2f) / 32767.0f -
+                ((static_cast<float>(random()) * 0.2f) / 32767.0f -
                  0.1f + s.GravityZ()) * strength;
             world->setGravity(btVector3(e0, e1, e2));
             s.state.gravityNoiseTimer = 0.0f;                     // 0x46F6AC
@@ -1211,14 +1292,14 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
                 (int)(s.PhysicsResetPending() != 0), count,
                 localBits);
     }
-    auto stepWorld = [world, &stepCount, &stepLabels](const char* label) {
+    auto stepWorld = [world, fixedDt, &stepCount, &stepLabels](const char* label) {
         if (stepCount < 16) stepLabels[stepCount] = label;
         ++stepCount;
-        world->stepSimulation(1.0f / 60.0f, 10, 1.0f / 60.0f);  // 0x46F206
+        world->stepSimulation(fixedDt, 1, fixedDt);  // 0x46F206
     };
 #else
-    auto stepWorld = [world](const char*) {
-        world->stepSimulation(1.0f / 60.0f, 10, 1.0f / 60.0f);  // 0x46F206
+    auto stepWorld = [world, fixedDt](const char*) {
+        world->stepSimulation(fixedDt, 1, fixedDt);  // 0x46F206
     };
 #endif
 
@@ -1256,6 +1337,9 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     for (int order = 0; order < kModelSlotCount; ++order) {
         for (int j = 0; j < kModelSlotCount; ++j) {
             unsigned char* mdl = models[j];
+            // Live tracking updates after catch-up. Preserve its previous
+            // kinematic sample until the new skeleton has been received.
+            if (j == trackedSlot) continue;
             if (mdl != nullptr && mdl::Mdl(mdl)->comboSelIndex2 == order) {
                 ModelApplyMorphs(mdl);                            // 0x46FCB1
                 SetPhysicsMode(mdl, 0, models, posePassMode);
@@ -1271,7 +1355,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     // `test eax,edx / jz 0x7FF7CB44C85F`): moved | settle | frame advanced,
     // model count 1..3, no seek pending (frameCopyDialog app+0xA1BC8 == 0).
     const bool moved = s.state.physicsBodiesMoved != 0;
-    const bool settle = s.PhysicsResetPending() != 0;
+    const bool settle = !fixedPlaybackStep && s.PhysicsResetPending() != 0;
     const bool frameAdv = s.PlaybackActive() != 0;           // 0x330
     const bool runWorldPass = count == 1 || count == 2 ||
         (count == 3 && (moved || settle || frameAdv));
@@ -1305,7 +1389,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
         }();
         // x64 twin: 255 count-down walk (mov edi, 0FFh at 0x7FF7CB44C74B).
         for (int j = 0; j < kModelSlotCount; ++j)
-            if (models[j] != nullptr && !skipSync)
+            if (models[j] != nullptr && !skipSync && j != trackedSlot)
                 ModelKinematicSync(models[j]);              // 0x46FD4D
 #ifdef MIKUMIKUSTUDIO_DIAG
         if (captureStages)
@@ -1319,7 +1403,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
         // moved && count==3 path (0x46FD7F) BOTH the main and extra
         // steps push flt_52EA00 - var_14C8 is skipped entirely there.
         const float mainDt =
-            (moved && count == 3) ? (1.0f / 60.0f) : mainTimeStep;
+            (!fixedPlaybackStep && moved && count == 3) ? fixedDt : mainTimeStep;
 #ifdef MIKUMIKUSTUDIO_DIAG
         if (stepCount < 16) stepLabels[stepCount] = "main";
         ++stepCount;
@@ -1335,9 +1419,9 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
         }();
         if (!skipStep) {
             MMD_PERF_SCOPE(PhysicsStep);
-            world->stepSimulation(mainDt, 10, 1.0f / 60.0f);
+            world->stepSimulation(mainDt, fixedPlaybackStep ? 1 : 256, fixedDt);
         }
-        if (moved && count == 3)
+        if (!fixedPlaybackStep && moved && count == 3)
             stepWorld("extra");                              // 0x46FD97
 #ifdef MIKUMIKUSTUDIO_DIAG
         if (captureStages)

@@ -13,10 +13,11 @@ inline std::int64_t FrameDuration(float fps) noexcept {
     return ValidFps(fps) ? static_cast<std::int64_t>(std::llround(10000000.0 / double(fps))) : 0;
 }
 
-inline std::uint64_t OutputFrameCount(std::int32_t first, std::int32_t last, float fps) noexcept {
-    if (last < first || !ValidFps(fps)) return 0;
+inline std::uint64_t OutputFrameCount(std::int32_t first, std::int32_t last, float fps,
+                                    int playbackFps = 30) noexcept {
+    if (last < first || !ValidFps(fps) || playbackFps < 1 || playbackFps > 240) return 0;
     const auto frames = std::int64_t(last) - first + 1;
-    return static_cast<std::uint64_t>(std::ceil(double(frames) * double(fps) / 30.0));
+    return static_cast<std::uint64_t>(std::ceil(double(frames) * double(fps) / playbackFps));
 }
 
 enum class Operation { Finish, GraphTeardown };

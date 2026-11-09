@@ -129,7 +129,7 @@ std::uint32_t SceneEndFrame(MMDApp* app) {
     if (const auto* audio = app->Audio(); audio && audio->dataSize > 0 &&
         audio->format.nAvgBytesPerSec > 0) {
         const double frames = std::ceil(static_cast<double>(audio->dataSize) *
-            g_FrameScale / audio->format.nAvgBytesPerSec);
+            app->PlaybackTiming().playbackFps / audio->format.nAvgBytesPerSec);
         if (std::isfinite(frames) && frames > end)
             end = static_cast<std::uint32_t>(std::min(frames, double(frame_limits::maximum)));
     }
@@ -138,8 +138,9 @@ std::uint32_t SceneEndFrame(MMDApp* app) {
 
 std::uint64_t FrameCount(const Options& o) {
     if (o.start < 0 || o.end < o.start || o.end == INT_MAX ||
-        !std::isfinite(o.fps) || o.fps < .001f || o.fps > 240) return 0;
-    const double frames = std::ceil((static_cast<double>(o.end) - o.start + 1) * o.fps / 30.0);
+        !std::isfinite(o.fps) || o.fps < .001f || o.fps > 240 ||
+        o.playbackFps < 1 || o.playbackFps > 240) return 0;
+    const double frames = std::ceil((static_cast<double>(o.end) - o.start + 1) * o.fps / o.playbackFps);
     return frames > 0 && frames <= INT_MAX ? static_cast<std::uint64_t>(frames) : 0;
 }
 

@@ -360,7 +360,10 @@ void InitExportPlaybackTracks(MMDApp* app, double frame) {
     InitAccessoryTracks(app, frame);
 }
 
+void ResetPlaybackPhysics(MMDApp* app);
+
 void UpdateBoneFrames(MMDApp* app) {
+    app->PlaybackPhysicsClock().Reset(app->PlaybackCursorSeconds());
     app->SyncPlaybackTimeCompatibility();
     const double cursor = app->PlaybackCursorSeconds();
     app->SavedPlaybackPhysicsMode() = app->PlaybackPhysicsMode();
@@ -386,6 +389,7 @@ void UpdateBoneFrames(MMDApp* app) {
     else
         InitLightAndShadowTracks(app, frame);
     InitAccessoryTracks(app, frame);
+    ResetPlaybackPhysics(app);
 
     HWND hwnd = static_cast<HWND>(app->Hwnd());
     EnableRange(hwnd, 400, 401, FALSE);
@@ -401,6 +405,7 @@ void UpdateBoneFrames(MMDApp* app) {
 }
 
 void StopPlayback(MMDApp* app) {  // was Sub4341E0
+    app->PlaybackPhysicsClock().active = false;
 #ifdef MIKUMIKUSTUDIO_DIAG
     if (getenv("MIKUMIKUSTUDIO_TRACE_REC")) {
         FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_REC"), "a");

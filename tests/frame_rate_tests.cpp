@@ -1,5 +1,6 @@
 // Display FPS counts completed scene submissions, never message-pump work.
 #include "mikumikustudio/frame_rate.hpp"
+#include "mikumikustudio/timeline_ruler.hpp"
 #include <cstdio>
 #include <cstdlib>
 using mikumikustudio::frame_rate::State;
@@ -8,6 +9,17 @@ void Check(bool ok,const char* what) {
     if(!ok)std::exit(2);
 }
 int main() {
+    namespace ruler = mikumikustudio::timeline_ruler;
+    Check(ruler::MajorInterval(30) == 5 && ruler::MajorInterval(60) == 10 &&
+          ruler::MajorInterval(24) == 4, "ruler intervals follow the playback rate");
+    Check(ruler::IsSecond(60, 60) && !ruler::IsSecond(30, 60) &&
+          ruler::IsSecond(-24, 24), "second markers use signed timeline frames at the selected rate");
+    Check(ruler::Label(59, 59) && !ruler::Label(60, 59) && ruler::Label(70, 59),
+          "unusual integer rates label whole seconds without overlapping the next major label");
+    Check(ruler::Label(-59, 59) && !ruler::Label(-60, 59),
+          "negative ruler labels use the same spacing around whole seconds");
+    Check(ruler::Label(4, 1) && !ruler::Label(3, 1) && ruler::Label(6, 3),
+          "very slow playback keeps second accents while spacing numeric labels");
     State fps;
     fps.Tick(0);
     for(int i=0;i<60;++i) {

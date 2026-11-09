@@ -203,6 +203,7 @@ bool HandleCommand(MMDApp* app, unsigned command) {
     // CameraMode is an editor selection, not a playback/recording guard.
     if (app->PlaybackActive() || app->RecordingWindow() || Active(app)) return true;
     DialogContext context{app};
+    context.options.playbackFps = app->PlaybackTiming().playbackFps;
     context.options.width = app->RenderWidth();
     context.options.height = app->RenderHeight();
     context.options.end = static_cast<int>(SceneEndFrame(app));

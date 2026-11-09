@@ -1,5 +1,6 @@
 #include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/timeline_ruler.hpp"
 #include "mikumikustudio/morph_display_rows.hpp"
 #include <algorithm>
 // ===========================================================================
@@ -225,6 +226,7 @@ void PanelPaint(MMDApp* app) {
     if (rows > 0) {
         char label[0x100];
         char sel[0x100];
+        const int playbackFps = app->PlaybackTiming().playbackFps;
         int x = kGridX0;
         for (int idx = 0; idx < rows; ++idx) {
             const auto wideFrame=std::int64_t(scroll)+idx;
@@ -245,7 +247,14 @@ void PanelPaint(MMDApp* app) {
                               &app->state.themeColors[30])[2], 1);
                 color = static_cast<COLORREF>(
                     app->state.themeColors[30]);
-            } else if (n % 5 != 0) {
+            } else if (timeline_ruler::IsSecond(n, playbackFps)) {
+                color = app->ThemeColor(UiThemeColor::Accent);
+                if (timeline_ruler::Label(n, playbackFps)) {
+                    sprintf_s(label, sizeof(label), "%-4d", n);
+                    DrawGlyph(app, label, panel, 12, x - 3, 3,
+                              GetRValue(color), GetGValue(color), GetBValue(color), 1);
+                }
+            } else if (!timeline_ruler::Label(n, playbackFps)) {
                 color = static_cast<COLORREF>(
                     app->state.themeColors[32]);
             } else {

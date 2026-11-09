@@ -1344,7 +1344,7 @@ static void Cmd400_PlayRangeEdits(MMDApp* app, HWND hwnd) {
             SetFrameNormalized(
                 app->FrameNormalization());
             WaveSeekAndFeed(app->Audio(),
-                      static_cast<double>(app->PlaybackStartSeconds()));
+                      app->PlaybackStartSeconds() / playback_timing::Speed(app->PlaybackTiming()));
         }
     }
     app->PlaybackClockAnchorLow() = app->TimeNowLow();

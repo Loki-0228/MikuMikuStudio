@@ -666,7 +666,8 @@ float CameraCurveTime(const std::array<double,4>& control,float t) {
     return (v3*v*u)*float(control[1])/127.0f+(v3*u*u)*float(control[3])/127.0f+u*u*u;
 }
 }
-ac::Sample SampleCameraChannel(const curve_editor::Channel& channel,double frame) {
+namespace {
+ac::Sample SampleCameraChannelAt(const curve_editor::Channel& channel,double frame,bool continuous) {
     const auto& keys=channel.track.keys;
     if(keys.size()<2 || !std::isfinite(frame))return ac::Evaluate(channel.track,frame);
     const auto value=[&](double at){
@@ -678,7 +679,7 @@ ac::Sample SampleCameraChannel(const curve_editor::Channel& channel,double frame
         const auto&a=keys[end-1];const auto&b=keys[end];
         if(at==a.frame)return a.value;
         const double span=double(b.frame)-a.frame;
-        if(span==1.0&&(end>=channel.nativeOneFrameHolds.size()||channel.nativeOneFrameHolds[end]))return a.value;
+        if(!continuous&&span==1.0&&(end>=channel.nativeOneFrameHolds.size()||channel.nativeOneFrameHolds[end]))return a.value;
         return a.value+(b.value-a.value)*CameraCurveTime(channel.nativeControls[end],float((at-a.frame)/span));
     };
     double speed=0;
@@ -688,11 +689,18 @@ ac::Sample SampleCameraChannel(const curve_editor::Channel& channel,double frame
         const auto&a=keys[end-1];const auto&b=keys[end];
         const double span=double(b.frame)-a.frame;
         if(NativeGeometry(channel,end)){
-            if(span>1||(end<channel.nativeOneFrameHolds.size()&&!channel.nativeOneFrameHolds[end]))
+            if(continuous||span>1||(end<channel.nativeOneFrameHolds.size()&&!channel.nativeOneFrameHolds[end]))
                 speed=(b.value-a.value)/span*ac::EvaluateMmdTiming(channel.nativeControls[end],(frame-a.frame)/span).derivative;
         }else speed=ac::Evaluate(channel.track,frame).derivative;
     }
     return {value(frame),speed};
+}
+}
+ac::Sample SampleCameraChannel(const curve_editor::Channel& channel,double frame) {
+    return SampleCameraChannelAt(channel,frame,false);
+}
+ac::Sample SampleCameraChannelContinuous(const curve_editor::Channel& channel,double frame) {
+    return SampleCameraChannelAt(channel,frame,true);
 }
 Motion CaptureChannels(Kind kind,const std::vector<curve_editor::Channel>& channels) {
     Motion motion; motion.kind=kind;

@@ -1,5 +1,6 @@
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/recording_state.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/key_pool.hpp"
 // ===========================================================================
 // CommandDispatch family: File/Play/Edit/View menu cases (0x47E8A0)
@@ -120,6 +121,7 @@
 #include <commctrl.h>
 #include <commdlg.h>
 
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -142,6 +144,7 @@
 #include "mikumikustudio/panel_controls.hpp"
 
 #include "dialog_scaffold.hpp"
+#include "playback_timing_ui.hpp"
 #include "export_save_prompt.hpp"
 
 namespace mikumikustudio {
@@ -554,8 +557,8 @@ INT_PTR __stdcall BlinkRegisterDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
 }
 
 // VA 0x0040F2F0 - AVI-output options dialog proc (case 223, tpl 0x28E/
-// 0x260).  WM_INITDIALOG: topmost; edits 0x261/0x262 copy the main-window
-// frame edits (0x199/0x19A), 0x263 gets "30", 0x264/0x265 show the render
+// 0x260).  WM_INITDIALOG: topmost; edits 0x261/0x262 use the playback range,
+// 0x263 gets the last accepted video FPS, 0x264/0x265 show the render
 // size "%5d" and are disabled; checkbox 0x266 is checked when app+0xA06CC
 // (else disabled); 0x326/0x327 disabled when the D3D wrapper stereo byte
 // (stereoEnabled, +0x1D566) is clear; FillCodecCombo (method of the 0xA06C0 codec obj) fills
@@ -582,12 +585,27 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
             ? L"Video Export Settings"
             : app->EnglishUI() == 2 ? L"视频导出设置" : L"動画出力設定");
 #endif
-        const std::uint32_t defaultEnd = image_sequence::DefaultEndFrame(app);
+        char bound[256]{};
+        std::int32_t start = 0, stop = 0;
+        GetDlgItemTextA(app->MainWindow(), panel::kPlayStartFrameEdit, bound, sizeof bound);
+        frame_limits::ParsePlaybackBound(bound, start);
+        const bool hasStop =
+            GetDlgItemTextA(app->MainWindow(), panel::kPlayStopFrameEdit, bound, sizeof bound) != 0 &&
+            frame_limits::ParsePlaybackBound(bound, stop) && stop != 0;
+        std::int32_t defaultStart = 0, defaultEnd = 0;
+        if (!hasStop || !frame_limits::ResolveRange(
+                start, stop, app->LastRegisteredFrame(), defaultStart, defaultEnd, true)) {
+            defaultStart = std::max(0, start);
+            defaultEnd = std::max(defaultStart, static_cast<std::int32_t>(
+                image_sequence::DefaultEndFrame(app)));
+        }
+        char fpsText[32]{};
+        std::to_chars(fpsText, fpsText + sizeof fpsText - 1, app->LastVideoExportFps());
         // Set complete values: selection replacement can append frame defaults
         // or insert dimensions into text already set by the aspect-ratio handler.
-        SetDlgItemInt(hDlg, panel::kAviStartFrameEdit, 0, FALSE);
+        SetDlgItemInt(hDlg, panel::kAviStartFrameEdit, defaultStart, FALSE);
         SetDlgItemInt(hDlg, panel::kAviEndFrameEdit, defaultEnd, FALSE);
-        SetDlgItemInt(hDlg, panel::kAviFpsEdit, 30, FALSE);
+        SetDlgItemTextA(hDlg, panel::kAviFpsEdit, fpsText);
         SetDlgItemInt(hDlg, panel::kAviWidthEdit, app->RenderWidth(), TRUE);
         SetDlgItemInt(hDlg, panel::kAviHeightEdit, app->RenderHeight(), TRUE);
         app->AviOutputWidth() = app->RenderWidth();
@@ -639,8 +657,7 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                 ReadIntFromEdit(hDlg, panel::kAviStartFrameEdit);
             app->AviRecordEndFrame() =
                 ReadIntFromEdit(hDlg, panel::kAviEndFrameEdit);
-            app->AviRecordFps() =
-                ReadFloatFromEdit(hDlg, panel::kAviFpsEdit);
+            const float fps = ReadFloatFromEdit(hDlg, panel::kAviFpsEdit);
             app->AviIncludeWave() =
                 IsDlgButtonChecked(hDlg, panel::kAviWaveCheckbox) == 1 ? 1 : 0;
             app->AviCloseAfterExport() = IsDlgButtonChecked(
@@ -689,7 +706,7 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                 return TRUE;
             }
 #endif
-            if (!recording_state::ValidFps(app->AviRecordFps())) {
+            if (!recording_state::ValidFps(fps)) {
                 const wchar_t* messages[] = {
                     L"フレームレートは 0.001 から 240 の範囲で指定してください。",
                     L"Frame rate must be between 0.001 and 240 FPS.",
@@ -697,6 +714,8 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                 MessageBoxW(hDlg, messages[app->EnglishUI() <= 2 ? app->EnglishUI() : 1],
                     L"FPS", MB_OK | MB_ICONWARNING);
             } else if (app->AviRecordEndFrame() >= app->AviRecordStartFrame() && dimensionsValid) {
+                app->AviRecordFps() = fps;
+                app->LastVideoExportFps() = fps;
                 EndDialog(hDlg, 1);
             } else if (!dimensionsValid) {
 #if MMD_ORIGINAL_PROFILE
@@ -2575,30 +2594,17 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     }
 
     // ------------------------------------------------------------------
-    // 234 / 235 / 236 (0x0048801B / 0x00488071 / 0x004880C7): FPS-cap
-    // radios.  Store the cap float into app+0xA08E0 (kFloatFpslimit) and
-    // flip the 0xEA / 0xEB / 0xEC menu checks (unchecked 0, checked 8).
+    // 234 / 235 / 236: select a fixed display FPS cap.
     // ------------------------------------------------------------------
-    case 234:  // 0xEA: no cap (1000.0 = flt_52FCE8)
-        app->state.fpsLimit = 1000.0f;
-        CheckMenuItem(GetMenu(MainHwnd(app)), 0xEB, MF_UNCHECKED);
-        CheckMenuItem(GetMenu(MainHwnd(app)), 0xEC, MF_UNCHECKED);
-        CheckMenuItem(GetMenu(MainHwnd(app)), 0xEA, MF_CHECKED);
+    case 234:
+    case 235:
+    case 236: {
+        constexpr float limits[] = {1000.f, 30.f, 60.f};
+        app->state.fpsLimit = limits[id - 234];
+        app->PlaybackTiming().displayFollowsPlaybackFps = false;
+        playback_timing_ui::RefreshMenu(app);
         break;
-
-    case 235:  // 0xEB: 30 fps (flt_52997C)
-        app->state.fpsLimit = 30.0f;
-        CheckMenuItem(GetMenu(MainHwnd(app)), 0xEA, MF_UNCHECKED);
-        CheckMenuItem(GetMenu(MainHwnd(app)), 0xEC, MF_UNCHECKED);
-        CheckMenuItem(GetMenu(MainHwnd(app)), 0xEB, MF_CHECKED);
-        break;
-
-    case 236:  // 0xEC: 60 fps (flt_52A1E0)
-        app->state.fpsLimit = 60.0f;
-        CheckMenuItem(GetMenu(MainHwnd(app)), 0xEB, MF_UNCHECKED);
-        CheckMenuItem(GetMenu(MainHwnd(app)), 0xEA, MF_UNCHECKED);
-        CheckMenuItem(GetMenu(MainHwnd(app)), 0xEC, MF_CHECKED);
-        break;
+    }
 
     // ------------------------------------------------------------------
     // 242 (0x0048811D): camera-frame multiply dialog.  NOTE the gate is
