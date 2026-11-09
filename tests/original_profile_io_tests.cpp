@@ -370,14 +370,20 @@ void Pmm(Files& files) {
     expandedMorphs[mdl::kMorphKeyCapacity].frame = 102;
     refusesHighSlot("PMM refuses even one live morph slot beyond original capacity without overwrite");
     expandedMorphs[mdl::kMorphKeyCapacity] = {};
-    expandedMorphs[1].previous = mdl::kMorphKeyCapacity;
+    expandedMorphs[2].previous = mdl::kMorphKeyCapacity;
     refusesHighSlot("PMM refuses an out-of-range morph link even when its target slot is empty");
-    expandedMorphs[1].previous = 0;
+    expandedMorphs[2].previous = 1;
     SendMessageW(models, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"sample"));
     f.app->Hwnd() = headless;
     SaveSceneFile(f.app.get()); auto grown = Read(path);
     Check(grown.size() > 54 && grown[54] == 1,
           "PMM accepts oversized allocated pools whose serialized slots and links all fit original limits");
+    expandedBones[0].previous = UINT32_MAX;
+    expandedMorphs[1].previous = UINT32_MAX;
+    SaveSceneFile(f.app.get());
+    Check(Read(path) == grown && expandedBones[0].previous == UINT32_MAX && expandedMorphs[1].previous == UINT32_MAX,
+          "original PMM writes canonical initial links without changing legacy deletion sentinels in memory");
+    expandedBones[0].previous = expandedMorphs[1].previous = 0;
     expandedBones[mdl::kBoneKeyCapacity - 1].frame = 103;
     expandedBones[mdl::kBoneKeyCapacity - 1].previous = 0;
     expandedMorphs[mdl::kMorphKeyCapacity - 1].frame = 104;

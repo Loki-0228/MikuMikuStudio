@@ -8,6 +8,7 @@
 #include "mikumikustudio/owned_text.hpp"
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/save_compatibility.hpp"
+#include "mikumikustudio/pmm_key_map.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/frame_limits.hpp"
@@ -810,6 +811,22 @@ template<class K> void TrackFormatBoundaries(MMDApp& app,K*& track,std::size_t o
     Check(save_compatibility::InspectPmm(app).invalidData,"link to an empty slot is invalid");
     track[original].previous=0;
     expect(false,"repairing the link restores v2 eligibility");
+    for(const auto previous:{1u,UINT32_MAX}) {
+        track[0].previous=previous;
+        expect(false,"initial key deletion sentinel does not invalidate a PMM track");
+        const auto initial=track[0];
+        const PmmKeyMap<K> compact(track,1,original+1,original);
+        const auto written=compact.Remap(track[0]);
+        Check(written.previous==0 && written.next==1 && compact.Remap(track[original]).previous==0,
+            "PMM compaction ignores the initial sentinel and preserves actual links");
+        const PmmKeyMap<K> unchanged(track,1,original+1,original+1);
+        Check(unchanged.Remap(track[0]).previous==0 && unchanged.Remap(track[0]).next==original &&
+            !std::memcmp(&initial,&track[0],sizeof(K)),
+            "ordinary PMM writing clears only the saved sentinel without changing live keys");
+    }
+    track[0].next=1;
+    Check(save_compatibility::InspectPmm(app).invalidData,"initial next still cannot reference an empty slot");
+    track[0].next=static_cast<std::uint32_t>(original);track[0].previous=0;
     track[1].next=static_cast<std::uint32_t>(original+100);
     expect(false,"stale links in unused slots are not serialized or rejected");
     if constexpr(std::is_same_v<K,mdl::BoneKey>)mdl::BoneKeyPoolDestroy(track);
@@ -1063,16 +1080,27 @@ void AutomaticCameraRoundtrip(MMDApp& app, const std::filesystem::path& director
     const auto expanded = directory / L"automatic-expanded.pmm";
     Check(mdl::KeyPoolEnsure(app.CameraKeys(),10001), "reserve expanded camera track");
     app.CameraKeys()[0].next=10000;
+    app.CameraKeys()[0].previous=1;
     app.CameraKeys()[10000].frame=23;
     app.CameraKeys()[10000].distance=-83;
     Check(SaveSceneCopy(&app,compact.c_str()), "save sparse pool using legacy format");
     int fd=Open(compact,_O_RDONLY);char header[30]{};Check(_read(fd,header,30)==30,"read compact header");_close(fd);
     Check(std::memcmp(header,"Polygon Movie maker 0002",24)==0,"sparse high slots save as original PMM");
-    Check(app.CameraKeys()[0].next==10000,"save compaction does not alter live indices");
+    Check(app.CameraKeys()[0].next==10000 && app.CameraKeys()[0].previous==1,
+          "save compaction does not alter live indices or the stale initial sentinel");
     Load(app,compact);
     const auto slot=app.CameraKeys()[0].next;
-    Check(slot>0&&slot<10000&&app.CameraKeys()[slot].frame==23&&app.CameraKeys()[slot].distance==-83,
+    Check(slot>0&&slot<10000&&app.CameraKeys()[0].previous==0&&app.CameraKeys()[slot].frame==23&&app.CameraKeys()[slot].distance==-83,
           "compact PMM roundtrip retains links and values");
+    const auto sentinel=directory/L"automatic-initial-sentinel.pmm";
+    app.CameraKeys()[0].previous=UINT32_MAX;
+    Check(SaveSceneCopy(&app,sentinel.c_str()) && app.CameraKeys()[0].previous==UINT32_MAX,
+          "ordinary PMM save accepts an unused initial sentinel without changing live state");
+    Load(app,sentinel);
+    Check(app.CameraKeys()[0].previous==0 && app.CameraKeys()[0].next==slot &&
+          app.CameraKeys()[slot].previous==0 && app.CameraKeys()[slot].frame==23 && app.CameraKeys()[slot].distance==-83,
+          "ordinary PMM roundtrip canonicalizes only the unused initial sentinel");
+    std::puts("PASS real PMM stale initial sentinels through compact and ordinary save/load");
     Check(mdl::KeyPoolEnsure(app.CameraKeys(),10001),"reserve fully occupied camera track");
     for(unsigned i=0;i<10001;++i){auto& k=app.CameraKeys()[i];k.frame=i;k.previous=i?i-1:0;k.next=i<10000?i+1:0;k.distance=-float(i);}
     Check(SaveSceneCopy(&app,expanded.c_str()),"save actual expanded camera content");
@@ -1152,11 +1180,12 @@ int wmain(int argc, wchar_t** argv) {
         LegacyBindingMetadata();AutomaticMetadata();return 0;
     }
     const bool signedCursor=argc>=2 && wcscmp(argv[1],L"--signed-cursor")==0;
+    const bool saveBoundaries=argc>=2 && wcscmp(argv[1],L"--save-boundaries")==0;
     const bool pmxBoundary=argc>=2 && wcscmp(argv[1],L"--pmx-boundary")==0;
     const bool measuredNames=argc>=2 && wcscmp(argv[1],L"--measured-names")==0;
     const bool reversibleEncoding=argc>=2 && wcscmp(argv[1],L"--reversible-encoding")==0;
     const bool pmdIdentity=argc>=2 && wcscmp(argv[1],L"--pmd-identity")==0;
-    if((signedCursor || pmxBoundary || measuredNames || reversibleEncoding || pmdIdentity) && argc!=3)return 2;
+    if((signedCursor || saveBoundaries || pmxBoundary || measuredNames || reversibleEncoding || pmdIdentity) && argc!=3)return 2;
     if (argc < 2 || argc > 4) return 2;
     const bool capacityOnly = argc == 4 && wcscmp(argv[3], L"--key-capacity") == 0;
     const bool commentsOnly = argc == 4 && wcscmp(argv[3], L"--model-comments") == 0;
@@ -1185,7 +1214,7 @@ int wmain(int argc, wchar_t** argv) {
         return CallNextHookEx(nullptr,code,wp,lp);
     },nullptr,GetCurrentThreadId());
     if(pmdIdentity && (!std::filesystem::path(argv[2]).is_absolute() || std::filesystem::exists(argv[2])))return 2;
-    const auto directory = std::filesystem::absolute(signedCursor || pmxBoundary || measuredNames || reversibleEncoding || pmdIdentity ? argv[2] : argv[1]);
+    const auto directory = std::filesystem::absolute(signedCursor || saveBoundaries || pmxBoundary || measuredNames || reversibleEncoding || pmdIdentity ? argv[2] : argv[1]);
     std::filesystem::create_directories(directory);
     const auto aaPreference = directory / L"antialias-user.ini";
     SetEnvironmentVariableW(L"MMS_ANTIALIAS_CONFIG", aaPreference.c_str());
@@ -1238,6 +1267,10 @@ int wmain(int argc, wchar_t** argv) {
     InvalidFormatEscalation(*app,directory);
     AutomaticCameraRoundtrip(*app,directory);
     SignedCursorRoundtrip(*app,directory);
+    if(saveBoundaries) {
+        ShutdownCleanup(app);delete app;g_Block=nullptr;
+        std::puts("PASS targeted PMM save boundaries and roundtrips");return 0;
+    }
     const auto a = directory / L"settings-a.pmm";
     const auto b = directory / L"settings-b.pmm";
     const auto legacy = directory / L"legacy.pmm";

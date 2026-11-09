@@ -38,7 +38,9 @@ public:
     }
     Key Remap(const Key& source) const {
         Key result = source;
-        result.previous = Index(source.previous);
+        // Only initial keys are serialized with frame zero. Their previous
+        // field can retain a deleted slot and is not part of the key chain.
+        result.previous = source.frame == 0 ? 0 : Index(source.previous);
         result.next = Index(source.next);
         return result;
     }

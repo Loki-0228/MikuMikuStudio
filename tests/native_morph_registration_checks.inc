@@ -1,5 +1,6 @@
 // Include after native_morph_key_checks.inc; call NativeMorphRegistrationChecks().
 // Compare private plans with the actual current-value registrar, not AtIndex.
+#include "mikumikustudio/pmm_key_map.hpp"
 namespace {
 void MorphRegistrationMarks(Fixture& f) {
     f.m->boneKeys[0].allocated=2;f.m->boneKeys[31].allocated=3;
@@ -21,6 +22,34 @@ void MorphRegistrationCommit(MorphKeyFixture& f,const std::shared_ptr<plugins::H
     Check(f.history.PrepareNative("morph registration",change,transaction)==MMS_OK,"morph registration journal prepares");
     Check(CommitRegistrationNoAllocation(f.history,std::move(transaction))==MMS_OK,
         "morph registration publication and growth acceptance do not allocate");
+}
+void MorphDeletionSentinelSave() {
+    MorphKeyFixture f;f.first.m->physicsMode=2;
+    std::memset(f.first.m->morphKeys,0,mdl::MorphKeyCapacity(f.first.m->morphKeys)*sizeof(mdl::MorphKey));
+    MorphRegistrationClearMarks(f.first);
+    MorphRegistrationCommit(f,MorphRegistrationPlan(f,0,10));
+    MorphRegistrationCommit(f,MorphRegistrationPlan(f,0,20));
+    auto* keys=f.first.m->morphKeys;
+    const auto first=keys[0].next,last=keys[first].next;
+    Check(first && last && keys[last].frame==20,"native registration creates two sparse morph keys");
+    MorphRegistrationClearMarks(f.first);keys[last].allocated=1;
+    MorphDeleteCommit(f,MorphDeletePlan(f));
+    Check(keys[0].previous==first,"native tail deletion retains the previous sentinel");
+    MorphRegistrationCommit(f,MorphRegistrationPlan(f,0,20));
+    MorphRegistrationClearMarks(f.first);keys[first].allocated=1;
+    MorphDeleteCommit(f,MorphDeletePlan(f));
+    Check(keys[0].next==last && keys[last].previous==0 && keys[last].next==0 &&
+        keys[0].previous==first && keys[first].frame==0,
+        "native history leaves a valid forward chain and a stale initial previous sentinel");
+    const auto before=MorphKeysCopy(f.first);
+    const PmmKeyMap<mdl::MorphKey> map(keys,f.first.m->morphCount,mdl::MorphKeyCapacity(keys),last);
+    const auto initial=map.Remap(keys[0]),sparse=map.Remap(keys[last]);
+    Check(initial.previous==0 && initial.next==first && sparse.previous==0 && sparse.frame==20 && MorphKeysMatch(f.first,before),
+        "PMM remapping canonicalizes a native history sentinel without changing history-owned keys");
+    Check(f.history.History(false)==MMS_OK && keys[first].frame==10 && keys[first].next==last,
+        "PMM remapping leaves native deletion undo intact");
+    Check(f.history.History(true)==MMS_OK && MorphKeysMatch(f.first,before),
+        "PMM remapping leaves native deletion redo intact");
 }
 void MorphRegistrationParity() {
     for(int morph:{0,1})for(int frame:{0,12,20,120}) {
@@ -238,6 +267,7 @@ void MorphRegistrationSelectionReplay() {
 }
 }
 void NativeMorphRegistrationChecks() {
+    std::puts("  morph registration: PMM deletion sentinel");MorphDeletionSentinelSave();
     std::puts("  morph registration: native parity and cross-frame undo");MorphRegistrationParity();
     std::puts("  morph registration: pristine curves no-op and overwritten ring");MorphRegistrationCurvesAndNoOp();
     std::puts("  morph registration: cancellable pool growth");MorphGrowthTokenChecks();
