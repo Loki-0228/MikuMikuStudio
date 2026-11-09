@@ -5,6 +5,7 @@
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/pmm_key_map.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include <memory>
@@ -530,6 +531,32 @@ template<class K> void TrackFormatBoundaries(MMDApp& app,K*& track,std::size_t o
     track[0].next=static_cast<std::uint32_t>(original);
     track[original].frame=frame_limits::legacyMaximum;
     expect(false,"sparse high slot and exact legacy maximum frame select v2");
+    for(const auto stale:{std::uint32_t(1),static_cast<std::uint32_t>(original+1)}) {
+        track[0].previous=stale;
+        expect(false,"frame-zero head may retain an empty or out-of-range predecessor");
+        K before{};std::memcpy(&before,&track[0],sizeof before);
+        const PmmKeyMap<K> unchanged(track,1,original+1,original+1);
+        const auto plain=unchanged.Remap(track[0]);
+        Check(plain.previous==0&&plain.next==original,
+              "saving without compaction clears only the frame-zero predecessor");
+        const PmmKeyMap<K> compact(track,1,original+1,original);
+        const auto head=compact.Remap(track[0]);
+        const auto tail=compact.Remap(track[original]);
+        Check(head.previous==0&&head.next==1&&tail.previous==0&&tail.next==0&&
+              tail.frame==frame_limits::legacyMaximum,
+              "compaction clears stale head predecessors while preserving the live chain");
+        Check(std::memcmp(&before,&track[0],sizeof before)==0&&track[original].previous==0&&
+              track[original].frame==frame_limits::legacyMaximum,
+              "neither mapping path changes the running key records");
+    }
+    track[0].frame=1;
+    Check(save_compatibility::InspectPmm(app).invalidData,
+          "a nonzero-frame dense key still requires a valid predecessor");
+    track[0].frame=0;track[0].previous=0;
+    track[0].next=1;
+    Check(save_compatibility::InspectPmm(app).invalidData,
+          "frame-zero head successors must still refer to a live slot");
+    track[0].next=static_cast<std::uint32_t>(original);
     ++track[original].frame;
     expect(true,"first extended frame selects v3");
     track[original].frame=frame_limits::maximum;
@@ -544,6 +571,12 @@ template<class K> void TrackFormatBoundaries(MMDApp& app,K*& track,std::size_t o
     Check(save_compatibility::InspectPmm(app).invalidData,"link to an empty slot is invalid");
     track[original].previous=0;
     expect(false,"repairing the link restores v2 eligibility");
+    for(const auto broken:{std::uint32_t(1),static_cast<std::uint32_t>(original+1)}) {
+        track[original].next=broken;
+        Check(save_compatibility::InspectPmm(app).invalidData,
+              "empty and out-of-range non-head successors remain invalid");
+    }
+    track[original].next=0;
     track[1].next=static_cast<std::uint32_t>(original+100);
     expect(false,"stale links in unused slots are not serialized or rejected");
     if constexpr(std::is_same_v<K,mdl::BoneKey>)mdl::BoneKeyPoolDestroy(track);
@@ -693,17 +726,30 @@ void AutomaticCameraRoundtrip(MMDApp& app, const std::filesystem::path& director
     const auto compact = directory / L"automatic-compact.pmm";
     const auto expanded = directory / L"automatic-expanded.pmm";
     Check(mdl::KeyPoolEnsure(app.CameraKeys(),10001), "reserve expanded camera track");
+    app.CameraKeys()[0].previous=1;
     app.CameraKeys()[0].next=10000;
     app.CameraKeys()[10000].frame=23;
     app.CameraKeys()[10000].distance=-83;
     Check(SaveSceneCopy(&app,compact.c_str()), "save sparse pool using legacy format");
     int fd=Open(compact,_O_RDONLY);char header[30]{};Check(_read(fd,header,30)==30,"read compact header");_close(fd);
     Check(std::memcmp(header,"Polygon Movie maker 0002",24)==0,"sparse high slots save as original PMM");
-    Check(app.CameraKeys()[0].next==10000,"save compaction does not alter live indices");
+    Check(app.CameraKeys()[0].previous==1&&app.CameraKeys()[0].next==10000,
+          "save compaction does not alter the live head or its stale predecessor");
     Load(app,compact);
     const auto slot=app.CameraKeys()[0].next;
-    Check(slot>0&&slot<10000&&app.CameraKeys()[slot].frame==23&&app.CameraKeys()[slot].distance==-83,
+    Check(app.CameraKeys()[0].previous==0&&slot>0&&slot<10000&&
+          app.CameraKeys()[slot].previous==0&&app.CameraKeys()[slot].frame==23&&app.CameraKeys()[slot].distance==-83,
           "compact PMM roundtrip retains links and values");
+    const auto uncompressed=directory/L"automatic-stale-head.pmm";
+    const auto stale=static_cast<std::uint32_t>(mdl::KeyPoolCapacity(app.CameraKeys()));
+    app.CameraKeys()[0].previous=stale;
+    Check(SaveSceneCopy(&app,uncompressed.c_str()),"save an ordinary PMM with an out-of-range head predecessor");
+    Check(app.CameraKeys()[0].previous==stale&&app.CameraKeys()[0].next==slot,
+          "ordinary saving leaves live key records unchanged");
+    Load(app,uncompressed);
+    Check(app.CameraKeys()[0].previous==0&&app.CameraKeys()[0].next==slot&&
+          app.CameraKeys()[slot].previous==0&&app.CameraKeys()[slot].frame==23&&app.CameraKeys()[slot].distance==-83,
+          "ordinary PMM roundtrip normalizes only the saved head predecessor");
     Check(mdl::KeyPoolEnsure(app.CameraKeys(),10001),"reserve fully occupied camera track");
     for(unsigned i=0;i<10001;++i){auto& k=app.CameraKeys()[i];k.frame=i;k.previous=i?i-1:0;k.next=i<10000?i+1:0;k.distance=-float(i);}
     Check(SaveSceneCopy(&app,expanded.c_str()),"save actual expanded camera content");

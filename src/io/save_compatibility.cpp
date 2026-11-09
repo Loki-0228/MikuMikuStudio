@@ -52,7 +52,10 @@ template<class K> void InspectKeys(Report& report,const K* keys,std::size_t dens
         if(i>=dense&&!keys[i].frame)continue;
         // A newer header cannot make an invalid reference or frame readable.
         // Check every live key, even after the legacy capacity is exceeded.
-        if(!live(keys[i].previous) || !live(keys[i].next) || keys[i].frame>frame_limits::maximum) {
+        // Deleting a terminal key can leave a stale predecessor in a frame-zero
+        // head. It is not part of the chain and is written as zero by PmmKeyMap.
+        const bool initial = i < dense && keys[i].frame == 0;
+        if((!initial && !live(keys[i].previous)) || !live(keys[i].next) || keys[i].frame>frame_limits::maximum) {
             Invalid(report,track+L": invalid key "+std::to_wstring(i));
             return;
         }

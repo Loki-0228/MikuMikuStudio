@@ -38,7 +38,9 @@ public:
     }
     Key Remap(const Key& source) const {
         Key result = source;
-        result.previous = Index(source.previous);
+        // Frame-zero records are track heads, with no predecessor. Normalize
+        // the saved copy before mapping; legacy editing can leave a stale link.
+        result.previous = source.frame == 0 ? 0 : Index(source.previous);
         result.next = Index(source.next);
         return result;
     }

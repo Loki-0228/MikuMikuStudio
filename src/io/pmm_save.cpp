@@ -195,7 +195,8 @@ bool OriginalPmmTrack(const Key* keys, std::size_t denseCount,
         // PMM stores absolute slot indices and links, not merely a count.
         // The original loader uses them directly in its fixed-size pools.
         // An expanded but unused tail is harmless; one live high slot is not.
-        if (i >= originalSlots || keys[i].previous >= originalSlots || keys[i].next >= originalSlots)
+        const bool initial = i < denseCount && keys[i].frame == 0;
+        if (i >= originalSlots || (!initial && keys[i].previous >= originalSlots) || keys[i].next >= originalSlots)
             return false;
     }
     return true;

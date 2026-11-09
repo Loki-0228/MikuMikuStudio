@@ -369,14 +369,28 @@ void Pmm(Files& files) {
     expandedMorphs[mdl::kMorphKeyCapacity].frame = 102;
     refusesHighSlot("PMM refuses even one live morph slot beyond original capacity without overwrite");
     expandedMorphs[mdl::kMorphKeyCapacity] = {};
-    expandedMorphs[1].previous = mdl::kMorphKeyCapacity;
-    refusesHighSlot("PMM refuses an out-of-range morph link even when its target slot is empty");
-    expandedMorphs[1].previous = 0;
+    expandedMorphs[2].previous = mdl::kMorphKeyCapacity;
+    refusesHighSlot("PMM refuses an out-of-range non-head morph predecessor even when its target slot is empty");
+    expandedMorphs[2].previous = 1;
     SendMessageW(models, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"sample"));
     f.app->Hwnd() = headless;
     SaveSceneFile(f.app.get()); auto grown = Read(path);
     Check(grown.size() > 54 && grown[54] == 1,
           "PMM accepts oversized allocated pools whose serialized slots and links all fit original limits");
+    for(const auto outside:{false,true}) {
+        const auto bonePrevious=outside?mdl::kBoneKeyCapacity+17:3u;
+        const auto morphPrevious=outside?mdl::kMorphKeyCapacity+23:3u;
+        expandedBones[0].previous=bonePrevious;
+        expandedMorphs[1].previous=morphPrevious;
+        Check(SaveSceneFile(f.app.get()),
+              "original profile accepts empty or out-of-range frame-zero predecessors");
+        Check(Read(path)==grown,
+              "original profile writes the same normalized PMM bytes for stale head predecessors");
+        Check(expandedBones[0].previous==bonePrevious&&expandedMorphs[1].previous==morphPrevious&&
+              expandedBones[0].next==1&&expandedMorphs[1].next==2&&expandedMorphs[2].previous==1,
+              "original-profile save preserves the running heads and valid non-head links");
+    }
+    expandedBones[0].previous=0;expandedMorphs[1].previous=0;
     expandedBones[mdl::kBoneKeyCapacity - 1].frame = 103;
     expandedBones[mdl::kBoneKeyCapacity - 1].previous = 0;
     expandedMorphs[mdl::kMorphKeyCapacity - 1].frame = 104;
@@ -390,14 +404,24 @@ void Pmm(Files& files) {
 }
 }
 
-int main() {
+int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     if (!build_profile::original) { std::fprintf(stderr, "Requires MIKUMIKUSTUDIO_PROFILE=mmd932\n"); return 2; }
     std::printf("original_profile_io_tests ACP=%u original=%d\n", GetACP(), build_profile::original ? 1 : 0);
     wchar_t desktop[256]{}; DWORD needed = 0;
     if (GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, desktop, sizeof desktop, &needed))
         std::wprintf(wcsncmp(desktop, L"MMS_REPAIR_", 11) == 0 ? L"PRIVATE_DESKTOP name=%ls\n" : L"DESKTOP name=%ls\n", desktop);
-    Files files; Encoding(); Vmd(files); Camera(files); VmdNameBoundaries(files); Vpd(files); Pmm(files);
-    std::printf("original_profile_io_tests: %d checks, %d failures\n", checks, failures);
-    return failures ? 1 : 0;
+    try {
+        Files files;
+        if (argc != 2 || std::strcmp(argv[1], "--pmm-only") != 0) {
+            Encoding(); Vmd(files); Camera(files); VmdNameBoundaries(files); Vpd(files);
+        }
+        std::puts("Checking PMM save compatibility"); Pmm(files);
+        std::printf("original_profile_io_tests: %d checks, %d failures\n", checks, failures);
+        return failures ? 1 : 0;
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "original_profile_io_tests: %s\n", error.what());
+        return 2;
+    }
 }
