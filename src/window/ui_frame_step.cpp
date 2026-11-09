@@ -170,8 +170,8 @@ void RefreshTimeline(MMDApp* app, bool forward) {
     }
 
     if (forward) {
-        app->PhysicsResetPending() =
-            app->PlaybackPhysicsMode() == 3 ? 1 : 0;
+        // Tracking advances the existing world by one frame.
+        app->state.physicsBodiesMoved = app->PlaybackPhysicsMode() == 3;
         if (app->state.aviBackgroundEnabled == 1)
             AviBgOverlayRefresh(app);
     } else {
