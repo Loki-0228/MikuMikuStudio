@@ -421,14 +421,8 @@ bool StartRecordGraphImpl(MMDApp* app, std::int32_t outW, std::int32_t outH) {
 
     const std::int32_t frameStart = s.AviRecordStartFrame();
     const std::int32_t frameEnd = s.AviRecordEndFrame();
-    std::int32_t frames = frameEnd - frameStart + 1;
-    double f = static_cast<double>(frames);
-    if (frames < 0)
-        f += 4294967296.0f;  // 0x52B9F0 float 2^32 (0x45EB6A)
-    // 0x52BA68 is a qword double (30.0) in .rdata; the port keeps the
-    // float mirror g_FrameScale (exactly 30.0 until the config loader
-    // rewrites it).
-    const float seconds = static_cast<float>(f / g_FrameScale);
+    const double frames = std::int64_t(frameEnd) - frameStart + 1;
+    const float seconds = static_cast<float>(frames / s.PlaybackTiming().playbackFps);
 
     float fpsF;
     std::memcpy(&fpsF, &s.AviRecordFps(), sizeof fpsF);

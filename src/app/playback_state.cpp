@@ -233,6 +233,23 @@ void InitLightAndShadowTracks(MMDApp* app, double frame) {
     }
 }
 
+void InitGravityTrack(MMDApp* app, double frame) {
+    auto* keys = app->GravityKeys();
+    app->GravityTrackActive() = keys != nullptr;
+    if (!keys) return;
+    bool ended = false;
+    const mdl::GravityKey* gravityKey = SeekTypedTrackEnd(
+        keys, app->GravityTrackCursor(), frame, ended);
+    if (ended) {
+        app->GravityTrackActive() = 0;
+        app->GravityNoiseEnabled() = gravityKey->noiseEnabled;
+        app->GravityNoise() = gravityKey->noise;
+        app->GravityMagnitude() = gravityKey->acceleration;
+        std::memcpy(app->GravityDirection(), gravityKey->direction,
+                    sizeof(gravityKey->direction));
+    }
+}
+
 void InitGlobalTracks(MMDApp* app, double frame) {
     app->ViewOffsetX() = 0.0f;
     app->ViewOffsetY() = 0.0f;
@@ -248,17 +265,7 @@ void InitGlobalTracks(MMDApp* app, double frame) {
 
     InitLightAndShadowTracks(app, frame);
 
-    app->GravityTrackActive() = 1;
-    const mdl::GravityKey* gravityKey = SeekTypedTrackEnd(
-        app->GravityKeys(), app->GravityTrackCursor(), frame, ended);
-    if (ended) {
-        app->GravityTrackActive() = 0;
-        app->GravityNoiseEnabled() = gravityKey->noiseEnabled;
-        app->GravityNoise() = gravityKey->noise;
-        app->GravityMagnitude() = gravityKey->acceleration;
-        std::memcpy(app->GravityDirection(), gravityKey->direction,
-                    sizeof(gravityKey->direction));
-    }
+    InitGravityTrack(app, frame);
 }
 
 void InitAccessoryTracks(MMDApp* app, double frame) {
@@ -372,6 +379,7 @@ void InitExportPlaybackTracks(MMDApp* app, double frame) {
 void UpdateBoneFrames(MMDApp* app) {
     app->SyncPlaybackTimeCompatibility();
     const double cursor = app->PlaybackCursorSeconds();
+    app->PlaybackPhysicsClock().Reset(cursor);
     app->SavedPlaybackPhysicsMode() = app->PlaybackPhysicsMode();
     if (app->state.playbackAlwaysOnOffMode != 0)
         app->PlaybackPhysicsMode() = 2;
@@ -380,7 +388,7 @@ void UpdateBoneFrames(MMDApp* app) {
         unsigned char* model = app->ModelSlot(i);
         if (model != nullptr)
             InitModelTrackCursors(model, cursor,
-                      app->PlaybackPhysicsMode());
+                      app->NativePhysicsMode());
     }
 
     if (app->PlaybackFrameChanged() != 0)
@@ -392,8 +400,10 @@ void UpdateBoneFrames(MMDApp* app) {
     if (app->FrameStepPlayback() != 0 || app->state.optflag[0] != 0 ||
         app->state.followCameraEnabled != 0)
         InitGlobalTracks(app, frame);
-    else
+    else {
         InitLightAndShadowTracks(app, frame);
+        InitGravityTrack(app, frame);
+    }
     InitAccessoryTracks(app, frame);
 
     HWND hwnd = static_cast<HWND>(app->Hwnd());

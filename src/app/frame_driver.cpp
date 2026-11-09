@@ -649,7 +649,9 @@ void FrameDriver(MMDApp* app) {
         UpdateBoneFrames(app);                                    // 0x433A40
         // Initialize the first output sample even when the editing playhead
         // already equals the export start (including frame zero).
+        PreparePlaybackPhysics(app, 0);
         PlaybackPoseAdvance(app, 0);
+        PhysicsFrame(app, 0);
         PrepareUninitializedImageModels(app);
         s.state.timelineAdvanceDue = 0;
         s.state.timelineAdvanceRequested = 0;
@@ -866,6 +868,12 @@ void FrameDriver(MMDApp* app) {
 
     // ---- 5. dynamic overlay producer + D3D scene envelope ---------------
     if (device_lost_wait::Pending(app)) return;
+    const bool advancePlaybackBeforeRender = s.PlaybackActive() && !s.FrameStepPlayback() && !selActive;
+    if (advancePlaybackBeforeRender) {
+        PlaybackCatchup(app, selActive);
+        if (device_lost_wait::Pending(app)) return;
+        if (s.PlaybackActive()) PhysicsFrame(app, selActive);
+    }
     // Poll modern video even while stopped, so the last asynchronous scrub
     // request reaches the screen without another mouse movement.
     if (s.AviBackgroundEnabled() != 0 &&
@@ -922,7 +930,7 @@ void FrameDriver(MMDApp* app) {
     }
 
     // ---- 6. playback catch-up + physics (0x46EEE0..0x46FEB8) ------------
-    PlaybackCatchup(app, selActive);
+    if (!advancePlaybackBeforeRender) PlaybackCatchup(app, selActive);
     if (device_lost_wait::Pending(app)) return;
     // ---- 6.5 Kinect 骨架驱动泵块（x64 0x7FF7CB44C12E..0x7FF7CB44C656）----
     // 原版位于物理帧内部：settle 上升沿请求（0x7FF7CB44C12E）之后、gate B
@@ -931,7 +939,10 @@ void FrameDriver(MMDApp* app) {
     // DisableKinect 都会补置 settle，先后次序无观测差异）。
     // oni_skeleton_pump.cpp 含完整地址锚点。
     PumpKinectSkeleton(app, selActive);
-    { MMD_PERF_SCOPE(Physics); PhysicsFrame(app, selActive); }
+    if (!advancePlaybackBeforeRender) {
+        MMD_PERF_SCOPE(Physics);
+        PhysicsFrame(app, selActive);
+    }
     // x64 0x7FF7CB456F21（泵尾，紧随 previousMouse 回写 0x7FF7CB456F08..F17）:
     // 把本趟 selActive 滞留进 app+0xA137C；下一趟物理帧的 settle 请求
     // （0x7FF7CB44C12E）读它做上升沿判定。物理帧已消费完上一趟的值，

@@ -110,16 +110,10 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/recording_state.hpp"
 
 namespace mikumikustudio {
 namespace {
-
-// fild dword + "test/jge/fadd flt_52B9F0" (x86) / zero-extended
-// cvtsi2ss r64 (x64, e.g. 0x7FF7CB44B96B): signed dword reinterpreted as
-// unsigned before the float conversion.
-double UnsigFlt(std::int32_t v) {
-    return static_cast<double>(static_cast<std::uint32_t>(v));
-}
 
 inline double& Cursor(MMDApp* app) {
     return app->PlaybackCursorSeconds();
@@ -130,67 +124,6 @@ btDiscreteDynamicsWorld* PlayWorld(MMDApp* app) {
     if (scene == nullptr)
         return nullptr;
     return scene->world;   // slot 64 / 0x40
-}
-
-void StepWorld(btDiscreteDynamicsWorld* world) {
-#ifdef MIKUMIKUSTUDIO_DIAG
-    if (getenv("MIKUMIKUSTUDIO_TRACE_STEPS") != nullptr)
-        fprintf(stderr, "CATCHUP step (cursor behind target)\n");
-#endif
-    world->stepSimulation(1.0f / 60.0f, 10, 1.0f / 60.0f);   // 0x46F206
-}
-
-// Cursor += 1/60.  x64: addss against the .rdata float 0x3C888889
-// (xmm10 slot 0x7FF7CB552D34) - one single-precision rounding.
-void BumpCursor(MMDApp* app) {
-    Cursor(app) += 1.0 / 60.0;
-    app->SyncPlaybackTimeCompatibility();
-}
-
-// 0x46F171..0x46F1DD (block 1) / 0x46F41B..0x46F4BE (block 2): per-model
-// morph application + pose source, ordered by model+0x2D7D.  Block 2 adds
-// the selected-model skip (var_14A1 && 2F8==0 && 910==slot).
-void OrderedMorphPhysicsPass(MMDApp* app, int count, bool selSkip) {
-    auto& s = *app;
-    unsigned char** models = s.ModelSlots();
-    // x64 pump sub_7FF7CB4474F0: both ordering passes run order and slot
-    // walks to 255 (block 1 cmp edi/rbx, 0FFh at 0x7FF7CB44BB0E/0x7FF7CB44BADA;
-    // block 2 at 0x7FF7CB44BDDA/0x7FF7CB44BD7D; comboSelIndex2 = model+0x3109).
-    // Keep legacy zero, plus the one-based final order at full slot capacity.
-    for (int order = 0; order <= kModelSlotCount; ++order) {
-        for (int j = 0; j < kModelSlotCount; ++j) {
-            unsigned char* mdl = models[j];
-            if (mdl == nullptr || mikumikustudio::mdl::Mdl(mdl)->comboSelIndex2 != order)
-                continue;
-            if (selSkip && s.state.optflag[0] == 0 &&
-                s.SelectedModelSlot() == j)
-                continue;                                   // 0x46F471
-            ModelApplyMorphs(mdl);                            // 0x46F1AE
-            SetPhysicsMode(mdl, 0, models, count);
-        }
-    }
-}
-
-// 0x46F1DF..0x46F204 (block 1, forward) / 0x46F4C4..0x46F50B (block 2,
-// forward, with the selected-model skip).
-void KinematicSyncPass(MMDApp* app, bool reverse, bool selSkip) {
-    auto& s = *app;
-    unsigned char** models = s.ModelSlots();
-    // x64: reverse walk is a 255 count-down from slot 254
-    // (mov edi, 0FFh ... dec rdi at 0x7FF7CB44BB16); forward-with-skip walk
-    // counts down 255 from slot 0 (mov esi, 0FFh ... dec rsi at 0x7FF7CB44BDF1).
-    const int begin = reverse ? kModelSlotCount - 1 : 0;
-    const int end = reverse ? -1 : kModelSlotCount;
-    const int step = reverse ? -1 : 1;
-    for (int j = begin; j != end; j += step) {
-        unsigned char* mdl = models[j];
-        if (mdl == nullptr)
-            continue;
-        if (selSkip && s.state.optflag[0] == 0 &&
-            s.SelectedModelSlot() == j)
-            continue;                                       // 0x46F4F1
-        ModelKinematicSync(mdl);                             // 0x46F1F7
-    }
 }
 
 // Recording wait (0x46F070..0x46F127): capture one frame through the
@@ -250,7 +183,7 @@ void PlayingBeyondEnd(MMDApp* app) {
         if (!frame_limits::ParsePlaybackBound(text, frame)) { s.PlaybackActive() = 0; StopPlayback(app); return; }
         // x64 0x7FF7CB44BC3E..0x7FF7CB44BC4B: cvtsi2ss of the
         // zero-extended frame, then divss by the 30.0f slot.
-        s.PlaybackStartSeconds() = UnsigFlt(frame) / 30.0f;
+        s.PlaybackStartSeconds() = (std::max)(frame, 0) / 30.0;
         s.PlaybackPhysicsMode() = s.SavedPlaybackPhysicsMode();
         Cursor(app) = s.PlaybackStartSeconds();
         UpdateBoneFrames(app);                              // 0x433A40
@@ -258,12 +191,12 @@ void PlayingBeyondEnd(MMDApp* app) {
             s.AutomaticFrameAdvanceEnabled() == 0) {
             SetFrameNormalized(
                 s.FrameNormalization());
-            WaveSeekAndFeed(audio, static_cast<double>(
-                                   s.PlaybackStartSeconds()));
+            WaveSeekAndFeed(audio, s.PlaybackStartSeconds() / playback_timing::Speed(s.PlaybackTiming()));
         }
         s.PlaybackClockAnchorLow() =
             s.TimeNowLow();
         s.PlaybackClockAnchorHigh() = s.TimeNowHigh();
+        PreparePlaybackPhysics(app, 0);
         PlaybackPoseAdvance(app, 0);                        // 0x46F56C
         return;
     }
@@ -277,13 +210,45 @@ void PlayingBeyondEnd(MMDApp* app) {
 
 }  // namespace
 
+void PreparePlaybackPhysics(MMDApp* app, unsigned char selActive) {
+    auto& clock = app->PlaybackPhysicsClock();
+    if (!clock.initialPosePending || app->NativePhysicsMode() <= 0 || !PlayWorld(app)) return;
+    const double target = Cursor(app);
+    Cursor(app) = clock.origin;
+    app->PhysicsResetPending() = 1;
+    app->state.gravityNoiseTimer = 0;
+    AdvancePlaybackPhysicsTracks(app);
+    StepPlaybackPhysics(app, selActive, 0.f);
+    clock.initialPosePending = false;
+    Cursor(app) = target;
+}
+
+namespace {
+double AdvanceFixedPhysics(MMDApp* app, unsigned char selActive, double target) {
+    if (app->NativePhysicsMode() <= 0 || !PlayWorld(app)) return target;
+    PreparePlaybackPhysics(app, selActive);
+    auto& clock = app->PlaybackPhysicsClock();
+    const int rate = playback_timing::PhysicsRate(app->PlaybackTiming());
+    const float seconds = 1.f / rate;
+    // A suspended real-time window may be many frames behind. Keep the next
+    // step pending across pumps instead of skipping solver input samples.
+    unsigned budget = app->FrameStepPlayback() ? UINT_MAX : 8192;
+    while (budget-- && clock.Due(target, rate)) {
+        Cursor(app) = clock.Next(rate);
+        ++clock.step;
+        AdvancePlaybackPhysicsTracks(app);
+        StepPlaybackPhysics(app, selActive, seconds);
+    }
+    return clock.Due(target, rate) ? Cursor(app) : target;
+}
+}
+
 // Physics-cursor catch-up of the FrameDriver (0x46EEE0..0x46F575).
 // selActive is the var_14A1 local computed in FrameDriver (0x46DCA6).
 void PlaybackCatchup(MMDApp* app, unsigned char selActive) {
     for (int slot=0; slot<kModelSlotCount; ++slot)
         if (auto* model=app->ModelSlot(slot)) bone_scale::RestoreTransforms(model);
     auto& s = *app;
-    const bool selSkip = selActive != 0;
 
     // ---- 1. frame counter display + N++ (0x46EEE0..0x46EFB7) ------------
     // x64 0x7FF7CB44B850..0x7FF7CB44B8A4, all single precision: N*30 as an
@@ -296,8 +261,7 @@ void PlaybackCatchup(MMDApp* app, unsigned char selActive) {
         const std::int32_t n = s.state.recordedFrameCount;
         const std::int32_t frameA = s.AviRecordStartFrame();
         const float fps = s.AviRecordFps();
-        const int shown = static_cast<int>(
-            static_cast<float>(n) * 30.0f / fps + UnsigFlt(frameA));
+        const int shown = static_cast<int>(n * double(s.PlaybackTiming().playbackFps) / fps + frameA);
         wchar_t buf[0x100];
         if (image_sequence::Active(app)) {
             swprintf_s(buf, image_sequence::Text(app,
@@ -323,84 +287,28 @@ void PlaybackCatchup(MMDApp* app, unsigned char selActive) {
     // ---- 2./3. gates (0x46EFBE..0x46EFEE) --------------------------------
     if (s.state.messageSeen == 0)
         return;                                    // -> 0x46FEC4 (post)
-    // var_14C8 = app+0xA06BC unconditionally (0x46EFDE); overwritten with
-    // 1/fps when the frame-advance byte AND the frame-step flag are both
-    // set (0x46F00D, x87 double divide, one rounding at the store).  The
-    // BLOCK loops below decrement it by 1/60 per substep (0x46F226 and the
-    // BLOCK 2 twin) and the settle main step consumes the REMAINDER - see
-    // g_CatchupDtBudget in globals.hpp.
+    // The idle physics pass still uses the wall-clock delta. Active playback
+    // instead advances at the independent fixed simulation timestamps.
     g_CatchupDtBudget = s.state.deltaTime;                   // 0xA06BC
     if (s.PlaybackActive() == 0)
         return;                                    // -> 0x46F575
 
-    const int count =
-        s.NativePhysicsMode();
-
     if (s.FrameStepPlayback() != 0) {
-        // ---- 4. frame-step mode (0x46EFFB..0x46F25B) --------------------
-        // var_14C8 = 1/fps: the frame's FULL dt budget, of which the BLOCK
-        // loop substeps below consume their 1/60s and the settle main
-        // step steps the remainder.  x64 0x7FF7CB44B940..0x7FF7CB44B956:
-        // movss 1.0f then divss by the fps float - single precision.
+        // Output samples have their own rate, independent of the rate used
+        // to map elapsed seconds to authored frames.
         const std::int32_t n = s.state.recordedFrameCount;
         const std::int32_t frameA = s.AviRecordStartFrame();
         const float fps = s.AviRecordFps();
-        g_CatchupDtBudget = 1.0f / fps;                     // 0x46F00D
-        // x64 0x7FF7CB44B92E..0x7FF7CB44B984, all single precision:
-        //   term   = ((float)N * 30.0f) / fps + (float)(u32)frameA
-        //            [movd/cvtdq2ss N, mulss 30.0f, divss fps,
-        //             cvtsi2ss zero-extended frameA, addss]
-        //   gate   = (u32)(int64)term   [cvttss2si r64, low half]
-        //   target = term / 30.0f       [divss]
-        // I.e. the frame-step target advances N/fps SECONDS per pass (one
-        // frame per pass at fps 30) - the port first read it as
-        // (frameA+30/fps)/(N*30), which DECREASES with N and pinned the
-        // recording cursor at 0.  NOTE: the display formula above
-        // multiplies N*30 as INTEGERS first; this path multiplies as
-        // float - keep the two apart.
-        const double term = static_cast<double>(n) * 30.0 / fps +
-                           UnsigFlt(frameA);
-        const double target = term / 30.0;                  // 0x46F054
-        const std::uint32_t gate = static_cast<std::uint32_t>(
-            static_cast<std::int64_t>(term));
-        const std::uint32_t limit = static_cast<std::uint32_t>(
-            s.AviRecordEndFrame() + 1);
-        if (gate < limit) {                                 // 0x46F06A jb
-            // BLOCK 1 (0x46F12C): catch-up loop, no selection skip.  The
-            // block is gated on the physics-mode counter exactly like
-            // BLOCK 2 (x86 `cmp [this+0xA0CC4],1 / jl` at 0x46F12C; x64
-            // `cmp [r12+0xA1D4C],1 / jl` at 0x7FF7CB44BA6A, reached from
-            // the frame-step gate's jb at 0x7FF7CB44B986) - the port
-            // previously ran the loop unconditionally here.
-            if (count >= 1) {
-                BumpCursor(app);
-                btDiscreteDynamicsWorld* world = PlayWorld(app);
-                if (target > Cursor(app)) {
-                    do {
-                        PlaybackPoseAdvance(app, 1);       // 0x46F16C
-                        OrderedMorphPhysicsPass(app, count, false);
-                        // 0x46F1DF: `lea 0x780(%ebx),%edi; add $0x4` -
-                        // FORWARD slot order (block 2 at 0x46F4CA is
-                        // forward too).
-                        KinematicSyncPass(app, false, false);
-                        StepWorld(world);
-                        // 0x46F226 / x64 0x7FF7CB44BB64: the dt budget
-                        // pays for the substep (subss 1/60f).
-                        g_CatchupDtBudget -= 1.0f / 60.0f;
-                        BumpCursor(app);
-                    } while (Cursor(app) < target);         // 0x46F255
-                }
-            }
-            Cursor(app) = target;                           // 0x46F566
-            // 0x46F566 falls THROUGH to 0x46F56C: the final
-            // sub_4175A0(app, 0) runs for BLOCK 1 too (the frame-step
-            // recording path) - omitting it desynchronised every recorded
-            // frame's pose application from the original.
-            PlaybackPoseAdvance(app, 0);                     // 0x46F56C
-            return;                                         // -> 0x46F575
+        const int playbackFps = s.PlaybackTiming().playbackFps;
+        const auto samples = recording_state::OutputFrameCount(frameA, s.AviRecordEndFrame(), fps, playbackFps);
+        if (std::uint64_t(n) >= samples) {
+            FrameStepBeyondEnd(app);
+            return;
         }
-        FrameStepBeyondEnd(app);                            // 0x46F070
-        return;                                             // -> 0x46F575
+        const double frame = frameA + n * double(playbackFps) / fps;
+        Cursor(app) = AdvanceFixedPhysics(app, 0, frame / playback_timing::kTimelineFps);
+        PlaybackPoseAdvance(app, 0);
+        return;
     }
 
     // ---- 5. playing (0x46F264..) ------------------------------------------
@@ -408,6 +316,8 @@ void PlaybackCatchup(MMDApp* app, unsigned char selActive) {
     // 40 catch-up substeps after play starts (diagnostic only; compiled
     // under MIKUMIKUSTUDIO_DIAG).
 #ifdef MIKUMIKUSTUDIO_DIAG
+    const int count = s.NativePhysicsMode();
+    const bool selSkip = selActive != 0;
     static int tracePlayLeft = -1;
     static int tracePassLeft = -1;
     if (const char* tp = getenv("MIKUMIKUSTUDIO_TRACE_PLAY")) {
@@ -478,8 +388,9 @@ void PlaybackCatchup(MMDApp* app, unsigned char selActive) {
         static_cast<std::int64_t>(now - t0);
     if (now < t0)
         elapsed += static_cast<std::int64_t>(1) << 32;
-    const double target = static_cast<double>(elapsed) * s.MilliToSec() +
-                         s.PlaybackStartSeconds();
+    constexpr double milliseconds = 0.001;
+    const double target = s.PlaybackStartSeconds() + elapsed * milliseconds *
+        playback_timing::Speed(s.PlaybackTiming());
     const double end = s.PlaybackEndSeconds();
 
 #ifdef MIKUMIKUSTUDIO_DIAG
@@ -496,67 +407,11 @@ void PlaybackCatchup(MMDApp* app, unsigned char selActive) {
     }
 #endif
 
-    if (!(end < target)) {                                  // 0x46F2A9 jp
-        // BLOCK 2 (0x46F3D6): playback catch-up with selection skip.
-        if (count >= 1) {
-            BumpCursor(app);
-            btDiscreteDynamicsWorld* world = PlayWorld(app);
-            if (target > Cursor(app)) {
-                do {
-                    PlaybackPoseAdvance(app, 1);           // 0x46F416
-                    OrderedMorphPhysicsPass(app, count, selSkip);
-                    KinematicSyncPass(app, false, selSkip);
-                    StepWorld(world);
-                    // BLOCK 2 twin of 0x46F226 (x64 0x7FF7CB44BE57):
-                    // the substep is paid from the dt budget (subss 1/60f).
-                    g_CatchupDtBudget -= 1.0f / 60.0f;
-                    BumpCursor(app);
-#ifdef MIKUMIKUSTUDIO_DIAG
-                    if (tracePlayLeft > 0 && getenv("MIKUMIKUSTUDIO_TRACE_PLAY")) {
-                        --tracePlayLeft;
-                        unsigned char* mdl = s.ModelSlot(0);
-                        FILE* tf = fopen(getenv("MIKUMIKUSTUDIO_TRACE_PLAY"), "a");
-                        if (tf) {
-                            if (mdl != nullptr) {
-                                mikumikustudio::mdl::BoneRecord* bones =
-                                    mikumikustudio::mdl::Bones(mdl);
-                                const std::int32_t boneCount = static_cast<std::int32_t>(
-                                    mikumikustudio::mdl::Mdl(mdl)->boneCount);
-                                fprintf(tf,
-                                        "sub cursor=%.5f target=%.5f bones=",
-                                        Cursor(app), target);
-                                for (int bi = 0; bi < boneCount && bi < 8;
-                                     ++bi)
-                                    fprintf(tf, "%08X%08X%08X%08X,",
-                                            *reinterpret_cast<
-                                                std::uint32_t*>(
-                                                &bones[bi].rotQuat[0]),
-                                            *reinterpret_cast<
-                                                std::uint32_t*>(
-                                                &bones[bi].rotQuat[1]),
-                                            *reinterpret_cast<
-                                                std::uint32_t*>(
-                                                &bones[bi].rotQuat[2]),
-                                            *reinterpret_cast<
-                                                std::uint32_t*>(
-                                                &bones[bi].rotQuat[3]));
-                                fputc('\n', tf);
-                            }
-                            fclose(tf);
-                        }
-                    }
-#endif
-                } while (Cursor(app) < target);             // 0x46F55C
-            }
-        }
-        Cursor(app) = target;                               // 0x46F566
-        PlaybackPoseAdvance(app, 0);                        // 0x46F56C
-        return;
-    }
-
-    // past end (0x46F2AF)
-    Cursor(app) = target;
-    PlayingBeyondEnd(app);
+    const double last = (std::min)(target, end);
+    Cursor(app) = AdvanceFixedPhysics(app, selActive, last);
+    PlaybackPoseAdvance(app, 0);
+    if (target > end && Cursor(app) >= last) PlayingBeyondEnd(app);
+    return;
 }
 
 }  // namespace mikumikustudio

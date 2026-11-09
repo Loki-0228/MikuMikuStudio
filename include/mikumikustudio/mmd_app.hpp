@@ -20,6 +20,7 @@
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/antialias.hpp"
 #include "mikumikustudio/frame_rate.hpp"
+#include "mikumikustudio/playback_timing.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -1134,6 +1135,7 @@ public:
         return state.aviRecordEndFrame;
     }
     float& AviRecordFps() { return state.aviRecordFps; }
+    float& LastVideoExportFps() { return m_lastVideoExportFps; }
     std::uint8_t& AviIncludeWave() {
         return state.aviIncludeWave;
     }
@@ -1229,6 +1231,9 @@ public:
     }
     double& PlaybackStartSeconds() { return m_playbackStartSeconds; }
     double& PlaybackCursorSeconds() { return m_playbackCursorSeconds; }
+    playback_timing::Settings& PlaybackTiming() { return m_playbackTiming; }
+    const playback_timing::Settings& PlaybackTiming() const { return m_playbackTiming; }
+    playback_timing::PhysicsClock& PlaybackPhysicsClock() { return m_playbackPhysicsClock; }
     double& PlaybackEndSeconds() { return m_playbackEndSeconds; }
     std::uint32_t& PlaybackClockAnchorLow() {
         return state.playbackClockAnchorLow;
@@ -1435,6 +1440,10 @@ public:
     // -- named fields (semantic names verified so far) -------------------
     // Main loop timing cluster (WinMain 0x004C4460)
     float& FpsLimit()               { return state.fpsLimit; }   // 657632
+    float EffectiveDisplayFps() const {
+        return m_playbackTiming.displayFollowsPlaybackFps && !state.kinectCaptureActive
+            ? static_cast<float>(m_playbackTiming.playbackFps) : state.fpsLimit;
+    }
     float& DeltaTime()              { return state.deltaTime; }  // 657084
     std::uint32_t& TimeNowLow()     { return state.timeNowLow; }
     std::uint32_t& TimeNowHigh()    { return state.timeNowHigh; }
@@ -1745,6 +1754,10 @@ public:
     // A pending request always applies current camera data, never an old pose.
     bool cameraProjectionRefreshPending = false;
 #endif
+private:
+    float m_lastVideoExportFps = 30.0f;
+    playback_timing::Settings m_playbackTiming;
+    playback_timing::PhysicsClock m_playbackPhysicsClock;
 };
 
 static_assert(sizeof(MMDApp) >= sizeof(MMDAppState),

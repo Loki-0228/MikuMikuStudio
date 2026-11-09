@@ -264,22 +264,23 @@ void AviBgOverlayRefresh(MMDApp* app) {
     const auto boundedSample = [](std::int64_t value) {
         return static_cast<LONG>(std::clamp(value, std::int64_t(LONG_MIN), std::int64_t(LONG_MAX)));
     };
+    const double mediaSpeed = playback_timing::Speed(s.PlaybackTiming());
     LONG sample;
     if (s.PlaybackActive() == 0) {
-        if (s.AviUsesThirtyFpsTiming() == 0) {
+        if (s.AviUsesThirtyFpsTiming() == 0 || mediaSpeed != 1.0) {
             sample = stream != nullptr
                 ? AVIStreamTimeToSample(
-                      stream, milliseconds(s.state.currentFrame / 30.0))                       // 0x416B27
+                      stream, milliseconds(s.state.currentFrame / (30.0 * mediaSpeed)))        // 0x416B27
                 : 0;
         } else {
             sample = s.state.currentFrame;
         }
     } else if (s.FrameStepPlayback() == 0 ||
                s.AviUsesThirtyFpsTiming() == 0 ||
-               s.state.aviRecordFps != g_FrameScale) {
+               s.state.aviRecordFps != g_FrameScale || mediaSpeed != 1.0) {
         // 0x416ADE: wall-clock driven sample from the seconds field
         // (9E64C is the frameB float copy; 0x52BA60 = double 1000.0).
-        const double secondsF = s.PlaybackCursorSeconds();
+        const double secondsF = s.PlaybackCursorSeconds() / mediaSpeed;
         const LONG t = milliseconds(secondsF);
         sample = boundedSample(std::int64_t(stream != nullptr ? AVIStreamTimeToSample(stream, t) : 0) +
                  static_cast<std::int32_t>(s.state.a0B10));
@@ -300,7 +301,7 @@ void AviBgOverlayRefresh(MMDApp* app) {
         videoSeconds = cursor + static_cast<std::int32_t>(s.state.a0B10) / 30.0;
     }
     const auto previousRevision = media::VideoFrameRevision(app);
-    void* bits = media::HasVideo(app) ? media::VideoFrame(app, videoSeconds, decodeError, s.RecordingWindow() != nullptr)
+    void* bits = media::HasVideo(app) ? media::VideoFrame(app, videoSeconds / mediaSpeed, decodeError, s.RecordingWindow() != nullptr)
                 : getFrame != nullptr ? AVIStreamGetFrame(getFrame, sample)
                                      : nullptr;                   // 0x416B4F
     if (bits == nullptr) {

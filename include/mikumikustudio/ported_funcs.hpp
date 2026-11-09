@@ -121,13 +121,17 @@ void ModelKinematicSync(unsigned char* model);        // VA 0x004B22F0
 void ModelDynamicReseat(unsigned char* model);        // VA 0x004B3460
 void ModelPhysicsReadback(unsigned char* model);      // VA 0x004B25D0
 void PhysicsFrame(MMDApp* app, unsigned char selActive);  // FrameDriver physics section 0x46F0D0..
+void StepPlaybackPhysics(MMDApp* app, unsigned char selActive, float seconds);
+void PreparePlaybackPhysics(MMDApp* app, unsigned char selActive);
 void PlaybackCatchup(MMDApp* app, unsigned char selActive);
                                 // FrameDriver playback section 0x46EEE0..
 void PlaybackPoseAdvance(MMDApp* app, int advance);  // VA 0x004175A0
+void AdvancePlaybackPhysicsTracks(MMDApp* app);
 void InitModelTrackCursors(unsigned char* model, double cursor,
                            int physicsMode);  // was Sub4A2CD0, VA 0x004A2CD0
 void AdvanceModelKeyframes(unsigned char* model, double cursor,
                            int physicsMode);  // was Sub4A31D0, VA 0x004A31D0
+void SampleModelPlaybackVisual(unsigned char* model, double cursor);
 float BoneEase(unsigned char* model, int channel, int keyIdx,
                float t);  // was Sub4A05A0, VA 0x004A05A0 (VMD easing)
 void NotifyBonePhysicsMode(unsigned char* model, int boneIdx,

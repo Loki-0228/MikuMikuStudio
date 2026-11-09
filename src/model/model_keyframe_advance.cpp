@@ -388,7 +388,7 @@ void InitModelTrackCursors(unsigned char* model, double cursor, int physicsMode)
 }
 
 // ---- VA 0x004A31D0 --------------------------------------------------------
-void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode) {  // was Sub4A31D0
+static void AdvanceModelPlaybackTracks(unsigned char* model, double cursor, int physicsMode, bool visualOnly) {
     // Keep an explicitly sought negative pose. Never extrapolate the native
     // zero-frame self-link (which has a zero interpolation denominator).
     if (!model || !std::isfinite(cursor) || cursor < 0.0) return;
@@ -441,6 +441,7 @@ void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode)
                 RefreshIkSelectors(m, keys, prevIdx, prevIdx, true, cur, cur);
             }
         }
+        if (visualOnly) state.displayTrackActive = 1;
     }
 
     // ==== section 2: morph tracks (0x4A391B) ==============================
@@ -463,7 +464,10 @@ void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode)
                     vals[k].value = rec.value;
                 }
             }
-            if (active[k] == 0) continue;
+            if (active[k] == 0) {
+                if (visualOnly) active[k] = 1;
+                continue;
+            }
             const mdl::MorphKey& rec = keys[cursors[k]];
             float v;
             if (frame == (double)rec.frame) {
@@ -556,7 +560,12 @@ void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode)
                 }
                 break;
             }
-            if (active[b] == 0) continue;
+            if (active[b] == 0) {
+                // A display sample may cross the final key before the next
+                // physics tick applies its rigid-body mode transition.
+                if (visualOnly) active[b] = 1;
+                continue;
+            }
 
             const int cursorIdx = cursors[b];
             const mdl::BoneKey& rec = keys[cursorIdx];
@@ -803,6 +812,14 @@ void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode)
 #if !MMD_ORIGINAL_PROFILE
     bone_curve::Evaluate(model, frame);
 #endif
+}
+
+void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode) {
+    AdvanceModelPlaybackTracks(model, cursor, physicsMode, false);
+}
+
+void SampleModelPlaybackVisual(unsigned char* model, double cursor) {
+    AdvanceModelPlaybackTracks(model, cursor, 0, true);
 }
 
 }  // namespace mikumikustudio

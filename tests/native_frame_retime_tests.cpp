@@ -24,13 +24,16 @@
 // pure CPU test.  Build with -DMDS_NATIVE_FRAME_RETIME_STANDALONE to bring the
 // stubs in; the unified build defines nothing and links the real modules.
 #include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/animation_retime.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/frame_rate_correction.hpp"
 #include "mikumikustudio/global_key_layout.hpp"
+#include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/morph_curve.hpp"
 #include "mikumikustudio/native_frame_retime.hpp"
+#include "mikumikustudio/pmm_extension.hpp"
 
 #include <algorithm>
 #include <array>
@@ -104,7 +107,11 @@ struct Fixture {
     // record is safe for every case in this file.
     ~Fixture() {
 #ifndef MDS_NATIVE_FRAME_RETIME_STANDALONE
-        if (app) mikumikustudio::curve_host::Reset(app.get());
+        if (app) {
+            mikumikustudio::curve_host::Reset(app.get());
+            mikumikustudio::mdl::KeyPoolReleaseOwned(app->CameraKeys());
+            app->CameraKeys() = nullptr;
+        }
 #endif
         for (int slot = 0; slot < 2; ++slot) {
             for (auto& key : displayKeys[slot]) {
@@ -407,6 +414,192 @@ void CheckBytes(const void* actual, const void* expected, std::size_t size, cons
         }
     }
 }
+
+void CheckMergedCameraTiming() {
+    using namespace mikumikustudio;
+    Fixture fixture;
+    Build(fixture);
+    auto& app = *fixture.app;
+    const std::uint32_t frames[] = {0, 10, 11, 30, 50};
+    const float values[] = {0, 10, 100, 200, 260};
+    for (std::uint32_t index = 0; index < std::size(frames); ++index) {
+        auto& key = fixture.camera[index];
+        key.frame = frames[index];
+        key.previous = index ? index - 1 : 0;
+        key.next = index + 1 < std::size(frames) ? index + 1 : 0;
+        key.eye[0] = values[index];
+        key.fov = 45;
+        key.parentModel = -1;
+        key.parentBone = 0;
+        for (int lane = 0; lane < 6; ++lane) SetCameraChannel(key, lane, kEase);
+    }
+    std::wstring error;
+    std::vector<curve_editor::Channel> source;
+    if (!ch::Read(app, ch::Kind::Camera, 0, source, error) ||
+        !ch::Write(app, ch::Kind::Camera, 0, source, error)) {
+        Check(false, "prepare authored native timing for a compressed camera");
+        return;
+    }
+    ac::Track expected;
+    animation_retime::Report scalarReport;
+    std::string detail;
+    if (!animation_retime::Retime(source[0].track, {30, 3}, {}, expected, scalarReport, detail)) {
+        Check(false, "derive the clipped camera curve after a key collision");
+        return;
+    }
+    native_frame_retime::PlanPtr plan;
+    frame_rate_correction::Report report;
+    if (!native_frame_retime::Prepare(app, {30, 3}, plan, report, error) ||
+        !native_frame_retime::Commit(app, plan, error, {})) {
+        Check(false, "compress the authored camera through the native transaction");
+        return;
+    }
+    std::vector<curve_editor::Channel> converted;
+    if (!ch::Read(app, ch::Kind::Camera, 0, converted, error) || converted.empty()) {
+        Check(false, "read the converted authored camera");
+        return;
+    }
+    const auto sample = [](const curve_editor::Channel& channel, double frame) {
+        return channel.sample ? channel.sample(channel, frame) : ac::Evaluate(channel.track, frame);
+    };
+    for (const double frame : {1.25, 1.5, 2.5})
+        Check(std::abs(sample(converted[0], frame).value -
+                       ac::Evaluate(expected, frame).value) < 1e-6,
+              "merged camera endpoints retain the clipped scalar curve");
+    Check(std::abs(sample(converted[0], 4).value - sample(source[0], 40).value) < 1e-6,
+          "unmerged camera endpoints retain their exact native timing");
+}
+
+void CheckAdjacentCameraCuts(bool preserveNativeCuts, bool authoredStep) {
+    using namespace mikumikustudio;
+    using native_frame_retime::Commit;
+    using native_frame_retime::PlanPtr;
+    using native_frame_retime::Prepare;
+    using frame_rate_correction::Rates;
+    using frame_rate_correction::Report;
+
+    Fixture fixture;
+    Build(fixture);
+    GiveCameraThreeKeys(fixture);
+    auto& app = *fixture.app;
+    const std::uint8_t linear[] = {20, 20, 107, 107};
+    const float position[] = {10.f, 20.f, 40.f};
+    for (std::uint32_t frame = 0; frame < 3; ++frame) {
+        auto& key = fixture.camera[frame];
+        key.frame = frame;
+        key.eye[0] = position[frame];
+        key.fov = 45;
+        key.parentModel = -1;
+        key.parentBone = 0;
+        for (int channel = 0; channel < 6; ++channel) SetCameraChannel(key, channel, linear);
+    }
+    const auto cameraBytes = fixture.camera.size() * sizeof(mdl::CameraKey);
+    if (preserveNativeCuts) {
+        app.CameraKeys() = mdl::KeyPoolCreate<mdl::CameraKey>(fixture.camera.size());
+        std::memcpy(app.CameraKeys(), fixture.camera.data(), cameraBytes);
+    }
+
+    std::wstring error;
+    std::vector<curve_editor::Channel> channels;
+    if (authoredStep) {
+        const bool read = ch::Read(app, ch::Kind::Camera, 0, channels, error);
+        Check(read && !channels.empty() && channels[0].track.keys.size() == 3, "read camera for explicit Step");
+        if (!read || channels.empty() || channels[0].track.keys.size() != 3) return;
+        channels[0].track.keys[1].interpolation = ac::Interpolation::Step;
+        if (!ch::Write(app, ch::Kind::Camera, 0, channels, error)) {
+            Check(false, "publish explicit camera Step");
+            return;
+        }
+    }
+
+    const auto* const originalPool = app.CameraKeys();
+    const auto originalPoolIdentity = mdl::KeyPoolIdentity(originalPool);
+    const auto cameraDigest = HashBytes(0, originalPool, cameraBytes);
+    const auto untouched = fixture.Digest();
+    const auto unchanged = [&] {
+        return app.CameraKeys() == originalPool && fixture.Digest() == untouched &&
+            HashBytes(0, app.CameraKeys(), cameraBytes) == cameraDigest;
+    };
+    PlanPtr plan;
+    Report report;
+    Rates rates{30, 60};
+    if (!preserveNativeCuts) rates.directAdjacentFrames = false;
+    const bool prepared = Prepare(app, rates, plan, report, error);
+    if (!prepared) std::fwprintf(stderr, L"Adjacent camera preparation: %ls\n", error.c_str());
+    Check(prepared, "prepare the adjacent camera conversion");
+    if (!prepared) return;
+    CheckEqual(report.insertedHoldKeys, preserveNativeCuts ? 2 : 0, "preview counts inserted native camera hold keys");
+    Check(unchanged(),
+          "camera preview leaves the original pool and bytes unchanged");
+    bool finalized = false;
+    Check(!Commit(app, plan, error, [&](std::wstring&) { finalized = true; return false; }),
+          "refusing finalization rolls the camera conversion back");
+    Check(finalized && unchanged(),
+          "camera rollback restores the original allocation and bytes");
+    const bool committed = Commit(app, plan, error, {});
+    if (!committed) std::fwprintf(stderr, L"Adjacent camera commit: %ls\n", error.c_str());
+    Check(committed, "camera conversion can retry after rollback");
+    if (!committed) return;
+
+    std::vector<std::uint32_t> frames;
+    std::vector<float> positions;
+    const auto* const keys = app.CameraKeys();
+    if (preserveNativeCuts)
+        Check(originalPoolIdentity != 0 && mdl::KeyPoolIdentity(keys) == originalPoolIdentity,
+              "detached camera publication preserves the logical pool identity");
+    for (std::uint32_t slot = 0, previous = 0; frames.size() <= 5;) {
+        const auto& key = keys[slot];
+        Check(key.previous == previous, "expanded camera chain keeps its backward links");
+        frames.push_back(key.frame);
+        positions.push_back(key.eye[0]);
+        if (!key.next) break;
+        if (key.next >= mdl::KeyPoolCapacity(keys)) {
+            Check(false, "expanded camera chain stays within its allocation");
+            return;
+        }
+        previous = slot;
+        slot = key.next;
+    }
+    if (preserveNativeCuts) {
+        Check(frames == std::vector<std::uint32_t>{0, 1, 2, 3, 4} &&
+              positions == std::vector<float>{10.f, 10.f, 20.f, 20.f, 40.f},
+              "native camera keeps adjacent hold endpoints at the expanded cuts");
+    } else {
+        Check(frames == std::vector<std::uint32_t>{0, 2, 4} &&
+              positions == std::vector<float>{10.f, 20.f, 40.f},
+              "opting out moves camera keys without inserting hold endpoints");
+    }
+
+    if (!preserveNativeCuts && !authoredStep) {
+        const bool read = ch::Read(app, ch::Kind::Camera, 0, channels, error);
+        Check(read && !channels.empty() && channels[0].sample &&
+              std::fabs(channels[0].sample(channels[0], 1).value - 15) < 1e-6,
+              "opting out leaves the native camera curve continuous");
+        return;
+    }
+
+    app.PlaybackActive() = 1;
+    app.PlaybackTiming().interpolate = true;
+    const auto sample = [&app](double frame) {
+        app.CameraPositionAxis(0) = -100.f;
+        ch::Apply(&app, ch::Kind::Camera, frame);
+        return app.CameraPositionAxis(0);
+    };
+    const auto checkHold = [&] {
+        Check(sample(1.75) == 10.f && sample(2) == 20.f, "camera Step holds to its exact expanded destination");
+        if (preserveNativeCuts)
+            Check(sample(3.75) == 20.f && sample(4) == 40.f,
+                  "continuous playback respects the second preserved camera cut");
+    };
+    checkHold();
+    pmm_extension::Document saved;
+    ch::Capture(app, saved);
+    Check(!saved.records.empty(), "camera Step is captured in the PMM extension");
+    ch::Reset(&app);
+    ch::Load(app, saved);
+    checkHold();
+    app.PlaybackActive() = 0;
+}
 #endif  // MDS_NATIVE_FRAME_RETIME_STANDALONE
 
 }  // namespace
@@ -622,6 +815,11 @@ int main() {
     // =====================================================================
 #ifndef MDS_NATIVE_FRAME_RETIME_STANDALONE
 
+    CheckMergedCameraTiming();
+    CheckAdjacentCameraCuts(true, false);
+    CheckAdjacentCameraCuts(false, false);
+    CheckAdjacentCameraCuts(false, true);
+
     // ---- no collision: every interpolation byte survives ------------------
     // 30 -> 45 leaves every chain's keys apart, so the conversion only moves
     // keys.  The records carry a chain head whose controls are non-linear, an
@@ -645,6 +843,7 @@ int main() {
         Rates rates;
         rates.originalFPS = 30.0;
         rates.currentFPS = 45.0;
+        rates.directAdjacentFrames = false;
         const std::uint64_t untouched = plain.Digest();
         PlanPtr plan;
         Report report;
@@ -1000,6 +1199,7 @@ AuthoringTable::~AuthoringTable() = default;
 AuthoringTable::AuthoringTable(AuthoringTable&&) noexcept = default;
 AuthoringTable& AuthoringTable::operator=(AuthoringTable&&) noexcept = default;
 bool CaptureAuthoring(MMDApp&, AuthoringTable&, std::wstring&) { return true; }
+bool Read(MMDApp&, Kind, int, std::vector<curve_editor::Channel>&, std::wstring&) { return false; }
 bool AuthoringEntries(const AuthoringTable&, std::vector<AuthoringEntry>& out) {
     out.clear();
     return true;

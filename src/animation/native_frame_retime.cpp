@@ -734,12 +734,19 @@ struct ModelPatch {
     bool layersMoved = false;
 };
 
+struct CameraPoolDeleter {
+    void operator()(mdl::CameraKey* pool) const noexcept { mdl::KeyPoolReleaseOwned(pool); }
+};
+
 struct AppPatch {
     MMDApp* app = nullptr;
     std::array<unsigned char*, kModelSlotCount> modelIdentities{};
     std::array<mdl::AccessoryRecord*, kAccessorySlots> accessoryIdentities{};
     std::array<mdl::AccessoryKey*, kAccessorySlots> accessoryPools{};
     PoolPatch camera;
+    mutable std::unique_ptr<mdl::CameraKey, CameraPoolDeleter> expandedCamera;
+    std::uint64_t cameraPoolDigest = 0;
+    std::vector<std::int32_t> cameraCutEnds;
     PoolPatch light;
     PoolPatch shadow;
     PoolPatch gravity;
@@ -1619,6 +1626,46 @@ bool PlanCamera(const art::Rates& rates, const art::Options& options, AppPatch& 
     return true;
 }
 
+// A native camera cut needs adjacent endpoint records even after expansion.
+// Stage a detached pool so preview, rollback, and allocation failure leave the
+// live pool untouched. Authoring below also keeps the cut exact at subframes.
+void PreserveCameraCuts(const fc::Rates& rates, AppPatch& ap, fc::Report& report) {
+    if (!rates.directAdjacentFrames || rates.currentFPS <= rates.originalFPS ||
+        ap.camera.chains.empty()) return;
+    auto& patch = ap.camera.chains.front();
+    if (!patch.changed || patch.original.size() != patch.written.size()) return;
+    std::vector<std::uint32_t> slots;
+    std::vector<Bytes> records;
+    std::size_t freeSlot = 1;
+    const auto* originalPool = reinterpret_cast<const mdl::CameraKey*>(ap.camera.pool);
+    for (std::size_t index = 0; index < patch.written.size(); ++index) {
+        const auto frame = ReadU32(patch.written[index].data(), 0);
+        if (index && ReadU32(patch.original[index].data(), 0) ==
+                         ReadU32(patch.original[index - 1].data(), 0) + 1) {
+            ap.cameraCutEnds.push_back(static_cast<std::int32_t>(ReadU32(patch.original[index].data(), 0)));
+            if (frame > ReadU32(patch.written[index - 1].data(), 0) + 1) {
+                while (freeSlot < ap.camera.capacity && originalPool[freeSlot].frame != 0) ++freeSlot;
+                Bytes hold = patch.written[index - 1];
+                WriteU32(hold.data(), 0, frame - 1);
+                slots.push_back(static_cast<std::uint32_t>(freeSlot++));
+                records.push_back(std::move(hold));
+                ++report.insertedHoldKeys;
+                ++report.outputKeys;
+            }
+        }
+        slots.push_back(patch.writeSlots[index]);
+        records.push_back(patch.written[index]);
+    }
+    if (records.size() == patch.written.size()) return;
+    const auto capacity = (std::max)(ap.camera.capacity, freeSlot);
+    ap.expandedCamera.reset(mdl::KeyPoolCreate<mdl::CameraKey>(capacity));
+    mdl::KeyPoolInheritIdentity(originalPool, ap.expandedCamera.get());
+    ap.cameraPoolDigest = HashBytes(0, ap.camera.pool, ap.camera.capacity * ap.camera.stride);
+    patch.writeSlots = std::move(slots);
+    patch.written = std::move(records);
+    LinkWritten(patch);
+}
+
 }  // namespace
 
 namespace {
@@ -1756,6 +1803,42 @@ bool PlanModel(MMDApp& app, const art::Rates& rates, const art::Options& options
 
 namespace {
 
+void RemapNativeTiming(const curve_editor::Channel& source, curve_editor::Channel& target,
+                       const art::Rates& rates, const art::Options& options) {
+    if (source.nativeControls.empty()) return;
+    target.nativeControls.assign(target.track.keys.size(), {});
+    target.controlGeometry.assign(target.track.keys.size(), {-1, 0, -1, 0});
+    std::string ignored;
+    for (std::size_t index = 1; index < source.track.keys.size(); ++index) {
+        const auto& first = source.track.keys[index - 1];
+        const auto& last = source.track.keys[index];
+        if (index >= source.nativeControls.size() || index >= source.controlGeometry.size() ||
+            last.interpolation != ac::Interpolation::Bezier ||
+            source.controlGeometry[index] !=
+                std::array<double, 4>{first.outWeight, first.outSlope, last.inWeight, last.inSlope}) continue;
+        std::int32_t mappedFirst = 0, mappedLast = 0;
+        if (!art::MapFrame(first.frame, rates, options.maximumFrame, mappedFirst, ignored) ||
+            !art::MapFrame(last.frame, rates, options.maximumFrame, mappedLast, ignored)) continue;
+        // A merged endpoint changes both its value and the adjacent clipped
+        // curve. Its original native tuple must not replace that new curve.
+        std::int32_t neighbor = 0;
+        if (index > 1 &&
+            art::MapFrame(source.track.keys[index - 2].frame, rates, options.maximumFrame, neighbor, ignored) &&
+            neighbor == mappedFirst) continue;
+        if (index + 1 < source.track.keys.size() &&
+            art::MapFrame(source.track.keys[index + 1].frame, rates, options.maximumFrame, neighbor, ignored) &&
+            neighbor == mappedLast) continue;
+        const auto end = std::lower_bound(target.track.keys.begin(), target.track.keys.end(), mappedLast,
+            [](const ac::Key& key, int frame) { return key.frame < frame; });
+        if (end == target.track.keys.end() || end == target.track.keys.begin() ||
+            end->frame != mappedLast || (end - 1)->frame != mappedFirst ||
+            end->interpolation != ac::Interpolation::Bezier) continue;
+        const auto slot = static_cast<std::size_t>(end - target.track.keys.begin());
+        target.nativeControls[slot] = source.nativeControls[index];
+        target.controlGeometry[slot] = {(end - 1)->outWeight, (end - 1)->outSlope, end->inWeight, end->inSlope};
+    }
+}
+
 bool PrepareImpl(MMDApp& app, const fc::Rates& rates, PlanPtr& plan, fc::Report& report,
                  std::wstring& error) {
     error.clear();
@@ -1817,6 +1900,7 @@ bool PrepareImpl(MMDApp& app, const fc::Rates& rates, PlanPtr& plan, fc::Report&
                           L"无法转换相机轨道。") + L" (" + Wide(detail) + L")";
         return false;
     }
+    PreserveCameraCuts(rates, ap, out);
 
     {
         std::vector<ScalarChannel> components;
@@ -1989,10 +2073,35 @@ bool PrepareImpl(MMDApp& app, const fc::Rates& rates, PlanPtr& plan, fc::Report&
                           L"无法读取曲线编辑器的编辑内容。");
         return false;
     }
+    bool nativeCameraOnly = false;
+    if (!ap.cameraCutEnds.empty()) {
+        auto camera = std::find_if(entries.begin(), entries.end(), [](const auto& entry) {
+            return entry.kind == curve_host::Kind::Camera;
+        });
+        if (camera == entries.end()) {
+            curve_host::AuthoringEntry entry;
+            entry.kind = curve_host::Kind::Camera;
+            if (!curve_host::Read(app, entry.kind, 0, entry.channels, error)) return false;
+            entry.baseline = entry.channels;
+            entries.push_back(std::move(entry));
+            nativeCameraOnly = true;
+        }
+    }
     if (!entries.empty()) {
         ap.hasAuthoring = true;
         for (curve_host::AuthoringEntry& entry : entries) {
+            if (entry.kind == curve_host::Kind::Camera && !ap.cameraCutEnds.empty()) {
+                for (auto& channel : entry.channels) {
+                    for (std::size_t index = 1; index < channel.track.keys.size(); ++index) {
+                        auto& key = channel.track.keys[index];
+                        if (key.frame == channel.track.keys[index - 1].frame + 1 &&
+                            std::binary_search(ap.cameraCutEnds.begin(), ap.cameraCutEnds.end(), key.frame))
+                            key.interpolation = ac::Interpolation::Step;
+                    }
+                }
+            }
             for (curve_editor::Channel& channel : entry.channels) {
+                const auto originalTiming = channel;
                 std::unique_ptr<curve_editor::Channel> exact;
                 if (!channel.preservedCameraIntervals.empty()) exact = std::make_unique<curve_editor::Channel>(channel);
                 ac::Track converted;
@@ -2004,6 +2113,7 @@ bool PrepareImpl(MMDApp& app, const fc::Rates& rates, PlanPtr& plan, fc::Report&
                     return false;
                 }
                 channel.track = std::move(converted);
+                RemapNativeTiming(originalTiming, channel, applyRates, options);
                 if (exact && !curve_host::RetimePreservedChannel(*exact, channel, error)) return false;
             }
             for (curve_editor::Channel& channel : entry.baseline) {
@@ -2029,7 +2139,8 @@ bool PrepareImpl(MMDApp& app, const fc::Rates& rates, PlanPtr& plan, fc::Report&
                 break;
             }
             }
-            if (pool) for (auto& chain : pool->chains) for (auto& bytes : chain.written) {
+            if (pool && !(nativeCameraOnly && entry.kind == curve_host::Kind::Camera))
+                for (auto& chain : pool->chains) for (auto& bytes : chain.written) {
                 if (!curve_host::SampleRetimedKey(entry, bytes.data(), bytes.size())) {
                     error = Localized(app, L"変換後のキーをサンプリングできません。",
                         L"Cannot sample a retimed native key.", L"无法采样修正后的原生关键帧。");
@@ -2165,6 +2276,12 @@ bool VerifyApp(MMDApp& app, const AppPatch& ap, std::string& error) {
         error = "a global key table changed since Prepare";
         return false;
     }
+    if (ap.expandedCamera &&
+        (mdl::KeyPoolCapacity(app.CameraKeys()) != ap.camera.capacity ||
+         HashBytes(0, ap.camera.pool, ap.camera.capacity * ap.camera.stride) != ap.cameraPoolDigest)) {
+        error = "the camera pool changed since Prepare";
+        return false;
+    }
     const PoolPatch* pools[4] = {&ap.camera, &ap.light, &ap.shadow, &ap.gravity};
     const char* names[4] = {"camera", "light", "shadow", "gravity"};
     for (int index = 0; index < 4; ++index) {
@@ -2205,7 +2322,13 @@ void RevertModel(const ModelPatch& mp) {
 }
 
 void ApplyApp(const AppPatch& ap) {
-    for (const SlotPatch& patch : ap.camera.chains) ApplyPatch(ap.camera.pool, ap.camera.stride, patch);
+    auto* camera = ap.camera.pool;
+    if (ap.expandedCamera) {
+        camera = reinterpret_cast<std::uint8_t*>(ap.expandedCamera.get());
+        std::memcpy(camera, ap.camera.pool, ap.camera.capacity * ap.camera.stride);
+        ap.app->CameraKeys() = ap.expandedCamera.get();
+    }
+    for (const SlotPatch& patch : ap.camera.chains) ApplyPatch(camera, ap.camera.stride, patch);
     for (const SlotPatch& patch : ap.light.chains) ApplyPatch(ap.light.pool, ap.light.stride, patch);
     for (const SlotPatch& patch : ap.shadow.chains) ApplyPatch(ap.shadow.pool, ap.shadow.stride, patch);
     for (const SlotPatch& patch : ap.gravity.chains) ApplyPatch(ap.gravity.pool, ap.gravity.stride, patch);
@@ -2221,7 +2344,8 @@ void RevertApp(const AppPatch& ap) {
     for (const SlotPatch& patch : ap.gravity.chains) RevertPatch(ap.gravity.pool, ap.gravity.stride, patch);
     for (const SlotPatch& patch : ap.shadow.chains) RevertPatch(ap.shadow.pool, ap.shadow.stride, patch);
     for (const SlotPatch& patch : ap.light.chains) RevertPatch(ap.light.pool, ap.light.stride, patch);
-    for (const SlotPatch& patch : ap.camera.chains) RevertPatch(ap.camera.pool, ap.camera.stride, patch);
+    if (ap.expandedCamera) ap.app->CameraKeys() = reinterpret_cast<mdl::CameraKey*>(ap.camera.pool);
+    else for (const SlotPatch& patch : ap.camera.chains) RevertPatch(ap.camera.pool, ap.camera.stride, patch);
 }
 
 // Recomputes the bookkeeping the registrars keep: the model timeline bound and
@@ -2427,6 +2551,10 @@ bool CommitBody(MMDApp& app, const PlanPtr& plan, std::wstring& error,
 
     // ---- finalize: noexcept from here on ----------------------------------
     guard.Release();
+    if (plan->app.expandedCamera) {
+        plan->app.expandedCamera.release();
+        mdl::KeyPoolReleaseOwned(reinterpret_cast<mdl::CameraKey*>(plan->app.camera.pool));
+    }
     for (const ModelPatch& mp : plan->models) {
         for (const SlotPatch& patch : mp.display.chains) ReleaseClearedPayloads(patch, mp.display);
     }

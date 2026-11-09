@@ -202,7 +202,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
             // v14 = 1/fpsLimit - delta (divss + subss, both float);
             // Sleep when cap enabled and positive.
-            float sleepSec = 1.0f / app->FpsLimit() - delta;
+            float sleepSec = 1.0f / app->EffectiveDisplayFps() - delta;
             if (app->RecordingWindow() == nullptr && sleepSec > 0.0f) {
                 DWORD pre = timeGetTime();
                 Sleep(static_cast<DWORD>(sleepSec * 1000.0f));
@@ -248,7 +248,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                         (unsigned long long)statsLoops,
                         (unsigned long long)statsMsgs,
                         (unsigned long long)statsPumps,
-                        statsPumpMs, statsSleepMs, app->FpsLimit());
+                        statsPumpMs, statsSleepMs, app->EffectiveDisplayFps());
                     std::fflush(pumpStats);
                     statsT0 += elapsed;
                     statsLoops = statsMsgs = statsPumps = 0;

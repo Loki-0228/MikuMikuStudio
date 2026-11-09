@@ -48,6 +48,7 @@
 
 #include "btBulletDynamicsCommon.h"
 #include "BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h"
+#include "playback_constraint.hpp"
 
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/model.hpp"
@@ -626,7 +627,7 @@ int CreatePhysJoint(PhysicsScene* scene, void* rbA, void* rbB,
     }
 #endif
 
-    auto* con = new btGeneric6DofSpringConstraint(             // 0x406048
+    auto* con = new PlaybackSpringConstraint(
         *static_cast<btRigidBody*>(rbA),
         *static_cast<btRigidBody*>(rbB), frameA, frameB, true);
 #if !MMD_ORIGINAL_PROFILE

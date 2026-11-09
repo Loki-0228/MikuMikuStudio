@@ -300,17 +300,90 @@ void ReloadModels(MMDApp* app) {
 }
 
 // VA 0x004175A0 - see file header.
-static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled) {
+static void AdvancePlaybackGravityTrack(MMDApp* app, double frame) {
+    auto& s = *app;
+    // ---- 4D. physics-gravity track (0x417EB1..0x41808D) -------------------
+    if (s.GravityTrackActive() != 0) {
+        mdl::GravityKey* keys = s.GravityKeys();
+        while (true) {
+            const mdl::GravityKey& key = keys[s.GravityTrackCursor()];
+            if (!(static_cast<double>(key.frame) < frame &&
+                  s.GravityTrackActive() != 0))
+                break;
+            const std::uint32_t next = key.next;
+            if (next != 0) {
+                s.GravityTrackCursor() = next;
+            } else {
+                s.GravityTrackActive() = 0;
+                s.GravityNoiseEnabled() = key.noiseEnabled;
+                s.GravityNoise() = key.noise;
+                s.GravityMagnitude() = key.acceleration;
+                std::memcpy(s.GravityDirection(), key.direction,
+                            sizeof(key.direction));
+                break;
+            }
+        }
+        if (s.GravityTrackActive() != 0) {
+            const mdl::GravityKey& current = keys[s.GravityTrackCursor()];
+            const std::uint32_t frameCur = current.frame;
+            if (frame == static_cast<double>(frameCur)) {
+                s.GravityNoiseEnabled() = current.noiseEnabled;
+                s.GravityNoise() = current.noise;
+                s.GravityMagnitude() = current.acceleration;
+                std::memcpy(s.GravityDirection(), current.direction,
+                            sizeof(current.direction));
+            } else {
+                const mdl::GravityKey& previous = keys[current.previous];
+                const std::uint32_t framePrev = previous.frame;
+                const double t =
+                    (frame - static_cast<double>(framePrev)) /
+                    static_cast<double>(frameCur - framePrev);
+                s.GravityNoiseEnabled() = previous.noiseEnabled;
+                s.GravityNoise() = previous.noise +
+                    static_cast<int>(static_cast<double>(
+                        current.noise - previous.noise) * t);
+                s.GravityMagnitude() = static_cast<float>(
+                    static_cast<double>(current.acceleration -
+                                        previous.acceleration) * t +
+                    previous.acceleration);
+                for (int axis = 0; axis < 3; ++axis) {
+                    s.GravityDirection()[axis] = static_cast<float>(
+                        static_cast<double>(current.direction[axis] -
+                                            previous.direction[axis]) * t +
+                        previous.direction[axis]);
+                }
+            }
+        }
+    }
+
+    curve_host::Apply(app, curve_host::Kind::Gravity, frame);
+}
+
+static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled,
+                                  bool physicsOnly = false) {
     auto& s = *app;
 
     app->SyncPlaybackTimeCompatibility();
 
+    const bool editGate = s.FrameStepPlayback() != 0 || s.state.optflag[0] != 0 ||
+                          s.state.followCameraEnabled != 0;
+    const bool visualOnly = !physicsOnly && advance == 0 &&
+                            modelsEnabled && s.PlaybackActive() && s.NativePhysicsMode() > 0;
+    const int physicsMode = s.NativePhysicsMode();
+    const double seconds = s.PlaybackCursorSeconds();
+
     // ---- 1. per-model keyframe application (0x4175A8) --------------------
     unsigned char** models = s.ModelSlots();
-    for (int j = 0; modelsEnabled && j < kModelSlotCount; ++j)
-        if (models[j] != nullptr)
-            AdvanceModelKeyframes(models[j], s.PlaybackCursorSeconds(),
-                      s.PlaybackPhysicsMode());
+    for (int j = 0; modelsEnabled && j < kModelSlotCount; ++j) {
+        if (models[j] == nullptr) continue;
+        if (visualOnly) SampleModelPlaybackVisual(models[j], seconds);
+        else AdvanceModelKeyframes(models[j], seconds, physicsMode);
+    }
+
+    if (physicsOnly) {
+        AdvancePlaybackGravityTrack(app, seconds * 30.0);
+        return;
+    }
 
     if (advance != 0)
         return;                                          // 0x4175DB
@@ -323,9 +396,6 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled) 
         if (scaled - std::floor(scaled) >= 0.5)
             frame = (std::floor(scaled) + 1.0) / 1000.0;
     }
-
-    const bool editGate = s.FrameStepPlayback() != 0 || s.state.optflag[0] != 0 ||
-                          s.state.followCameraEnabled != 0;
 
     // ---- 4A. camera track (0x417656..0x417A48) ----------------------------
     if (editGate && (s.CameraTrackActive() != 0 || curve_host::Has(app, curve_host::Kind::Camera))) {
@@ -359,7 +429,8 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled) 
                 s.CameraParentBone() = current.parentBone;
             } else {
                 const mdl::CameraKey& previous = keys[current.previous];
-                if (frameCur - 1 == previous.frame) {
+                if (frameCur - 1 == previous.frame &&
+                    (!app->PlaybackActive() || !app->PlaybackTiming().interpolate)) {
                     CopyCameraKey(app, previous);         // 0x4177F1
                 } else {
                     const std::uint32_t framePrev = previous.frame;
@@ -500,59 +571,10 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled) 
                 s.ShadowMode() =
                     static_cast<signed char>(previous.mode);
                 s.ShadowDistance() = previous.distance;
-            }
-        }
-    }
-
-    // ---- 4D. physics-gravity track (0x417EB1..0x41808D) -------------------
-    if (editGate && s.GravityTrackActive() != 0) {
-        mdl::GravityKey* keys = s.GravityKeys();
-        while (true) {
-            const mdl::GravityKey& key = keys[s.GravityTrackCursor()];
-            if (!(static_cast<double>(key.frame) < frame &&
-                  s.GravityTrackActive() != 0))
-                break;
-            const std::uint32_t next = key.next;
-            if (next != 0) {
-                s.GravityTrackCursor() = next;
-            } else {
-                s.GravityTrackActive() = 0;
-                s.GravityNoiseEnabled() = key.noiseEnabled;
-                s.GravityNoise() = key.noise;
-                s.GravityMagnitude() = key.acceleration;
-                std::memcpy(s.GravityDirection(), key.direction,
-                            sizeof(key.direction));
-                break;
-            }
-        }
-        if (s.GravityTrackActive() != 0) {
-            const mdl::GravityKey& current = keys[s.GravityTrackCursor()];
-            const std::uint32_t frameCur = current.frame;
-            if (frame == static_cast<double>(frameCur)) {
-                s.GravityNoiseEnabled() = current.noiseEnabled;
-                s.GravityNoise() = current.noise;
-                s.GravityMagnitude() = current.acceleration;
-                std::memcpy(s.GravityDirection(), current.direction,
-                            sizeof(current.direction));
-            } else {
-                const mdl::GravityKey& previous = keys[current.previous];
-                const std::uint32_t framePrev = previous.frame;
-                const double t =
-                    (frame - static_cast<double>(framePrev)) /
-                    static_cast<double>(frameCur - framePrev);
-                s.GravityNoiseEnabled() = previous.noiseEnabled;
-                s.GravityNoise() = previous.noise +
-                    static_cast<int>(static_cast<double>(
-                        current.noise - previous.noise) * t);
-                s.GravityMagnitude() = static_cast<float>(
-                    static_cast<double>(current.acceleration -
-                                        previous.acceleration) * t +
-                    previous.acceleration);
-                for (int axis = 0; axis < 3; ++axis) {
-                    s.GravityDirection()[axis] = static_cast<float>(
-                        static_cast<double>(current.direction[axis] -
-                                            previous.direction[axis]) * t +
-                        previous.direction[axis]);
+                if (s.PlaybackActive() && s.PlaybackTiming().interpolate &&
+                    frameCur - previous.frame == 1) {
+                    s.ShadowDistance() += static_cast<float>(frame - previous.frame) *
+                        (current.distance - previous.distance);
                 }
             }
         }
@@ -560,9 +582,7 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled) 
 
     curve_host::Apply(app, curve_host::Kind::Light, frame);
     curve_host::Apply(app, curve_host::Kind::Shadow, frame);
-    if (editGate) {
-        curve_host::Apply(app, curve_host::Kind::Gravity, frame);
-    }
+    if (editGate && !visualOnly) AdvancePlaybackGravityTrack(app, frame);
     // ---- 6. accessory tracks (0x418093..0x4184E9) ---------------------------
     for (int i = 0; i < 0xFF; ++i) {
         if (s.AccessoryTrackActive(i) == 0)
@@ -632,8 +652,19 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled) 
             accessory.opacity =
                 t * (recCur.opacity - recPrev.opacity) + recPrev.opacity;
             applyDiscreteState(recPrev);
+            if (frameCur - framePrev == 1 &&
+                s.PlaybackActive() && s.PlaybackTiming().interpolate) {
+                for (int axis = 0; axis < 3; ++axis) {
+                    accessory.position[axis] += t * (recCur.position[axis] - recPrev.position[axis]);
+                    accessory.rotation[axis] += t * (recCur.rotation[axis] - recPrev.rotation[axis]);
+                }
+            }
         }
     }
+}
+
+void AdvancePlaybackPhysicsTracks(MMDApp* app) {
+    AdvancePlaybackTracks(app, 1, true, true);
 }
 
 void PlaybackPoseAdvance(MMDApp* app, int advance) {

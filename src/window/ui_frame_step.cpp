@@ -164,7 +164,7 @@ void RefreshTimeline(MMDApp* app, bool forward) {
                     static_cast<std::uint32_t>(previous)) / 30.0;
                 if (time < 0.0)
                     time = 0.0;
-                WaveRestartAt(app->Audio(), time);
+                WaveRestartAt(app->Audio(), time / playback_timing::Speed(app->PlaybackTiming()));
             }
         }
     }

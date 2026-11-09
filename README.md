@@ -144,8 +144,11 @@ MikuMikuStudio (MMS) is a Windows desktop application for creating and editing M
 - **Models**: PMD / PMX loading (incl. BDEF4/SDEF weights), bone trees, IK,
   morphs, toon rendering
 - **Animation**: VMD load/save, VPD export, frame editor (bone / morph /
-  camera / lighting / self-made expression / accessory tracks), whole-project
-  frame-rate correction, and frame playback with physics preview
+  camera / lighting / self-made expression / accessory tracks), and frame playback with physics preview
+- **Bone box selection**: The full build uses the former Box-sel button for Scale. In Select mode, hold Shift and drag with the left mouse button in the viewport to select a box.
+- **Frame sequence scatter**: Select morph keys on at least two frames and choose Edit → Scatter selected frame sequence. Set a target range, gap, and speed. Each copy scales the selected keys’ frame offsets by the inverse speed and is placed after the previous copy. Preview / reroll regenerates the placement, and Scatter inserts it. Source keys stay intact. Conflicting or incomplete copies are skipped.
+- **Project frame rate scaling**: In Edit → Project-wide frame rate scaling, enter both rates, preview, then apply. Adjacent camera cuts are preserved by default. Compression may lose motion detail. Applying opens Save As.
+- **Real-time physics stepping**: Built-in physics uses a fixed step at 60 Hz by default. Real-time physics settings lets you adjust ERP, CFM, substeps, the base rate, and the multiplier, or follow the playback FPS.
 - **Physics**: Bullet 2.75 rigid bodies + constraints (6DOF spring),
   deterministic solve order, physics baking and per-frame bone-motion
   resampling. Supports frame ranges, ERP/CFM, substeps, simulation rate,
@@ -325,6 +328,15 @@ them by editing the code.
 - **Transparent sorting preference**: Adds five selectable sorting levels,
   including disable, to adjust transparency ordering for personal scenes.
 
+#### Playback and output frame rates
+
+- **View → Playback frame rate…** accepts integers from 1 to 240 and defaults to 30 FPS. At 60 FPS the same frame sequence plays twice as fast. The timeline adjusts its ticks and highlights the frame at each whole second.
+- **Use playback frame rate as limit** makes the display cap follow the playback FPS. Choose a fixed 30 or 60 FPS cap or the unlimited option to set the cap separately.
+- **Smooth playback above timeline FPS** is off by default. Enable it to sample supported continuous tracks between adjacent keys using their interpolation curves. Explicit Step intervals still switch directly.
+- **Video export** starts with the current playback range and remembers the last confirmed output FPS during the session. Playback FPS determines the duration, and output FPS determines how often frames are sampled.
+
+Playback and display settings apply to the current session.
+
 ### Contributions
 
 This project modifies code that [XiaHan](https://blog.han.moe)
@@ -368,7 +380,11 @@ MikuMikuStudio（MMS）是用于制作和编辑 MMD 舞蹈动画的 Windows 桌�
 
 - **模型**：PMD / PMX（含 BDEF4/SDEF 权重）加载，骨骼树、IK、形态（morph）、toon 渲染
 - **动画**：VMD 加载/保存、VPD 导出、帧编辑器（骨骼/形态/相机/照明/自作表情/附件轨道）、
-  整个工程的帧率修正、帧回放与物理预览
+  帧回放与物理预览
+- **骨骼框选**：完整版的「框选」按钮现为「缩放」。在「选择」模式下，按住 Shift 并在视口内用鼠标左键拖动即可框选骨骼。
+- **帧序列散布**：选中至少两帧的表情关键帧，打开「编辑 → 选中帧序列散布」。设置目标范围、片段间隔和速度。每份副本按速度缩放帧间距，再依次排布。「预览 / 重新随机」重算位置，「散布」插入副本。原帧保留，冲突或放不完整的副本会跳过。
+- **全工程帧率缩放**：在「编辑」中填写原帧率和现帧率，先预览再应用。默认保留相邻镜头的直接切换。压缩可能损失动作细节，应用后打开工程另存为。
+- **实时物理步进**：内置物理默认以独立的 60 Hz 固定步长计算。「物理计算 → 实时物理设置」可调整 ERP、CFM、子步数、基准频率及倍率，也可跟随播放帧率。
 - **物理**：Bullet 2.75 刚体与约束（6DOF spring），确定性求解顺序；支持烧录物理结果和逐帧重采样骨骼动作。可设置帧范围、ERP、CFM、子步数和计算频率，支持撤销、取消及 UTF-8 非加密 JSON 预设。界面提供中英日三语和悬浮说明，初始值采用 Bullet 默认参数。见[物理烧录](docs/guides/physics-baking.md)
 - **网格烧录与导出**：Alembic 可导出包含 MME 顶点变形的网格；导出 ABC 与烧录回工程可分别选择，只有选择烧录时才提示影响。清除网格烧录可恢复当前模型或全部对象的实时变形，已停用的 FX 保持关闭。见[网格导出与烧录](docs/guides/mesh-export.md)
 - **渲染**：原生 DX12 预览与 GPU 蒙皮；DX12 不可用时回退到 DX9/CPU。支持 MME Effect、toon 纹理、地面阴影、立体视觉（NVIDIA 3D Vision），并可分别选择主渲染和顶点计算设备
@@ -543,6 +559,15 @@ ctest --test-dir build -C Release -R keyboard_input_regressions --output-on-fail
   和 `A/S/D/F/G/H/I/J/K/L/U/V/X/Z/B/C/R`；在编辑框内输入文字时除外。
 - **透明排序偏好**：增加关闭、低、标准、高、最高五档，便于按个人场景调整透明排序。
 
+#### 播放与输出帧率
+
+- **显示 → 播放帧率…** 默认 30 FPS，只接受 1–240 的整数。设为 60 FPS 时，同一段帧序列以默认速度的两倍播放。时间轴刻度随播放帧率调整，每个整秒对应的帧以重点色标出。
+- **采用播放帧率作为上限** 让显示帧率上限跟随播放帧率。也可选择固定的 30、60 FPS 上限，或选择不限帧率。
+- **连续帧超帧率优化** 默认关闭。开启后，支持的连续通道会按补间曲线在相邻关键帧之间取样。显式设为直接切换的区间仍会跳变。
+- **视频输出** 会带入当前播放范围，并在本次运行内记住上次确认的输出帧率。播放帧率决定片段时长，输出帧率决定每秒取样多少张画面。
+
+播放与显示设置在本次运行内生效。
+
 ### 项目来源与维护
 
 本项目在 [XiaHan](https://blog.han.moe) 对 mmd932 32 位原版逆向并重构的代码基础上修改。
@@ -583,7 +608,11 @@ MikuMikuStudio（MMS）は、MMD のダンスアニメーションを制作・�
   モーフ、トゥーンレンダリング
 - **アニメーション**：VMD 読み込み／保存、VPD エクスポート、フレームエディタ
   （ボーン／モーフ／カメラ／照明／自作表情／アクセサリトラック）、物理プレビュー付き
-  フレーム再生、プロジェクト全体のフレームレート修正
+  フレーム再生
+- **ボーンの範囲選択**：完全版では従来の「BOX選択」ボタンが「拡縮」になりました。「選択」モードで Shift を押しながら、ビューポート上でマウスの左ボタンをドラッグすると範囲選択できます。
+- **選択フレーム列を散布**：少なくとも 2 フレームのモーフのキーを選び、「編集 → 選択フレーム列を散布」を開きます。範囲、コピー間隔、速度を指定します。キー間隔を速度に応じて伸縮し、コピーを順に配置します。「再ランダム化」で配置を確認し、「散布」で挿入します。元のキーは保持され、衝突するコピーや範囲に収まらないコピーは省かれます。
+- **プロジェクト全体のフレームレート拡縮**：「編集」で変換前後の FPS を入力し、プレビューして適用します。隣接するカメラのカットは既定で保持します。圧縮で動きが失われる場合があり、適用後は「名前を付けて保存」が開きます。
+- **リアルタイム物理演算**：内蔵物理は既定で 60 Hz の固定ステップで計算します。「リアルタイム物理演算設定」で ERP、CFM、サブステップ、基準周波数、倍率を調整したり、再生 FPS に合わせたりできます。
 - **物理**：Bullet 2.75 剛体とコンストレイント（6DOF スプリング）、決定論的な求解順序。物理結果のベイクとボーン動作のフレーム単位再サンプリングにも対応します。フレーム範囲、ERP、CFM、サブステップ、計算周波数を設定でき、取り消し・キャンセルと暗号化しない UTF-8 JSON プリセットを利用できます。UI とツールチップは日英中に対応し、初期値は Bullet の既定値です。[物理ベイク](docs/guides/physics-baking.md)
 - **メッシュベイクと出力**：Alembic は MME の頂点変形を含むメッシュを出力します。ABC 出力とプロジェクトへのベイクは個別に選択でき、ベイクを選んだ場合だけ影響を警告します。メッシュベイク解除で選択モデルまたは全オブジェクトの変形を元に戻し、無効化済み FX は無効のままです。[メッシュ出力・ベイク](docs/guides/mesh-export.md)
 - **レンダリング**：ネイティブ DX12 プレビューと GPU スキニングに対応し、DX12 が使えない場合は DX9/CPU にフォールバックします。MME Effect、トゥーンテクスチャ、地面影、立体視（NVIDIA 3D Vision）をサポートし、メイン描画と頂点計算のデバイスを個別に選べます。
@@ -709,6 +738,15 @@ cmake --install build --config Release --prefix build/Release
   英字ショートカット（P 再生／停止、ほか A/S/D/F/G/H/I/J/K/L/U/V/X/Z/B/C/R）が有効です
   （テキスト入力欄を除く）。
 - **透明ソート設定**：個人のシーンに合わせて、無効・低・標準・高・最高の五段階を選べます。
+
+#### 再生と出力のフレームレート
+
+- **表示 → 再生フレームレート…** の既定値は 30 FPS で、1～240 の整数を入力できます。60 FPS では同じフレーム列を既定の 2 倍の速さで再生します。タイムラインの目盛りは再生 FPS に合わせて変わり、毎秒の位置を強調表示します。
+- **再生フレームレートを上限にする** では、表示 FPS の上限を再生 FPS に合わせます。上限は 30 FPS、60 FPS、無制限からも選べます。
+- **再生フレーム間を補間する** は既定で無効です。有効にすると、対応する連続チャンネルは隣接キー間を補間カーブで評価します。明示的な Step 区間は直接切り替わります。
+- **動画出力** ダイアログには現在の再生範囲が入り、その起動中は最後に確定した出力 FPS を記憶します。再生 FPS が長さを、出力 FPS が 1 秒あたりのサンプル数を決めます。
+
+再生と表示の設定は、その起動中に有効です。
 
 ### 貢献
 

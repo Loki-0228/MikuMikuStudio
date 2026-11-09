@@ -90,7 +90,7 @@ LRESULT CALLBACK PreviewIdle(HWND window, UINT message, WPARAM wp, LPARAM lp,
     auto& session = *reinterpret_cast<PreviewSession*>(data);
     if (message == WM_ENTERIDLE && wp == MSGF_DIALOGBOX &&
         reinterpret_cast<HWND>(lp) == session.dialog && IsWindow(session.dialog)) {
-        const double cap = session.app->FpsLimit();
+        const double cap = session.app->EffectiveDisplayFps();
         const double elapsed = std::chrono::duration<double>(Clock::now() - session.lastFrame).count();
         const double remaining = cap > 0 ? 1.0 / cap - elapsed : 0;
         const DWORD waitMs = remaining > 0 ? DWORD(remaining * 1000) : 0;

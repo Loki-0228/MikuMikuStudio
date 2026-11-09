@@ -59,7 +59,7 @@ bool Blocked(MMDApp* app) {
 }
 DWORD Period(MMDApp* app) {
     if (Exporting(app)) return 1;
-    float fps = app->FpsLimit();
+    float fps = app->EffectiveDisplayFps();
     if (!std::isfinite(fps) || fps < 1) fps = 60;
     return std::clamp<DWORD>(DWORD(1000.0f / fps), 1, 1000);
 }

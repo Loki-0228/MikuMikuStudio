@@ -64,6 +64,17 @@ template<class Key> Key* KeyPoolCreate(std::size_t count = KeyPoolStorage<Key>::
     return pool;
 }
 
+// A transactional replacement is private until installation and may need to
+// build authored state before the old allocation can be released.
+template<class Key> void KeyPoolInheritIdentity(const Key* previous, Key* staged) noexcept {
+    std::lock_guard<std::mutex> lock(KeyPoolStorage<Key>::mutex);
+    auto& map = KeyPoolStorage<Key>::capacities;
+    const auto old = map.find(previous);
+    const auto replacement = map.find(staged);
+    if (old != map.end() && replacement != map.end())
+        replacement->second.identity = old->second.identity;
+}
+
 // Commit a fully initialized registered replacement. This transfers the old
 // registered identity without allocating. Borrowed pools are left to their
 // owner and the replacement retains its newly allocated identity.

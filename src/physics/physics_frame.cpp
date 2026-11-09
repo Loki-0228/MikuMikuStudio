@@ -86,6 +86,7 @@
 #include "mikumikustudio/dynamics_world.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "../app/frame_state_dump.hpp"
+#include "playback_constraint.hpp"
 
 namespace mikumikustudio {
 
@@ -952,13 +953,43 @@ void ModelPhysicsReadback(unsigned char* m) {
     physics_scale::FinishReadback(m);
 }
 
+static void ResetTimelineWorld(btDiscreteDynamicsWorld& world) {
+    if (auto* dynamics = dynamic_cast<DynamicsWorld*>(&world)) dynamics->ResetLocalTime();
+    world.getConstraintSolver()->reset();
+    auto& objects = world.getCollisionObjectArray();
+    for (int i = 0; i < objects.size(); ++i) {
+        auto* body = btRigidBody::upcast(objects[i]);
+        if (!body || (body->isStaticObject() && !body->isKinematicObject())) continue;
+        if (body->isKinematicObject() && body->getMotionState()) {
+            btTransform pose;
+            body->getMotionState()->getWorldTransform(pose);
+            ReseatRigidBody(body, pose);
+        }
+        body->setInterpolationWorldTransform(body->getWorldTransform());
+        body->clearForces();
+        body->activate(true);
+    }
+    auto* dispatcher = world.getDispatcher();
+    for (int i = 0; i < dispatcher->getNumManifolds(); ++i)
+        dispatcher->clearManifold(dispatcher->getManifoldByIndexInternal(i));
+}
+
 // Physics section of the FrameDriver (original 0x46F0D0..0x46FEB8 core).
-// One shared Bullet world steps at a fixed 1/60 with a 10-substep cap;
-// kinematic bodies are pushed from the bones before the step and the
-// dynamic result is read back after the settle iterations.
-void PhysicsFrame(MMDApp* app, unsigned char selActive) {
+// The timeline scheduler drives the native world in fixed steps. A visual
+// pass reuses the last simulated pose without updating the rigid bodies.
+static void RunPhysicsFrame(MMDApp* app, unsigned char selActive, float timelineStep) {
+    auto& s = *app;
+    const bool timeline = timelineStep >= 0.f;
+    const bool initializing = timeline && timelineStep == 0.f;
+    const bool visualOnly = s.PlaybackActive() && !timeline;
+    auto* trackedModel = s.PlaybackActive() && selActive && !s.state.optflag[0] && !s.FrameStepPlayback()
+        ? s.SelectedModel() : nullptr;
+    auto* skippedModel = timeline && !initializing ? trackedModel : nullptr;
     for (int slot=0; slot<kModelSlotCount; ++slot)
-        if (auto* model=app->ModelSlot(slot)) { bone_scale::RestoreTransforms(model); physics_scale::Sync(model); }
+        if (auto* model=app->ModelSlot(slot)) {
+            bone_scale::RestoreTransforms(model);
+            if (!visualOnly && model != skippedModel) physics_scale::Sync(model);
+        }
     // Bisect switch for the crash investigation: with MIKUMIKUSTUDIO_SKIP_PHYSICS
     // set, this frame's whole physics update (kinematic sync, stepSimulation and
     // readback) is a no-op.  If the heap-corruption crashes disappear, the
@@ -973,7 +1004,6 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     }();
     if (skipPhysics)
         return;
-    auto& s = *app;
     // ---- gate A: the shared message-seen / pump counter ------------------
     // ONE field in both originals (x64 app+0xA1E18 / x86 app+0xA0D6C =
     // state.messageSeen), with three jobs: the Present gate in section 9 of
@@ -994,7 +1024,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     // (PlaybackCatchup is not behind this gate in the port: the x64
     // catch-up blocks share it but can only run while playing, which
     // already holds the counter open.)
-    if (s.state.messageSeen == 0)
+    if (!timeline && s.state.messageSeen == 0)
         return;                       // 0x7FF7CB44B8E7 -> 0x7FF7CB44C8D6
     ui_metrics::Add(ui_metrics::Physics);
     PhysicsScene* scene = s.Physics();
@@ -1004,6 +1034,19 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     if (world == nullptr)
         return;
     const int count = s.NativePhysicsMode();
+    const auto& timing = s.PlaybackTiming();
+    const float fixedStep = 1.f / playback_timing::PhysicsRate(timing);
+    if (!visualOnly && count > 0) {
+        auto& solver = world->getSolverInfo();
+        solver.m_erp = timing.physics.erp;
+        solver.m_globalCfm = timing.physics.cfm;
+        for (int i = 0; i < world->getNumConstraints(); ++i)
+            if (auto* joint = dynamic_cast<PlaybackSpringConstraint*>(world->getConstraint(i)))
+                joint->SetCfm(timing.physics.cfm);
+    }
+    const auto windRandom = [&] {
+        return timeline ? s.PlaybackPhysicsClock().NextWindRandom() : std::rand();
+    };
     // ---- random-wind / gravity-noise block (0x46F582..0x46F6B4) ----------
     // With the noise mode byte 0xA0CD4 set, this REPLACES the normal
     // per-pass gravity apply (both branches jump to 0x46F7DB, right past
@@ -1026,13 +1069,13 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     // arithmetic precision differs (see the #if paths).
     // Vector element order is (0x9EDB8, 0x9EDBC, 0x9EDC0, 0).
     bool windRan = false;
-    if (count > 0 && s.state.gravityNoiseEnabled != 0) {
+    if (!visualOnly && !initializing && count > 0 && s.state.gravityNoiseEnabled != 0) {
         // x64 0x7FF7CB44BEA4..0x7FF7CB44BEC9: the timer accumulates with a
         // single float add (addss, result stored back unconditionally) and
         // the compare is `comiss xmm0,[0x7FF7CB55298C=0.5f]; jbe skip` -
         // the perturbation fires only when the timer is STRICTLY greater
         // than 0.5; an exactly-0.5 timer does not fire.
-        s.state.gravityNoiseTimer = s.state.gravityNoiseTimer + s.DeltaTime();
+        s.state.gravityNoiseTimer += timeline ? timelineStep : s.DeltaTime();
         if (s.state.gravityNoiseTimer > 0.5f) {                          // flt_52960C
 #if defined(_MSC_VER) && defined(_M_IX86)
             // x87 transcription of 0x46F5BA..0x46F66E: every intermediate
@@ -1045,8 +1088,8 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
             static const double kRandMax = 32767.0;     // dbl_52E9F8
             static const double kNoise = 0.20000000298023224;   // 52E9F0
             static const double kOffset = 0.10000000149011612;  // 52BEA8
-            int rStrength = std::rand(), rX = std::rand(),
-                rY = std::rand(), rZ = std::rand();
+            int rStrength = windRandom(), rX = windRandom(),
+                rY = windRandom(), rZ = windRandom();
             float strengthF, e0, e1, e2;
             const float dirX = s.GravityX(),
                         dirY = s.GravityY(),
@@ -1089,7 +1132,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
             // axis mulss 0.2f / divss 32767.0f / subss 0.1f / addss dir /
             // mulss strength.  The strength stays a float value end to
             // end (no double round-trip).
-            const int rStrength = std::rand();
+            const int rStrength = windRandom();
             const float noise =
                 static_cast<float>(s.GravityNoise());
             const float gravmag = s.GravityMagnitude();
@@ -1097,13 +1140,13 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
                 ((static_cast<float>(rStrength) * 10.0f) / 32767.0f) *
                     noise + gravmag;
             const float e0 =
-                ((static_cast<float>(std::rand()) * 0.2f) / 32767.0f -
+                ((static_cast<float>(windRandom()) * 0.2f) / 32767.0f -
                  0.1f + s.GravityX()) * strength;
             const float e1 =
-                ((static_cast<float>(std::rand()) * 0.2f) / 32767.0f -
+                ((static_cast<float>(windRandom()) * 0.2f) / 32767.0f -
                  0.1f + s.GravityY()) * strength;
             const float e2 =
-                ((static_cast<float>(std::rand()) * 0.2f) / 32767.0f -
+                ((static_cast<float>(windRandom()) * 0.2f) / 32767.0f -
                  0.1f + s.GravityZ()) * strength;
             world->setGravity(btVector3(e0, e1, e2));
             s.state.gravityNoiseTimer = 0.0f;                     // 0x46F6AC
@@ -1120,7 +1163,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     // precision, one rounding per multiply.  The wind block above jumps
     // to 0x46F7DB - right past this setGravity - and physics-off
     // (A0CC4<=0) skips both.
-    if (count > 0 && !windRan) {
+    if (!visualOnly && count > 0 && !windRan) {
         float dir[3] = {s.state.gravityX,
                         s.state.gravityY,
                         s.state.gravityZ};
@@ -1177,7 +1220,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     // the world four times per frame instead of once (proven by the
     // body-3 origin write-watch: original alternates proceed/sync, the
     // port emitted two proceedToTransform writes per sync).
-    if (selActive != 0 &&
+    if (!visualOnly && selActive != 0 &&
         s.state.optflag[0] == 0 &&        // 0x2F8 model-mode flag
         s.state.frameStepPlayback == 0) {     // 0x9ED90 frame-step flag
         // 0x46F7FF / x64 0x7FF7CB44C12E: `cmp [app+0xA137C],0 / jnz` -
@@ -1213,14 +1256,14 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
                 (int)(s.PhysicsResetPending() != 0), count,
                 localBits);
     }
-    auto stepWorld = [world, &stepCount, &stepLabels](const char* label) {
+    auto stepWorld = [world, fixedStep, &stepCount, &stepLabels](const char* label) {
         if (stepCount < 16) stepLabels[stepCount] = label;
         ++stepCount;
-        world->stepSimulation(1.0f / 60.0f, 10, 1.0f / 60.0f);  // 0x46F206
+        world->stepSimulation(fixedStep, 1, fixedStep);  // 0x46F206
     };
 #else
-    auto stepWorld = [world](const char*) {
-        world->stepSimulation(1.0f / 60.0f, 10, 1.0f / 60.0f);  // 0x46F206
+    auto stepWorld = [world, fixedStep](const char*) {
+        world->stepSimulation(fixedStep, 1, fixedStep);  // 0x46F206
     };
 #endif
 
@@ -1249,7 +1292,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
 
     // Per-model morph application + pose source selection, ordered by the
     // PMM model-display order (the x86 field was model+0x2D7D).
-    const int posePassMode = s.PhysicsResetPending() != 0
+    const int posePassMode = !visualOnly && s.PhysicsResetPending() != 0
                        ? 0
                        : count;
     // x64 pump sub_7FF7CB4474F0: both pose passes run order and slot walks
@@ -1260,12 +1303,15 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     for (int order = 0; order <= kModelSlotCount; ++order) {
         for (int j = 0; j < kModelSlotCount; ++j) {
             unsigned char* mdl = models[j];
-            if (mdl != nullptr && mdl::Mdl(mdl)->comboSelIndex2 == order) {
+            if (mdl != nullptr && mdl != skippedModel && mdl::Mdl(mdl)->comboSelIndex2 == order) {
                 ModelApplyMorphs(mdl);                            // 0x46FCB1
                 SetPhysicsMode(mdl, 0, models, posePassMode);
             }
         }
     }
+    // Kinect publishes its latest pose after playback catch-up. Stage that
+    // kinematic input for the next simulation tick without stepping here.
+    if (visualOnly && trackedModel && count > 0) ModelKinematicSync(trackedModel);
 #ifdef MIKUMIKUSTUDIO_DIAG
     if (captureStages)
         DumpFrameEntryState(app, "physics_pose0.json", false);
@@ -1294,7 +1340,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     // normal setGravity (handled by the !windRan gate above).  The world
     // pass itself runs identically with or without wind - do NOT add
     // !windRan here, that freezes physics while the noise mode is active.
-    if (runWorldPass && !idleNoStep &&
+    if (!visualOnly && runWorldPass && !idleNoStep &&
         s.state.frameCopyDialog == 0) {
         // Third bisect level (crash investigation): with
         // MIKUMIKUSTUDIO_SKIP_PHYSICS_SYNC set, only the per-model kinematic
@@ -1309,7 +1355,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
         }();
         // x64 twin: 255 count-down walk (mov edi, 0FFh at 0x7FF7CB44C74B).
         for (int j = 0; j < kModelSlotCount; ++j)
-            if (models[j] != nullptr && !skipSync)
+            if (models[j] != nullptr && models[j] != skippedModel && !skipSync)
                 ModelKinematicSync(models[j]);              // 0x46FD4D
 #ifdef MIKUMIKUSTUDIO_DIAG
         if (captureStages)
@@ -1322,8 +1368,8 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
         // timeStep (fixedTimeStep stays flt_52EA00 = 1/60).  In the
         // moved && count==3 path (0x46FD7F) BOTH the main and extra
         // steps push flt_52EA00 - var_14C8 is skipped entirely there.
-        const float mainDt =
-            (moved && count == 3) ? (1.0f / 60.0f) : mainTimeStep;
+        const float mainDt = timeline ? timelineStep :
+            (moved && count == 3) ? fixedStep : mainTimeStep;
 #ifdef MIKUMIKUSTUDIO_DIAG
         if (stepCount < 16) stepLabels[stepCount] = "main";
         ++stepCount;
@@ -1337,11 +1383,14 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
                                            value, sizeof(value)) > 0 &&
                    value[0] != '\0' && value[0] != '0';
         }();
-        if (!skipStep) {
+        if (initializing) ResetTimelineWorld(*world);
+        if (!skipStep && !initializing) {
             MMD_PERF_SCOPE(PhysicsStep);
-            world->stepSimulation(mainDt, 10, 1.0f / 60.0f);
+            const int idleLimit = std::clamp(playback_timing::PhysicsRate(timing) / 6, 10, 8192);
+            const int maxSteps = timeline ? 1 : idleLimit;
+            world->stepSimulation(mainDt, maxSteps, fixedStep);
         }
-        if (moved && count == 3)
+        if (!timeline && moved && count == 3)
             stepWorld("extra");                              // 0x46FD97
 #ifdef MIKUMIKUSTUDIO_DIAG
         if (captureStages)
@@ -1354,7 +1403,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
             for (int iter = 3; iter >= 1; --iter) {
                 // x64 twin: 255 count-down walk (mov edi, 0FFh at 0x7FF7CB44C7E8).
                 for (int j = 0; j < kModelSlotCount; ++j)
-                    if (models[j] != nullptr)
+                    if (models[j] != nullptr && models[j] != skippedModel)
                         ModelDynamicReseat(models[j]);      // 0x46FDF7
 #ifdef MIKUMIKUSTUDIO_DIAG
                 if (captureStages) {
@@ -1421,7 +1470,7 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     for (int order = 0; order <= kModelSlotCount; ++order) {
         for (int j = 0; j < kModelSlotCount; ++j) {
             unsigned char* mdl = models[j];
-            if (mdl != nullptr && mdl::Mdl(mdl)->comboSelIndex2 == order) {
+            if (mdl != nullptr && mdl != skippedModel && mdl::Mdl(mdl)->comboSelIndex2 == order) {
                 ModelApplyMorphs(mdl);                            // 0x46FE93
                 SetPhysicsMode(mdl, 1, models, count);
             }
@@ -1435,6 +1484,14 @@ void PhysicsFrame(MMDApp* app, unsigned char selActive) {
     if (captureStages)
         DumpFrameEntryState(app, "physics_pose1.json", false);
 #endif
+}
+
+void PhysicsFrame(MMDApp* app, unsigned char selActive) {
+    RunPhysicsFrame(app, selActive, -1.f);
+}
+
+void StepPlaybackPhysics(MMDApp* app, unsigned char selActive, float seconds) {
+    RunPhysicsFrame(app, selActive, seconds);
 }
 
 }  // namespace mikumikustudio

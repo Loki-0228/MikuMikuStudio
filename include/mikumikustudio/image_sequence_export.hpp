@@ -22,6 +22,7 @@ struct Options {
     int start = 0, end = 0;
     float fps = 30;
     bool closeAfterExport = false;
+    int playbackFps = 30;
 };
 int FormatFromPath(const wchar_t*);
 bool SupportsAlpha(int format);

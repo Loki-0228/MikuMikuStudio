@@ -186,7 +186,8 @@ void PrepareFrameTextOverlay(MMDApp* app) {  // 0x423420
             xOffset += width;
         };
         glyph(160, 127, 75.0f);
-        const int seconds = static_cast<int>(app->PlaybackCursorSeconds());
+        const int seconds = static_cast<int>(app->PlaybackCursorSeconds() /
+            playback_timing::Speed(app->PlaybackTiming()));
         const int parts[] = {seconds / 3600, (seconds / 60) % 60, seconds % 60};
         for (int i = 0; i < 3; ++i) {
             char timePart[32]{};

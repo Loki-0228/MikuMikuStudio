@@ -1,6 +1,6 @@
-// MMS addition: the floating window behind "Edit -> Correct by frame rate...".
+// Floating window for project-wide frame rate scaling.
 //
-// The window owns the two frame-rate fields, the Preview and Apply buttons, the
+// The window owns the frame-rate controls, the Preview and Apply buttons, the
 // report area and the Copy report button; the conversion itself lives in the
 // backend declared by frame_rate_correction.hpp.  This file never applies
 // anything on its own and never writes a file:
@@ -14,7 +14,7 @@
 //     states that the result is in memory only, and then calls RequestSaveAs
 //     once so the backend can run the real Save As flow.  No second
 //     confirmation is shown and nothing here claims the project was saved.
-//   * Editing either frame rate drops the stored plan, clears the report area
+//   * Editing a conversion option drops the stored plan, clears the report area
 //     and disarms Apply.
 //   * Close (and the system close button) only closes the window.
 //
@@ -66,8 +66,7 @@ namespace {
 // Control ids (private to this window; the ids are not part of the interface).
 // ---------------------------------------------------------------------------
 enum : int {
-    kIdTop = 1300,
-    kIdOriginalLabel,
+    kIdOriginalLabel = 1301,
     kIdOriginalEdit,
     kIdCurrentLabel,
     kIdCurrentEdit,
@@ -78,6 +77,7 @@ enum : int {
     kIdReport,
     kIdStatus,
     kIdHint,
+    kIdDirectAdjacentFrames,
 };
 
 // ---------------------------------------------------------------------------
@@ -94,27 +94,25 @@ const wchar_t* Tr(unsigned language, const Text& text) {
     return language == 0 ? text.ja : language == 1 ? text.en : text.zh;
 }
 
-const Text kTitle{L"フレームレートで補正", L"Correct by frame rate",
-                  L"根据帧率修正"};
-const Text kMenuText{L"フレームレートで補正…", L"Correct by frame rate…",
-                     L"根据帧率修正…"};
+const Text kTitle{L"プロジェクト全体のフレームレートを拡縮", L"Project-wide frame rate scaling",
+                  L"全工程帧率缩放"};
+const Text kMenuText{L"プロジェクト全体のフレームレートを拡縮…", L"Project-wide frame rate scaling…",
+                     L"全工程帧率缩放…"};
 const Text kOriginalLabel{L"元のFPS", L"Original FPS", L"原帧率"};
 const Text kCurrentLabel{L"現在のFPS", L"Current FPS", L"现帧率"};
+const Text kDirectAdjacentFrames{L"連続フレームを直接切り替える", L"Switch adjacent frames directly",
+                                 L"连续帧直接切换"};
 const Text kPreviewText{L"プレビュー", L"Preview", L"预览"};
 const Text kApplyText{L"適用", L"Apply", L"应用"};
 const Text kCopyText{L"レポートをコピー", L"Copy report", L"复制报告"};
 const Text kCloseText{L"閉じる", L"Close", L"关闭"};
 
-// The one line at the top: the scope and the anchor, nothing else.
-const Text kTopLine{L"プロジェクト全体を換算します（拡縮の中心はフレーム 0）。",
-                    L"Converts the whole project; scaling is centered on frame 0.",
-                    L"换算整个工程，缩放中心为帧 0。"};
 // The one line at the bottom, kept deliberately short: what happens after
 // Apply, and the one thing about the conversion a user has to know up front.
 const Text kHint{
-    L"適用後は自動で「名前を付けて保存」を開きます。同じフレームのキーは統合されます。",
-    L"Save As opens automatically after applying; keys on the same frame merge.",
-    L"应用后自动另存为；同帧关键帧会合并。"};
+    L"圧縮すると動きが失われる場合があります。適用後はプロジェクトの「名前を付けて保存」を自動で開きます。",
+    L"Compression may lose motion detail. Save As opens for the project after applying.",
+    L"压缩可能造成动作损失，应用后自动另存为工程。"};
 
 const Text kReady{L"「プレビュー」で変更内容を確認できます。",
                   L"Press Preview to see what the conversion would change.",
@@ -152,6 +150,7 @@ const Text kReportTooLarge{L"レポートが大きすぎて表示できません
 
 const Text kInputKeys{L"入力キー", L"Input keys", L"输入关键帧"};
 const Text kOutputKeys{L"出力キー", L"Output keys", L"输出关键帧"};
+const Text kInsertedHoldKeys{L"追加したカット保持キー", L"Added camera hold keys", L"新增镜头保持帧"};
 const Text kMergeGroups{L"統合グループ", L"Merge groups", L"合并组"};
 const Text kMergedKeys{L"統合されたキー", L"Merged keys", L"合并的键"};
 const Text kRoundedKeys{L"整数化したキー", L"Rounded keys", L"取整的关键帧"};
@@ -320,6 +319,12 @@ std::wstring SummaryText(unsigned language, const Rates& rates,
                number(report.outputKeys));
     text += line;
     text += L"\r\n";
+    if (report.insertedHoldKeys != 0) {
+        swprintf_s(line, L"%ls %llu", Tr(language, kInsertedHoldKeys),
+                   number(report.insertedHoldKeys));
+        text += line;
+        text += L"\r\n";
+    }
     swprintf_s(line, L"%ls %llu / %ls %llu", Tr(language, kMergeGroups),
                number(report.mergeGroups), Tr(language, kMergedKeys),
                number(report.mergedKeys));
@@ -460,11 +465,11 @@ bool CopyTextToClipboard(HWND owner, const std::wstring& text) {
 struct Metric {
     int clientW = 0;
     int clientH = 0;
-    RECT top{};
     RECT originalLabel{};
     RECT originalEdit{};
     RECT currentLabel{};
     RECT currentEdit{};
+    RECT directAdjacentFrames{};
     RECT preview{};
     RECT apply{};
     RECT copy{};
@@ -495,6 +500,8 @@ Metric ComputeMetric() {
     HDC dc = GetDC(nullptr);
     int labelW = 0, fieldW = 64, buttonRowW = 0, lineH = 16, wordH = 0;
     int previewW = 0, applyW = 0, copyW = 0, closeW = 0;
+    int directAdjacentW = 0;
+    const int checkPadding = GetSystemMetrics(SM_CXMENUCHECK) + 12;
     for (unsigned language = 0; language < 3; ++language) {
         HFONT font = MakeFont(language);
         HGDIOBJ previous = SelectObject(dc, font);
@@ -504,6 +511,8 @@ Metric ComputeMetric() {
         labelW = std::max(labelW, TextWidth(dc, Tr(language, kOriginalLabel)));
         labelW = std::max(labelW, TextWidth(dc, Tr(language, kCurrentLabel)));
         fieldW = std::max(fieldW, TextWidth(dc, L"1000") + kFieldPad);
+        directAdjacentW = std::max(directAdjacentW,
+            TextWidth(dc, Tr(language, kDirectAdjacentFrames)) + checkPadding);
         previewW = std::max(previewW, ButtonWidth(dc, language, kPreviewText));
         applyW = std::max(applyW, ButtonWidth(dc, language, kApplyText));
         copyW = std::max(copyW, ButtonWidth(dc, language, kCopyText));
@@ -514,12 +523,11 @@ Metric ComputeMetric() {
         DeleteObject(font);
     }
     const int labelColumn = labelW + kLabelPad;
-    const int innerW = std::max(
-        kMinInnerW, std::max(labelColumn + kLabelFieldGap + fieldW, buttonRowW));
+    const int fieldsW = labelColumn + kLabelFieldGap + fieldW;
+    const int innerW = std::max({kMinInnerW, fieldsW + kGap + directAdjacentW, buttonRowW});
     for (unsigned language = 0; language < 3; ++language) {
         HFONT font = MakeFont(language);
         HGDIOBJ previous = SelectObject(dc, font);
-        wordH = std::max(wordH, WrappedHeight(dc, Tr(language, kTopLine), innerW));
         wordH = std::max(wordH, WrappedHeight(dc, Tr(language, kHint), innerW));
         SelectObject(dc, previous);
         DeleteObject(font);
@@ -528,8 +536,6 @@ Metric ComputeMetric() {
     const int reportH = kReportLines * lineH;
     const int statusH = lineH + 6;
     int y = kPad;
-    metric.top = {kPad, y, kPad + innerW, y + wordH + 2};
-    y += wordH + 2 + kGap;
     metric.originalLabel = {kPad, y + 2, kPad + labelColumn, y + kRowH};
     metric.originalEdit = {kPad + labelColumn + kLabelFieldGap, y,
                            kPad + labelColumn + kLabelFieldGap + fieldW, y + kRowH};
@@ -537,6 +543,8 @@ Metric ComputeMetric() {
     metric.currentLabel = {kPad, y + 2, kPad + labelColumn, y + kRowH};
     metric.currentEdit = {kPad + labelColumn + kLabelFieldGap, y,
                           kPad + labelColumn + kLabelFieldGap + fieldW, y + kRowH};
+    const int optionX = kPad + fieldsW + kGap;
+    metric.directAdjacentFrames = {optionX, y, optionX + directAdjacentW, y + kRowH};
     y += kRowH + kGap;
     int x = kPad;
     metric.preview = {x, y, x + previewW, y + kButtonH};
@@ -572,11 +580,11 @@ void Place(HWND control, const RECT& rect) {
 
 void ApplyLayout(HWND window) {
     const Metric& metric = Metrics();
-    Place(GetDlgItem(window, kIdTop), metric.top);
     Place(GetDlgItem(window, kIdOriginalLabel), metric.originalLabel);
     Place(GetDlgItem(window, kIdOriginalEdit), metric.originalEdit);
     Place(GetDlgItem(window, kIdCurrentLabel), metric.currentLabel);
     Place(GetDlgItem(window, kIdCurrentEdit), metric.currentEdit);
+    Place(GetDlgItem(window, kIdDirectAdjacentFrames), metric.directAdjacentFrames);
     Place(GetDlgItem(window, kIdPreview), metric.preview);
     Place(GetDlgItem(window, kIdApply), metric.apply);
     Place(GetDlgItem(window, kIdCopy), metric.copy);
@@ -647,6 +655,7 @@ void SetStatus(HWND window, Instance& instance, StatusKind status,
 
 void UpdateEnabledState(HWND window, Instance& instance) {
     const bool available = Available(instance.app);
+    EnableWindow(GetDlgItem(window, kIdDirectAdjacentFrames), available);
     EnableWindow(GetDlgItem(window, kIdPreview), available ? TRUE : FALSE);
     EnableWindow(GetDlgItem(window, kIdApply),
                  (available && instance.plan != nullptr) ? TRUE : FALSE);
@@ -705,12 +714,13 @@ void SetLanguage(HWND window, Instance& instance, unsigned language) {
         ApplyFieldMargins(window);
     }
     SetWindowTextW(window, Tr(language, kTitle));
-    SetWindowTextW(GetDlgItem(window, kIdTop), Tr(language, kTopLine));
     SetWindowTextW(GetDlgItem(window, kIdHint), Tr(language, kHint));
     SetWindowTextW(GetDlgItem(window, kIdOriginalLabel),
                    Tr(language, kOriginalLabel));
     SetWindowTextW(GetDlgItem(window, kIdCurrentLabel),
                    Tr(language, kCurrentLabel));
+    SetWindowTextW(GetDlgItem(window, kIdDirectAdjacentFrames),
+                   Tr(language, kDirectAdjacentFrames));
     SetWindowTextW(GetDlgItem(window, kIdPreview), Tr(language, kPreviewText));
     SetWindowTextW(GetDlgItem(window, kIdApply), Tr(language, kApplyText));
     SetWindowTextW(GetDlgItem(window, kIdCopy), Tr(language, kCopyText));
@@ -781,6 +791,8 @@ void OnPreview(HWND window, Instance& instance) {
     Rates rates;
     rates.originalFPS = original;
     rates.currentFPS = current;
+    rates.directAdjacentFrames =
+        IsDlgButtonChecked(window, kIdDirectAdjacentFrames) == BST_CHECKED;
     PlanPtr plan;
     Report report;
     std::wstring error;
@@ -898,7 +910,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                     GetModuleHandleW(nullptr), nullptr);
             };
-            add(L"STATIC", L"", staticStyle | SS_LEFT, 0, kIdTop);
             add(L"STATIC", L"", staticStyle | SS_LEFT, 0, kIdOriginalLabel);
             // The two rate fields are the only editable controls, so they are the
             // only ones that carry a client edge: an editable box has to look
@@ -910,6 +921,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
             add(L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                  ES_AUTOHSCROLL | ES_LEFT,
                 WS_EX_CLIENTEDGE, kIdCurrentEdit);
+            add(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                   BS_AUTOCHECKBOX, 0, kIdDirectAdjacentFrames);
             add(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
                                     BS_PUSHBUTTON,
                 0, kIdPreview);
@@ -943,6 +956,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
                            FormatRate(Rates{}.originalFPS).c_str());
             SetWindowTextW(GetDlgItem(window, kIdCurrentEdit),
                            FormatRate(Rates{}.currentFPS).c_str());
+            CheckDlgButton(window, kIdDirectAdjacentFrames,
+                           Rates{}.directAdjacentFrames ? BST_CHECKED : BST_UNCHECKED);
             ApplyLayout(window);
             SetLanguage(window, *instance, instance->language);
             instance->ready = true;
@@ -971,6 +986,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
             }
             if ((id == kIdOriginalEdit || id == kIdCurrentEdit) &&
                 code == EN_CHANGE) {
+                OnParameterChanged(window, *instance);
+                return 0;
+            }
+            if (id == kIdDirectAdjacentFrames && code == BN_CLICKED) {
                 OnParameterChanged(window, *instance);
                 return 0;
             }
@@ -1132,11 +1151,15 @@ void RefreshMenu(MMDApp* app) {
             const UINT flags =
                 MF_STRING | (Available(app) ? MF_ENABLED : MF_GRAYED);
             if (GetMenuState(edit, kMenuCommand, MF_BYCOMMAND) ==
-                static_cast<UINT>(-1))
+                static_cast<UINT>(-1)) {
+                const int count = GetMenuItemCount(edit);
+                if (count > 0 && (GetMenuState(edit, count - 1, MF_BYPOSITION) & MF_SEPARATOR) == 0)
+                    AppendMenuW(edit, MF_SEPARATOR, 0, nullptr);
                 AppendMenuW(edit, flags, kMenuCommand, text);
-            else
+            } else {
                 ModifyMenuW(edit, kMenuCommand, MF_BYCOMMAND | flags,
                             kMenuCommand, text);
+            }
         }
     }
     // An open dialog follows the host language; this is the hook the host's

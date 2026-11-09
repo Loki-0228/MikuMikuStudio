@@ -206,6 +206,7 @@ bool HandleCommand(MMDApp* app, unsigned command) {
     context.options.width = app->RenderWidth();
     context.options.height = app->RenderHeight();
     context.options.end = static_cast<int>(SceneEndFrame(app));
+    context.options.playbackFps = app->PlaybackTiming().playbackFps;
     context.options.directory = app->DirUser();
     if (!PickFolder(app->MainWindow(), app, context.options.directory)) return true;
     app->state.enterKeyState = 1;

@@ -163,7 +163,7 @@ bool NativeGeometry(const Channel& channel,std::size_t end){
     return b.interpolation==ac::Interpolation::Bezier&&
         channel.controlGeometry[end]==std::array<double,4>{a.outWeight,a.outSlope,b.inWeight,b.inSlope};
 }
-ac::Sample CameraSample(const Channel& channel,double frame){
+ac::Sample CameraSampleImpl(const Channel& channel,double frame,bool interpolateAdjacent){
     ac::Sample preserved;
     if(SamplePreservedInterval(channel,frame,preserved))return preserved;
     const auto&keys=channel.track.keys;
@@ -179,7 +179,7 @@ ac::Sample CameraSample(const Channel& channel,double frame){
         // inverse only approximates t=0 and must not perturb keys on commit.
         if(at==a.frame)return a.value;
         const double span=double(b.frame)-a.frame;
-        if(span==1.0)return a.value;
+        if(span==1.0&&!interpolateAdjacent)return a.value;
         return a.value+(b.value-a.value)*CameraCurveTime(channel.nativeControls[end],float((at-a.frame)/span));
     };
     double derivative=0;
@@ -188,11 +188,14 @@ ac::Sample CameraSample(const Channel& channel,double frame){
         const auto end=std::min(std::size_t(bound-keys.begin()),keys.size()-1);
         if(end&&NativeGeometry(channel,end)){
             const auto&a=keys[end-1];const auto&b=keys[end];const double span=double(b.frame)-a.frame;
-            if(span>1.0)derivative=(b.value-a.value)/span*
+            if(span>1.0||interpolateAdjacent)derivative=(b.value-a.value)/span*
                 native_curve_sample::Evaluate(channel.nativeControls[end],(frame-a.frame)/span).slope;
         }else derivative=ac::Evaluate(channel.track,frame).derivative;
     }
     return {value(frame),derivative};
+}
+ac::Sample CameraSample(const Channel& channel,double frame){
+    return CameraSampleImpl(channel,frame,false);
 }
 double SampleValue(const Channel&channel,double frame){
     return channel.sample?channel.sample(channel,frame).value:ac::Evaluate(channel.track,frame).value;
@@ -926,7 +929,12 @@ void Apply(MMDApp*app,Kind kind,double frame,int slot){
     if(!attachment.CanApply())return;
 #endif
     double v[12]{};const auto&fields=Fields(kind);
-    for(size_t c=0;c<s->channels.size();++c){v[c]=SampleValue(s->channels[c],frame);
+    const bool continuousCamera = kind == Kind::Camera && app->PlaybackActive() && app->PlaybackTiming().interpolate;
+    for(size_t c=0;c<s->channels.size();++c){
+        const auto& channel = s->channels[c];
+        const auto sampler = channel.sample.target<ac::Sample(*)(const Channel&,double)>();
+        v[c] = continuousCamera && sampler && *sampler == CameraSample
+            ? CameraSampleImpl(channel, frame, true).value : SampleValue(channel, frame);
 #if !MMD_ORIGINAL_PROFILE
         if(!attachment.CanApply())return;
 #endif

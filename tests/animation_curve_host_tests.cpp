@@ -286,6 +286,15 @@ static void CheckCameraHoldSamples() {
     };
     check();
     Check(curve_host::Write(*app, curve_host::Kind::Camera, 0, channels, error), "write one-frame camera hold fixture");
+    app->PlaybackActive() = 1;
+    curve_host::Apply(app.get(), curve_host::Kind::Camera, 12.5);
+    Check(app->CameraPositionAxis(0) == 5.f, "default playback holds an adjacent camera interval");
+    app->PlaybackTiming().interpolate = true;
+    curve_host::Apply(app.get(), curve_host::Kind::Camera, 12.5);
+    Check(app->CameraPositionAxis(0) > 5.f && app->CameraPositionAxis(0) < 11.f,
+          "continuous playback samples the authored native timing between adjacent camera frames");
+    app->PlaybackActive() = 0;
+    app->PlaybackTiming().interpolate = false;
     for (unsigned i = 0; i < 4; ++i)
         Check(app->CameraKeys()[i].frame == frames[i] && app->CameraKeys()[i].eye[0] == positions[i],
             "unchanged curve write preserves both sides of the native camera cut");
