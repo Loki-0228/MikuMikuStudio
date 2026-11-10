@@ -147,16 +147,29 @@ void WideToSjisPath(char* dst, const wchar_t* src, rsize_t size) {
 }  // namespace
 
 void HandleDropFiles(HDROP hDrop) {
+    struct DropScope {
+        HDROP handle;
+        ~DropScope() { DragFinish(handle); }
+    } drop{hDrop};
     MMDApp* app = g_Block;
+    if (!app) return;
 
-    const int fileCount = DragQueryFileA(hDrop, 0xFFFFFFFF, nullptr, 0);
-    for (int iFile = 0; iFile < fileCount; ++iFile) {
-        // 0x461360: the original passes cch = 0x200 for a 256-wchar buffer,
-        // which overflows it for paths longer than 255 wchars. The
-        // The port deliberately deviates by passing _countof(szFile) instead.
-        // Defect B2-13.
-        wchar_t szFile[256];
-        DragQueryFileW(hDrop, iFile, szFile, _countof(szFile));
+    const UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+    for (UINT iFile = 0; iFile < fileCount; ++iFile) {
+        wchar_t szFile[kPathFieldCapacity]{};
+        const UINT length = DragQueryFileW(hDrop, iFile, nullptr, 0);
+        if (length >= _countof(szFile)) {
+            const wchar_t* text[] = {
+                L"ファイルのパスが長すぎます。短いパスに移動してからやり直してください。",
+                L"The file path is too long. Move the file to a shorter path and try again.",
+                L"文件路径过长。请将文件移到较短的路径后重试。"};
+            const wchar_t* title[] = {L"ファイルを開く", L"Open file", L"打开文件"};
+            const auto language = app->EnglishUI() <= 2 ? app->EnglishUI() : 1;
+            MessageBoxW(MainHwnd(app), text[language], title[language], MB_OK | MB_ICONERROR);
+            continue;
+        }
+        if (length == 0 || DragQueryFileW(hDrop, iFile, szFile, _countof(szFile)) != length)
+            continue;
 
         // ---- .pmm - project file -----------------------------------------
         if (pmm_paths::IsProject(szFile)) {
@@ -165,7 +178,7 @@ void HandleDropFiles(HDROP hDrop) {
                 const int r = ShowUiMessage(app, MainHwnd(app), UiMessage::OpenUnsaved,
                                             MB_OKCANCEL);
                 if (r != IDOK)
-                    return;  // 0x4613F9: original returns, DragFinish skipped
+                    return;
             }
             if (DirMenuChecked(app)) {  // 0x46140D
                 wchar_t directory[kPathFieldCapacity]{};
@@ -313,7 +326,6 @@ void HandleDropFiles(HDROP hDrop) {
         LoadBackgroundPicture(app);                                   // 0x4337A0
         app->SceneModified() = 1;
     }
-    DragFinish(hDrop);  // 0x461BF7 (not reached by the cancel path above)
 }
 
 }  // namespace mikumikustudio

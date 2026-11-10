@@ -19,7 +19,7 @@ constexpr UINT first=34800, browse=34810;
 MMDApp* owner=nullptr;
 HMENU fileMenu=nullptr, recentMenu=nullptr;
 HHOOK hook=nullptr;
-bool openSelected=false, filePopupOpen=false;
+bool openSelected=false, recentSelected=false, filePopupOpen=false;
 int openPosition=-1;
 std::vector<std::wstring> paths, menuPaths;
 std::filesystem::path StorePath() {
@@ -108,11 +108,10 @@ LRESULT CALLBACK MenuFilter(int code,WPARAM wp,LPARAM lp) {
     if(code==MSGF_MENU && owner && openPosition>=0) {
         const auto& msg=*reinterpret_cast<MSG*>(lp);
         bool activate=msg.message==WM_KEYDOWN && msg.wParam==VK_RETURN && openSelected;
-        if(msg.message==WM_LBUTTONUP && filePopupOpen) {
-            // The recent submenu can own the selection while the pointer is
-            // still over Open. Hit-test the visible parent instead; a hidden
-            // File popup can retain stale bounds belonging to another menu.
-            RECT bounds{};activate=GetMenuItemRect(owner->MainWindow(),fileMenu,openPosition,&bounds) && PtInRect(&bounds,msg.pt);
+        if(msg.message==WM_LBUTTONUP && filePopupOpen && (openSelected || recentSelected)) {
+            // Geometry alone can belong to an earlier menu layout. When the
+            // Open split item or its submenu is selected, locate the live popup.
+            RECT bounds{};activate=GetMenuItemRect(nullptr,fileMenu,openPosition,&bounds) && PtInRect(&bounds,msg.pt);
             // Keep the arrow available for native submenu navigation.
             if(activate && msg.pt.x>=bounds.right-GetSystemMetrics(SM_CXMENUCHECK)-8)activate=false;
         }
@@ -125,17 +124,23 @@ LRESULT CALLBACK MenuFilter(int code,WPARAM wp,LPARAM lp) {
 bool HandleMessage(MMDApp* app,UINT msg,WPARAM wp,LPARAM lp) {
 #if !MMD_ORIGINAL_PROFILE
     if(msg==WM_ENTERMENULOOP) {
-        owner=app;openSelected=filePopupOpen=false;
+        owner=app;openSelected=recentSelected=filePopupOpen=false;
         hook=SetWindowsHookExW(WH_MSGFILTER,MenuFilter,nullptr,GetCurrentThreadId());
         if(hook)Attach(app);
     } else if(msg==WM_INITMENUPOPUP) {
         if(fileMenu && reinterpret_cast<HMENU>(wp)==fileMenu)filePopupOpen=true;
         if(recentMenu && reinterpret_cast<HMENU>(wp)==recentMenu)RefreshAvailability();
-    } else if(msg==WM_UNINITMENUPOPUP && reinterpret_cast<HMENU>(wp)==fileMenu)filePopupOpen=false;
-    else if(msg==WM_MENUSELECT)openSelected=reinterpret_cast<HMENU>(lp)==fileMenu &&
-        ((HIWORD(wp)&MF_POPUP)?LOWORD(wp)==openPosition:LOWORD(wp)==205);
-    else if(msg==WM_EXITMENULOOP || msg==WM_DESTROY) {
-        if(hook){UnhookWindowsHookEx(hook);hook=nullptr;}openSelected=filePopupOpen=false;
+    } else if(msg==WM_UNINITMENUPOPUP) {
+        const auto popup=reinterpret_cast<HMENU>(wp);
+        if(fileMenu && popup==fileMenu)openSelected=recentSelected=filePopupOpen=false;
+        if(recentMenu && popup==recentMenu)recentSelected=false;
+    } else if(msg==WM_MENUSELECT) {
+        const auto popup=reinterpret_cast<HMENU>(lp);
+        openSelected=fileMenu && popup==fileMenu &&
+            ((HIWORD(wp)&MF_POPUP)?LOWORD(wp)==openPosition:LOWORD(wp)==205);
+        recentSelected=recentMenu && popup==recentMenu;
+    } else if(msg==WM_EXITMENULOOP || msg==WM_DESTROY) {
+        if(hook){UnhookWindowsHookEx(hook);hook=nullptr;}openSelected=recentSelected=filePopupOpen=false;
         if(IsMenu(fileMenu) && openPosition>=0) {
             MENUITEMINFOW item{sizeof(item)};item.fMask=MIIM_SUBMENU;item.hSubMenu=nullptr;
             SetMenuItemInfoW(fileMenu,openPosition,TRUE,&item);

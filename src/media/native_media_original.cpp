@@ -55,7 +55,10 @@ bool StartBuiltInH264Recording(DShowRecorder*, const wchar_t*, std::int32_t, std
     float, const WaveAudioContext*, bool, std::uint32_t, void*, unsigned char) { return false; }
 bool IsBuiltInH264Recording(const DShowRecorder*) { return false; }
 bool WriteBuiltInH264Frame(DShowRecorder*, const void*, std::size_t) { return false; }
-bool FinishBuiltInH264Recording(DShowRecorder*, std::uint64_t) { return false; }
+bool FinishBuiltInH264Recording(DShowRecorder*, std::uint64_t, std::int32_t* failure) {
+    if (failure) *failure = 0;
+    return false;
+}
 bool StartPngMovRecording(DShowRecorder*, const wchar_t*, int, int, float, std::wstring& error) {
     error = kUnavailable;
     return false;

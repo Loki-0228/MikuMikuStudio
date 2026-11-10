@@ -11,6 +11,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include <shellapi.h>
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 
@@ -78,6 +79,14 @@ int FilterSeparateWindowMouseMove(MMDApp* app, unsigned short x, unsigned short 
 LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
                             LPARAM lParam) {
     MMDApp* app = g_Block;
+    if (msg == WM_CREATE) DragAcceptFiles(hwnd, TRUE);
+    if (msg == WM_DROPFILES) {
+        // The main window owns drop handling, including busy checks and cleanup.
+        const HWND main = app ? app->MainWindow() : nullptr;
+        if (main != hwnd && IsWindow(main)) return SendMessageW(main, msg, wParam, lParam);
+        DragFinish(reinterpret_cast<HDROP>(wParam));
+        return 0;
+    }
     auto& s = *app;
     if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
         msg == WM_LBUTTONDBLCLK || msg == WM_MOUSEMOVE) {

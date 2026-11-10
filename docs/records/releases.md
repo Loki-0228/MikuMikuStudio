@@ -95,6 +95,71 @@
 
 [下载最新发布包](https://github.com/Loki-0228/MikuMikuStudio/releases/latest)。这里说明当前包的安装方式和功能边界；历史版本说明见 [GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases)。源码能力的完整入口见[功能文档](../README.md)。
 
+<!-- release-notes:v2026.11.10.2:begin -->
+## 中文
+
+### 本次更新
+
+- 修复「最近打开」菜单偶尔把「导出视频」误判成「打开工程」的问题。确认视频参数后才开始录制。
+- 独立预览窗口现在也支持拖入 PMM。拖放路径过长时会提示。
+- 视频输出预检保留已有文件的内容。路径无法写入时显示完整路径和 Windows 错误码。修复 MP4 写帧失败后可能卡住录制窗口的问题。
+- 「实时物理设置」新增「恢复默认」。按「确定」后应用。
+
+- 修复 [#48](https://github.com/Loki-0228/MikuMikuStudio/issues/48)。视频输出对话框自动带入播放范围，并在本次运行内记住上次确认的输出帧率。
+- 「显示」菜单新增整数播放帧率、跟随播放帧率的显示上限和可选的连续帧补间。播放帧率默认 30 FPS，设为 60 FPS 时同一段帧序列以两倍速度播放。时间轴会标出整秒位置。
+- 内置实时物理默认以独立的 60 Hz 固定步长计算。可在「实时物理设置」中调整参数或跟随播放帧率。修复 [#46](https://github.com/Loki-0228/MikuMikuStudio/issues/46)，跟踪模式下向前逐帧时会继续使用已有的物理状态。
+- 完整包的「全工程帧率缩放」默认保留相邻镜头的直接切换。压缩时合并关键帧会保留裁剪后的曲线。应用后打开工程另存为。
+- 修复含旧式首帧前驱标记的 PMM 保存失败。在写入时规范化标记，保留工程内的关键帧和撤销状态。
+
+### 选择与安装
+
+`full` 提供扩展编辑、抗锯齿、现代媒体和烘焙。`minimal` 使用 `mmd932` 构建档，保留原版 MMD 功能及共享修复，保存标准格式数据。扩展 PMM `0003` 需要完整包。将两包分别解压到独立目录，运行 `MikuMikuDance.exe`。
+
+可选的 `MMSNvidiaAAFix.dll` 单独下载。用于 NVIDIA 原生 MSAA 双面绘制修复。放在完整版程序旁，在「帮助」菜单安装并重启。设置绑定 EXE 完整路径，移动程序后需重新安装，卸载也通过「帮助」菜单。
+
+## English
+
+### Changes in this release
+
+- Fix an intermittent menu routing error that opened a project picker when Export Video was selected. Recording starts after confirming the video settings.
+- Drop PMM projects onto the detached preview as well as the main window. A message appears when a dropped path is too long.
+- Check output permissions without truncating existing files. A failed check displays the path and Windows error code. Fix a possible recording hang after an MP4 write failure.
+- Restore defaults in Real-time physics settings and choose OK to apply them.
+
+- Fix [#48](https://github.com/Loki-0228/MikuMikuStudio/issues/48). Video export starts with the playback range and remembers the last confirmed output FPS for the session.
+- The View menu adds an integer playback FPS, a display cap that follows it, and optional interpolation between adjacent frames. Playback defaults to 30 FPS. At 60 FPS the same frame sequence plays twice as fast. The timeline highlights each whole second.
+- Built-in real-time physics uses independent fixed steps at 60 Hz by default. Real-time physics settings lets you adjust simulation parameters or follow the playback FPS. Fix [#46](https://github.com/Loki-0228/MikuMikuStudio/issues/46) so a forward step in tracking mode continues from the existing physics state.
+- Project-wide frame rate scaling in the full package preserves adjacent camera cuts by default. Compression keeps the trimmed curves where keys merge. Applying opens Save As.
+- Fix PMM saving for legacy first-key predecessor markers. The writer normalizes the markers without changing live keys or undo state.
+
+### Packages and installation
+
+The `full` package provides extended editing, anti-aliasing, modern media, and baking. The `minimal` package uses the `mmd932` profile and saves standard data. Extended PMM `0003` requires the full package. Extract the packages into separate folders and run `MikuMikuDance.exe`.
+
+The optional `MMSNvidiaAAFix.dll` is a separate download for NVIDIA double-sided drawing with original MSAA. Place it beside the full executable, install it from Help, and restart. The setting applies to the full EXE path. Reinstall after moving the program and uninstall from Help.
+
+## 日本語
+
+### 今回の更新
+
+- 「動画出力」のクリックでプロジェクト選択画面が開く場合がある問題を修正しました。録画は出力設定を確定してから始まります。
+- 独立プレビューにも PMM をドロップできます。パスが長すぎる場合はメッセージを表示します。
+- 既存ファイルを切り詰めずに出力先を確認します。失敗時はパスと Windows エラーコードを表示します。MP4 の書き込み失敗後に録画ウィンドウが応答しなくなる場合がある問題を修正しました。
+- リアルタイム物理演算設定に「既定値に戻す」を追加しました。「OK」で適用します。
+
+- [#48](https://github.com/Loki-0228/MikuMikuStudio/issues/48) を修正しました。動画出力ダイアログに再生範囲を引き継ぎ、起動中は最後に確定した出力 FPS を記憶します。
+- 「表示」メニューで整数の再生 FPS、再生 FPS に連動する表示上限、隣接フレームの補間を設定できます。既定は 30 FPS です。60 FPS では同じフレーム列を 2 倍の速さで再生し、タイムラインは毎秒の位置を強調表示します。
+- 内蔵のリアルタイム物理演算は既定で独立した 60 Hz の固定ステップを使用します。演算設定で各パラメータを変更したり、再生 FPS に合わせたりできます。[#46](https://github.com/Loki-0228/MikuMikuStudio/issues/46) を修正し、追従モードで 1 フレーム進める際に現在の物理状態から演算を続けます。
+- 完全版のプロジェクト全体のフレームレート拡縮は、既定で隣接するカメラのカットを保持します。圧縮でキーが統合される場合は切り詰めたカーブを使います。適用後は「名前を付けて保存」が開きます。
+- 先頭キーに旧形式の前方リンク値がある PMM の保存を修正しました。書き出し時に値を正規化し、編集中のキーや取り消し履歴を保持します。
+
+### パッケージと導入
+
+`full` は拡張編集、アンチエイリアス、各種メディア、ベイクに対応します。`minimal` は `mmd932` 構成で、標準データを保存します。拡張 PMM `0003` には完全版が必要です。別々のフォルダーに展開し、`MikuMikuDance.exe` を実行してください。
+
+任意の `MMSNvidiaAAFix.dll` は従来の MSAA での NVIDIA 両面描画を修正します。別途ダウンロードして完全版の横に置き、ヘルプから導入して再起動します。設定は EXE のフルパスに適用されます。移動後は再導入し、解除はヘルプから行ってください。
+<!-- release-notes:v2026.11.10.2:end -->
+
 <!-- release-notes:v2026.11.10.1:begin -->
 ## 中文
 

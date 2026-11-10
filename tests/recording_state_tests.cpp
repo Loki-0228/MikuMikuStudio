@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikumikustudio/recording_state.hpp"
+#include "recording_output_path_checks.hpp"
 #include "../src/app/recording_ack_wait.hpp"
 #include <cstdio>
 #include <limits>
@@ -25,6 +26,7 @@ struct FakePush final : IPushSource {
 int main() {
     unsigned failures = 0, checks = 0;
     const auto check = [&](bool value, const char* message) { ++checks; if (!value) { ++failures; std::printf("FAIL %s\n", message); } };
+    CheckRecordingOutputPath(check);
     using namespace recording_state;
     for (float invalid : {0.f, -.5f, 241.f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()})
         check(!ValidFps(invalid) && FrameDuration(invalid) == 0, "invalid rate rejected");

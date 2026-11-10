@@ -16,6 +16,9 @@ enum class Fault { None, BeginException, BeginFailure, SettingsBefore, SettingsA
 Fault fault = Fault::None;
 bool failSoftware = false, probeFails = false;
 bool captureFrame = false;
+HRESULT writeResult = S_OK;
+int frameWrites = 0, finalizations = 0, frameErrors = 0;
+DShowRecorder* recordingInError = nullptr;
 std::vector<unsigned char> capturedFrame;
 LONG capturedStride = 0;
 void Check(bool ok, const char* name) {
@@ -39,18 +42,19 @@ struct Writer final : IMFSinkWriter {
         begun=true; return S_OK;
     }
     HRESULT STDMETHODCALLTYPE WriteSample(DWORD, IMFSample* sample) override {
+        ++frameWrites;
         if(captureFrame){
             IMFMediaBuffer* buffer=nullptr;Check(SUCCEEDED(sample->ConvertToContiguousBuffer(&buffer)),"read actual encoder input");
             BYTE* bytes=nullptr;DWORD size=0;Check(SUCCEEDED(buffer->Lock(&bytes,nullptr,&size)),"lock actual encoder input");
             capturedFrame.assign(bytes,bytes+size);buffer->Unlock();buffer->Release();
         }
-        return S_OK;
+        return writeResult;
     }
     HRESULT STDMETHODCALLTYPE SendStreamTick(DWORD,LONGLONG) override { return S_OK; }
     HRESULT STDMETHODCALLTYPE PlaceMarker(DWORD,LPVOID) override { return S_OK; }
     HRESULT STDMETHODCALLTYPE NotifyEndOfSegment(DWORD) override { return S_OK; }
     HRESULT STDMETHODCALLTYPE Flush(DWORD) override { return S_OK; }
-    HRESULT STDMETHODCALLTYPE Finalize() override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE Finalize() override { ++finalizations; return S_OK; }
     HRESULT STDMETHODCALLTYPE GetServiceForStream(DWORD,REFGUID,REFIID,LPVOID*) override { return E_NOINTERFACE; }
     HRESULT STDMETHODCALLTYPE GetStatistics(DWORD,MF_SINK_WRITER_STATISTICS*) override { return E_NOTIMPL; }
 } writers[2];
@@ -71,6 +75,13 @@ ApplyResult Apply(IMFSinkWriter* writer,DWORD,bool hardware,std::uint32_t,unsign
     return result;
 }
 void Notice(void*,unsigned char) { ++notices; }
+int WINAPI FrameError(HWND, LPCWSTR, LPCWSTR, UINT) {
+    ++frameErrors;
+    // A modal error pumps messages. The recording window's close handler
+    // queries this same recorder before it can finish the export.
+    IsBuiltInH264Recording(recordingInError);
+    return IDOK;
+}
 bool Probe(bool hardware,std::int32_t,std::int32_t,float,std::uint32_t,EncoderProbe&) noexcept {
     return !(hardware && probeFails);
 }
@@ -104,6 +115,33 @@ void Case(Fault injected,bool softwareFailure=false,const WaveAudioContext* audi
         gRecordings.erase(&recorder);
     }
 }
+void FrameWriteFailure() {
+    DShowRecorder recorder{};
+    fault = Fault::None;
+    auto recording = std::make_unique<Recording>();
+    recording->width = 16;
+    recording->height = 16;
+    std::vector<unsigned char> pixels(16 * 16 * 4);
+    recording->frameBytes = pixels.size();
+    recording->frameDuration = 333333;
+    recording->writer = &writers[0];
+    gRecordings.emplace(&recorder, std::move(recording));
+    frameWrites = frameErrors = finalizations = releases = 0;
+    recordingInError = &recorder;
+    writeResult = E_ACCESSDENIED;
+    Check(!WriteBuiltInH264Frame(&recorder, pixels.data(), pixels.size()),
+          "write failure returns without entering a reentrant modal loop");
+    Check(frameErrors == 0 && IsBuiltInH264Recording(&recorder),
+          "the caller can still query and stop the failed recording");
+    std::int32_t failure = 0;
+    Check(!FinishBuiltInH264Recording(&recorder, 1, &failure) && failure == E_ACCESSDENIED,
+          "cleanup returns the original write error to the caller");
+    Check(!IsBuiltInH264Recording(&recorder) && frameErrors == 0 &&
+          frameWrites == 1 && finalizations == 0 && releases == 1,
+          "cleanup releases the failed writer once without retrying it or opening a dialog");
+    recordingInError = nullptr;
+    writeResult = S_OK;
+}
 #include "h264_orientation_checks.hpp"
 }
 int main(int argc,char** argv) {
@@ -114,12 +152,14 @@ int main(int argc,char** argv) {
         MFShutdown();CoUninitialize();std::printf("h264 orientation: %d checks passed\n",checks);return 0;
     }
     Check(SUCCEEDED(MFStartup(MF_VERSION)),"MF initialized for encoder input checks");
-    H264InputOrientation();MFShutdown();
+    H264InputOrientation();
     Check(MH_Initialize()==MH_OK,"hooks initialized");
     Hook(OpenH264SinkWriterGuarded,Open); Hook(ApplyConfiguredEncoderSettings,Apply);
     Hook(ReportHardwareFallbackOnce,Notice); Hook(CreateEncoderProbeGuarded,Probe);
-    Hook(CreateWindowExW,SettingsWindow);
+    Hook(CreateWindowExW,SettingsWindow); Hook(MessageBoxW,FrameError);
     Check(MH_EnableHook(MH_ALL_HOOKS)==MH_OK,"hooks enabled");
+    FrameWriteFailure();
+    MFShutdown();
     for(Fault f:{Fault::BeginException,Fault::BeginFailure,Fault::SettingsBefore,Fault::SettingsAfter,Fault::Release}) Case(f);
     Case(Fault::BeginException,true);
     const auto path=std::filesystem::current_path()/

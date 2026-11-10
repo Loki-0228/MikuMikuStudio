@@ -1839,7 +1839,7 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
             static_cast<HINSTANCE>(app->HInstance()),
             MAKEINTRESOURCEA(app->EnglishUI() != 0 ? 0x28E : 0x260),
             MainHwnd(app), AviOutDlgProc, 0);
-        if (r == 2) {  // IDCANCEL
+        if (r != IDOK) {
             break;
         }
         if (app->AviStereoOutput() != 0) {

@@ -94,8 +94,9 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
     const bool mfRecording = IsBuiltInH264Recording(s.Recorder());
     std::wstring sequenceError;
     const bool sequenceComplete = image_sequence::Finish(app, reachedRequestedEnd, sequenceError);
+    std::int32_t mfFailure = 0;
     const bool mfComplete = mfRecording &&
-        FinishBuiltInH264Recording(s.Recorder(), expectedFrames);
+        FinishBuiltInH264Recording(s.Recorder(), expectedFrames, &mfFailure);
     const bool movRecording = IsPngMovRecording(s.Recorder());
     std::wstring movError;
     bool movComplete = false;
@@ -181,6 +182,12 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
     // restoration, so stale edit text cannot seek or register a frame.
     s.state.recordPlaybackStartPending = 0;
     s.state.frameStepPlayback = 0;
+    if (FAILED(mfFailure)) {
+        wchar_t message[192]{};
+        swprintf_s(message, L"Media Foundation 视频编码失败（0x%08lX）。",
+                   static_cast<unsigned long>(mfFailure));
+        MessageBoxW(s.MainWindow(), message, L"H.264 导出", MB_OK | MB_ICONERROR);
+    }
     if (!movError.empty()) MessageBoxW(static_cast<HWND>(s.Hwnd()), movError.c_str(), L"MOV export", MB_OK | MB_ICONERROR);
     if (!sequenceError.empty()) MessageBoxW(s.MainWindow(), sequenceError.c_str(),
         image_sequence::Text(app, L"导出图片序列", L"Image sequence export", L"連番画像出力"), MB_OK | MB_ICONERROR);

@@ -39,6 +39,8 @@ bool IsBuiltInH264Recording(const DShowRecorder* recorder);
 // The NV12 hardware path converts it to top-down planes before submission.
 bool WriteBuiltInH264Frame(DShowRecorder* recorder, const void* bgra,
                            std::size_t bytes);
+// Return the first encoding error as an HRESULT for the restored editor to show.
 bool FinishBuiltInH264Recording(DShowRecorder* recorder,
-                                std::uint64_t expectedFrames);
+                                std::uint64_t expectedFrames,
+                                std::int32_t* failure = nullptr);
 }

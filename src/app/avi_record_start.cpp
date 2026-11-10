@@ -3,7 +3,7 @@
 //
 //   VA 0x0045E820 - StartAviRecordWindow: windowed AVI dump (menu 0xDF,
 //                   app+0xA0D61 == 0 path).  Probes the output file with
-//                   _wsopen_s/_close, grows the render target and resets the
+//                   a non-truncating write check, grows the render target and resets the
 //                   device when the output size exceeds the current RT,
 //                   creates the "RecWindow" recording window at app+0xA0D24,
 //                   lazily creates the recording render-target surface
@@ -35,8 +35,6 @@
 #include <mmsystem.h>
 
 #include <algorithm>
-#include <fcntl.h>
-#include <io.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -49,6 +47,7 @@
 #include "mikumikustudio/window_dpi_scope.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/recording_preview.hpp"
+#include "mikumikustudio/recording_output_path.hpp"
 
 namespace mikumikustudio {
 
@@ -126,18 +125,6 @@ const char kRecTitleEn[] = "Recording...";
 // 0x52DFF8: "録画ウィンドウ作成" (caption), text 0x52E00C "CreateWindow failed"
 const char kCaptionRecWndJp[] =
     "\x98\x5E\x89\xE6\x83\x45\x83\x42\x83\x93\x83\x68\x83\x45\x8D\xEC\x90\xAC";
-// 0x52E060/0x52E0B8: "出力ファイルを作成できません。..." / "AVI出力"
-const char kMsgSaveFailJp[] =
-    "\x8F\x6F\x97\xCD\x83\x74\x83\x40\x83\x43\x83\x8B\x82\xF0\x8D\xEC\x90\xAC"
-    "\x82\xC5\x82\xAB\x82\xDC\x82\xB9\x82\xF1\x81\x42\x0A\x91\xBC\x82\xCC\x83"
-    "\x41\x83\x76\x83\x8A\x83\x50\x81\x5B\x83\x56\x83\x87\x83\x93\x93\x99\x82"
-    "\xC5\x8A\x4A\x82\xA2\x82\xC4\x82\xA2\x82\xC8\x82\xA2\x82\xA9\x8A\x6D\x94"
-    "\x46\x82\xB5\x82\xC4\x89\xBA\x82\xB3\x82\xA2\x81\x42";
-const char kCaptionAviOutJp[] = "\x41\x56\x49\x8F\x6F\x97\xCD";
-// 0x52E0C0/0x52E108: EN pair for the same failure
-const char kMsgSaveFailEn[] =
-    "Cannot make save file.\nPlease check whether other application open it.";
-const char kCaptionAviOutEn[] = "AVI save failed";
 // 0x52E690: "3D Vision出力時は、画面解像度以上のサイズのAVIは出力できません"
 const char kMsg3dVisionJp[] =
     "\x33\x44\x20\x56\x69\x73\x69\x6F\x6E\x8F\x6F\x97\xCD\x8E\x9E\x82\xCD\x81"
@@ -159,16 +146,15 @@ struct RecConfig {
 };
 static_assert(sizeof(RecConfig) == 0x28);
 
-bool ProbeWritable(const wchar_t* path) {  // _wsopen_s/_close pair, 0x45E849
-    int fd = -1;
-    const errno_t r =
-        _wsopen_s(&fd, path, 0x8301 /*_O_BINARY|_O_CREAT|_O_TRUNC|_O_WRONLY*/,
-                  0x40 /*_SH_DENYNO*/, 0x80 /*_S_IWRITE*/);
-    if (r != 0)
-        return false;
-    if (fd >= 0)
-        _close(fd);
-    return true;
+bool CheckRecordingOutputPath(MMDApp* app) {
+    if (image_sequence::Active(app)) return true;
+    const DWORD error = recording_output_path::ProbeWritable(app->AviOutputPath());
+    if (error == ERROR_SUCCESS) return true;
+    const auto message = recording_output_path::FailureMessage(
+        app->AviOutputPath(), error, app->EnglishUI());
+    MessageBoxW(app->MainWindow(), message.c_str(),
+        recording_output_path::FailureCaption(app->EnglishUI()), MB_OK | MB_ICONERROR);
+    return false;
 }
 
 // Resizes the render target to the requested export dimensions when they do
@@ -327,15 +313,7 @@ bool StartRecordGraph(MMDApp* app, std::int32_t outW, std::int32_t outH) {
 // VA 0x0045E820 - windowed AVI record start.
 void StartAviRecordWindow(MMDApp* app) {
     auto& s = *app;
-    if (!image_sequence::Active(app) && !ProbeWritable(
-            s.AviOutputPath())) {                               // 0x45E849
-        const HWND main = static_cast<HWND>(s.state.hwnd);
-        MessageBoxA(main, s.EnglishUI() != 0 ? kMsgSaveFailEn
-                                             : kMsgSaveFailJp,
-                    s.EnglishUI() != 0 ? kCaptionAviOutEn : kCaptionAviOutJp,
-                    0);                                         // 0x45E871
-        return;
-    }
+    if (!CheckRecordingOutputPath(app)) return;
 
     const std::int32_t outW = s.AviOutputWidth() > 0 ? s.AviOutputWidth() : s.RenderWidth();
     const std::int32_t outH = s.AviOutputHeight() > 0 ? s.AviOutputHeight() : s.RenderHeight();
@@ -428,6 +406,8 @@ void StartAviRecordFullscreen(MMDApp* app) {
         return;
     }
 
+    if (!CheckRecordingOutputPath(app)) return;
+
     s.FullscreenMode() = 1;
     ApplyFullscreenWindowState(app, true);                                            // 0x4629D0
     if (!PostDeviceReset(app)) {
@@ -456,10 +436,6 @@ void StartAviRecordFullscreen(MMDApp* app) {
         FinishAviRecord(app);
         return;
     }
-    // 0x46497A: probe open/close without checking the result, then the
-    // picture overlay and the shared tail.
-    ProbeWritable(
-        s.AviOutputPath());
     if (s.state.pictureBackgroundEnabled != 0) {
         PicBgOverlayRefresh(app);                              // 0x4649A7
     }

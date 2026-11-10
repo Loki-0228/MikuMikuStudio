@@ -59,6 +59,7 @@ struct Recording {
     std::uint32_t fpsNumerator = 30;
     std::uint32_t fpsDenominator = 1;
     HWND owner = nullptr;
+    HRESULT writeFailure = S_OK;
     bool mfStarted = false;
     unsigned char uiLanguage = kUiJapanese;
 
@@ -859,13 +860,6 @@ LRESULT CALLBACK EncoderSettingsWndProc(HWND hwnd, UINT message,
     return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
-void ReportFailure(HWND owner, HRESULT hr) {
-    wchar_t message[192]{};
-    swprintf_s(message, L"Media Foundation 视频编码失败（0x%08lX）。",
-                static_cast<unsigned long>(hr));
-    MessageBoxW(owner, message, L"H.264 导出", MB_OK | MB_ICONERROR);
-}
-
 void SetVideoAttributes(IMFMediaType* type, GUID subtype,
                         std::uint32_t width, std::uint32_t height,
                         std::uint32_t fpsNumerator,
@@ -1560,12 +1554,15 @@ bool IsBuiltInH264Recording(const DShowRecorder* recorder) {
 
 bool WriteBuiltInH264Frame(DShowRecorder* recorder, const void* bgra,
                            std::size_t bytes) {
-    if (bgra == nullptr) return false;
     std::lock_guard<std::mutex> lock(gRecordingsMutex);
     const auto found = gRecordings.find(recorder);
     if (found == gRecordings.end()) return false;
     Recording& recording = *found->second;
-    if (bytes != recording.frameBytes) return false;
+    if (FAILED(recording.writeFailure)) return false;
+    if (bgra == nullptr || bytes != recording.frameBytes) {
+        recording.writeFailure = E_INVALIDARG;
+        return false;
+    }
 
     IMFMediaBuffer* buffer = nullptr;
     IMFSample* sample = nullptr;
@@ -1609,13 +1606,14 @@ bool WriteBuiltInH264Frame(DShowRecorder* recorder, const void* bgra,
             recording.audioSampleRate / 10'000'000ull;
         hr = WriteAudioSamplesThrough(recording, audioSamplesToWrite);
     }
-    if (FAILED(hr))
-        ReportFailure(recording.owner, hr);
+    if (FAILED(hr)) recording.writeFailure = hr;
     return SUCCEEDED(hr);
 }
 
 bool FinishBuiltInH264Recording(DShowRecorder* recorder,
-                                std::uint64_t expectedFrames) {
+                                std::uint64_t expectedFrames,
+                                std::int32_t* failure) {
+    if (failure) *failure = 0;
     std::unique_ptr<Recording> recording;
     {
         std::lock_guard<std::mutex> lock(gRecordingsMutex);
@@ -1623,6 +1621,10 @@ bool FinishBuiltInH264Recording(DShowRecorder* recorder,
         if (found == gRecordings.end()) return false;
         recording = std::move(found->second);
         gRecordings.erase(found);
+    }
+    if (FAILED(recording->writeFailure)) {
+        if (failure) *failure = recording->writeFailure;
+        return false;
     }
     const std::uint64_t audioSamplesAtVideoEnd =
         recording->frameIndex * recording->frameDuration *
@@ -1635,7 +1637,7 @@ bool FinishBuiltInH264Recording(DShowRecorder* recorder,
     const bool completeFrameCount = expectedFrames != 0 &&
         recording->frameIndex == expectedFrames;
     if (SUCCEEDED(hr)) hr = recording->writer->Finalize();
-    if (FAILED(hr)) ReportFailure(recording->owner, hr);
+    if (FAILED(hr) && failure) *failure = hr;
     return SUCCEEDED(hr) && completeFrameCount;
 }
 
