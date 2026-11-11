@@ -63,6 +63,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/dshow_recorder.hpp"
@@ -94,8 +95,7 @@ HRESULT CreateEmbeddedPushSource(IBaseFilter** filter) {
 // 0x529980: MMDxShow frame-push interface (ECFAB031-...)
 const GUID kIidPushSource = {
     0xecfab031, 0x72ba, 0x4120, {0xb9, 0xf7, 0x8a, 0x3d, 0x5f, 0xd3, 0x8d, 0xec}};
-// 0x53CEE0: ARGB32-ish subtype used whenever a compressor is selected
-// (byte-identical to the baseclasses MEDIASUBTYPE_ARGB32).
+// 0x53CEE0: preferred capture subtype, including for codecs that preserve alpha.
 const GUID kSubtypeArgb32 = {
     0x773c9ac0, 0x3274, 0x11d0, {0xb7, 0x24, 0x00, 0xaa, 0x00, 0x6c, 0x1a, 0x01}};
 // 0x53CE50: SampleGrabber CLSID (qedit.h is not shipped with modern SDKs,
@@ -112,6 +112,35 @@ void ReleaseCom(T*& object) {
         object->Release();
         object = nullptr;
     }
+}
+
+void DeleteEnumeratedMediaType(AM_MEDIA_TYPE* type) {
+    MMDxShow_FreeMediaType(type);
+    CoTaskMemFree(type);
+}
+
+using EnumeratedMediaType = std::unique_ptr<AM_MEDIA_TYPE, decltype(&DeleteEnumeratedMediaType)>;
+
+EnumeratedMediaType SelectRgb32CompressorInput(IPin* source, IPin* compressor) {
+    EnumeratedMediaType type(nullptr, DeleteEnumeratedMediaType);
+    IEnumMediaTypes* types = nullptr;
+    if (source == nullptr || compressor == nullptr || FAILED(source->EnumMediaTypes(&types)))
+        return type;
+
+    AM_MEDIA_TYPE* preferred = nullptr;
+    const HRESULT hr = types->Next(1, &preferred, nullptr);
+    types->Release();
+    type.reset(preferred);
+    if (hr == S_OK && type && type->subtype == kSubtypeArgb32 &&
+        compressor->QueryAccept(type.get()) != S_OK) {
+        // Both subtypes use the same 32-bit DIB bytes. Ut Video's non-alpha
+        // variants can accept RGB32 even when they reject ARGB32.
+        type->subtype = MEDIASUBTYPE_RGB32;
+        if (compressor->QueryAccept(type.get()) == S_OK)
+            return type;
+    }
+    type.reset();
+    return type;
 }
 
 // IAMVfwCompressDialogs raw slots (slot 3 / slot 6).
@@ -573,11 +602,11 @@ void ShowCodecConfigDialog(DShowRecorder* rec, HWND hDlg) {
 //   2. FilterGraph -> [3]; MMDxShow source -> [4]; AddFilter "File Source"
 //   3. IPushSource QI -> [26]; GetRate must be >= 1.02 or "dll is too old";
 //      SetBitmapInfo(recStruct, 40, fps)
-//   4. SampleGrabber -> [5]; ISampleGrabber::SetMediaType(video,
-//      ARGB32-when-compressed / RGB24-when-raw); AddFilter "Sample Grabber"
+//   4. Add the compressor, then configure the SampleGrabber for the capture
+//      subtype accepted by the compressor (ARGB32 preferred)
 //   5. CaptureGraphBuilder2: SetFiltergraph + SetOutputFileName(Avi,
 //      outPath, -> [6] mux, [7] writer)
-//   6. compressor AddFilter "Compressor"; pin web through 0x4096D0/0x409700;
+//   6. pin web through 0x4096D0/0x409700;
 //      Connect source->grabber(+->compressor)->mux; re-apply the codec state
 //      blob (SendDriverMessage 0x5001) when this[24] > 0
 //   7. wave branch: AddSourceFilter "Source" -> [18], audio grabber -> [20],
@@ -691,6 +720,19 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
         return false;
     }
 
+    IBaseFilter* comp = rec->compressor;
+    if (comp != nullptr && graph->AddFilter(comp, L"Compressor") < 0) {
+        MessageBoxA(hwnd, english
+                    ? "Could not add selected compressor to the graph."
+                    : JP_DRIVER, "DirectShow", 0);
+        TeardownDShowGraph(rec);
+        return false;
+    }
+    rec->sourceOutput = FindOutputPin(rec, source, 0);
+    if (comp != nullptr)
+        rec->compressorInput = FindInputPin(rec, comp, 0);
+    const auto rgb32 = SelectRgb32CompressorInput(rec->sourceOutput, rec->compressorInput);
+
     // 3: SampleGrabber with the video media type
     if (CoCreateInstance(kClsidSampleGrabber, nullptr, CLSCTX_INPROC_SERVER,
                          IID_IBaseFilter, reinterpret_cast<void**>(&rec->videoGrabber)) < 0) {
@@ -715,7 +757,9 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
         mt.bFixedSizeSamples = TRUE;
         mt.lSampleSize = 1;
         mt.majortype = MEDIATYPE_Video;                          // "vids"
-        if (rec->compressor != nullptr || forceArgb != 0)
+        if (rgb32)
+            mt.subtype = rgb32->subtype;
+        else if (comp != nullptr || forceArgb != 0)
             mt.subtype = kSubtypeArgb32;                         // 0x53CEE0
         else
             mt.subtype = MEDIASUBTYPE_RGB24;                     // 0x53CEF0
@@ -768,23 +812,12 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
     }
     builder->Release();
     IBaseFilter* mux = rec->aviMux;
-    IBaseFilter* comp = rec->compressor;
 
-    // 5: compressor + pin web
-    if (comp != nullptr && graph->AddFilter(comp, L"Compressor") < 0) {
-        MessageBoxA(hwnd, english
-                    ? "Could not add selected compressor to the graph."
-                    : JP_DRIVER, "DirectShow", 0);
-        TeardownDShowGraph(rec);
-        return false;
-    }
-    rec->sourceOutput = FindOutputPin(rec, source, 0);
+    // 5: pin web
     rec->grabberInput = FindInputPin(rec, grabber, 0);
     rec->grabberOutput = FindOutputPin(rec, grabber, 0);
-    if (comp != nullptr) {
-        rec->compressorInput = FindInputPin(rec, comp, 0);
+    if (comp != nullptr)
         rec->compressorOutput = FindOutputPin(rec, comp, 0);
-    }
     rec->muxVideoInput = FindInputPin(rec, mux, 0);
     IPin* srcOut = rec->sourceOutput;
     IPin* grabIn = rec->grabberInput;
@@ -793,7 +826,9 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
     IPin* compOut = rec->compressorOutput;
     IPin* muxIn = rec->muxVideoInput;
 
-    if (graph->Connect(srcOut, grabIn) < 0) {
+    hr = rgb32 ? graph->ConnectDirect(srcOut, grabIn, rgb32.get())
+               : graph->Connect(srcOut, grabIn);
+    if (FAILED(hr)) {
         MessageBoxA(hwnd, english
                     ? "Could not connect SourcePin to pVideoIn."
                     : JP_SRC_PIN, "DirectShow", 0);
@@ -801,7 +836,9 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
         return false;
     }
     if (comp != nullptr) {
-        if (graph->Connect(grabOut, compIn) < 0) {
+        hr = rgb32 ? graph->ConnectDirect(grabOut, compIn, rgb32.get())
+                   : graph->Connect(grabOut, compIn);
+        if (FAILED(hr)) {
             MessageBoxA(hwnd, english
                         ? "Could not connect pVideoOut to CompressorIn."
                         : JP_COMP_IN, "DirectShow", 0);

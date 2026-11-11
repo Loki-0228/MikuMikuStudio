@@ -95,6 +95,7 @@ int wmain(int argc, wchar_t** argv) {
     header.biWidth = header.biHeight = 2;
     header.biPlanes = 1;
     header.biBitCount = 32;
+    header.biSizeImage = 16;
     for (float fps : {0.f, -.5f, 241.f, std::numeric_limits<float>::infinity(),
                       std::numeric_limits<float>::quiet_NaN()})
         Check(push->SetBitmapInfo(&header, 0, fps) == E_INVALIDARG, "reject unusable frame rates");
@@ -115,6 +116,16 @@ int wmain(int argc, wchar_t** argv) {
     Check(mediaTypes->Next(1, &mediaType, nullptr) == S_OK && mediaType &&
           reinterpret_cast<VIDEOINFOHEADER*>(mediaType->pbFormat)->AvgTimePerFrame == 333667,
           "the published AVI media type retains 29.97 FPS");
+    Check(mediaType->subtype == MEDIASUBTYPE_ARGB32 && pin->QueryAccept(mediaType) == S_OK,
+          "the source advertises ARGB32 as its default");
+    mediaType->subtype = MEDIASUBTYPE_RGB32;
+    Check(pin->QueryAccept(mediaType) == S_OK, "accept the same 32-bit DIB as RGB32");
+    auto* video = reinterpret_cast<VIDEOINFOHEADER*>(mediaType->pbFormat);
+    video->bmiHeader.biWidth++;
+    Check(pin->QueryAccept(mediaType) == S_FALSE, "reject RGB32 with different bitmap dimensions");
+    video->bmiHeader.biWidth--;
+    mediaType->subtype = MEDIASUBTYPE_RGB24;
+    Check(pin->QueryAccept(mediaType) == S_FALSE, "reject relabeling the 32-bit DIB as RGB24");
     CoTaskMemFree(mediaType->pbFormat); CoTaskMemFree(mediaType); mediaTypes->Release();
     Check(push->SetBitmapInfo(&header, 0, 30.f) == S_OK, "set bitmap fields");
     BYTE state = 0;
