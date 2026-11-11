@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <cstdio>
 
+struct IDirect3DDevice9;
+
 namespace mikumikustudio {
 
 class MMDApp;
@@ -382,7 +384,7 @@ ULONG DownsampleCaptureSurface(MMDApp*);          // VA 0x00425970
 bool EnsureCaptureRenderTarget(MMDApp* app);
 void DrawAccessoryDebug(MMDApp*);                 // VA 0x00420F30
 void DrawPhysicsCollisionDebug(PhysicsScene*);    // VA 0x00406950
-void DrawBoneOperationAxis(MMDApp*, const float[16]); // VA 0x0042DB10
+void DrawBoneOperationAxis(MMDApp*, const float[16], IDirect3DDevice9* presentationDevice = nullptr); // VA 0x0042DB10
 void DrawFrameOverlayBatches(MMDApp* app);
 void SetupFrameWorldTransform(MMDApp* app);       // VA 0x0046B185..0x0046BC20
 // Camera attachment/model tracking reference: 0 = default target, 1 = model root,

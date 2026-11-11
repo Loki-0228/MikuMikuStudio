@@ -9,6 +9,40 @@ static_assert(sizeof(BoneGizmoScreenVertex) == 20);
 using BoneGizmoDraw = HRESULT(WINAPI*)(IDirect3DDevice9*, D3DPRIMITIVETYPE,
     UINT, const void*, UINT);
 BoneGizmoDraw originalBoneGizmoDraw = nullptr;
+using RayEffectCreate = HRESULT(WINAPI*)(IDirect3DDevice9*, LPCWSTR, const void*,
+    const void*, DWORD, void*, void**, void**);
+RayEffectCreate originalRayEffectCreate = nullptr;
+bool rayEffectCreated = false;
+
+HRESULT WINAPI ObserveRayEffectCreate(IDirect3DDevice9* device, LPCWSTR filename,
+    const void* macros, const void* include, DWORD flags, void* pool,
+    void** effect, void** errors) {
+    const HRESULT result = originalRayEffectCreate(device, filename, macros, include,
+        flags, pool, effect, errors);
+    if (SUCCEEDED(result) && filename && effect && *effect) {
+        const wchar_t* base = std::wcsrchr(filename, L'\\');
+        if (_wcsicmp(base ? base + 1 : filename, L"ray.fx") == 0)
+            rayEffectCreated = true;
+    }
+    return result;
+}
+
+void* ObserveRayEffectCompilation() {
+    Check(GetModuleHandleW(L"MMEffect.dll") && GetModuleHandleW(L"MMHack.dll"),
+        "Ray gizmo regression requires the real MME plugins");
+    Check(SetEnvironmentVariableW(L"MMS_EFFECT_CACHE_DISABLE", L"1") != FALSE,
+        "route Ray effect creation through the observed compiler");
+    const auto initialized = MH_Initialize();
+    Check(initialized == MH_OK || initialized == MH_ERROR_ALREADY_INITIALIZED,
+        "initialize Ray effect observer");
+    auto* compile = reinterpret_cast<void*>(GetProcAddress(d3dx::Get().module,
+        "D3DXCreateEffectFromFileW"));
+    Check(compile && MH_CreateHook(compile, &ObserveRayEffectCreate,
+        reinterpret_cast<void**>(&originalRayEffectCreate)) == MH_OK &&
+        MH_EnableHook(compile) == MH_OK, "observe real Ray effect creation");
+    return compile;
+}
+
 struct BoneGizmoObservation {
     bool enabled = false;
     unsigned triangles = 0;
@@ -16,6 +50,42 @@ struct BoneGizmoObservation {
     RECT viewport{};
     float pixelScale = 1.0f;
 } boneGizmoObservation;
+
+std::vector<DWORD> ReadGizmoPixels(IDirect3DDevice9* device, const RECT& area) {
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IDirect3DSurface9> back, resolved, cpu;
+    Check(SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)),
+        "get completed Ray preview backbuffer");
+    D3DSURFACE_DESC desc{};
+    Check(SUCCEEDED(back->GetDesc(&desc)) &&
+        (desc.Format == D3DFMT_X8R8G8B8 || desc.Format == D3DFMT_A8R8G8B8) &&
+        area.left >= 0 && area.top >= 0 && area.right <= LONG(desc.Width) &&
+        area.bottom <= LONG(desc.Height) && area.left < area.right && area.top < area.bottom,
+        "Ray gizmo sample lies within a BGRA backbuffer");
+    auto* source = back.Get();
+    if (desc.MultiSampleType != D3DMULTISAMPLE_NONE) {
+        Check(SUCCEEDED(device->CreateRenderTarget(desc.Width, desc.Height, desc.Format,
+            D3DMULTISAMPLE_NONE, 0, FALSE, &resolved, nullptr)) &&
+            SUCCEEDED(device->StretchRect(source, nullptr, resolved.Get(), nullptr, D3DTEXF_NONE)),
+            "resolve completed Ray preview");
+        source = resolved.Get();
+    }
+    Check(SUCCEEDED(device->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format,
+        D3DPOOL_SYSTEMMEM, &cpu, nullptr)) && SUCCEEDED(device->GetRenderTargetData(source, cpu.Get())),
+        "read completed Ray preview pixels");
+    D3DLOCKED_RECT lock{};
+    Check(SUCCEEDED(cpu->LockRect(&lock, &area, D3DLOCK_READONLY)), "lock local gizmo pixels");
+    const auto width = area.right - area.left;
+    const auto height = area.bottom - area.top;
+    std::vector<DWORD> pixels(std::size_t(width) * height);
+    for (LONG y = 0; y < height; ++y) {
+        const auto* row = reinterpret_cast<const DWORD*>(
+            static_cast<const char*>(lock.pBits) + y * lock.Pitch);
+        std::copy_n(row, width, pixels.data() + std::size_t(y) * width);
+    }
+    cpu->UnlockRect();
+    return pixels;
+}
 
 HRESULT WINAPI ObserveBoneGizmoDraw(IDirect3DDevice9* device,
     D3DPRIMITIVETYPE type, UINT primitives, const void* vertices, UINT stride) {
@@ -42,13 +112,25 @@ HRESULT WINAPI ObserveBoneGizmoDraw(IDirect3DDevice9* device,
     return result;
 }
 
-void CheckBoneGizmoScene(MMDApp* app) {
+void CheckBoneGizmoScene(MMDApp* app, void* rayCompiler) {
 #if defined(REQUIRE_MME)
     Check(GetModuleHandleW(L"MMEffect.dll") && GetModuleHandleW(L"MMHack.dll"),
         "gizmo MME regression requires the actual effect plugins");
     std::puts("MME loaded for bone gizmo regression");
 #endif
     int slot = app->SelectedModelSlot();
+    if (rayCompiler) {
+        // The stage also contains helpers, lights, and a skybox. Use the
+        // character with the most bones to exercise the model editing HUD.
+        unsigned mostBones = 0;
+        for (int candidate = 0; candidate < kModelSlotCount; ++candidate) {
+            const auto* model = mdl::Mdl(app->ModelSlot(candidate));
+            if (!model || model->boneCount <= mostBones) continue;
+            mostBones = model->boneCount;
+            slot = candidate;
+        }
+        app->SetSelectedModelSlot(slot);
+    }
     if (!app->SelectedModel()) {
         slot = 0;
         while (slot < kModelSlotCount && !app->ModelSlot(slot)) ++slot;
@@ -101,6 +183,15 @@ void CheckBoneGizmoScene(MMDApp* app) {
     FrameDriver(app);
     Check(std::fabs(bones[selected].matInit[15] - 1.0f) < .001f,
         "production warmup evaluates a valid bone pose");
+    if (rayCompiler) {
+        for (int i = 0; i < 5; ++i) {
+            app->state.messageSeen = 10;
+            FrameDriver(app);
+        }
+        Check(rayEffectCreated, "real MME successfully creates ray.fx");
+        MH_DisableHook(rayCompiler);
+        MH_RemoveHook(rayCompiler);
+    }
 
     auto* device = app->Renderer()->device;
     const RECT originalRect = app->ViewportRect();
@@ -111,12 +202,21 @@ void CheckBoneGizmoScene(MMDApp* app) {
     const auto initialized = MH_Initialize();
     Check(initialized == MH_OK || initialized == MH_ERROR_ALREADY_INITIALIZED,
         "initialize gizmo draw observer");
-    void* draw = (*reinterpret_cast<void***>(device))[83];
+    Microsoft::WRL::ComPtr<IDirect3DDevice9> presentationDevice;
+    if (MMD_ORIGINAL_PROFILE && !GetModuleHandleW(L"MMEffect.dll")) {
+        presentationDevice = device;
+    } else {
+        Microsoft::WRL::ComPtr<IDirect3DSurface9> back;
+        Check(SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)) &&
+            SUCCEEDED(back->GetDevice(&presentationDevice)), "get native presentation device");
+    }
+    void* draw = (*reinterpret_cast<void***>(presentationDevice.Get()))[83];
     Check(MH_CreateHook(draw, &ObserveBoneGizmoDraw,
         reinterpret_cast<void**>(&originalBoneGizmoDraw)) == MH_OK &&
         MH_EnableHook(draw) == MH_OK, "observe production gizmo triangles");
 
     unsigned cases = 0;
+    unsigned pixelCases = 0;
     for (int inset : {0, 1}) {
         const RECT display{originalRect.left + inset * 37,
             originalRect.top + inset * 23, originalRect.right - inset * 19,
@@ -134,11 +234,29 @@ void CheckBoneGizmoScene(MMDApp* app) {
                     app->state.coordinateSystem = coordinate;
                     const int actions[] = {9 + coordinate, 12 + coordinate, 23 + coordinate};
                     for (int kind = 0; kind < (MMD_ORIGINAL_PROFILE ? 2 : 3); ++kind) {
-                        app->ViewportToolOperation() = static_cast<ViewportToolAction>(actions[kind]);
                         app->InteractionDragMode() = ViewportDragMode::None;
                         const D3DVIEWPORT9 viewport{DWORD(display.left), DWORD(display.top),
                             DWORD(display.right - display.left), DWORD(display.bottom - display.top), 0, 1};
                         Check(SUCCEEDED(device->SetViewport(&viewport)), "set inset gizmo viewport");
+                        // Global Y is side-on in this view and its yellow
+                        // stroke extends beyond the selected bone sprite.
+                        const bool checkPixels = rayCompiler && inset == 0 && angle == 0 &&
+                            coordinate == 1 && kind == 1;
+                        RECT sample{};
+                        std::vector<DWORD> before;
+                        if (checkPixels) {
+                            app->ViewportToolOperation() = ViewportToolAction::None;
+                            app->state.messageSeen = 10;
+                            RenderFrameScene(app);
+                            const auto& bone = bones[selected];
+                            const LONG radius = LONG(std::ceil(72 * app->Renderer()->viewScale));
+                            sample = {(std::max)(display.left, LONG(bone.selState) - radius),
+                                (std::max)(display.top, LONG(bone.selState2) - radius),
+                                (std::min)(display.right, LONG(bone.selState) + radius),
+                                (std::min)(display.bottom, LONG(bone.selState2) + radius)};
+                            before = ReadGizmoPixels(presentationDevice.Get(), sample);
+                        }
+                        app->ViewportToolOperation() = static_cast<ViewportToolAction>(actions[kind]);
                         boneGizmoObservation = {};
                         boneGizmoObservation.enabled = true;
                         app->state.messageSeen = 10;
@@ -172,6 +290,28 @@ void CheckBoneGizmoScene(MMDApp* app) {
                                 inset, percent, angle, coordinate, actions[kind], x, y, bone.selState, bone.selState2);
                         }
                         Check(anchored, "production HUD preview remains centered on the selected bone");
+                        if (checkPixels) {
+                            const auto after = ReadGizmoPixels(presentationDevice.Get(), sample);
+                            std::size_t revealed = 0, changed = 0;
+                            DWORD nearestYellow = 0;
+                            int nearestDistance = 1000;
+                            for (std::size_t i = 0; i < after.size(); ++i) {
+                                const DWORD rgb = after[i] & 0xFFFFFF;
+                                if (rgb == (before[i] & 0xFFFFFF)) continue;
+                                ++changed;
+                                if (rgb == 0xFFE000) ++revealed;
+                                const int distance = 255 - int(rgb >> 16) +
+                                    std::abs(int((rgb >> 8) & 255) - 224) + int(rgb & 255);
+                                if (distance < nearestDistance) {
+                                    nearestDistance = distance;
+                                    nearestYellow = rgb;
+                                }
+                            }
+                            std::printf("RAY GIZMO scale=%g newly yellow=%zu changed=%zu nearest=%06lX\n",
+                                percent, revealed, changed, static_cast<unsigned long>(nearestYellow));
+                            Check(revealed > 0, "yellow axis reaches the completed Ray preview");
+                            ++pixelCases;
+                        }
                         ++cases;
                     }
                 }
@@ -187,4 +327,6 @@ void CheckBoneGizmoScene(MMDApp* app) {
     app->ViewportToolOperation() = ViewportToolAction::None;
     Check(!IsWindowVisible(app->MainWindow()), "gizmo scene test stays hidden");
     std::printf("PASS production bone gizmo origin: %u cases across HUD rows, coordinate modes, camera angles, inset viewports and render scales\n", cases);
+    if (rayCompiler)
+        std::printf("PASS production Ray gizmo pixels: %u render scales\n", pixelCases);
 }

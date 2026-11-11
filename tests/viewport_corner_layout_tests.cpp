@@ -150,7 +150,7 @@ bool HasQuad(const std::vector<QuadBox>& quads, const QuadBox& want) {
     return false;
 }
 
-void DrawChecks(IDirect3DDevice9* device) {
+void DrawChecks(IDirect3DDevice9* device, const RECT& view) {
     auto app = std::make_unique<MMDApp>();
     ResetAppState(*app);
     BlockGuard blockGuard(app.get());
@@ -180,7 +180,6 @@ void DrawChecks(IDirect3DDevice9* device) {
         settings::ResetCacheForTest(corner);
         for (float sceneScale : kScales) {
             renderer->viewScale = sceneScale;
-            RECT view{100, 50, 1380, 770};
             app->ViewportRect() = view;
             const float scale = FrameOverlayScale(app.get());
             Check(scale == 1.0f, "HUD size is independent of scene scale when it fits");
@@ -264,7 +263,7 @@ void DrawChecks(IDirect3DDevice9* device) {
 }
 
 // ---- 3) 命中 -------------------------------------------------------------
-void HitChecks(IDirect3DDevice9* device) {
+void HitChecks(IDirect3DDevice9* device, const RECT& view) {
     auto app = std::make_unique<MMDApp>();
     ResetAppState(*app);
     BlockGuard blockGuard(app.get());
@@ -286,7 +285,6 @@ void HitChecks(IDirect3DDevice9* device) {
         settings::ResetCacheForTest(corner);
         for (float sceneScale : kScales) {
             renderer->viewScale = sceneScale;
-            RECT view{100, 50, 1380, 770};
             app->ViewportRect() = view;
             const float scale = FrameOverlayScale(app.get());
             Check(scale == 1.0f, "HUD size is independent of scene scale when it fits");
@@ -464,8 +462,15 @@ int main() {
                                       &pp, &device)),
           "create a real GPU device");
     if (device != nullptr) {
-        DrawChecks(device);
-        HitChecks(device);
+        for (const int dpi : {96, 120, 144, 168, 192}) {
+            // Keep a fixed physical area and exercise the logical geometry a
+            // DPI-unaware window would receive. The display DPI is untouched.
+            const RECT view{100, 50, 100 + MulDiv(1280, 96, dpi),
+                50 + MulDiv(960, 96, dpi)};
+            std::printf("HUD layout and hit tests at simulated %d DPI\n", dpi);
+            DrawChecks(device, view);
+            HitChecks(device, view);
+        }
     }
     if (device != nullptr) device->Release();
     if (d3d != nullptr) d3d->Release();

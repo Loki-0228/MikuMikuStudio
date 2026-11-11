@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cwchar>
 #include <chrono>
 #include <cmath>
 #include <string>
@@ -1826,13 +1827,16 @@ int wmain(int argc, wchar_t** argv) {
     if (cameraStartup) wcscpy_s(app->EnvFileName(), 256, scenePath);
     if (!InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE)) return 3;
     ShowWindow(app->MainWindow(), SW_HIDE);
-    if (argc > 3 && std::wcscmp(argv[3], L"--bone-gizmo") == 0) {
+    const bool rayGizmo = argc > 3 && std::wcscmp(argv[3], L"--bone-gizmo-ray") == 0;
+    if (rayGizmo || (argc > 3 && std::wcscmp(argv[3], L"--bone-gizmo") == 0)) {
+        void* rayCompiler = rayGizmo ? ObserveRayEffectCompilation() : nullptr;
         if (_wcsicmp(std::filesystem::path(scenePath).extension().c_str(), L".pmm") == 0) {
             wcscpy_s(app->EnvFileName(), 256, scenePath); LoadSceneFile();
         } else {
+            Check(!rayGizmo, "Ray gizmo regression requires a Ray-enabled PMM");
             LoadModelFile(app, scenePath, false);
         }
-        CheckBoneGizmoScene(app);
+        CheckBoneGizmoScene(app, rayCompiler);
         ShutdownCleanup(app); delete app; g_Block = nullptr; return 0;
     }
     if(argc>3&&std::wcscmp(argv[3],L"--curve-transport")==0){

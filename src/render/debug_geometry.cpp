@@ -223,8 +223,7 @@ void ReleaseCom(void* object) {
         reinterpret_cast<IUnknown*>(object)->Release();  // vtable slot 2
 }
 
-void DrawAxisMesh(void* axis, D3DRenderer* sub) {
-    auto* device = sub->device;
+void DrawAxisMesh(void* axis, IDirect3DDevice9* device) {
     mdl::AccessoryRecord& gizmo = *mdl::Accessory(axis);
     const DWORD count = gizmo.materialCount;
     auto* materials = static_cast<D3DMATERIAL9*>(gizmo.materials);
@@ -506,8 +505,7 @@ void DrawAccessoryDebug(MMDApp* app) {
             device->SetRenderState(D3DRS_ZENABLE, TRUE);
             device->SetRenderState(D3DRS_LIGHTING, TRUE);
             device->Clear(0, nullptr, D3DCLEAR_ZBUFFER, 0x00FFFFFF, 1.0f, 0);
-            DrawAxisMesh(app->state.axisMeshObject,
-                         app->Renderer());
+            DrawAxisMesh(app->state.axisMeshObject, device);
             device->SetRenderState(D3DRS_ZENABLE, FALSE);
             device->SetRenderState(D3DRS_LIGHTING, FALSE);
         } else {
@@ -657,20 +655,16 @@ struct ScreenHandleVertex {
 // Triangle-list order for one quad {corner0, corner1, corner2, corner3}.
 constexpr int kQuadTriangles[6] = {0, 1, 2, 0, 2, 3};
 
-void DrawBoneScaleHandles(MMDApp* app,
+void DrawBoneScaleHandles(MMDApp* app, IDirect3DDevice9* device,
                           mikumikustudio::mdl::BoneRecord* bone,
                           const float frameMatrix[16]) {
+    const auto* sub = app->Renderer();
     Matrix world;
     float unitScale = 1.0f;
     // Bone scale is a view-axis tool (bone_scale::AxisDirection), so its
     // handles always show the screen axes, whatever the caption says.
     if (!BoneGizmoTransform(app, frameMatrix, bone, world, unitScale, true))
         return;
-    D3DRenderer* sub = app->Renderer();
-    if (sub == nullptr || sub->device == nullptr)
-        return;
-    auto* device = sub->device;
-
     // Gizmo-space images of the camera axes: the i-th row of the unscaled
     // transform is the world image of the i-th unit axis, so the dot of a
     // normalized row with a world direction is that direction's component on
@@ -1175,11 +1169,13 @@ float JointRotationIncrement(const float previous[4], const float current[4],
         sign * (x * axis[0] + y * axis[1] + z * axis[2]), sign * w));
 }
 
-void DrawHudAxisPreview(MMDApp* app, mikumikustudio::mdl::BoneRecord* bone,
+void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
+                        mikumikustudio::mdl::BoneRecord* bone,
                         const float frameMatrix[16], HudPreviewKind kind,
                         int axis, bool rotateDragging,
                         RotateSectorState* sector = nullptr,
                         bool secondary = false) {
+    const auto* sub = app->Renderer();
     const auto invalidateSector = [&] {
         if (sector != nullptr)
             *sector = {};
@@ -1204,13 +1200,6 @@ void DrawHudAxisPreview(MMDApp* app, mikumikustudio::mdl::BoneRecord* bone,
             return;
         }
     }
-    D3DRenderer* sub = app->Renderer();
-    if (sub == nullptr || sub->device == nullptr) {
-        invalidateSector();
-        return;
-    }
-    auto* device = sub->device;
-
     auto& api = d3dx::Get();
     Matrix scaleMatrix;
     Matrix finalWorld;
@@ -1583,7 +1572,8 @@ void DrawHudAxisPreview(MMDApp* app, mikumikustudio::mdl::BoneRecord* bone,
 
 }  // namespace
 
-void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16]) {
+void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16],
+                           IDirect3DDevice9* presentationDevice) {
     unsigned char* model = CurrentModel(app);
     // Deliberate hardening: the ledger records no VA for this access, and the
     // original call site was never located, so the port adds this guard intentionally
@@ -1616,6 +1606,10 @@ void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16]) {
         return;
     }
     mikumikustudio::mdl::BoneRecord* bone = &bones[selected];
+    auto* sub = app->Renderer();
+    if (!sub) return;
+    auto* device = presentationDevice ? presentationDevice : sub->device;
+    if (!device) return;
 
     // MMS addition: scale mode draws its own handles instead of the operation
     // axis mesh.  Every bone type scales (BONE_SCALING.md), so the FixedAxis
@@ -1665,7 +1659,7 @@ void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16]) {
             const bool dragging = activeDrag >= 4 && activeDrag <= 6;
             PrepareRotatePreviews(app, model, targets, previewAxis, dragging);
             for (std::size_t i = 0; i < targets.size(); ++i)
-                DrawHudAxisPreview(app, &bones[targets[i]], frameMatrix,
+                DrawHudAxisPreview(app, device, &bones[targets[i]], frameMatrix,
                     previewKind, previewAxis, dragging,
                     &g_rotatePreviews.sectors[i], targets[i] != selected);
             return;
@@ -1678,7 +1672,7 @@ void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16]) {
              (bone->flags & mdl::kBoneFlagFixedAxis) ==
                  mdl::kBoneFlagFixedAxis);
         if (previewKind == HudPreviewKind::Scale || !fixedAxis)
-            DrawHudAxisPreview(app, bone, frameMatrix, previewKind,
+            DrawHudAxisPreview(app, device, bone, frameMatrix, previewKind,
                                previewAxis, false);
         return;
     }
@@ -1695,11 +1689,11 @@ void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16]) {
               static_cast<int>(ViewportToolAction::ScaleUniform))) &&
         bone_scale::Enabled(app);
     if (uniformPreview) {
-        DrawBoneScaleHandles(app, bone, frameMatrix);
+        DrawBoneScaleHandles(app, device, bone, frameMatrix);
         return;
     }
     if (!MMD_ORIGINAL_PROFILE && app->EditMode() == ViewportEditMode::Scale && bone_scale::Enabled(app)) {
-        DrawBoneScaleHandles(app, bone, frameMatrix);
+        DrawBoneScaleHandles(app, device, bone, frameMatrix);
         return;
     }
     bone_scale::gizmo::Publish(app, bone_scale::gizmo::ScreenGeometry{});
@@ -1724,11 +1718,17 @@ void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16]) {
     Matrix scaleMatrix;
     api.scaling(&scaleMatrix, unitScale, unitScale, unitScale);
     api.multiply(&world, &scaleMatrix, &world);
-    auto* device = DeviceFromScene(app->Physics());
     device->SetTransform(D3DTS_WORLD,
                          reinterpret_cast<const D3DMATRIX*>(&world));
-    device->Clear(0, nullptr, D3DCLEAR_ZBUFFER, 0x00FFFFFF, 1.0f, 0);
-    DrawAxisMesh(app->state.axisMeshObject, app->Renderer());
+    if (presentationDevice) {
+        device->SetLight(0, &app->SceneLight());
+        device->LightEnable(0, TRUE);
+        device->SetRenderState(D3DRS_LIGHTING, TRUE);
+    } else {
+        device->Clear(0, nullptr, D3DCLEAR_ZBUFFER, 0x00FFFFFF, 1.0f, 0);
+    }
+    DrawAxisMesh(app->state.axisMeshObject, device);
+    if (presentationDevice) device->SetRenderState(D3DRS_LIGHTING, FALSE);
 }
 
 namespace {

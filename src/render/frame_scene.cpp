@@ -420,8 +420,13 @@ void DrawOverlayBatches(MMDApp* app, IDirect3DDevice9* device, bool presentation
     DrawTextOverlay(app, device);
 }
 
-#if !MMD_ORIGINAL_PROFILE
-void DrawPresentationOverlays(MMDApp* app) {
+struct BoneAxisCamera {
+    D3DMATRIX view;
+    D3DMATRIX projection;
+};
+
+void DrawPresentationOverlays(MMDApp* app, const D3DMATRIX& frameWorld,
+                              const BoneAxisCamera* axisCamera) {
     using Microsoft::WRL::ComPtr;
     ComPtr<IDirect3DSurface9> back, previous, depth;
     ComPtr<IDirect3DDevice9> native;
@@ -433,9 +438,24 @@ void DrawPresentationOverlays(MMDApp* app) {
     ComPtr<IDirect3DStateBlock9> saved;
     if (FAILED(device->CreateStateBlock(D3DSBT_ALL, &saved)) ||
         FAILED(device->GetRenderTarget(0, &previous))) return;
-    device->GetDepthStencilSurface(&depth);
-    device->SetDepthStencilSurface(nullptr);
-    HRESULT hr = device->SetRenderTarget(0, back.Get());
+    D3DVIEWPORT9 previousViewport{};
+    D3DCAPS9 caps{};
+    if (FAILED(device->GetViewport(&previousViewport)) ||
+        FAILED(device->GetDeviceCaps(&caps))) return;
+    ComPtr<IDirect3DSurface9> extraTargets[3];
+    const DWORD targetCount = std::min<DWORD>(caps.NumSimultaneousRTs, 4);
+    for (DWORD slot = 1; slot < targetCount; ++slot) {
+        const HRESULT result = device->GetRenderTarget(slot, &extraTargets[slot - 1]);
+        if (FAILED(result) && result != D3DERR_NOTFOUND) return;
+    }
+    HRESULT hr = device->GetDepthStencilSurface(&depth);
+    if (FAILED(hr) && hr != D3DERR_NOTFOUND) return;
+    hr = device->SetDepthStencilSurface(nullptr);
+    // Effects can leave MRTs bound. The HUD writes only to the back buffer.
+    for (DWORD slot = 1; SUCCEEDED(hr) && slot < targetCount; ++slot) {
+        if (extraTargets[slot - 1]) hr = device->SetRenderTarget(slot, nullptr);
+    }
+    if (SUCCEEDED(hr)) hr = device->SetRenderTarget(0, back.Get());
     const RECT rect = FrameOverlayRect(app);
     const D3DVIEWPORT9 viewport{DWORD(rect.left), DWORD(rect.top),
         DWORD(rect.right - rect.left), DWORD(rect.bottom - rect.top), 0, 1};
@@ -453,14 +473,38 @@ void DrawPresentationOverlays(MMDApp* app) {
         device->SetRenderState(D3DRS_FOGENABLE, FALSE);
         device->SetRenderState(D3DRS_LIGHTING, FALSE);
         device->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
+        device->SetRenderState(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
+        device->SetRenderState(D3DRS_INDEXEDVERTEXBLENDENABLE, FALSE);
+        device->SetStreamSourceFreq(0, 1);
         device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
         device->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
         device->SetRenderState(D3DRS_COLORWRITEENABLE, 15);
         device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
         device->SetRenderState(D3DRS_MULTISAMPLEMASK, 0xFFFFFFFFu);
         device->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
-        device->SetScissorRect(&rect);
         device->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+        device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+
+        // Draw the gizmo with the camera used for bone picking, in display
+        // pixels after MME post-processing, anti-aliasing and preview scaling.
+        const RECT scene = app->ViewportRect();
+        if (axisCamera && !IsRectEmpty(&scene)) {
+            const D3DVIEWPORT9 sceneViewport{DWORD(scene.left), DWORD(scene.top),
+                DWORD(scene.right - scene.left), DWORD(scene.bottom - scene.top), 0, 1};
+            if (SUCCEEDED(device->SetViewport(&sceneViewport)) &&
+                SUCCEEDED(device->SetScissorRect(&scene)) &&
+                SUCCEEDED(device->SetTransform(D3DTS_VIEW, &axisCamera->view)) &&
+                SUCCEEDED(device->SetTransform(D3DTS_PROJECTION, &axisCamera->projection))) {
+                device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+                device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+                device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+                device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+                DrawBoneOperationAxis(app, reinterpret_cast<const float*>(&frameWorld), device);
+            }
+            hr = device->SetViewport(&viewport);
+        }
+
+        device->SetScissorRect(&rect);
         device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
         device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
         device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
@@ -469,23 +513,27 @@ void DrawPresentationOverlays(MMDApp* app) {
         device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
         device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
         device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
-        device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
         device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
         device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
         device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
         device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
         device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
         device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
-        DrawOverlayBatches(app, device, true);
-        hr = device->EndScene();
+
+        if (SUCCEEDED(hr)) DrawOverlayBatches(app, device, true);
+        const HRESULT end = device->EndScene();
+        if (SUCCEEDED(hr)) hr = end;
     }
     device->SetRenderTarget(0, previous.Get());
     device->SetDepthStencilSurface(depth.Get());
+    for (DWORD slot = 1; slot < targetCount; ++slot) {
+        if (extraTargets[slot - 1]) device->SetRenderTarget(slot, extraTargets[slot - 1].Get());
+    }
     // SetRenderTarget resets the viewport; restore the state block last.
     saved->Apply();
+    device->SetViewport(&previousViewport);
     if (FAILED(hr)) runtime_log::Write("HUD presentation failed hr=0x%08lX", hr);
 }
-#endif
 
 }  // namespace
 
@@ -516,6 +564,11 @@ void RenderFrameScene(MMDApp* app) {
     PrepareFrameSpriteOverlay(app); // 0x46BD79, after transform setup
     D3DMATRIX frameWorld{};
     device->GetTransform(D3DTS_WORLD, &frameWorld);
+    const bool presentOverlays = !MMD_ORIGINAL_PROFILE || GetModuleHandleW(L"MMEffect.dll") != nullptr;
+    BoneAxisCamera axisCamera{};
+    const bool haveAxisCamera = presentOverlays && !app->RecordingWindow() &&
+        SUCCEEDED(device->GetTransform(D3DTS_VIEW, &axisCamera.view)) &&
+        SUCCEEDED(device->GetTransform(D3DTS_PROJECTION, &axisCamera.projection));
     deformed_mesh_capture::SetCamera(device, reinterpret_cast<const float*>(&frameWorld));
 
     // 0x46DB41: the whole block - per-model VB update (inner gate
@@ -677,31 +730,26 @@ void RenderFrameScene(MMDApp* app) {
         device->SetRenderState(D3DRS_LIGHTING, TRUE);
     }
 
-    // 0x46E556..0x46E592: selected-bone local/global operation axis.
-    if (app->state.optflag[0] == 0 &&
-        app->PlaybackActive() == 0 &&
-        app->state.frameCopyDialog == 0) {
-        DrawBoneOperationAxis(app,
-            reinterpret_cast<const float*>(&frameWorld));
-    }
-
-    {
+    const bool drawBoneAxis = app->state.optflag[0] == 0 &&
+        app->PlaybackActive() == 0 && app->state.frameCopyDialog == 0;
+    if (!presentOverlays) {
         MMD_PERF_SCOPE(Overlays);
-#if MMD_ORIGINAL_PROFILE
+        // 0x46E556..0x46E592: selected-bone local/global operation axis.
+        if (drawBoneAxis)
+            DrawBoneOperationAxis(app, reinterpret_cast<const float*>(&frameWorld));
         DrawFrameOverlayBatches(app);
         FillFramePresentationMargins(app, device);
-#endif
     }
     { MMD_PERF_SCOPE(EndScene); if (SUCCEEDED(device->EndScene())) {
         antialiasFrame.Complete();
         if (previewScale.Complete()) {
-#if !MMD_ORIGINAL_PROFILE
-            // Keep text and controls out of scene scaling and temporal history.
-            // FPS still comes from FrameDriver's one-count-per-scene counter.
-            MMD_PERF_SCOPE(Overlays);
-            FillFramePresentationMargins(app, device);
-            DrawPresentationOverlays(app);
-#endif
+            if (presentOverlays) {
+                // Keep controls out of scene scaling and temporal history.
+                MMD_PERF_SCOPE(Overlays);
+                FillFramePresentationMargins(app, device);
+                DrawPresentationOverlays(app, frameWorld,
+                    drawBoneAxis && haveAxisCamera ? &axisCamera : nullptr);
+            }
             if(antialiasFrame.Succeeded())frame_rate::CompleteScene(app);
         }
     } }
