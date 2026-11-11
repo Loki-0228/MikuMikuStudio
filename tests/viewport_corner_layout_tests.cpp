@@ -11,7 +11,7 @@
 //      留白 10s、贴合对应角；右下角锚点严格等于移植现状。
 //   2) 绘制位置：PrepareFrameSpriteOverlay 顶点回读，四角下旋转 / 位移 /
 //      缩放行的四边形坐标与映射值一致（绘制与命中同源）。
-//   3) 命中：HandleViewportToolPress 在各角返回对应操作号，缩放行在
+//   3) 命中：生产视口命中检查在各角返回对应操作号，缩放行在
 //      bone_scale::Enabled 为假时整行不命中。
 //   4) 设置往返：临时 ini 四值读写一致、坏值回退 br、默认 br。
 //
@@ -36,6 +36,8 @@
 #include "mikumikustudio/viewport_corner_settings.hpp"
 #include "mikumikustudio/viewport_tool_layout.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
+
+namespace mikumikustudio { int ViewportToolAtPointForTest(MMDApp*); }
 
 namespace {
 
@@ -150,7 +152,7 @@ bool HasQuad(const std::vector<QuadBox>& quads, const QuadBox& want) {
     return false;
 }
 
-void DrawChecks(IDirect3DDevice9* device) {
+void DrawChecks(HWND window, IDirect3DDevice9* device) {
     auto app = std::make_unique<MMDApp>();
     ResetAppState(*app);
     BlockGuard blockGuard(app.get());
@@ -158,6 +160,12 @@ void DrawChecks(IDirect3DDevice9* device) {
     std::memset(renderer.get(), 0, sizeof(*renderer));
     app->Renderer() = renderer.get();
     renderer->device = device;
+    app->Hwnd() = window;
+    app->SidebarWidth() = 100;
+    RECT client{};
+    Check(GetClientRect(window, &client), "get the logical drawing client");
+    app->RenderWidth() = client.right;
+    app->RenderHeight() = client.bottom;
 
     IDirect3DVertexBuffer9* vb = nullptr;
     Check(SUCCEEDED(device->CreateVertexBuffer(0x445C0, D3DUSAGE_WRITEONLY,
@@ -180,8 +188,9 @@ void DrawChecks(IDirect3DDevice9* device) {
         settings::ResetCacheForTest(corner);
         for (float sceneScale : kScales) {
             renderer->viewScale = sceneScale;
-            RECT view{100, 50, 1380, 770};
-            app->ViewportRect() = view;
+            app->ViewportRect() = {109, 50, client.right - 80, client.bottom - 210};
+            const RECT view = FrameOverlayRect(app.get());
+            Check(!IsRectEmpty(&view), "the hidden client has a real presentation rectangle");
             const float scale = FrameOverlayScale(app.get());
             Check(scale == 1.0f, "HUD size is independent of scene scale when it fits");
             const layout::Anchor a = layout::Make(view, scale, corner);
@@ -264,7 +273,7 @@ void DrawChecks(IDirect3DDevice9* device) {
 }
 
 // ---- 3) 命中 -------------------------------------------------------------
-void HitChecks(IDirect3DDevice9* device) {
+void HitChecks(HWND window, IDirect3DDevice9* device) {
     auto app = std::make_unique<MMDApp>();
     ResetAppState(*app);
     BlockGuard blockGuard(app.get());
@@ -276,21 +285,37 @@ void HitChecks(IDirect3DDevice9* device) {
     app->state.playbackActive = 0;
     app->state.optflag[0] = 0;   // 模型面板
     app->state.v32c = 0;         // 旋转 / 位移行都可用
-    app->Hwnd() = nullptr;       // 拖拽分支不得移动真实指针
+    app->Hwnd() = window;
+    app->SidebarWidth() = 100;
+    app->RenderWidth() = 1280;
+    app->RenderHeight() = 720;
+    auto model = std::make_unique<mikumikustudio::mdl::ModelRecord>();
+    mikumikustudio::mdl::BoneRecord bone{};
+    unsigned char selected = 1;
+    model->boneTable = &bone;
+    model->boneCount = 1;
+    model->selectedBone = 0;
+    model->boneSelection = &selected;
+    model->physicsMode = 1;
 
     struct Row { int xUnits, yUnits, modelOp, cameraOp; };
     const Row rows[] = {{110, 105, 9, 18}, {70, 105, 10, 19}, {30, 105, 11, 20},
                         {110, 65, 12, 15}, {70, 65, 13, 16}, {30, 65, 14, 17}};
+    RECT client{};
+    Check(GetClientRect(window, &client), "get the logical input client");
 
     for (Corner corner : kCorners) {
         settings::ResetCacheForTest(corner);
         for (float sceneScale : kScales) {
             renderer->viewScale = sceneScale;
-            RECT view{100, 50, 1380, 770};
-            app->ViewportRect() = view;
+            app->ViewportRect() = {109, 50, client.right - 80, client.bottom - 210};
+            const RECT view = FrameOverlayRect(app.get());
+            Check(!IsRectEmpty(&view), "the input fixture uses the real hidden client");
             const float scale = FrameOverlayScale(app.get());
             Check(scale == 1.0f, "HUD size is independent of scene scale when it fits");
             const layout::Anchor a = layout::Make(view, scale, corner);
+            app->ModelSlot(0) = reinterpret_cast<unsigned char*>(model.get());
+            app->SetSelectedModelSlot(0);
             for (const Row& row : rows) {
                 const int x = static_cast<int>(a.X(
                     static_cast<float>(row.xUnits)));
@@ -299,23 +324,16 @@ void HitChecks(IDirect3DDevice9* device) {
                 app->MouseX() = app->PreviousMouseX() = x;
                 app->MouseY() = app->PreviousMouseY() = y;
                 app->state.optflag[0] = 0;
-                Check(mikumikustudio::HandleViewportToolPress(app.get()),
-                      "row cell answers a press");
-                Check(static_cast<int>(app->ViewportToolOperation()) ==
-                          row.modelOp,
+                Check(mikumikustudio::ViewportToolAtPointForTest(app.get()) == row.modelOp,
                       "model-panel row cell maps to its own axis operation");
-                mikumikustudio::ReleaseLeftButtonState(app.get(), false);
 
                 app->MouseX() = app->PreviousMouseX() = x;
                 app->MouseY() = app->PreviousMouseY() = y;
                 app->state.optflag[0] = 1;
-                Check(mikumikustudio::HandleViewportToolPress(app.get()),
-                      "row cell answers a press on the camera panel");
-                Check(static_cast<int>(app->ViewportToolOperation()) ==
-                          row.cameraOp,
+                Check(mikumikustudio::ViewportToolAtPointForTest(app.get()) == row.cameraOp,
                       "camera-panel row cell maps to its own axis operation");
-                mikumikustudio::ReleaseLeftButtonState(app.get(), false);
             }
+            app->ModelSlot(0) = nullptr;
 
             // 坐标条（操作 21）：格心 (70, 145) 在命中带 (130..10, 167..125)。
             app->state.optflag[0] = 1;
@@ -335,19 +353,10 @@ void HitChecks(IDirect3DDevice9* device) {
                 static_cast<int>(a.X(110.0f));
             app->MouseY() = app->PreviousMouseY() =
                 static_cast<int>(a.Y(25.0f));
-            Check(!mikumikustudio::HandleViewportToolPress(app.get()),
+            Check(mikumikustudio::ViewportToolAtPointForTest(app.get()) == 0,
                   "scale row stays inert while bone scaling is disabled");
-            mikumikustudio::ReleaseLeftButtonState(app.get(), false);
             // Real enabled scale operations must still address uniform/X/Y/Z
             // in that logical order, including the moved uniform button.
-            auto model = std::make_unique<mikumikustudio::mdl::ModelRecord>();
-            mikumikustudio::mdl::BoneRecord bone{};
-            unsigned char selected = 1;
-            model->boneTable = &bone;
-            model->boneCount = 1;
-            model->selectedBone = 0;
-            model->boneSelection = &selected;
-            model->physicsMode = 1;
             app->ModelSlot(0) = reinterpret_cast<unsigned char*>(model.get());
             app->SetSelectedModelSlot(0);
             app->state.optflag[0] = 0;
@@ -358,10 +367,8 @@ void HitChecks(IDirect3DDevice9* device) {
                                                 : 150.0f - 40.0f * column;
                 app->MouseX() = app->PreviousMouseX() = static_cast<int>(a.X(units));
                 app->MouseY() = app->PreviousMouseY() = static_cast<int>(a.Y(25.0f));
-                Check(mikumikustudio::HandleViewportToolPress(app.get()) &&
-                          static_cast<int>(app->ViewportToolOperation()) == 22 + column,
+                Check(mikumikustudio::ViewportToolAtPointForTest(app.get()) == 22 + column,
                       "enabled scale cell retains its own axis operation");
-                mikumikustudio::ReleaseLeftButtonState(app.get(), false);
             }
             app->ModelSlot(0) = nullptr;
 
@@ -464,8 +471,17 @@ int main() {
                                       &pp, &device)),
           "create a real GPU device");
     if (device != nullptr) {
-        DrawChecks(device);
-        HitChecks(device);
+        for (const int dpi : {96, 120, 144, 168, 192}) {
+            // Resize the hidden window in logical pixels without changing
+            // the monitor's display settings.
+            const int width = MulDiv(1280, 96, dpi);
+            const int height = MulDiv(960, 96, dpi);
+            Check(SetWindowPos(window, nullptr, 0, 0, width, height,
+                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOZORDER), "resize logical client for DPI fixture");
+            std::printf("HUD layout and hit tests at simulated %d DPI\n", dpi);
+            DrawChecks(window, device);
+            HitChecks(window, device);
+        }
     }
     if (device != nullptr) device->Release();
     if (d3d != nullptr) d3d->Release();

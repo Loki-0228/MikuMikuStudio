@@ -17,6 +17,10 @@
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/viewport_render_scale.hpp"
+#include <MinHook.h>
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/plugins/native_pose_scope.hpp"
@@ -28,6 +32,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cwchar>
 #include <chrono>
 #include <cmath>
 #include <string>
@@ -60,6 +65,8 @@ namespace {
 void Check(bool ok, const char* what) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", what); std::exit(7); }
 }
+
+#include "bone_gizmo_scene_checks.hpp"
 
 void CheckCoordinateReset(MMDApp* app, const std::filesystem::path& output) {
     const HWND main = app->MainWindow();
@@ -1770,9 +1777,11 @@ int wmain(int argc, wchar_t** argv) {
     const bool cameraLoad = cameraStartup ||
         (argc > 3 && std::wcscmp(argv[3], L"--pmm-camera-load") == 0);
     const bool legacyProbe = argc > 3 && std::wcscmp(argv[3], L"--legacy-package") == 0;
-    HHOOK cameraLoadHook = (cameraLoad || legacyProbe) ? SetWindowsHookExW(WH_CBT,
+    const bool rayGizmo = argc > 3 && std::wcscmp(argv[3], L"--bone-gizmo-ray") == 0;
+    HHOOK cameraLoadHook = (cameraLoad || legacyProbe || rayGizmo) ? SetWindowsHookExW(WH_CBT,
         GuardCameraLoadProbe, nullptr, GetCurrentThreadId()) : nullptr;
-    if (cameraLoad || legacyProbe) Check(cameraLoadHook != nullptr, "install hidden integration dialog guard");
+    if (cameraLoad || legacyProbe || rayGizmo)
+        Check(cameraLoadHook != nullptr, "install hidden integration dialog guard");
     const bool menusOnly = std::wcscmp(argv[1], L"--menus-only") == 0;
     HHOOK menuHook = menusOnly ? SetWindowsHookExW(WH_CBT, RejectMenuProbeDialog,
         nullptr, GetCurrentThreadId()) : nullptr;
@@ -1797,6 +1806,7 @@ int wmain(int argc, wchar_t** argv) {
     app->state = MMDAppState{};
     app->InitDefaults();
     if (cameraStartup) wcscpy_s(app->EnvFileName(), 256, scenePath);
+    if (rayGizmo) std::puts("Ray gizmo: initialize hidden renderer");
     if (!InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE)) return 3;
     ShowWindow(app->MainWindow(), SW_HIDE);
 
@@ -1951,14 +1961,19 @@ int wmain(int argc, wchar_t** argv) {
         std::puts("PASS renamed packaged MME loads draws toggles deletes and exits");
         return 0;
     }
-    if (argc > 3 && std::wcscmp(argv[3], L"--bone-gizmo") == 0) {
+    if (rayGizmo || (argc > 3 && std::wcscmp(argv[3], L"--bone-gizmo") == 0)) {
+        void* rayCompiler = rayGizmo ? ObserveRayEffectCompilation() : nullptr;
         if (_wcsicmp(std::filesystem::path(scenePath).extension().c_str(), L".pmm") == 0) {
+            if (rayGizmo) std::puts("Ray gizmo: load project and effect assignments");
             wcscpy_s(app->EnvFileName(), 256, scenePath); LoadSceneFile();
         } else {
+            Check(!rayGizmo, "Ray gizmo regression requires a Ray-enabled PMM");
             LoadModelFile(app, scenePath, false);
         }
-        CheckBoneGizmoScene(app);
-        ShutdownCleanup(app); delete app; g_Block = nullptr; return 0;
+        CheckBoneGizmoScene(app, rayCompiler);
+        ShutdownCleanup(app); delete app; g_Block = nullptr;
+        if (rayGizmo) UnhookWindowsHookEx(cameraLoadHook);
+        return 0;
     }
     if (argc > 3 && std::wcscmp(argv[3], L"--model-order") == 0) {
         model_order_dialog_checks::Run(app, scenePath);
