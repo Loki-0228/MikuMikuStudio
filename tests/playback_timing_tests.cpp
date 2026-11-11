@@ -23,6 +23,29 @@ void Check(bool value, const char* label) {
 }
 struct Result { btVector3 position; std::uint64_t ticks; double frame; };
 
+void CheckRecordingStartKey(std::uint32_t frame) {
+    auto model = std::make_unique<mdl::ModelRecord>();
+    auto* raw = reinterpret_cast<unsigned char*>(model.get());
+    mdl::DisplayKey keys[3]{};
+    keys[0].next = 1;
+    keys[1].frame = frame;
+    keys[1].next = 2;
+    keys[1].visible = 1;
+    keys[2].frame = frame + 1;
+    keys[2].previous = 1;
+    mdl::DisplayKeys(raw) = keys;
+
+    // The seconds round trip can put an integer start on either side of its key.
+    const double start = double(frame) / 30.0;
+    InitModelTrackCursors(raw, start, 0);
+    AdvanceModelKeyframes(raw, start, 0);
+    Check(model->displayKeyCursor == 1 && model->loadComplete,
+          "the first recorded sample evaluates the exact nonzero start key");
+    AdvanceModelKeyframes(raw, (frame + 0.5) / 30.0, 0);
+    Check(model->displayKeyCursor == 2 && model->loadComplete,
+          "a fractional sample stays between the start key and its successor");
+}
+
 Result Simulate(int playbackFps, int outputFps, bool recording, bool noise = false,
                 bool jointed = false, float erp = .3f, float cfm = .001f,
                 bool physicsEnabled = true) {
@@ -170,6 +193,8 @@ std::array<float, 2> SampleDrivenBody(int displayFps, bool tracked) {
 }
 
 int main() {
+    CheckRecordingStartKey(31);
+    CheckRecordingStartKey(123);
     const auto baseline = Simulate(30, 30, true);
     Check(baseline.ticks == 120 && baseline.position.y() < 99, "fixed physics advances at independent 60 Hz");
     for (int playbackFps : {24, 30, 60, 120}) {

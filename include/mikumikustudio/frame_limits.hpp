@@ -52,6 +52,13 @@ inline bool ParsePlaybackBound(const char* value,std::int32_t& result) noexcept 
     const char* first=value;
     while (*first && std::isspace(static_cast<unsigned char>(*first))) ++first;
     if (!*first) { result=0;return true; }
-    return ParseSigned(value,result);
+    errno = 0;
+    char* end = nullptr;
+    const auto parsed = std::strtoll(first, &end, 10);
+    if (errno == ERANGE || end == first || parsed < minimum || parsed > maximum) return false;
+    while (*end && std::isspace(static_cast<unsigned char>(*end))) ++end;
+    if (*end) return false;
+    result = static_cast<std::int32_t>(parsed);
+    return true;
 }
 }

@@ -80,6 +80,8 @@ const RangeCase cases[] = {
     {"reported-1100-plus-1", L"0", L"1100", 1, 0, 0, 0, 1100},
     {"explicit-plus-zero", L"", L"1100", 0, 0, 0, 0, 1100},
     {"explicit-short-range", L"35", L"120", 3000, 60000, 300, 35, 120},
+    {"issue-48-playback-range", L"6559", L"7448", 8000, 0, 0, 6559, 7448},
+    {"pasted-playback-range", L" 6559 ", L"7448 ", 8000, 0, 0, 6559, 7448},
     {"relative-stop", L"35", L"-2", 120, 0, 0, 35, 119},
     {"negative-start-clamps-to-zero", L"-10", L"120", 0, 0, 0, 0, 120},
     {"zero-falls-back-to-motion", L"10", L"0", 1100, 0, 0, 10, 1100},
@@ -104,6 +106,21 @@ std::wstring Text(HWND dialog, int id) {
     GetDlgItemTextW(dialog, id, text, static_cast<int>(std::size(text)));
     return text;
 }
+void CheckChineseFpsUnit(HWND dialog) {
+    HWND label = FindWindowExW(dialog, nullptr, L"Static", L"帧/秒");
+    Check(label != nullptr, "Chinese dialog has the translated FPS unit");
+    if (!label) return;
+    RECT bounds{}, textBounds{};
+    GetClientRect(label, &bounds);
+    const HDC dc = GetDC(label);
+    Require(dc != nullptr, "get the FPS label device context");
+    const auto font = reinterpret_cast<HFONT>(SendMessageW(label, WM_GETFONT, 0, 0));
+    const auto previous = font ? SelectObject(dc, font) : nullptr;
+    DrawTextW(dc, L"帧/秒", -1, &textBounds, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+    if (previous) SelectObject(dc, previous);
+    ReleaseDC(label, dc);
+    Check(bounds.right >= textBounds.right, "the Chinese FPS unit fits without clipping");
+}
 INT_PTR CALLBACK Probe(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
     auto* context = reinterpret_cast<Context*>(GetWindowLongPtrW(dialog, DWLP_USER));
     if (message != WM_INITDIALOG)
@@ -127,6 +144,7 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
           "default start uses the current playback range");
     Check(Text(dialog, panel::kAviFpsEdit) == context->expectedFps,
           "default FPS uses the last confirmed video frame rate");
+    if (context->app->EnglishUI() == 2) CheckChineseFpsUnit(dialog);
     Check(Text(dialog, panel::kAviWidthEdit) == std::to_wstring(context->app->RenderWidth()) &&
           Text(dialog, panel::kAviHeightEdit) == std::to_wstring(context->app->RenderHeight()),
           "initial dimensions match the render size without inserted digits");

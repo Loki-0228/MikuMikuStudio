@@ -187,7 +187,24 @@ const wchar_t* ChineseUiText(const char* english) {
 }
 
 namespace {
-void TranslateFixedWindowText(HWND window) {
+void FitFpsLabelWidth(HWND label, const wchar_t* text) {
+    HDC dc = GetDC(label);
+    if (!dc) return;
+    const auto font = reinterpret_cast<HFONT>(SendMessageW(label, WM_GETFONT, 0, 0));
+    const HGDIOBJ previous = font ? SelectObject(dc, font) : nullptr;
+    RECT textBounds{};
+    DrawTextW(dc, text, -1, &textBounds, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+    if (previous) SelectObject(dc, previous);
+    ReleaseDC(label, dc);
+
+    RECT bounds{};
+    if (GetWindowRect(label, &bounds) && textBounds.right > bounds.right - bounds.left) {
+        SetWindowPos(label, nullptr, 0, 0, textBounds.right, bounds.bottom - bounds.top,
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+void TranslateFixedWindowText(HWND window, bool isStatic = false) {
     wchar_t wide[1024]{};
     GetWindowTextW(window, wide, 1024);
     std::string ascii;
@@ -195,7 +212,10 @@ void TranslateFixedWindowText(HWND window) {
         if (*ch > 127) return; // Model names and already translated text remain intact.
         ascii.push_back(static_cast<char>(*ch));
     }
-    if (const auto* translated = ChineseUiText(ascii.c_str())) SetWindowTextW(window, translated);
+    if (const auto* translated = ChineseUiText(ascii.c_str())) {
+        if (isStatic && ascii == "fps") FitFpsLabelWidth(window, translated);
+        SetWindowTextW(window, translated);
+    }
 }
 struct DialogInit { DLGPROC procedure; LPARAM parameter; };
 constexpr wchar_t kDialogProcedure[] = L"MMS.OriginalLocalizedDialogProc";
@@ -222,8 +242,9 @@ void LocalizeChineseDialog(MMDApp* app, HWND dialog) {
         (void)context;
         wchar_t className[32]{};
         GetClassNameW(child, className, 32);
-        if (_wcsicmp(className, L"Static") == 0 || _wcsicmp(className, L"Button") == 0)
-            TranslateFixedWindowText(child);
+        const bool isStatic = _wcsicmp(className, L"Static") == 0;
+        if (isStatic || _wcsicmp(className, L"Button") == 0)
+            TranslateFixedWindowText(child, isStatic);
         return TRUE;
     }, reinterpret_cast<LPARAM>(app));
 }

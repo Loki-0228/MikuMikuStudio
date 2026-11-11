@@ -24,6 +24,14 @@ inline bool Valid(const Settings& settings) {
         std::isfinite(physics.cfm) && physics.cfm >= 0 && physics.cfm <= 1000000;
 }
 inline double Speed(const Settings& settings) { return settings.playbackFps / 30.0; }
+inline double TimelineFrame(double seconds) {
+    const double frame = seconds * 30.0;
+    const double whole = std::round(frame);
+    // A frame-to-seconds round trip can place an exact key just past its
+    // boundary. Preserve fractional samples outside floating-point error.
+    const double tolerance = std::numeric_limits<double>::epsilon() * std::abs(frame);
+    return std::abs(frame - whole) <= tolerance ? whole : frame;
+}
 inline double PhysicsRate(const Settings& settings) {
     return double(settings.followPlaybackFps ? settings.playbackFps : settings.physics.baseRateHz) *
         settings.physics.rateMultiplier * settings.physics.substeps;
