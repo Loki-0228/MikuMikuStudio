@@ -27,6 +27,28 @@ struct Result {
     double frame;
 };
 
+void CheckRecordingStartKey(std::uint32_t frame) {
+    auto model = std::make_unique<mdl::ModelRecord>();
+    auto* raw = reinterpret_cast<unsigned char*>(model.get());
+    mdl::DisplayKey keys[3]{};
+    keys[0].next = 1;
+    keys[1].frame = frame;
+    keys[1].next = 2;
+    keys[1].visible = 1;
+    keys[2].frame = frame + 1;
+    keys[2].previous = 1;
+    mdl::DisplayKeys(raw) = keys;
+
+    const double start = double(frame) / playback_timing::kTimelineFps;
+    InitModelTrackCursors(raw, start, 0);
+    AdvanceModelKeyframes(raw, start, 0);
+    Check(model->displayKeyCursor == 1 && model->loadComplete,
+          "the first recorded sample evaluates the exact nonzero start key");
+    AdvanceModelKeyframes(raw, (frame + 0.5) / playback_timing::kTimelineFps, 0);
+    Check(model->displayKeyCursor == 2 && model->loadComplete,
+          "a fractional sample stays between the start key and its successor");
+}
+
 Result Simulate(int playbackFps, int outputFps, bool recording, bool noise = false,
                 bool followPlayback = false, bool pluginOwnsPhysics = false,
                 bool trackedInput = false) {
@@ -123,6 +145,9 @@ void CheckDisplayLimit() {
 }  // namespace
 
 int main() {
+    // The conversion to seconds and back can round up at 31 and down at 123.
+    CheckRecordingStartKey(31);
+    CheckRecordingStartKey(123);
     CheckDisplayLimit();
     const auto baseline = Simulate(30, 30, true);
     Check(baseline.steps == 120 && baseline.position.y() < 99,

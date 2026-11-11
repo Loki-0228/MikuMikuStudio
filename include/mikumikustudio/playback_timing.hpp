@@ -35,6 +35,15 @@ inline double Speed(const Settings& settings) noexcept {
     return double(settings.playbackFps) / kTimelineFps;
 }
 
+inline double TimelineFrame(double seconds) noexcept {
+    const double frame = seconds * kTimelineFps;
+    const double whole = std::round(frame);
+    // A frame-to-seconds round trip can place an exact key just past its
+    // boundary. Preserve fractional samples outside floating-point error.
+    const double tolerance = std::numeric_limits<double>::epsilon() * std::abs(frame);
+    return std::abs(frame - whole) <= tolerance ? whole : frame;
+}
+
 inline int PhysicsRate(const Settings& settings) noexcept {
     const int baseRate = settings.followPlaybackFps ? settings.playbackFps : settings.physics.baseRateHz;
     return baseRate * settings.physics.rateMultiplier * settings.physics.substeps;

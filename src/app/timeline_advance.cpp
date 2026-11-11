@@ -381,7 +381,7 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled,
     }
 
     if (physicsOnly) {
-        AdvancePlaybackGravityTrack(app, seconds * 30.0);
+        AdvancePlaybackGravityTrack(app, playback_timing::TimelineFrame(seconds));
         return;
     }
 
@@ -389,8 +389,7 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled,
         return;                                          // 0x4175DB
 
     // ---- 3. frame rounding (0x4175ED) -------------------------------------
-    double frame = static_cast<double>(s.PlaybackCursorSeconds() *
-                                       30.0f);
+    double frame = playback_timing::TimelineFrame(seconds);
     {
         const double scaled = frame * 1000.0;
         if (scaled - std::floor(scaled) >= 0.5)
@@ -674,9 +673,10 @@ void PlaybackPoseAdvance(MMDApp* app, int advance) {
         // discard fractional playback and authored curve interpolation.
         SyncCameraFovControls(app);
         SyncSelfShadowControls(app);
+        const double frame = playback_timing::TimelineFrame(app->PlaybackCursorSeconds());
+        for (int slot = 0; slot < 255; ++slot)
+            curve_host::Apply(app, curve_host::Kind::Accessory, frame, slot);
     }
-    if (advance == 0) for (int slot=0;slot<255;++slot)
-        curve_host::Apply(app, curve_host::Kind::Accessory, app->PlaybackCursorSeconds()*30.0, slot);
 }
 
 // Geometry export has already evaluated bones in an isolated physics world.

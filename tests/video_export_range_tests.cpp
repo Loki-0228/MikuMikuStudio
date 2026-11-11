@@ -80,6 +80,8 @@ const RangeCase cases[] = {
     {"reported-1100-plus-1", L"0", L"1100", 1, 0, 0, 0, 1100},
     {"explicit-plus-zero", L"", L"1100", 0, 0, 0, 0, 1100},
     {"explicit-short-range", L"35", L"120", 3000, 60000, 300, 35, 120},
+    {"issue-48-playback-range", L"6559", L"7448", 8000, 0, 0, 6559, 7448},
+    {"pasted-playback-range", L" 6559 ", L"7448 ", 8000, 0, 0, 6559, 7448},
     {"relative-stop", L"35", L"-2", 120, 0, 0, 35, 119},
     {"negative-start-clamps-to-zero", L"-10", L"120", 0, 0, 0, 0, 120},
     {"zero-falls-back-to-motion", L"10", L"0", 1100, 0, 0, 10, 1100},
@@ -104,6 +106,22 @@ std::wstring Text(HWND dialog, int id) {
     GetDlgItemTextW(dialog, id, text, static_cast<int>(std::size(text)));
     return text;
 }
+void CheckChineseFpsLabel(HWND dialog) {
+    constexpr wchar_t unit[] = L"帧/秒";
+    const HWND label = FindWindowExW(dialog, nullptr, L"Static", unit);
+    Require(label != nullptr, "find the translated frame-rate unit");
+    HDC dc = GetDC(label);
+    Require(dc != nullptr, "get a device context for the frame-rate label");
+    const auto font = reinterpret_cast<HFONT>(SendMessageW(label, WM_GETFONT, 0, 0));
+    const HGDIOBJ previous = font ? SelectObject(dc, font) : nullptr;
+    SIZE extent{};
+    const bool measured = GetTextExtentPoint32W(dc, unit, static_cast<int>(std::size(unit) - 1), &extent) != 0;
+    if (previous) SelectObject(dc, previous);
+    ReleaseDC(label, dc);
+    RECT bounds{};
+    Check(measured && GetClientRect(label, &bounds) && bounds.right >= extent.cx,
+          "the Chinese frame-rate unit fits its control");
+}
 INT_PTR CALLBACK Probe(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
     auto* context = reinterpret_cast<Context*>(GetWindowLongPtrW(dialog, DWLP_USER));
     if (message != WM_INITDIALOG)
@@ -112,6 +130,7 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
     SetWindowLongPtrW(dialog, DWLP_USER, reinterpret_cast<LONG_PTR>(context));
     AviOutDlgProc(dialog, WM_INITDIALOG, wp, 0);
     context->initialized = true;
+    if (context->app->EnglishUI() == 2) CheckChineseFpsLabel(dialog);
     const auto actual = Text(dialog, panel::kAviEndFrameEdit);
     std::printf("CASE language=%u name=%s opening=%u end='%ls' expected=%d action=%s\n",
                 unsigned(context->app->EnglishUI()), context->range->name,

@@ -1,6 +1,7 @@
 #include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/bone_curve.hpp"
 #include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/playback_timing.hpp"
 // ===========================================================================
 // VA 0x004A31D0 - per-model keyframe application  (5754 bytes, 187 blocks)
 // + helpers VA 0x004A05A0 (VMD interpolation easing) and 0x00499B50
@@ -294,7 +295,7 @@ void InitModelTrackCursors(unsigned char* model, double cursor, int physicsMode)
         return;
     }
     unsigned char* const m = model;
-    const double frame = static_cast<double>(cursor) * 30.0;
+    const double frame = playback_timing::TimelineFrame(cursor);
 
     // IK/display master track.  This is a single linked list rooted at 0.
     mdl::DisplayKey* const ikKeys = mdl::DisplayKeys(m);
@@ -397,7 +398,7 @@ static void AdvanceModelPlaybackTracks(unsigned char* model, double cursor, int 
 
     // cursor(seconds) -> frame, 1/1000 round-up (0x4A31E1; same shape as
     // PlaybackPoseAdvance's rounding tail)
-    double frame = static_cast<double>(cursor) * 30.0;
+    double frame = playback_timing::TimelineFrame(cursor);
     {
         const double scaled = frame * 1000.0;
         if (scaled - std::floor(scaled) >= 0.5)

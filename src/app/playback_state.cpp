@@ -396,7 +396,7 @@ void UpdateBoneFrames(MMDApp* app) {
     else
         app->PhysicsResetPending() = 1;
 
-    const double frame = cursor * kFrameRate;
+    const double frame = playback_timing::TimelineFrame(cursor);
     if (app->FrameStepPlayback() != 0 || app->state.optflag[0] != 0 ||
         app->state.followCameraEnabled != 0)
         InitGlobalTracks(app, frame);
