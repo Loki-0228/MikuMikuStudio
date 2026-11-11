@@ -112,6 +112,10 @@ const GUID kFormatVideoInfo =
 const GUID kSubtypeARGB32 =
     { 0x773c9ac0, 0x3274, 0x11d0, { 0xb7, 0x24, 0x00, 0xaa, 0x00, 0x6c, 0x1a, 0x01 } };
 
+// MEDIASUBTYPE_RGB32, offered explicitly when a compressor requires it.
+const GUID kSubtypeRGB32 =
+    { 0xe436eb7e, 0x524f, 0x11ce, { 0x9f, 0x53, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70 } };
+
 } // anonymous namespace
 
 // =============================================================================
@@ -593,23 +597,8 @@ HRESULT CPushPinDIBSq::GetMediaType1(AM_MEDIA_TYPE* pmt)
         return E_FAIL;
     }
 
-    // The binary's format block is a 0x58-byte VIDEOINFOHEADER VARIANT:
-    // rcSource(+0x00)/rcDest(+0x10), 8 zero bytes at +0x20, AvgTimePerFrame
-    // at +0x28 (Src[10..11] = pin+0x5A8), the pushed BITMAPINFOHEADER at
-    // +0x30 (qmemcpy(&Src[12])) - i.e. the header sits 8 bytes later than
-    // the SDK's VIDEOINFOHEADER (biSizeImage lands at +0x44, which is
-    // exactly what FillBuffer/0x10001310 dereference). Reproduced
-    // field-for-field; a stock VIDEOINFOHEADER is 0x50 bytes and the
-    // SampleGrabber rejects the connection over the format mismatch.
-    struct {
-        RECT           rcSource;              // +0x00
-        RECT           rcDest;                // +0x10
-        DWORD          pad20[2];              // +0x20 (zeroed)
-        LONGLONG       AvgTimePerFrame;       // +0x28
-        BITMAPINFOHEADER bmiHeader;           // +0x30
-    } vih;
-    memset(&vih, 0, sizeof(vih));             // 0x58 bytes
-    vih.AvgTimePerFrame = (LONGLONG)m_rtAvgPerFrame;
+    VIDEOINFOHEADER vih{};
+    vih.AvgTimePerFrame = m_rtAvgPerFrame;
     memcpy(&vih.bmiHeader, PushBIH(this), sizeof(BITMAPINFOHEADER));
 
     MtSetType_10004AB0(pmt, &kMediaVideo);
@@ -642,9 +631,14 @@ HRESULT CPushPinDIBSq::CheckMediaType(const AM_MEDIA_TYPE* pmt)
     AM_MEDIA_TYPE mt;
     MMDxShow_InitMediaType(&mt);
 
-    GetMediaType1(&mt);                            // virtual, result ignored
-
-    BOOL bSame = MtIsEqual_10004DD0(&mt, pmt);
+    const HRESULT hr = GetMediaType1(&mt);
+    if (SUCCEEDED(hr) && mt.cbFormat == sizeof(VIDEOINFOHEADER) &&
+        pmt->subtype == kSubtypeRGB32) {
+        const auto& bitmap = reinterpret_cast<const VIDEOINFOHEADER*>(mt.pbFormat)->bmiHeader;
+        if (bitmap.biBitCount == 32 && bitmap.biCompression == BI_RGB)
+            mt.subtype = kSubtypeRGB32;
+    }
+    const BOOL bSame = SUCCEEDED(hr) && MtIsEqual_10004DD0(&mt, pmt);
 
     MMDxShow_FreeMediaType(&mt);
 
