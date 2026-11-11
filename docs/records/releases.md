@@ -95,6 +95,50 @@
 
 [下载最新发布包](https://github.com/Loki-0228/MikuMikuStudio/releases/latest)。这里说明当前包的安装方式和功能边界；历史版本说明见 [GitHub Releases](https://github.com/Loki-0228/MikuMikuStudio/releases)。源码能力的完整入口见[功能文档](../README.md)。
 
+<!-- release-notes:v2026.11.11.1:begin -->
+## English
+
+### Changes in this release
+
+- Fix missing or misaligned operation axes and HUD when Ray-MMD is enabled. The editing overlay stays visible after post-processing and aligns with the selected bone. [#49](https://github.com/Loki-0228/MikuMikuStudio/issues/49)
+- Keep the exact starting frame when exporting a video from the playback range. Accept spaces around the start and end frame values and give the Chinese FPS label enough room.
+- Fix AVI export with Ut Video compressors that require RGB32 input.
+
+### Packages and installation
+
+Extract the `full` and `minimal` Windows x64 packages into separate folders and run `MikuMikuDance.exe`. The full package includes extended editing, anti-aliasing, modern media and baking, and is required for extended PMM `0003`. The minimal package uses the `mmd932` profile and saves standard formats.
+
+For NVIDIA double-sided drawing with original MSAA, download the optional `MMSNvidiaAAFix.dll` separately. Place it beside the full executable, install it from Help, and restart.
+
+## 中文
+
+### 本次更新
+
+- 修复开启 Ray-MMD 后操作轴和 HUD 消失或偏移的问题。编辑叠层在后处理完成后仍然可见，操作轴与所选骨骼对齐。 [#49](https://github.com/Loki-0228/MikuMikuStudio/issues/49)
+- 视频输出沿用播放范围的准确起始帧，支持在起止帧数值前后输入空格，并修复中文帧率单位显示不全的问题。
+- 修复使用要求 RGB32 输入的 Ut Video 编码器时无法输出 AVI 的问题。
+
+### 选择与安装
+
+将 Windows x64 的 `full` 和 `minimal` 分别解压到独立目录后运行 `MikuMikuDance.exe`。完整包提供扩展编辑、抗锯齿、现代媒体和烘焙，扩展 PMM `0003` 需要完整包。最小包使用 `mmd932` 构建档，保存标准格式。
+
+使用 NVIDIA 原生 MSAA 双面绘制修复时，请单独下载可选的 `MMSNvidiaAAFix.dll`，放到完整版程序旁，从「帮助」菜单安装后重启。
+
+## 日本語
+
+### 今回の更新
+
+- Ray-MMD を有効にすると操作軸や HUD が消えたり、位置がずれたりする問題を修正しました。ポスト処理後も編集用の表示が残り、操作軸は選択したボーンに一致します。 [#49](https://github.com/Loki-0228/MikuMikuStudio/issues/49)
+- 動画出力が再生範囲の開始フレームから正確に始まるようにしました。開始・終了フレームの数値の前後に空白を入力でき、中国語のフレームレート単位が切れる問題も修正しました。
+- RGB32 入力が必要な Ut Video コーデックで AVI を出力できない問題を修正しました。
+
+### パッケージと導入
+
+Windows x64 向けの `full` と `minimal` を別々のフォルダーに展開し、`MikuMikuDance.exe` を実行してください。完全版は拡張編集、アンチエイリアス、各種メディア、ベイクに対応します。拡張 PMM `0003` には完全版が必要です。最小版は `mmd932` 構成で、標準形式で保存します。
+
+従来の MSAA で NVIDIA の両面描画を修正するには、任意の `MMSNvidiaAAFix.dll` を別途ダウンロードし、完全版の実行ファイルの横に置きます。ヘルプメニューから導入した後、再起動してください。
+<!-- release-notes:v2026.11.11.1:end -->
+
 <!-- release-notes:v2026.11.10.2:begin -->
 ## 中文
 
