@@ -1,11 +1,16 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
+
+struct IDirect3DDevice9;
 
 namespace mikumikustudio {
 
 class MMDApp;
+namespace project_relocation { class RootMappings; }
 
 // Repair the legacy MME English menu and preserve its switch across languages.
 void InstallEffectMenuCompatibility(MMDApp* app);
@@ -27,6 +32,13 @@ void InstallEffectPathCompatibility();
 // A null/empty project retires relative assignments when the workspace resets.
 // Notification aliases remain stable until exit for already queued MME work.
 void PrepareEffectProjectPaths(const wchar_t* project);
+// Only report missing references read from this project's sidecar.
+std::vector<std::wstring> MissingProjectEffects(const wchar_t* project);
+// Compile with the legacy provider's D3DX compiler on the current device.
+bool CompileLegacyMmeRecoveryEffect(IDirect3DDevice9* device, const wchar_t* path);
+// Bind confirmed model recovery to the matching EMM after successful PMM load.
+void PublishEffectProjectRelocation(const wchar_t* project,
+    std::weak_ptr<const project_relocation::RootMappings> roots) noexcept;
 // Use a process-local, explicitly mapped EMM alias for retained PMM suffixes.
 // Empty means no safe notification alias is available; never use a guessed path.
 std::wstring EffectProjectNotificationPath(const wchar_t* project) noexcept;

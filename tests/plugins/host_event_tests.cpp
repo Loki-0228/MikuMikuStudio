@@ -11,6 +11,7 @@
 #include <Windows.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -29,6 +30,16 @@ static std::string ReadLog(const wchar_t* path) {
     std::ostringstream body;
     body << file.rdbuf();
     return body.str();
+}
+// The ABI carries project paths as UTF-8. Mirror the host conversion so the
+// expected log text can be compared byte for byte.
+static std::string WideToUtf8(const wchar_t* text) {
+    if (!text || !*text) return {};
+    const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, -1, nullptr, 0, nullptr, nullptr);
+    if (length <= 1) return {};
+    std::string result(static_cast<size_t>(length - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text, -1, &result[0], length, nullptr, nullptr);
+    return result;
 }
 static void Pump() {
     MSG message{};
@@ -50,9 +61,82 @@ static bool WaitFor(const wchar_t* path, const char* markers, int iterations) {
     }
     return false;
 }
+// Markers left by the successful path above must never satisfy a regression
+// assertion. Each phase records the append offset first and inspects only bytes
+// written after it; the fresh marker names keep the interval visible in the log.
+static void AppendLog(const wchar_t* path, const char* marker) {
+    std::ofstream file(path, std::ios::binary | std::ios::app);
+    file << marker << '\n';
+}
+static std::string ReadRegion(const wchar_t* path, size_t offset) {
+    const auto body = ReadLog(path);
+    return body.size() <= offset ? std::string{} : body.substr(offset);
+}
+static size_t CountLine(const std::string& region, const std::string& line) {
+    size_t count = 0, start = 0;
+    while (start < region.size()) {
+        const auto end = region.find('\n', start);
+        const auto stop = end == std::string::npos ? region.size() : end;
+        if (stop - start == line.size() && region.compare(start, line.size(), line) == 0) ++count;
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return count;
+}
+// Identity lines carry lo/hi after the stable prefix; only a prefix count can
+// see them without knowing the random values.
+static size_t CountPrefixLine(const std::string& region, const std::string& prefix) {
+    size_t count = 0, start = 0;
+    while (start < region.size()) {
+        const auto end = region.find('\n', start);
+        const auto stop = end == std::string::npos ? region.size() : end;
+        if (stop - start >= prefix.size() && region.compare(start, prefix.size(), prefix) == 0) ++count;
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return count;
+}
+static std::string FindLine(const std::string& region, const std::string& prefix) {
+    size_t start = 0;
+    while (start < region.size()) {
+        const auto end = region.find('\n', start);
+        const auto stop = end == std::string::npos ? region.size() : end;
+        if (stop - start >= prefix.size() && region.compare(start, prefix.size(), prefix) == 0)
+            return region.substr(start, stop - start);
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return {};
+}
+static size_t LinePosition(const std::string& region, const std::string& line) {
+    size_t start = 0;
+    while (start < region.size()) {
+        const auto end = region.find('\n', start);
+        const auto stop = end == std::string::npos ? region.size() : end;
+        if (stop - start == line.size() && region.compare(start, line.size(), line) == 0) return start;
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return std::string::npos;
+}
+static bool WaitForRegion(const wchar_t* path, size_t offset, const char* markers, int iterations) {
+    for (int i = 0; i < iterations; ++i) {
+        Pump();
+        Sleep(5);
+        const auto region = ReadRegion(path, offset);
+        bool all = true;
+        std::istringstream lines(markers);
+        std::string marker;
+        while (std::getline(lines, marker)) if (!marker.empty() && region.find(marker) == std::string::npos) all = false;
+        if (all) return true;
+    }
+    return false;
+}
 using RenderReentryHook = void (MMS_CALL*)(void*);
 using SetRenderHook = void (MMS_CALL*)(RenderReentryHook, void*);
 using GetRenderCounts = void (MMS_CALL*)(uint64_t*);
+using EnableSerializer = MmsResult (MMS_CALL*)();
+using SetSerializerCommitThrow = void (MMS_CALL*)(uint32_t);
 struct RenderReentryProbe { MMDApp* app; unsigned calls = 0; };
 static void MMS_CALL ReenterRender(void* context) {
     auto& probe = *static_cast<RenderReentryProbe*>(context);
@@ -114,6 +198,13 @@ int wmain() {
     plugins::PluginNotifyDeviceRestored(&app);
     Check(WaitFor(logPath, "EVENT_DEVICE_RESTORED\nRENDER_RESTORED_QUERY", 800),
         "device restoration refreshes the render generation");
+    // Close carries the current project path. Keep it non-empty and non-ASCII so
+    // the deferred payload must keep both its pointer and its UTF-8 text intact.
+    const wchar_t* closedProject = L"D:/MMS ABI/工程/closed project.pmm";
+    wcscpy_s(app.EnvFileName(), 256, closedProject);
+    const std::string closedPath = WideToUtf8(closedProject);
+    const std::string closedMarker = "EVENT_PROJECT_CLOSED_PATH data=non-null bytes=" +
+        std::to_string(closedPath.size()) + " text=" + closedPath;
     plugins::PluginNotifyProjectClosed(&app);
     const void* removedToken = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(0x5150));
     plugins::SceneObjectIdentity(removedToken);
@@ -124,7 +215,7 @@ int wmain() {
     plugins::PluginNotifyDpiChanged(&app, 144);
     plugins::PluginNotifyPropertyChanged(&app, "camera.distance", 7);
     Check(WaitFor(logPath,
-        "EVENT_LANGUAGE\nEVENT_PROJECT_CLOSED\n"
+        "EVENT_LANGUAGE\nEVENT_PROJECT_CLOSED\nEVENT_PROJECT_CLOSED_PATH data=non-null\n"
         "EVENT_OBJECT_REMOVED\nEVENT_DPI\nEVENT_PROPERTY_CHANGED\n"
         "RENDER_INFO\nRENDER_LEASE_ACQUIRED\nRENDER_LEASE_RELEASED\n"
         "RENDER_LOST_QUERY\nRENDER_RESTORED_QUERY\nRENDER_FRAME_SEEN\nLAYOUT_HISTORY_PASS\n"
@@ -153,6 +244,96 @@ int wmain() {
         "no event payload validation failures");
     Check(ReadLog(logPath).find("frame=1 ") != std::string::npos,
         "presented frame reaches the render service");
+    Check(!closedPath.empty() && body.find(closedMarker) != std::string::npos,
+        "project close delivers the exact non-empty project path to the plugin");
+    // ResetPluginProject only queues PROJECT_CLOSED when a current project id
+    // exists. Capture one through the host's own save snapshot, then let the
+    // production reset boundary prove close is delivered before scene reset.
+    bool captured = false;
+    try {
+        plugins::ProjectSave capture(&app);
+        captured = true;
+    } catch (...) {
+    }
+    const bool reset = captured && plugins::ResetPluginProject(&app);
+    Check(reset, "plugin project reset accepts a captured current project");
+    if (reset) {
+        Check(WaitFor(logPath, "EVENT_SCENE_RESET", 800), "scene reset reaches the plugin");
+        const auto resetBody = ReadLog(logPath);
+        const auto firstClosed = resetBody.find(closedMarker);
+        const auto secondClosed = firstClosed == std::string::npos ? firstClosed :
+            resetBody.find(closedMarker, firstClosed + 1);
+        const auto sceneReset = resetBody.find("EVENT_SCENE_RESET");
+        Check(secondClosed != std::string::npos && sceneReset != std::string::npos && secondClosed < sceneReset,
+            "project close is delivered before scene reset");
+
+        // Regression: the serializer violates commitLoad's no-fail contract while
+        // ResetPluginProject consumes the prepared candidates. The success path
+        // above stays intact; the serializer is enabled only for this phase and
+        // every assertion reads bytes appended after a fresh marker, so earlier
+        // close/reset lines cannot turn these checks into false positives.
+        const auto enableSerializer = fixture ? reinterpret_cast<EnableSerializer>(GetProcAddress(fixture, "MmsTestEnableSerializer")) : nullptr;
+        const auto setCommitThrow = fixture ? reinterpret_cast<SetSerializerCommitThrow>(GetProcAddress(fixture, "MmsTestSetSerializerCommitThrow")) : nullptr;
+        Check(enableSerializer && setCommitThrow, "lifecycle fixture exposes independent serializer fault controls");
+        const std::string consumedIdentity = FindLine(ReadLog(logPath), "EVENT_PROJECT_CLOSED_ID nonzero=1");
+        const bool serializerEnabled = enableSerializer && enableSerializer() == MMS_OK;
+        Check(serializerEnabled && CountLine(ReadLog(logPath), "SERIALIZER_PROVIDER_ENABLED") == 1,
+            "test serializer enabled independently after the successful reset");
+        bool reidentified = false;
+        try {
+            plugins::ProjectSave recapture(&app);
+            reidentified = true;
+        } catch (...) {
+        }
+        Check(reidentified, "serializer-enabled capture re-establishes a project identity");
+        const auto captureBody = ReadLog(logPath);
+        Check(CountLine(captureBody, "SERIALIZER_SAVE") == 1 && CountLine(captureBody, "SERIALIZER_RELEASE") == 1,
+            "serializer-enabled capture publishes and releases one saved state");
+        if (setCommitThrow) setCommitThrow(1);
+        Check(CountLine(ReadLog(logPath), "SERIALIZER_COMMIT_THROW_ARMED") == 1,
+            "commitLoad failure armed only for the next reset");
+        AppendLog(logPath, "RESET_SERIALIZER_THROW_BEGIN");
+        const size_t throwOffset = ReadLog(logPath).size();
+        const bool resetAfterThrow = plugins::ResetPluginProject(&app);
+        AppendLog(logPath, "RESET_SERIALIZER_THROW_END");
+        const auto throwRegion = ReadRegion(logPath, throwOffset);
+        Check(resetAfterThrow, "reset still succeeds after serializer commitLoad throws");
+        Check(CountLine(throwRegion, "SERIALIZER_COMMIT_THROW_BEGIN") == 1,
+            "the targeted reset enters the throwing commitLoad callback");
+        Check(CountLine(throwRegion, "SERIALIZER_COMMIT") == 0 && CountLine(throwRegion, "SERIALIZER_PREPARE") == 1,
+            "the throwing callback replaces the normal commit tail");
+        if (setCommitThrow) setCommitThrow(0);
+
+        const size_t eventsOffset = ReadLog(logPath).size();
+        Check(WaitForRegion(logPath, eventsOffset,
+            "EVENT_PROJECT_CLOSED\nEVENT_PROJECT_CLOSED_PATH data=non-null\n"
+            "EVENT_PROJECT_CLOSED_ID nonzero=1\nEVENT_SCENE_RESET", 800),
+            "poisoned reset still delivers project close before scene reset");
+        const auto eventRegion = ReadRegion(logPath, eventsOffset);
+        const auto closeLine = FindLine(eventRegion, "EVENT_PROJECT_CLOSED");
+        const auto sceneLine = FindLine(eventRegion, "EVENT_SCENE_RESET");
+        const auto freshIdentity = FindLine(eventRegion, "EVENT_PROJECT_CLOSED_ID nonzero=1");
+        Check(CountLine(eventRegion, "EVENT_PROJECT_CLOSED") == 1 && CountLine(eventRegion, "EVENT_SCENE_RESET") == 1 &&
+              CountPrefixLine(eventRegion, "EVENT_PROJECT_CLOSED_ID nonzero=1") == 1,
+            "poisoned reset queues exactly one close and one scene reset");
+        Check(closeLine == "EVENT_PROJECT_CLOSED" && sceneLine == "EVENT_SCENE_RESET" && !freshIdentity.empty() &&
+            LinePosition(eventRegion, closeLine) < LinePosition(eventRegion, freshIdentity) &&
+            LinePosition(eventRegion, freshIdentity) < LinePosition(eventRegion, sceneLine),
+            "close with the re-established identity is delivered before scene reset");
+        Check(!consumedIdentity.empty() && freshIdentity != consumedIdentity,
+            "the close consumes the newly established identity");
+
+        AppendLog(logPath, "RESET_IDENTITY_PROBE_BEGIN");
+        const size_t identityOffset = ReadLog(logPath).size();
+        plugins::PluginNotifyProjectClosed(&app);
+        Check(WaitForRegion(logPath, identityOffset, "EVENT_PROJECT_CLOSED_ID nonzero=0", 800),
+            "reset cleared the project identity after the poisoned commit");
+        const auto identityRegion = ReadRegion(logPath, identityOffset);
+        Check(CountLine(identityRegion, "EVENT_PROJECT_CLOSED") == 1 &&
+              CountPrefixLine(identityRegion, "EVENT_PROJECT_CLOSED_ID nonzero=1") == 0 &&
+              CountPrefixLine(identityRegion, "EVENT_PROJECT_CLOSED_ID nonzero=0") == 1,
+            "identity probe observes no surviving project identity");
+    }
     plugins::Shutdown();
     ShutdownCleanup(&app);
     g_Block = nullptr;

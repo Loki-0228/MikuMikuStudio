@@ -2,6 +2,9 @@
 #include "mikumikustudio/original_import.hpp"
 #include "mikumikustudio/image_sequence_export.hpp"
 #include "mikumikustudio/key_pool.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
+#include "mikumikustudio/recording_state.hpp"
+#include "../app/recording_ack_wait.hpp"
 #include "../plugins/native_model_physics.hpp"
 #include "../plugins/native_floor_history.hpp"
 // ===========================================================================
@@ -231,6 +234,9 @@
 #include <Windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <ShObjIdl.h>
+#include <wrl/client.h>
+#include <wrl/implements.h>
 
 #include <array>
 #include <algorithm>
@@ -284,6 +290,7 @@
 #include "mikumikustudio/plugin_storage.hpp"
 
 #include "dialog_scaffold.hpp"
+#include "still_image_picker.hpp"
 
 namespace mikumikustudio {
 
@@ -382,10 +389,6 @@ double AngleAtan2(float y, float x) {
 }
 
 // Use the COM interface instead of byte offsets into the x86 vtable.
-void SetCaptureRenderTarget(MMDApp* app) {
-    auto* renderer = app->Renderer();
-    renderer->device->SetRenderTarget(0, renderer->captureSurface);
-}
 void SetMultisampleAntialias(MMDApp* app, bool enabled) {
     app->Renderer()->device->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, enabled ? TRUE : FALSE);
 }
@@ -1852,23 +1855,101 @@ bool StoredLimitNeedsRewrite(const MMDApp& app,
             limit->value[0] != static_cast<std::uint8_t>(selected));
 }
 
-UINT_PTR CALLBACK ImageSaveTypeHook(HWND dialog, UINT message, WPARAM, LPARAM lp) {
-    if (message == WM_NOTIFY && lp) {
-        auto* notice = reinterpret_cast<OFNOTIFYW*>(lp);
-        if (notice->hdr.code == CDN_TYPECHANGE && notice->lpOFN) {
-            constexpr int formats[] = {2, 1, 0, 3, 4, 5, 6};
-            const auto selected = notice->lpOFN->nFilterIndex;
-            if (selected > 0 && selected <= std::size(formats)) {
-                const auto* extension = image_sequence::kFormats[formats[selected - 1]].extension + 1;
-                notice->lpOFN->lpstrDefExt = extension;
-                SendMessageW(GetParent(dialog), CDM_SETDEFEXT, 0, reinterpret_cast<LPARAM>(extension));
-            }
-        }
+}  // namespace
+
+namespace {
+class StillPickerEvents final : public Microsoft::WRL::RuntimeClass<
+        Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IFileDialogEvents> {
+public:
+    HRESULT STDMETHODCALLTYPE OnOverwrite(IFileDialog*, IShellItem* item, FDE_OVERWRITE_RESPONSE* response) override {
+        *response = FDEOR_DEFAULT;
+        PWSTR path = nullptr;
+        const HRESULT result = item->GetDisplayName(SIGDN_FILESYSPATH, &path);
+        path_.reset(path);
+        identity_.reset();
+        if (SUCCEEDED(result)) identity_ = image_sequence::ReadStillFileIdentity(path);
+        return S_OK;
     }
-    return 0;
+    HRESULT STDMETHODCALLTYPE OnFileOk(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnFolderChanging(IFileDialog*, IShellItem*) override {
+        identity_.reset();
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnFolderChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnSelectionChange(IFileDialog*) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnTypeChange(IFileDialog*) override {
+        identity_.reset();
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnShareViolation(IFileDialog*, IShellItem*, FDE_SHAREVIOLATION_RESPONSE* response) override {
+        *response = FDESVR_DEFAULT;
+        return S_OK;
+    }
+    std::optional<image_sequence::StillFileIdentity> ForPath(const wchar_t* path) const {
+        if (identity_ && CompareStringOrdinal(path_.get(), -1, path, -1, TRUE) == CSTR_EQUAL)
+            return identity_;
+        return std::nullopt;
+    }
+
+private:
+    std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)> path_{nullptr, &CoTaskMemFree};
+    std::optional<image_sequence::StillFileIdentity> identity_;
+};
 }
 
-}  // namespace
+HRESULT ChooseStillImagePath(MMDApp* app, HWND owner, wchar_t* file, std::size_t capacity,
+                             std::optional<image_sequence::StillFileIdentity>& overwrite) {
+    overwrite.reset();
+    Microsoft::WRL::ComPtr<IFileSaveDialog> picker;
+    HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&picker));
+    if (FAILED(hr)) return hr;
+    DWORD options = 0;
+    hr = picker->GetOptions(&options);
+    if (SUCCEEDED(hr)) hr = picker->SetOptions(options | FOS_FORCEFILESYSTEM |
+        FOS_OVERWRITEPROMPT | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR);
+    const COMDLG_FILTERSPEC types[] = {
+        {L"PNG (*.png)", L"*.png"}, {L"JPEG (*.jpg;*.jpeg)", L"*.jpg;*.jpeg"},
+        {L"BMP (*.bmp)", L"*.bmp"}, {L"DDS (*.dds)", L"*.dds"},
+        {L"DIB (*.dib)", L"*.dib"}, {L"PFM (*.pfm)", L"*.pfm"},
+        {L"HDR (*.hdr)", L"*.hdr"},
+    };
+    if (SUCCEEDED(hr)) hr = picker->SetFileTypes(static_cast<UINT>(std::size(types)), types);
+    if (SUCCEEDED(hr)) hr = picker->SetFileTypeIndex(1);
+    // Set before Show so the shell updates the extension when the file type changes.
+    if (SUCCEEDED(hr)) hr = picker->SetDefaultExtension(L"png");
+    if (SUCCEEDED(hr)) hr = picker->SetTitle(LocalizedUiTextW(
+        app->EnglishUI() ? L"render to picture file" : kTitleRenderJp));
+    const std::wstring directory = (GetMenuState(GetMenu(owner), 0x12D, 0) & 8) != 0
+        ? app->DirUser() : std::wstring(app->ExeDir()) + L"\\UserFile";
+    Microsoft::WRL::ComPtr<IShellItem> folder;
+    if (SUCCEEDED(hr) && SUCCEEDED(SHCreateItemFromParsingName(directory.c_str(),
+            nullptr, IID_PPV_ARGS(&folder))))
+        hr = picker->SetFolder(folder.Get());
+    if (FAILED(hr)) return hr;
+    auto events = Microsoft::WRL::Make<StillPickerEvents>();
+    if (!events) return E_OUTOFMEMORY;
+    DWORD cookie = 0;
+    hr = picker->Advise(events.Get(), &cookie);
+    if (FAILED(hr)) return hr;
+    hr = picker->Show(owner);
+    picker->Unadvise(cookie);
+    if (FAILED(hr)) return hr;
+    Microsoft::WRL::ComPtr<IShellItem> result;
+    hr = picker->GetResult(&result);
+    PWSTR path = nullptr;
+    if (SUCCEEDED(hr)) hr = result->GetDisplayName(SIGDN_FILESYSPATH, &path);
+    if (SUCCEEDED(hr)) {
+        // The capture pipeline still stores paths in a fixed-size field.
+        if (std::wcslen(path) >= capacity) hr = HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE);
+        else {
+            wcscpy_s(file, capacity, path);
+            overwrite = events->ForPath(path);
+        }
+    }
+    CoTaskMemFree(path);
+    return hr;
+}
 
 #if !MMD_ORIGINAL_PROFILE
 namespace plugins {
@@ -2494,45 +2575,43 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
     // app+0xA0D24 and the refresh tail runs.
     // ------------------------------------------------------------------
     case 276: {
+        const auto generation = app->SceneGeneration();
+        const auto canStart = [&] {
+            return IsWindow(hwnd) && app->MainWindow() == hwnd &&
+                app->SceneGeneration() == generation && !app->sceneRecoveryPending &&
+                !app->SceneMutationInProgress() && !app->RecordingWindow();
+        };
+        if (!canStart()) return;
+#if !MMD_ORIGINAL_PROFILE
+        // Release the start guard before replaying a deferred close.
+        ScopedSceneCloseDeferral deferClose(*app);
+#endif
+        recording_state::WindowStopGuard starting(app, recording_state::Operation::Start);
+        if (!starting) return;
+
         app->state.dialogFlags[6] = 1;
         app->state.enterKeyState = 1;
         SetCurrentDirectoryW(app->ExeDir());
-        wchar_t fileBuf[0x100];
-        fileBuf[0] = L'\0';
-        OPENFILENAMEW ofn;
-        std::memset(&ofn, 0, sizeof(ofn));
-        ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = hwnd;
-        ofn.lpstrFilter = L"PNG (*.png)\0*.png\0JPEG (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0"
-            L"BMP (*.bmp)\0*.bmp\0DDS (*.dds)\0*.dds\0DIB (*.dib)\0*.dib\0"
-            L"PFM (*.pfm)\0*.pfm\0HDR (*.hdr)\0*.hdr\0";
-        ofn.lpstrFile = fileBuf;
-        ofn.nFilterIndex = 1;
-        ofn.nMaxFile = 0x100;
-        ofn.Flags = (OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY);
-        if ((GetMenuState(GetMenu(hwnd), 0x12D, 0) & 8) != 0) {
-            ofn.lpstrInitialDir = app->DirUser();
-        } else {
-            ofn.lpstrInitialDir = L"UserFile";
-        }
-        ofn.lpstrDefExt = L"png";
-        ofn.Flags |= OFN_EXPLORER | OFN_ENABLEHOOK;
-        ofn.lpfnHook = ImageSaveTypeHook;
-        wchar_t fileTitle[0x100];
-        ofn.nMaxFileTitle = 0x100;
-        ofn.lpstrFileTitle = fileTitle;
-        ofn.lpstrTitle = english ? L"render to picture file" : kTitleRenderJp;
-        if (!GetUiSaveFileNameW(&ofn)) {
+        wchar_t fileBuf[0x100]{};
+        std::optional<image_sequence::StillFileIdentity> overwrite;
+        const HRESULT picked = ChooseStillImagePath(app, hwnd, fileBuf, std::size(fileBuf), overwrite);
+        if (!canStart()) return;
+        if (FAILED(picked)) {
+            if (picked != HRESULT_FROM_WIN32(ERROR_CANCELLED))
+                MessageBoxW(hwnd, image_sequence::Text(app,
+                    L"无法选择图片保存路径。请重试，或选择较短的路径。",
+                    L"Could not select the image output path. Please retry or choose a shorter path.",
+                    L"画像の保存先を選択できません。再試行するか、短いパスを選択してください。"),
+                    L"MMS", MB_OK | MB_ICONWARNING);
             return;
         }
+        if (app->SelfShadowMode() > 0 && !recording_state::CheckEffectReady(app)) return;
         if ((GetMenuState(GetMenu(hwnd), 0x12D, 0) & 8) != 0) {
-            wchar_t* dir = ExtractDirFromPath(
-                app->PathWorkspace().projectDirectory,
-                fileBuf, kPathFieldCapacity);
-            CopyDirPathW(app->DirUser(), dir);
+            wchar_t directory[kPathFieldCapacity]{};
+            CopyDirPathW(app->DirUser(), ExtractDirFromPath(directory, fileBuf, std::size(directory)));
         }
         wcscpy_s(app->CaptureSavePath(), 0x100, fileBuf);
-        image_sequence::BeginStill(app, image_sequence::FormatFromPath(fileBuf));
+        image_sequence::BeginStill(app, image_sequence::FormatFromPath(fileBuf), overwrite);
         D3DRenderer* locale = app->Renderer();
         const std::int32_t oldW = locale->screenWidth;   // 0x1D4E4
         const std::int32_t oldH = locale->screenHeight;  // 0x1D4E8
@@ -2587,8 +2666,10 @@ void CmdViewMenu(MMDApp* app, HWND hwnd, std::uint16_t id,
         }
         ShowWindow(recWnd, SW_SHOW);
         UpdateWindow(recWnd);
-        if (locale->multisampleAvailable == 0) {  // 0x1D4F8
-            SetCaptureRenderTarget(app);
+        if (locale->multisampleAvailable == 0 && !image_sequence::Transparent(app) &&
+            !EnsureCaptureRenderTarget(app, true)) {
+            CancelExportAfterCaptureTargetFailure(app);
+            return;
         }
         const bool needRefresh =
             app->CaptureMode() == ScreenCaptureMode::BackgroundRefresh ||

@@ -38,6 +38,9 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <commctrl.h>
+#include <MinHook.h>
+#include <algorithm>
+#include "../src/window/curve_editor_axis.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -53,6 +56,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/bone_curve.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/channel_bake.hpp"
@@ -953,7 +957,19 @@ void LauncherButtons() {
 }
 
 
-void CurveTransportAndLongBoneSpeed() {
+void DragCurveKey(HWND editor,int targetFrame,bool sendMove=true) {
+    const auto key=SendMessageW(editor,WM_APP+300,1,0);
+    const auto target=SendMessageW(editor,WM_APP+301,targetFrame,0);
+    const HWND canvas=GetDlgItem(editor,1020);
+    Check(canvas&&LOWORD(key)>0&&HIWORD(key)>0&&LOWORD(target)>0,
+        "key and target are on the actual curve canvas");
+    const auto destination=MAKELPARAM(LOWORD(target),HIWORD(key));
+    SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,key);
+    if(sendMove)SendMessageW(canvas,WM_MOUSEMOVE,MK_LBUTTON,destination);
+    SendMessageW(canvas,WM_LBUTTONUP,0,destination);
+}
+
+void CurveTransportAndLongBoneSpeed(bool testKeyDrag=false) {
     auto model=MakeModel({{"smile",1}},"transport-speed");NativeTrack(model,0,{{0,0},{20,1}});
     auto app=std::make_unique<MMDApp>();ResetApp(*app);
     mdl::BoneRecord bone{};bone.type=mdl::BoneType::Move;bone.parent=bone.slotIndex=bone.tailIdx=-1;
@@ -962,7 +978,7 @@ void CurveTransportAndLongBoneSpeed() {
     auto boneKeys=std::make_unique<mdl::BoneKey[]>(mdl::kBoneKeyCapacity);
     auto displayKeys=std::make_unique<mdl::DisplayKey[]>(mdl::kDisplayKeyCapacity);
     for(int index=0;index<2;++index){auto& key=boneKeys[index];key.frame=index*100000;key.next=index?0:1;key.previous=0;
-        key.allocated=1;key.position[0]=index*100.f;key.rotation[0]=index?float(std::sin(.5)):0;
+        key.allocated=testKeyDrag?index:1;key.position[0]=index*100.f;key.rotation[0]=index?float(std::sin(.5)):0;
         key.rotation[3]=index?float(std::cos(.5)):1;
         for(int axis=0;axis<4;++axis){key.interpolation[axis]=key.interpolation[axis+4]=20;
             key.interpolation[axis+8]=key.interpolation[axis+12]=107;}}
@@ -973,6 +989,7 @@ void CurveTransportAndLongBoneSpeed() {
     auto scale=mikumikustudio::bone_scale::Matrix{};scale.v[0]=2; mikumikustudio::bone_scale::SetKey(model.raw(),1,scale);
     ac::Track morph;std::string error;Check(mc::Read(model.raw(),0,morph,error),"read transport expression fixture");
     Check(mc::Write(model.raw(),{{mc::StableId(0,record.morphs[0].name),morph}},error),"author transport expression fixture");
+    if(testKeyDrag)model.keys[0].allocated=0;
     HWND owner=CreateWindowW(L"STATIC",L"curve transport speed",WS_OVERLAPPED,0,0,800,600,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     app->Hwnd()=owner;app->ModelSlot(0)=model.raw();
     HWND frameEdit=CreateWindowW(L"EDIT",L"0",WS_CHILD,0,0,80,24,owner,reinterpret_cast<HMENU>(static_cast<INT_PTR>(mikumikustudio::panel::kCurrentFrameEdit)),GetModuleHandleW(nullptr),nullptr);
@@ -983,6 +1000,15 @@ void CurveTransportAndLongBoneSpeed() {
     wchar_t text[32]{};GetWindowTextW(frameEdit,text,32);
     Check(app->CurrentFrame()==10&&wcscmp(text,L"10")==0&&std::abs(record.morphs[0].value-.5)<.0001,
         "expression transport updates the shared frame field and evaluated expression");
+    if(testKeyDrag){
+        DragCurveKey(editor,15);
+        Check(mc::Read(model.raw(),0,morph,error)&&morph.keys.size()==2&&morph.keys[1].frame==15&&
+            std::abs(morph.keys[1].value-1)<.0001,"expression key drag reaches the registered track");
+        SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1059,BN_CLICKED),0);
+        Check(mc::Read(model.raw(),0,morph,error)&&morph.keys.size()==2&&morph.keys[1].frame==20,
+            "expression key drag is undoable from its own editor");
+        app->SceneModified()=0;
+    }
     ce::CloseOwned(owner);ch::OpenInterpolation(app.get(),false);
     editor=FindWindowW(L"MikuMikuStudioCurveEditorWindow",nullptr);
     Check(editor!=nullptr,"open real bone transport and speed host");
@@ -999,8 +1025,35 @@ void CurveTransportAndLongBoneSpeed() {
     GetWindowTextW(frameEdit,text,32);
     Check(app->CurrentFrame()==50&&wcscmp(text,L"50")==0,"bone and scale transport update the shared timeline");
     Check(app->SceneModified()==0&&boneKeys[1].frame==100000,"curve navigation and speed queries do not author keys");
+    if(testKeyDrag){
+        const auto before=boneKeys[1];
+        DragCurveKey(editor,85000);
+        const auto moved=boneKeys[1].frame;
+        Check(moved>84500&&moved<85500&&boneKeys[0].frame==0&&boneKeys[0].next==1&&
+            boneKeys[1].next==0&&boneKeys[1].position[0]==before.position[0]&&
+            !std::memcmp(boneKeys[1].rotation,before.rotation,sizeof(before.rotation))&&
+            !std::memcmp(boneKeys[1].interpolation,before.interpolation,sizeof(before.interpolation)),
+            "native curve drag moves the whole bone key without changing quaternion, pose or interpolation");
+        SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1059,BN_CLICKED),0);
+        Check(boneKeys[1].frame==100000,"curve editor undo restores the native frame");
+        SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1060,BN_CLICKED),0);
+        Check(boneKeys[1].frame==moved,"curve editor redo restores the dragged frame");
+        DragCurveKey(editor,0,false);
+        Check(boneKeys[0].frame==0&&boneKeys[1].frame>0&&boneKeys[1].frame<500,
+            "mouse release supplies the final destination and preserves the frame-zero anchor");
+        SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1059,BN_CLICKED),0);
+        Check(boneKeys[1].frame==moved,"undo after the bounded drag restores the earlier frame");
+        const HWND source=GetDlgItem(editor,1002);
+        SendMessageW(source,CB_SETCURSEL,1,0);
+        SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1002,CBN_SELCHANGE),reinterpret_cast<LPARAM>(source));
+        DragCurveKey(editor,70000);
+        mikumikustudio::bone_curve::Tracks authored;
+        Check(mikumikustudio::bone_curve::Read(model.raw(),0,authored)&&authored[0].keys.size()==2&&
+            authored[0].keys[1].frame>69500&&authored[0].keys[1].frame<70500,
+            "free bone curve drag writes the independently edited lane");
+    }
     ce::CloseOwned(owner);DestroyWindow(owner);app->Hwnd()=nullptr;app->ModelSlot(0)=nullptr;
-    mc::Forget(model.raw());mikumikustudio::bone_scale::Forget(model.raw());
+    mc::Forget(model.raw());mikumikustudio::bone_scale::Forget(model.raw());mikumikustudio::bone_curve::Forget(model.raw());
 }
 
 void BakedMorphKeepsBoneEditing() {
@@ -1095,9 +1148,16 @@ void BakedMorphKeepsBoneEditing() {
     }
 }
 
+#include "expression_curve_paint_checks.inc"
 }  // namespace
 
 int main(int argc, char** argv) {
+    if(argc==2 && std::string(argv[1])=="--expression-first-paint")
+        return ExpressionFirstPaint();
+    if(argc==2 && std::string(argv[1])=="--native-key-drag"){
+        CurveTransportAndLongBoneSpeed(true);
+        std::printf("native curve key drag: %d checks, %d failures\n",g_checks,g_failures);return g_failures?1:0;
+    }
     if(argc>1&&std::string(argv[1])=="--timeline-speed"){
         CurveTransportAndLongBoneSpeed();
         std::printf("curve transport/speed: %d checks, %d failures\n",g_checks,g_failures);return g_failures?1:0;

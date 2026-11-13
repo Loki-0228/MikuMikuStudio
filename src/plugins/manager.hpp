@@ -4,8 +4,44 @@
 #include "render_service.hpp"
 #include "scene_store.hpp"
 #include "storage_store.hpp"
+#include <list>
 
 namespace mikumikustudio::plugins {
+// UI-thread-only notification staging. A reservation allocates before the
+// associated edit commits; publishing it never allocates or drops an item.
+class PropertyNotificationQueue {
+public:
+    using Item = std::pair<std::string, uint64_t>;
+    class Reservation {
+        friend class PropertyNotificationQueue;
+        PropertyNotificationQueue* owner_ = nullptr;
+        std::list<Item> staged_;
+    public:
+        Reservation() = default;
+        Reservation(const Reservation&) = delete;
+        Reservation& operator=(const Reservation&) = delete;
+        ~Reservation() { if (owner_) --owner_->reserved_; }
+    };
+    MmsResult Prepare(const std::string& id, Reservation& out) {
+        if (out.owner_ || id.empty()) return MMS_E_ARGUMENT;
+        if (pending_.size() + reserved_ >= 64) return MMS_E_BUSY;
+        out.staged_.emplace_back(id, 0);
+        out.owner_ = this; ++reserved_;
+        return MMS_OK;
+    }
+    void Publish(Reservation& item, uint64_t revision) noexcept {
+        if (item.owner_ != this) return;
+        item.staged_.front().second = revision;
+        pending_.splice(pending_.end(), item.staged_);
+        item.owner_ = nullptr; --reserved_;
+    }
+    bool Empty() const noexcept { return pending_.empty(); }
+    const Item& Front() const noexcept { return pending_.front(); }
+    void Pop() noexcept { pending_.pop_front(); }
+private:
+    std::list<Item> pending_;
+    size_t reserved_ = 0;
+};
 class EditHost;
 class EvaluationStore;
 struct PluginStatus { std::string id, stage, error; fs::path package; };
@@ -38,6 +74,8 @@ public:
     // the edit gate, not arbitrary work from a plugin callback.
     bool CanInvokeEdit() const noexcept;
     void Drain();
+    // UI-thread safe boundary; false leaves pending notifications for retry.
+    bool FlushPropertyNotifications() noexcept;
     // Pure host invalidation uses the same safe dispatch boundary, without
     // entering the plugin task/edit origin or refreshing the complete UI.
     void SetRefreshGuard(std::function<bool()>);

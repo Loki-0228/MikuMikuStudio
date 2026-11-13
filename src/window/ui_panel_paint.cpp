@@ -80,6 +80,7 @@
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/global_key_layout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/panel_controls.hpp"
@@ -164,7 +165,10 @@ void DrawBandList(MMDApp* app, HDC panel, HDC icons, Key* keys,
 }  // namespace
 
 void PanelPaint(MMDApp* app) {
-    const std::int32_t sidebar = app->SidebarWidth();
+    RECT client{};
+    GetClientRect(app->MainWindow(), &client);
+    const auto layout = MainPanelLayout(app, client.bottom);
+    const int sidebar = layout.DesignPixels(app->SidebarWidth());
     D3DRenderer* sub = app->Renderer();
     // (The 0x1D574 render wrapper's "list width/height" reads below are its
     // screenWidth/screenHeight fields, sub+0x1D4E4/0x1D4E8.)
@@ -221,9 +225,7 @@ void PanelPaint(MMDApp* app) {
     DeleteObject(brush2);
 
     // --- 3. row labels + grid lines (0x414812) -----------------------------
-    const int rows = (sidebar - 84) / kRowH;      // signed, as the original
-    if (rows < 0)
-        return;
+    const int rows = layout.FrameColumns(app->SidebarWidth());
     if (rows > 0) {
         char label[0x100];
         char sel[0x100];
@@ -334,7 +336,6 @@ void PanelPaint(MMDApp* app) {
     // it, which is a no-op difference for display mode since a == b there).
     auto FinishPanel = [&](std::uint32_t a, std::uint32_t b) {
         const std::int64_t pos=scroll;
-        const int wrapShift = panel::TimelinePanelShift(sidebar);
         // x64 @0x7FF7CB482963：SCROLLINFO 内嵌在 app+0x1430（cbSize=1Ch、
         // fMask=SIF_ALL），nPage/nPos 落在 app+0x1440/0x1444；HandleHScroll
         // （0x7FF7CB45E060）case 2/3/5 回读的就是这两格。x86 原版把这块临时
@@ -364,18 +365,17 @@ void PanelPaint(MMDApp* app) {
                       &scrollInfo,
                       TRUE);
 
-        RECT rc;
-        GetClientRect(static_cast<HWND>(app->Hwnd()), &rc);
+        RECT rc = client;
         if (app->SelectionBoxDragging() != 0 &&
             app->TimelineSelectionChanged() == 0) {
             HPEN box = CreatePen(PS_SOLID, 1, 0x969696);
             SelectObject(panel, box);
-            int x2 = app->MouseX() - 6;
-            int y2 = app->MouseY() - 145;
+            int x2 = layout.DesignX(app->MouseX()) - 6;
+            int y2 = layout.DesignY(app->MouseY()) - kTimelineGridTop;
             if (x2 < kListLeft) x2 = kListLeft;
             if (y2 < 17) y2 = 17;
             if (x2 > sidebar - 28) x2 = sidebar - 28;
-            if (y2 > rc.bottom - 396 - wrapShift) y2 = rc.bottom - 396 - wrapShift;
+            y2 = std::min(y2, layout.DesignPixels(layout.timelineBottom - layout.GridTop()) - 3);
             const int ax = app->SelectionBoxAnchorX();
             const int ay = app->SelectionBoxAnchorY();
             MoveToEx(panel, ax, ay, nullptr);
@@ -391,10 +391,10 @@ void PanelPaint(MMDApp* app) {
         // Restoring editor layout after isolated sampling must not evaluate
         // scale transforms or replace authored readouts through this tail.
         if(!FrameEditorViewportRebuilding(app))PostViewRefresh(app);
-        rc.bottom -= 248 + wrapShift;
-        rc.left = 6;
-        rc.top = 145;
-        rc.right = sidebar - 19;
+        rc.bottom = layout.timelineBottom;
+        rc.left = layout.Pixels(6);
+        rc.top = layout.GridTop();
+        rc.right = app->SidebarWidth() - layout.Pixels(19);
         InvalidateRect(static_cast<HWND>(app->Hwnd()), &rc, FALSE);
     };
 

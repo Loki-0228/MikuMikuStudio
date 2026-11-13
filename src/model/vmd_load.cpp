@@ -91,6 +91,11 @@
 #include <share.h>
 #include <sys/stat.h>
 #include <vector>
+#include <string_view>
+#include <unordered_map>
+#include "keyframe_common.hpp"
+#include "vmd_prepare.hpp"
+#include "vmd_import_target.hpp"
 #include "vmd_read_guard.hpp"
 
 #include "mikumikustudio/globals.hpp"
@@ -110,15 +115,27 @@ void ApplyGravityTrack(MMDApp* app);                        // 0x412330 (track_a
 
 namespace {
 
-int MotionMessageBox(HWND owner, int language, const wchar_t* japanese,
+int MotionMessageBox(MMDApp* app, const wchar_t* body, const wchar_t* caption,
+                     UINT flags) {
+    const HWND owner = app->state.hwnd;
+    if (!owner) return 0;
+    const int result = MessageBoxW(owner, body, caption, flags);
+    // Only a dialog closed by Enter leaves the key down; a mouse or Escape
+    // dismissal pressed nothing to consume, and latching there would swallow
+    // the user's next real press.
+    if (result != 0 && (ReadPolledKeyState(VK_RETURN) & 0x8000) != 0)
+        app->state.enterKeyState = 3;
+    return result;
+}
+
+int MotionMessageBox(MMDApp* app, int language, const wchar_t* japanese,
                      const wchar_t* english, const wchar_t* chinese,
                      UINT flags) {
-    if (!owner) return 0;
     const wchar_t* caption = language == 1 ? L"Load motion data"
         : language == 2 ? L"载入动作数据" : L"モーション読込";
     const wchar_t* body = language == 1 ? english
         : language == 2 ? chinese : japanese;
-    return MessageBoxW(owner, body, caption, flags);
+    return MotionMessageBox(app, body, caption, flags);
 }
 
 // SJIS constants from .rdata (byte-exact)
@@ -164,11 +181,13 @@ const char kJpModelMismatch[] =  // 0x52CB48 "... %s ..."
 }  // namespace
 
 // ---- VA 0x00434B60 --------------------------------------------------------
-static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* wideFileName) {
+static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* wideFileName, bool& committed) {
     if (app == nullptr || (!fileName && !wideFileName)) return 0;
+    const VmdImportTarget target(*app);
+    if (!target.Current(*app)) return 0;
 #if !MMD_ORIGINAL_PROFILE
     int controlledResult=0;
-    if (plugins::TryImportBoundVmd(app,fileName,wideFileName,controlledResult)) return controlledResult;
+    if (plugins::TryImportBoundVmd(app,fileName,wideFileName,controlledResult,committed)) return controlledResult;
 #endif
     curve_host::LegacyRegistrationBatch registrationBatch(app);
     auto& s = *app;
@@ -177,9 +196,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     int fileHandle;
     unsigned int count = 0;  // DstBuf - reused for every section count
     char text[256];
-    unsigned char rec[96];
-    unsigned int scratch;    // k
-    unsigned short word = 0; // v68
+    alignas(float) unsigned char rec[96];
     unsigned char flag = 0;
 
     const HWND hwnd = s.state.hwnd;
@@ -198,7 +215,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             swprintf_s(message, L"无法打开文件：%d", openErr);
         else
             swprintf_s(message, L"ファイルを読み込めません：%d", openErr);
-        if (hwnd) MessageBoxW(hwnd, message, language == 1 ? L"Load motion data"
+        if (hwnd) MotionMessageBox(app, message, language == 1 ? L"Load motion data"
             : language == 2 ? L"载入动作数据" : L"モーション読込", MB_OK | MB_ICONWARNING);
         return 0;
     }
@@ -209,7 +226,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     bool valid = false;
     try { valid = input.Load(fileHandle); } catch (const std::exception&) {}
     if (!valid) {
-        if (hwnd) MotionMessageBox(hwnd, language,
+        if (hwnd) MotionMessageBox(app, language,
             L"VMD ファイルが不完全か、レコード数が正しくありません。",
             L"The VMD file is incomplete or contains invalid record counts.",
             L"VMD 文件不完整或记录数量无效。", MB_OK | MB_ICONWARNING);
@@ -220,6 +237,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     if (!input.OriginalNamesFit()) {
         _close(fileHandle);
         original_import::Refuse(hwnd, language);
+        if (hwnd) app->state.enterKeyState = 3;
         return 0;
     }
 #endif
@@ -228,10 +246,18 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
         return 0;
     }
 
-    std::uint32_t lastImportedFrame=0;
-    if(!frame_limits::Add(s.state.currentFrame,input.maximumFrame,lastImportedFrame)){
-        if(hwnd)MotionMessageBox(hwnd,language,L"フレーム番号が保存可能な範囲を超えます。",L"The motion exceeds the representable frame range.",L"动作超出可表示的帧号范围，未导入。",MB_OK|MB_ICONWARNING);
-        _close(fileHandle);return 0;
+    const auto initialFrame = s.state.currentFrame;
+    const auto validFrameOffset = [&](int offset) {
+        std::uint32_t lastImportedFrame = 0;
+        if (frame_limits::Add(offset, input.maximumFrame, lastImportedFrame)) return true;
+        if (hwnd) MotionMessageBox(app, language, L"フレーム番号が保存可能な範囲を超えます。",
+            L"The motion exceeds the representable frame range.", L"动作超出可表示的帧号范围，未导入。",
+            MB_OK | MB_ICONWARNING);
+        return false;
+    };
+    if (!validFrameOffset(initialFrame)) {
+        _close(fileHandle);
+        return 0;
     }
     // header + model name (the name read overwrites the header buffer)
     input.Read(text, 30);
@@ -244,7 +270,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     } else if (std::strcmp(text, "Vocaloid Motion Data 0002") == 0) {
         ver = 2; flavor = 2; nameLen = 20;
     } else {
-        MotionMessageBox(hwnd, language,
+        MotionMessageBox(app, language,
             L"Vocaloid Motion Data ファイルではありません。",
             L"This is not a Vocaloid Motion Data file.",
             L"这不是 Vocaloid Motion Data 动作文件。", MB_OK | MB_ICONWARNING);
@@ -279,11 +305,9 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             if(hasFullNames){
                 if(fullNames.boneOwners.size()!=input.boneCount||fullNames.morphOwners.size()!=input.morphCount||fullNames.ikOwners.size()!=input.totalIkEntries)
                     throw std::runtime_error("Unicode motion key count mismatch");
-                const auto& m=*mdl::Mdl(model);std::vector<std::wstring> names;
-                for(unsigned i=0;i<m.boneCount;++i)names.push_back(text_encoding::BoneName(m.boneTable[i],false));
-                boneTargets=extended_names::MatchNames(fullNames.bones,names);names.clear();
-                for(unsigned i=0;i<m.morphCount;++i)names.push_back(text_encoding::MorphName(m.morphs[i],false));
-                morphTargets=extended_names::MatchNames(fullNames.morphs,names);
+                auto targets = extended_names::ResolveMotionTargets(fullNames, *mdl::Mdl(model));
+                boneTargets = std::move(targets.bones);
+                morphTargets = std::move(targets.morphs);
                 ikTargets.reserve(input.maximumIkEntries);
             }
             const auto* nameTail=input.Data(tailStart);
@@ -303,7 +327,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
                 static_cast<std::int64_t>(tailStart)) == bone_scale_io::ExtensionLoad::Loaded;
         }
     } catch (const std::exception&) {
-        MotionMessageBox(hwnd, language,
+        MotionMessageBox(app, language,
             L"モーションの追加データを読み込めませんでした。",
             L"Cannot prepare the motion's extension data.",
             L"无法读取动作扩展数据。", MB_OK | MB_ICONWARNING);
@@ -319,39 +343,28 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             return count<=free||mdl::KeyPoolEnsure(keys,std::uint64_t(capacity)+count-free);
         };
         if(!reserve(app->CameraKeys(),input.cameraCount)||!reserve(app->LightKeys(),input.lightCount)||!reserve(app->ShadowKeys(),input.shadowCount)){
-            if(hwnd)MotionMessageBox(hwnd,language,L"メモリ不足です。",L"Not enough memory to import this motion.",L"内存不足，未导入此动作。",MB_OK|MB_ICONWARNING);
+            if(hwnd)MotionMessageBox(app,language,L"メモリ不足です。",L"Not enough memory to import this motion.",L"内存不足，未导入此动作。",MB_OK|MB_ICONWARNING);
             _close(fileHandle);return 0;
         }
         // ==== camera / light / self-shadow motion =========================
         if (ver == 2 && std::memcmp(text, kCameraLightName, 13) != 0) {
-            MotionMessageBox(hwnd, language,
+            MotionMessageBox(app, language,
                 L"このモーションファイルにカメラ・照明・セルフシャドウのデータがありません。",
                 L"This motion file has no camera, light, or self-shadow data.",
                 L"此动作文件不含镜头、灯光或自阴影数据。", MB_OK | MB_ICONWARNING);
             _close(fileHandle);
             return 0;
         }
-        // discard the bone keys: 15-byte name + 24 dwords each
-        input.Read(&count, 4);
-        for (unsigned int i = 0; i < count; ++i) {
-            input.Read(text, 15);
-            for (int w = 0; w < 24; ++w) input.Read(&scratch, 4);
-        }
-        // discard the morph keys: 15 + 4 + 4
-        input.Read(&count, 4);
-        for (unsigned int j = 0; j < count; ++j) {
-            input.Read(text, 15);
-            input.Read(&scratch, 4);
-            input.Read(&scratch, 4);
-        }
-        if (input.Read(&count, 4) == 0) {
-            MotionMessageBox(hwnd, language,
+        if (input.cameraOffset == vmd_read::Input::absent) {
+            MotionMessageBox(app, language,
                 L"このモーションファイルにカメラ・照明のデータがありません。",
                 L"This motion file has no camera or light data.",
                 L"此动作文件不含镜头或灯光数据。", MB_OK | MB_ICONWARNING);
             _close(fileHandle);
             return 0;
         }
+        input.Seek(input.cameraOffset);
+        input.Read(&count, 4);
         if (ver == 1) {
             unsigned char ok = 1;
             for (unsigned int k = 0; k < count; ++k) {
@@ -379,7 +392,10 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
                 }
                 *reinterpret_cast<int*>(rec + 28) = 45;  // fov default
                 rec[32] = 0;                             // view flag
-                if (ok && !RegisterCameraKey(app, rec)) ok = 0;
+                if (ok) {
+                    ok = RegisterCameraKey(app, rec) != 0;
+                    committed |= ok != 0;
+                }
             }
         } else {
             unsigned char ok = 1;
@@ -404,7 +420,10 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
                 input.Read(rec + 28, 4);   // fov
                 input.Read(&flag, 1);
                 rec[32] = static_cast<unsigned char>(flag != 0);
-                if (ok && !RegisterCameraKey(app, rec)) ok = 0;
+                if (ok) {
+                    ok = RegisterCameraKey(app, rec) != 0;
+                    committed |= ok != 0;
+                }
             }
         }
         // light keys
@@ -423,7 +442,10 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             input.Read(rec + 4, 4);    // position xyz
             input.Read(rec + 8, 4);
             input.Read(rec + 12, 4);
-            if (lightOk && !RegisterLightKey(app, rec)) lightOk = 0;
+            if (lightOk) {
+                lightOk = RegisterLightKey(app, rec) != 0;
+                committed |= lightOk != 0;
+            }
         }
         // self-shadow keys (ver 2 only)
         unsigned char shadowOk = 1;
@@ -435,7 +457,10 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
                 input.Read(rec + 0, 4);
                 input.Read(rec + 4, 1);
                 input.Read(rec + 8, 4);
-                if (shadowOk && !RegisterSelfShadowKey(app, rec)) shadowOk = 0;
+                if (shadowOk) {
+                    shadowOk = RegisterSelfShadowKey(app, rec) != 0;
+                    committed |= shadowOk != 0;
+                }
             }
         }
         // MMS: `.x` accessory keys behind the standard end code
@@ -447,6 +472,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
         const bool accessoriesApplied = !accessoryTracks.empty() &&
             accessory_motion_io::Apply(app, accessoryTracks) > 0;
 #endif
+        committed |= accessoriesApplied;
         _close(fileHandle);
         PanelPaint(app);
         SelectionReeval(app);
@@ -471,7 +497,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     if (hasFullNames ? fullNames.model != text_encoding::ModelName(*mdl::Mdl(model),false) : std::strcmp(text, mdl::Mdl(model)->name) != 0) {
 #endif
         if (std::memcmp(text, kCameraLightName, 13) == 0) {
-            MotionMessageBox(hwnd, language,
+            MotionMessageBox(app, language,
                 L"このモーションはカメラ・照明用です。カメラ編集モードで読み込んでください。",
                 L"This is a camera/light motion. Load it in camera editing mode.",
                 L"这是镜头/灯光动作，请切换到镜头编辑模式后载入。", MB_OK | MB_ICONWARNING);
@@ -488,7 +514,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             swprintf_s(prompt, L"此动作文件属于“%s”。\n只会导入骨骼名称匹配的动作。\n是否继续？", sourceModelName.c_str());
         else
             swprintf_s(prompt, L"このモーションファイルは「%s」用です。\n同じボーン名のモーションのみ読み込みます。\n続行しますか？", sourceModelName.c_str());
-        if (!hwnd || MessageBoxW(hwnd, prompt,
+        if (!hwnd || MotionMessageBox(app, prompt,
                         language == 1 ? L"Load motion data"
                             : language == 2 ? L"载入动作数据" : L"モーション読込",
                         MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
@@ -496,8 +522,15 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             return 0;
         }
     }
-    input.Read(&count, 4);
-    const unsigned int boneKeyCount = count;
+    // The model-name confirmation can pump messages before we publish.
+    if (!target.Current(s)) {
+        _close(fileHandle);
+        return 0;
+    }
+    const auto frameOffset = initialFrame;
+    const auto boneKeyCount = input.boneCount;
+    const auto boneStart = input.Tell() + 4;
+    const auto morphStart = boneStart + std::size_t(boneKeyCount) * 111 + 4;
 
     // Prepare loader-owned allocations before clearing selections or replacing
     // an undo slot. The per-record scratch also cannot fail midway through IK.
@@ -509,6 +542,18 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     using Allocation = std::unique_ptr<unsigned char, decltype(&undo_storage::Free)>;
     Allocation preparedPose(sizesFit && poseBytes ? static_cast<unsigned char*>(undo_storage::Malloc(poseBytes)) : nullptr, &undo_storage::Free);
     Allocation preparedKeys(sizesFit && undoBytes ? static_cast<unsigned char*>(undo_storage::Malloc(undoBytes)) : nullptr, &undo_storage::Free);
+    struct PreparedBone {
+        unsigned char data[49]{};
+        int target = -1;
+    };
+    struct PreparedMorph {
+        std::uint32_t frame;
+        float value;
+        int target;
+    };
+    std::vector<PreparedBone> bones;
+    std::vector<PreparedMorph> morphs;
+    std::vector<int> boneCursors, morphCursors;
     std::vector<unsigned char> ikEntries;
 #if MMD_ORIGINAL_PROFILE
     // Complete standard names can differ from the PMX loader's NUL-reserving
@@ -521,6 +566,66 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
         // Keep an extra terminator beyond the fixed-width entry array.
         try {
             ikEntries.resize(std::size_t(input.maximumIkEntries) * 21 + 1);
+            const auto collectNames = [](const auto* table, unsigned count) {
+                std::unordered_map<std::string_view, int> names;
+                if (table) {
+                    names.reserve(count);
+                    for (unsigned i = 0; i < count; ++i) {
+                        const auto& name = table[i].name;
+                        names.try_emplace(std::string_view(name, strnlen_s(name, sizeof name)), int(i));
+                    }
+                }
+                return names;
+            };
+            const auto target = [](const auto& names, const std::uint8_t* bytes) noexcept {
+                const char* name = reinterpret_cast<const char*>(bytes);
+                auto length = strnlen_s(name, 15);
+                if (const auto* newline = static_cast<const char*>(std::memchr(name, '\n', length)))
+                    length = newline - name;
+                const auto found = names.find(std::string_view(name, length));
+                return found == names.end() ? -1 : found->second;
+            };
+            const auto boneNames = collectNames(record.boneTable, record.boneCount);
+            const auto morphNames = collectNames(record.morphs, record.morphCount);
+            bones.resize(boneKeyCount);
+            morphs.resize(input.morphCount);
+            boneCursors.resize(record.boneCount);
+            morphCursors.resize(record.morphCount);
+            for (unsigned i = 0; i < record.boneCount; ++i) boneCursors[i] = int(i);
+            for (unsigned i = 0; i < record.morphCount; ++i) morphCursors[i] = int(i);
+            vmd_read::PrepareRecords(bones.size(), [&](std::size_t i) noexcept {
+                const auto* bytes = input.Data(boneStart + i * 111);
+                auto& key = bones[i];
+#if !MMD_ORIGINAL_PROFILE
+                key.target = hasFullNames ? boneTargets[fullNames.boneOwners[i]] : target(boneNames, bytes);
+#else
+                key.target = target(boneNames, bytes);
+#endif
+                if (key.target < 0) return true;
+                std::memcpy(key.data, bytes + 15, 4);
+                std::memcpy(key.data + 4, bytes + 31, 16);
+                std::memcpy(key.data + 20, bytes + 19, 12);
+                std::uint16_t physics;
+                std::memcpy(&physics, bytes + 49, sizeof physics);
+                key.data[32] = physics == 3939;
+                for (int row = 0; row < 4; ++row)
+                    for (int channel = 0; channel < 4; ++channel)
+                        key.data[33 + 4 * row + channel] = bytes[47 + 16 * channel + 4 * row];
+                return true;
+            });
+            vmd_read::PrepareRecords(morphs.size(), [&](std::size_t i) noexcept {
+                const auto* bytes = input.Data(morphStart + i * 23);
+                auto& key = morphs[i];
+#if !MMD_ORIGINAL_PROFILE
+                key.target = hasFullNames ? morphTargets[fullNames.morphOwners[i]] : target(morphNames, bytes);
+#else
+                key.target = target(morphNames, bytes);
+#endif
+                key.frame = kfa::Rd32(bytes + 15);
+                key.value = kfa::RdF32(bytes + 19);
+                if (!_finite(key.value)) key.value = 0.f;
+                return true;
+            });
 #if MMD_ORIGINAL_PROFILE
             for (unsigned i = 0; i < record.ikChainCount; ++i) {
                 const int index = record.ikChains[i].boneIndex;
@@ -547,7 +652,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             mdl::DisplayKeyPoolEnsure(record,needed(record.displayKeys,mdl::KeyPoolCapacity(record.displayKeys),1,input.displayCount));
     }
     if (!allocationsReady) {
-        MotionMessageBox(hwnd, language,
+        MotionMessageBox(app, language,
             L"モーションを読み込むためのメモリが不足しています。",
             L"Not enough memory to load this motion.",
             L"内存不足，无法载入此动作。", MB_OK | MB_ICONWARNING);
@@ -573,6 +678,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), FALSE);
     record.undoDirty = 1;
     record.redoDirty = 0;
+    committed = true;
     std::uint32_t& ringIdx = record.undoState[0];
     if (++ringIdx >= 30) ringIdx = 0;
     record.undoState[1] = ringIdx;
@@ -583,7 +689,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     auto& undo = mikumikustudio::mdl::Mdl(model)->undoRings[0].slots[ringIdx];
     undo.operation = 2;
     undo.dirty = 0;
-    undo.frame = s.state.currentFrame;
+    undo.frame = frameOffset;
     if (undo.bonePose != nullptr)
         undo_storage::Free(undo.bonePose);
     const int boneCnt = static_cast<int>(record.boneCount);
@@ -625,84 +731,18 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
 #if !MMD_ORIGINAL_PROFILE
     bone_scale::DefaultCurveScope defaultScaleCurve;
 #endif
-    unsigned char boneOk = 1;
-    for (unsigned int k = 0; k < boneKeyCount; ++k) {
-        input.Read(text, 15);
-        text[15] = 0;
-        if (char* nl = std::strchr(text, 10)) *nl = 0;
-        strcpy_s(reinterpret_cast<char*>(rec), 30, text);
-        input.Read(rec + 32, 4);   // frame
-        input.Read(rec + 52, 4);   // position
-        input.Read(rec + 56, 4);
-        input.Read(rec + 60, 4);
-        input.Read(rec + 36, 4);   // quaternion
-        input.Read(rec + 40, 4);
-        input.Read(rec + 44, 4);
-        input.Read(rec + 48, 4);
-        for (int ch = 0; ch < 4; ++ch) {
-            if (ch != 0) {
-                input.Read(&scratch, 4);
-                rec[ch + 65] = static_cast<unsigned char>(scratch);
-            } else {
-                input.Read(&word, 2);
-                rec[65] = static_cast<unsigned char>(word);
-                input.Read(&word, 2);
-                rec[64] = static_cast<unsigned char>(word == 3939);
-            }
-            input.Read(&scratch, 4);
-            rec[ch + 69] = static_cast<unsigned char>(scratch);
-            input.Read(&scratch, 4);
-            rec[ch + 73] = static_cast<unsigned char>(scratch);
-            input.Read(&scratch, 4);
-            rec[ch + 77] = static_cast<unsigned char>(scratch);
-        }
-        if (boneOk) {
-#if !MMD_ORIGINAL_PROFILE
-            if(hasFullNames){
-                const int destination=boneTargets[fullNames.boneOwners[k]];
-                if(destination<0)continue;
-                const int previousSelection=record.selectedBone;
-                record.selectedBone=destination;
-                const bool registered=RegisterBoneKey(model,rec,s.state.currentFrame,1);
-                record.selectedBone=previousSelection;
-                if(!registered)boneOk=0;
-                continue;
-            }
-#endif
-            if (!RegisterBoneKey(model, rec,
-                           s.state.currentFrame, 0))
-                boneOk = 0;
-        }
+    // Keep publication in file order: duplicate frames, undo records and
+    // pool allocation must behave exactly as they do for a serial import.
+    for (const auto& key : bones) {
+        if (key.target < 0) continue;
+        std::memcpy(rec + 32, key.data, sizeof key.data);
+        if (!kfa::RegisterBoneKeyAtCursor(model, rec, frameOffset,
+                key.target, boneCursors[key.target])) break;
     }
     ResetMorphKeyCursor(model);
-
-    // morph keys
-    input.Read(&count, 4);
-    unsigned char morphOk = 1;
-    for (unsigned int k = 0; k < count; ++k) {
-        input.Read(text, 15);
-        text[15] = 0;
-        if (char* nl = std::strchr(text, 10)) *nl = 0;
-        strcpy_s(reinterpret_cast<char*>(rec), 30, text);
-        input.Read(rec + 32, 4);   // frame
-        input.Read(rec + 36, 4);   // value
-        if (!_finite(*reinterpret_cast<float*>(rec + 36)))
-            *reinterpret_cast<float*>(rec + 36) = 0.0f;
-        if (morphOk) {
-#if !MMD_ORIGINAL_PROFILE
-            if(hasFullNames){
-                const int destination=morphTargets[fullNames.morphOwners[k]];
-                if(destination<0)continue;
-                std::uint32_t relative;float value;
-                std::memcpy(&relative,rec+32,4);std::memcpy(&value,rec+36,4);
-                if(!RegisterMorphKeyAtIndex(model,destination,relative+std::uint32_t(s.state.currentFrame),value))morphOk=0;
-                continue;
-            }
-#endif
-            if (!RegisterMorphKeyFromRecord(model, rec,
-                           s.state.currentFrame))
-                morphOk = 0;
-        }
+    for (const auto& key : morphs) {
+        if (key.target >= 0 && !kfa::RegisterMorphKeyAtCursor(model, key.target,
+                key.frame + std::uint32_t(frameOffset), key.value, morphCursors[key.target])) break;
     }
     unsigned int modelMax = record.maxFrame;
     if (s.LastRegisteredFrame() < modelMax)
@@ -749,7 +789,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             if (ikOk) {
                 if (!RegisterDisplayKeyFromRecord(model, *reinterpret_cast<int*>(rec), rec[4],
                                n, entries, 0, nullptr,
-                               s.state.currentFrame))
+                               frameOffset))
                     ikOk = 0;
             }
         }
@@ -764,32 +804,42 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     extended_names::MotionScope unicodeScope(false, hasFullNames ? &boneTargets : nullptr, hasFullNames ? &morphTargets : nullptr);
     if (!morphBlock.empty())
         morph_curve::ApplyVmd(model, morphBlock.data(), morphBlock.size(),
-                              static_cast<int>(s.state.currentFrame));
+                              frameOffset);
     if (hasScaleExtension)
-        bone_scale_io::ApplyImportedExtension(model, scaleExtension, s.state.currentFrame);
+        bone_scale_io::ApplyImportedExtension(model, scaleExtension, frameOffset);
+    bool boneCurvesSkipped = false;
     if(!boneCurveBlock.empty()){
         std::string error;
-        if(!bone_curve::ApplyVmd(model,boneCurveBlock.data(),boneCurveBlock.size(),int(s.state.currentFrame),error))
-            MotionMessageBox(hwnd,language,L"自由カーブは空のボーントラックに読み込んでください。標準キーのみ読み込みました。",L"Free curves require empty bone tracks. Only the standard keys were imported.",L"自由曲线需要导入空的骨骼轨道，本次只读取了标准关键帧。",MB_OK|MB_ICONWARNING);
+        boneCurvesSkipped = !bone_curve::ApplyVmd(model,boneCurveBlock.data(),boneCurveBlock.size(),frameOffset,error);
     }
 #endif
 
     _close(fileHandle);
     PanelPaint(app);                                    // 0x414610
     SelectionReeval(app);                               // 0x430510
-    return SeekModelFrame(model, s.state.currentFrame,
-                     s.PlaybackPhysicsMode());
+    const auto result = target.Current(s) ? SeekModelFrame(model, s.state.currentFrame, s.PlaybackPhysicsMode()) : 0;
+#if !MMD_ORIGINAL_PROFILE
+    if (boneCurvesSkipped && target.Current(s))
+        MotionMessageBox(app,language,L"自由カーブは空のボーントラックに読み込んでください。標準キーのみ読み込みました。",L"Free curves require empty bone tracks. Only the standard keys were imported.",L"自由曲线需要导入空的骨骼轨道，本次只读取了标准关键帧。",MB_OK|MB_ICONWARNING);
+#endif
+    return result;
 }
 
 int LoadVmdMotion(MMDApp* app, const char* fileName) {
-    return LoadVmdMotionPath(app, fileName, nullptr);
+    bool committed = false;
+    return LoadVmdMotionPath(app, fileName, nullptr, committed);
 }
 
 // Keep dialog/drop paths in Unicode, as model loading does. An ANSI roundtrip
 // loses characters that are not available in the system code page.
 void LoadVmdFile(const wchar_t* path) {
-    if (g_Block == nullptr) return;
-    LoadVmdMotionPath(g_Block, nullptr, path);
+    ImportVmdFile(g_Block, path);
+}
+
+bool ImportVmdFile(MMDApp* app, const wchar_t* path) {
+    bool committed = false;
+    LoadVmdMotionPath(app, nullptr, path, committed);
+    return committed;
 }
 
 }  // namespace mikumikustudio

@@ -467,6 +467,48 @@ struct Retained::Transition::Impl {
 Retained::Retained(DynamicsWorld& world, std::vector<btRigidBody*> bodies, std::vector<btTypedConstraint*> constraints)
     : impl_(std::make_shared<Impl>(world, std::move(bodies), std::move(constraints))) {}
 Retained::~Retained() = default;
+#if !MMD_ORIGINAL_PROFILE
+MmsResult MeasureRetainedCapturePreparation(std::size_t bodyCount,std::size_t constraintCount,
+    std::uint64_t& bytes)noexcept{
+#if defined(_MSVC_STL_VERSION) && _MSVC_STL_VERSION == 143 && _MSVC_STL_UPDATE == 202503L && !_HAS_CXX23
+    std::uint64_t measured=0;
+    const auto add=[&](std::uint64_t amount)noexcept{
+        if(amount>=UINT64_MAX-measured)return false;
+        measured+=amount;return true;
+    };
+    // Both make_shared calls use raw new of these exact combined object and
+    // control-block types. sizeof includes their object alignment and padding.
+    if(!add(sizeof(std::_Ref_count_obj2<Retained>))||
+        !add(sizeof(std::_Ref_count_obj2<Retained::Impl>)))return MMS_E_MEMORY;
+    const auto buffer=[&](std::size_t count,std::size_t stride)noexcept{
+        const auto limit=(std::min)(std::size_t((std::numeric_limits<std::ptrdiff_t>::max)()),
+            (std::numeric_limits<std::size_t>::max)()/stride);
+        if(count>limit)return false;
+        auto allocation=std::uint64_t(count)*stride;
+#if defined(_M_IX86) || defined(_M_X64)
+        // Both element types are ordinary pointers, so allocator's large
+        // buffer path uses its manually aligned allocation header.
+        if(allocation>=std::_Big_allocation_threshold){
+            if(allocation>(std::numeric_limits<std::size_t>::max)()-std::_Non_user_size)return false;
+            allocation+=std::_Non_user_size;
+        }
+#endif
+        return add(allocation);
+    };
+    if(!buffer(bodyCount,sizeof(btRigidBody*))||!buffer(constraintCount,sizeof(btTypedConstraint*)))return MMS_E_MEMORY;
+#if _ITERATOR_DEBUG_LEVEL != 0
+    // Per vector: copy into Retained's value parameter, move into Impl's value
+    // parameter, move into the member. Each of these three constructions buys
+    // a proxy in this STL, even for an empty vector. Buffers themselves move.
+    for(unsigned construction=0;construction<6;++construction)
+        if(!add(sizeof(std::_Container_proxy)))return MMS_E_MEMORY;
+#endif
+    bytes=measured;return MMS_OK;
+#else
+    (void)bodyCount;(void)constraintCount;(void)bytes;return MMS_E_NOT_READY;
+#endif
+}
+#endif
 bool Retained::Present() const noexcept { return impl_->present; }
 void Retained::MeasureResources(plugins::resource_budget::Collector& out) const {
     impl_->MeasureResources(out, impl_->saved.get());

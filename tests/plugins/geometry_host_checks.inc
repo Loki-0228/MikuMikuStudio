@@ -12,7 +12,7 @@ void Run(MMDApp* app) {
     auto& model=*mdl::Mdl(app->ModelSlot(0));const bool pmx=model.physicsMode==2;
     GetEnvironmentVariableW(L"MMS_SCENE_TEST_ACCESSORY",path,32768);LoadAccessoryFile(path);
     Check(app->AccessorySlot(0)!=nullptr,"load original accessory geometry");
-    auto store=CreateSceneStore(app);SceneClient client;auto api=store->Api(client);
+    auto store=CreateSceneStore(app);SceneClient client;auto api=([&]{ MmsSceneApiV1 value{}; if (store->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     MmsSceneQueryV1 query{};query.h=Header<MmsSceneQueryV1>();query.time={0,1};
     query.channels=511;
     MmsSnapshotV1 snapshot{};Check(api.acquire(api.context,&query,&snapshot)==MMS_OK,"acquire bind geometry and materials");

@@ -1,5 +1,6 @@
 // Mock host contracts only; native scene parity and DLL lifetime have separate targets.
 #include "evaluation_store.hpp"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -45,6 +46,8 @@ struct Control{
     std::atomic<int> meshMode{0};
     std::shared_ptr<Gate> materialGate;
     std::atomic<int> materialMode{0};
+    std::shared_ptr<Gate> referenceGate;
+    std::atomic<int> referenceMode{0};
     bool empty=false;
 };
 static MmsEvaluationScenePoseV1 Pose(double frame,uint64_t generation,unsigned model,unsigned boneIndex){
@@ -209,6 +212,41 @@ static EvaluationStore::CaptureScene MaterialSceneCapture(const std::shared_ptr<
             if(control->materialMode==32)frame->material={};
             result=frame;return MMS_OK;
         };
+        out=source;return MMS_OK;
+    };
+}
+static EvaluationStore::CaptureScene ReferenceSceneCapture(const std::shared_ptr<Control>& control) {
+    return [control](const auto& query,uint64_t budget,std::shared_ptr<const EvaluationSceneSourceData>& out)->MmsResult {
+        std::shared_ptr<const EvaluationSceneSourceData> original;
+        const auto status=MaterialSceneCapture(control)(query,budget,original);
+        if(status!=MMS_OK||!original)return status;
+        auto source=std::make_shared<EvaluationSceneSourceData>(*original);
+        const auto maybe=[control]()->MmsResult {
+            if(control->referenceGate&&!control->referenceGate->Wait())return MMS_E_FAILED;
+            switch(control->referenceMode.load()) {
+            case 5:return MMS_E_CANCELLED;case 6:throw std::bad_alloc();case 7:throw std::runtime_error("references");
+            } return MMS_OK;
+        };
+        source->references=[control,maybe](uint32_t model,uint32_t index,MmsEvaluationMaterialReferencesV1& out)->MmsResult {
+            out={};out.h={1,77,88};out.material={777,888};out.index=999;
+            out.flags=index?MMS_EVALUATION_MATERIAL_FORMAT_PMD:MMS_EVALUATION_MATERIAL_FORMAT_PMX;
+            out.texturePath[0]=uint16_t('t');out.texturePath[1]=0x9ad8;out.spherePath[0]=uint16_t('s');out.toonPath[0]=uint16_t('o');
+            out.toonReference=index?0xff:0xfe;out.sphereMode=2;out.materialFlags=0xa5;
+            switch(control->referenceMode.load()) {
+            case 1:std::fill(std::begin(out.texturePath),std::end(out.texturePath),uint16_t('x'));break;
+            case 2:std::fill(std::begin(out.spherePath),std::end(out.spherePath),uint16_t('x'));break;
+            case 3:std::fill(std::begin(out.toonPath),std::end(out.toonPath),uint16_t('x'));break;
+            case 4:out.reserved=1;break;case 8:out.flags=0;break;
+            }return maybe();
+        };
+        source->toonTable=[control,maybe](uint32_t model,MmsEvaluationToonTableV1& out)->MmsResult {
+            out={};out.h={1,77,88};out.modelDirectory[0]=uint16_t('A'+model);
+            std::fill(std::begin(out.fileNames[9]),std::end(out.fileNames[9]),uint8_t(0x81));
+            if(control->referenceMode==9)std::fill(std::begin(out.modelDirectory),std::end(out.modelDirectory),uint16_t('x'));
+            return maybe();
+        };
+        if(control->referenceMode==20)source->references={};
+        if(control->referenceMode==21)source->toonTable={};
         out=source;return MMS_OK;
     };
 }
@@ -628,6 +666,88 @@ static void MaterialReadInFlight(){
     SetEvent(gate->proceed);workers.threads[0].join();
     CHECK(result==MMS_OK&&Same(values[1].material,MmsId{103,104})&&client.active==0&&client.bytes==0&&client.workspaceBytes==0&&!store.HasLeases(client));
 }
+static void ReferencePublicContracts(){
+    section="1.7 runtime material references";
+    auto control=std::make_shared<Control>();
+    EvaluationStore store(ChannelCapture(),1,SceneCapture(control),MeshSceneCapture(control),MaterialSceneCapture(control),ReferenceSceneCapture(control));
+    EvaluationStore::Client client,foreign;client.owner=foreign.owner=&store;
+    const auto api=store.Api17(client),other=store.Api17(foreign);const auto old=store.Api16(client);
+    CHECK(api.h.major==1&&api.h.minor==7&&api.h.size==sizeof(api));
+    CHECK(!std::memcmp(reinterpret_cast<const char*>(&api)+sizeof(MmsHeader),reinterpret_cast<const char*>(&old)+sizeof(MmsHeader),sizeof(old)-sizeof(MmsHeader)));
+    MmsEvaluationReferenceCapsV1 caps{};
+    CHECK(api.getReferenceCapabilities(api.context,&caps)==MMS_OK&&HeaderOk(caps)&&caps.flags==MMS_EVALUATION_REFERENCE_CAP_RUNTIME_FIELDS&&!caps.reserved);
+    CHECK(api.getReferenceCapabilities(api.context,nullptr)==MMS_E_ARGUMENT);
+    EvaluationStore noReferences(ChannelCapture(),1,SceneCapture(control),MeshSceneCapture(control),MaterialSceneCapture(control));
+    EvaluationStore::Client unsupported;unsupported.owner=&noReferences;const auto missing=noReferences.Api17(unsupported);
+    MmsEvaluationReferenceCapsV1 emptyCaps{};CHECK(missing.getReferenceCapabilities(missing.context,&emptyCaps)==MMS_OK&&emptyCaps.flags==0);
+    const auto query=SceneQuery();MmsHandle rejected=sentinel;
+    CHECK(missing.createReferenceSceneSource(missing.context,&query,&rejected)==MMS_E_UNSUPPORTED&&rejected==sentinel);
+    MmsHandle source=sentinel;CHECK(api.createReferenceSceneSource(api.context,&query,&source)==MMS_OK&&source!=sentinel);
+    MmsEvaluationSceneInfoV1 info{};CHECK(api.describeSceneSource(api.context,source,&info)==MMS_OK);
+    auto limited=SceneQuery(info.retainedBytes-1);rejected=sentinel;
+    CHECK(api.createReferenceSceneSource(api.context,&limited,&rejected)==MMS_E_MEMORY&&rejected==sentinel);
+    limited=SceneQuery(info.retainedBytes);CHECK(api.createReferenceSceneSource(api.context,&limited,&rejected)==MMS_OK&&api.release(api.context,rejected)==MMS_OK);
+    for(int mode:{20,21}){control->referenceMode=mode;rejected=sentinel;const auto bytes=client.bytes;
+        CHECK(api.createReferenceSceneSource(api.context,&query,&rejected)==MMS_E_FAILED&&rejected==sentinel&&client.bytes==bytes);}
+    control->referenceMode=0;
+    MmsEvaluationMaterialReferencesV1 first{},second{};MmsEvaluationToonTableV1 table{};
+    CHECK(api.readMaterialReferences(api.context,source,0,0,&first)==MMS_OK&&HeaderOk(first)&&Same(first.material,MmsId{101,102})&&first.index==0);
+    CHECK(first.flags==MMS_EVALUATION_MATERIAL_FORMAT_PMX&&first.texturePath[0]=='t'&&first.texturePath[1]==0x9ad8&&first.texturePath[2]==0&&first.toonReference==0xfe&&first.sphereMode==2&&first.materialFlags==0xa5&&!first.reserved);
+    CHECK(api.readMaterialReferences(api.context,source,0,1,&second)==MMS_OK&&HeaderOk(second)&&Same(second.material,MmsId{103,104})&&second.index==1&&second.flags==MMS_EVALUATION_MATERIAL_FORMAT_PMD&&second.toonReference==0xff);
+    CHECK(api.readToonTable(api.context,source,1,&table)==MMS_OK&&HeaderOk(table)&&table.modelDirectory[0]=='B');
+    CHECK(std::all_of(std::begin(table.fileNames[9]),std::end(table.fileNames[9]),[](uint8_t c){return c==0x81;}));
+    auto refs=Poison<MmsEvaluationMaterialReferencesV1>();auto poisonTable=Poison<MmsEvaluationToonTableV1>();
+    CHECK(api.readMaterialReferences(api.context,source,0,2,&refs)==MMS_E_NOT_FOUND&&Unchanged(refs));
+    CHECK(api.readMaterialReferences(api.context,source,2,0,&refs)==MMS_E_NOT_FOUND&&Unchanged(refs));
+    CHECK(api.readToonTable(api.context,source,2,&poisonTable)==MMS_E_NOT_FOUND&&Unchanged(poisonTable));
+    CHECK(api.readMaterialReferences(api.context,source,0,0,nullptr)==MMS_E_ARGUMENT);
+    CHECK(api.readToonTable(api.context,source,0,nullptr)==MMS_E_ARGUMENT);
+    CHECK(other.readMaterialReferences(other.context,source,0,0,&refs)==MMS_E_NOT_FOUND&&Unchanged(refs));
+    CHECK(other.readToonTable(other.context,source,0,&poisonTable)==MMS_E_NOT_FOUND&&Unchanged(poisonTable));
+    MmsHandle oldSource=sentinel;CHECK(api.createMaterialSceneSource(api.context,&query,&oldSource)==MMS_OK);
+    CHECK(api.readMaterialReferences(api.context,oldSource,0,0,&refs)==MMS_E_UNSUPPORTED&&Unchanged(refs));
+    CHECK(api.readToonTable(api.context,oldSource,0,&poisonTable)==MMS_E_UNSUPPORTED&&Unchanged(poisonTable));
+    auto fq=FrameQuery(source);MmsHandle frame=sentinel;CHECK(api.evaluateFrame(api.context,&fq,&frame)==MMS_OK);
+    CHECK(api.readMaterialReferences(api.context,frame,0,0,&refs)==MMS_E_UNSUPPORTED&&Unchanged(refs));
+    for(int mode:{1,2,3,4,5,6,7,8}) {control->referenceMode=mode;
+        const auto expected=mode==5?MMS_E_CANCELLED:mode==6?MMS_E_MEMORY:MMS_E_FAILED;
+        CHECK(api.readMaterialReferences(api.context,source,0,0,&refs)==expected&&Unchanged(refs));
+    }
+    for(int mode:{5,6,7,9}) {control->referenceMode=mode;
+        const auto expected=mode==5?MMS_E_CANCELLED:mode==6?MMS_E_MEMORY:MMS_E_FAILED;
+        CHECK(api.readToonTable(api.context,source,0,&poisonTable)==expected&&Unchanged(poisonTable));
+    }
+    control->referenceMode=0;MmsHandle alias=sentinel;const auto bytes=client.bytes;
+    CHECK(api.retain(api.context,source,&alias)==MMS_OK&&client.bytes==bytes);
+    CHECK(api.release(api.context,source)==MMS_OK);
+    CHECK(api.readMaterialReferences(api.context,alias,0,0,&refs)==MMS_OK&&Same(refs.material,MmsId{101,102}));
+    CHECK(api.release(api.context,alias)==MMS_OK);
+    // Frames retain their own material values and identity after all source
+    // leases have been released, but do not expose source-only references.
+    std::array<MmsEvaluationMaterialV1,2> frameMaterials{};
+    CHECK(api.readFrameMaterials(api.context,frame,0,0,2,frameMaterials.data())==MMS_OK&&Same(frameMaterials[0].material,MmsId{101,102})&&Same(frameMaterials[1].material,MmsId{103,104}));
+    const auto refsBeforeFrameRead=refs;
+    CHECK(api.readMaterialReferences(api.context,frame,0,0,&refs)==MMS_E_UNSUPPORTED&&Bits(refs,refsBeforeFrameRead));
+    CHECK(api.release(api.context,frame)==MMS_OK&&api.release(api.context,oldSource)==MMS_OK&&!store.HasLeases(client));
+}
+static void ReferenceReadInFlight(){
+    section="1.7 source reference and toon reads survive release and retirement";
+    for(bool tableRead:{false,true}) {
+    auto control=std::make_shared<Control>();control->referenceGate=std::make_shared<Gate>();const auto gate=control->referenceGate;
+    CHECK(gate->ready&&gate->proceed);
+    EvaluationStore store(ChannelCapture(),1,SceneCapture(control),MeshSceneCapture(control),MaterialSceneCapture(control),ReferenceSceneCapture(control));
+    EvaluationStore::Client client;client.owner=&store;const auto api=store.Api17(client);const auto query=SceneQuery();
+    MmsHandle source=sentinel;CHECK(api.createReferenceSceneSource(api.context,&query,&source)==MMS_OK);
+    const auto bytes=client.bytes;MmsEvaluationMaterialReferencesV1 value{};MmsEvaluationToonTableV1 table{};MmsResult result=MMS_E_FAILED;Workers workers{gate,{}};
+    workers.threads[0]=std::thread([&]{result=tableRead?api.readToonTable(api.context,source,0,&table):api.readMaterialReferences(api.context,source,0,0,&value);});
+    CHECK(WaitForSingleObject(gate->ready,10000)==WAIT_OBJECT_0);
+    store.Retire(client);CHECK(api.release(api.context,source)==MMS_OK&&client.handles==0&&client.active==1&&client.bytes==bytes&&store.HasLeases(client));
+    auto untouched=Poison<MmsEvaluationMaterialReferencesV1>();
+    CHECK(api.readMaterialReferences(api.context,source,0,0,&untouched)==MMS_E_NOT_READY&&Unchanged(untouched));
+    SetEvent(gate->proceed);workers.threads[0].join();
+    CHECK(result==MMS_OK&&(tableRead?(HeaderOk(table)&&table.modelDirectory[0]=='A'&&table.fileNames[9][99]==0x81):Same(value.material,MmsId{101,102}))&&client.active==0&&client.bytes==0&&client.workspaceBytes==0&&!store.HasLeases(client));
+    }
+}
 static void MeshReadInFlight(){
     section="1.5 admitted source and frame reads survive release and retirement";
     for(bool frameRead:{false,true}){
@@ -809,6 +929,6 @@ static void FailedMeshCaptureDestroyOutsideMutex(){
     CHECK(state->nested==MMS_E_BUSY&&state->nestedHandle==sentinel&&control->captures==1);
     CHECK(status==MMS_E_CANCELLED&&out==sentinel&&client.handles==0&&client.active==0&&client.bytes==0&&!store.HasLeases(client));
 }
-int main(){try{TablesAndCapabilities();EnumerationTimeAndLifetime();AdmissionAndKinds();BadHostPayloads();SharedBudgetsAndFaults();SourceAndFrameInFlight();ParallelWorkspaceBudgets();FailedLegacyCaptureKeepsLeaseDuringDestruction();MeshPublicContracts();MeshReadInFlight();MeshDestroyOutsideMutex();LegacySceneDestroyOutsideMutex();FailedMeshCaptureDestroyOutsideMutex();MaterialPublicContracts();MaterialReadInFlight();
+int main(){try{TablesAndCapabilities();EnumerationTimeAndLifetime();AdmissionAndKinds();BadHostPayloads();SharedBudgetsAndFaults();SourceAndFrameInFlight();ParallelWorkspaceBudgets();FailedLegacyCaptureKeepsLeaseDuringDestruction();MeshPublicContracts();MeshReadInFlight();MeshDestroyOutsideMutex();LegacySceneDestroyOutsideMutex();FailedMeshCaptureDestroyOutsideMutex();MaterialPublicContracts();MaterialReadInFlight();ReferencePublicContracts();ReferenceReadInFlight();
     std::printf("PASS %u mock evaluation scene checks\n",checks);return 0;
 }catch(const std::exception& error){failAfter=-1;std::fprintf(stderr,"FAIL %s unexpected exception: %s\n",section,error.what());return 1;}}

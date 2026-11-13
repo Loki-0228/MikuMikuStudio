@@ -1228,6 +1228,42 @@ void DenseWriteAndGrowthIdentity() {
     mdl::MorphKeyPoolDestroy(record.morphKeys);
 }
 
+void SelectedPreviewUsesTheMarkedInterval() {
+    auto model = MakeModel({{"smile", 1}, {"blink", 2}, {"hidden", 0}});
+    auto track = Curve({{0, 0.1}, {15, 0.4}, {30, 0.9}});
+    EaseInto(track, 2, 0.1);
+    std::string error;
+    if (!mc::Write(model.raw(), {Named(model, 0, track), Named(model, 1, track)}, error)) {
+        Check(false, "install exact curves on both visible tracks");
+        return;
+    }
+    NativeClearMarks(model, 0);
+    NativeClearMarks(model, 1);
+    ac::Track preview;
+    Check(!mc::ReadSelectedPreview(model.raw(), preview), "no marked expression key leaves the normal panel alone");
+    Check(NativeSetMark(model, 0, 0, 1) && mc::ReadSelectedPreview(model.raw(), preview) &&
+          preview.keys.front().frame == 0 && preview.keys.back().frame == 15,
+          "a selected head previews the first interval");
+    Check(NativeSetMark(model, 0, 30, 1) && mc::ReadSelectedPreview(model.raw(), preview) &&
+          preview.keys.front().frame == 15 && preview.keys.back().frame == 30 &&
+          Near(ac::Evaluate(preview, 22).value, ac::Evaluate(track, 22).value),
+          "a marked continuation previews its own incoming curve");
+    const auto before = PoolSnapshot(model);
+    model.value(0) = 0.63f;
+    Check(mc::ReadSelectedPreview(model.raw(), preview) && PoolUnchanged(model, before) && Near(model.value(0), 0.63),
+          "previewing does not change timeline marks or the live expression weight");
+    Check(NativeSetMark(model, 1, 15, 1) && !mc::ReadSelectedPreview(model.raw(), preview),
+          "ambiguous selection does not replace the normal panel with an arbitrary expression");
+    NativeClearMarks(model, 1);
+    NativeAdd(model, 0, 30, 0.8f);
+    ac::Track effective;
+    Check(mc::Read(model.raw(), 0, effective, error) && mc::ReadSelectedPreview(model.raw(), preview) &&
+          Near(ac::Evaluate(preview, 22).value, ac::Evaluate(effective, 22).value) &&
+          !Near(ac::Evaluate(preview, 22).value, ac::Evaluate(track, 22).value),
+          "native changes are reflected in the preview instead of using stale authoring");
+    mc::Forget(model.raw());
+}
+
 }  // namespace
 
 int main() {
@@ -1237,6 +1273,7 @@ int main() {
     WriteSamplingAndRejection();
     NativeEditsInvalidate();
     NativeMarksAreNotOccupancy();
+    SelectedPreviewUsesTheMarkedInterval();
     AuthoredFallbackAndRestore();
     ModelIsolationAndIdentity();
     PmmRoundTrip();

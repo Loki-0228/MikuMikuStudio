@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 struct IDirect3DSurface9;
@@ -27,13 +28,24 @@ struct Options {
 int FormatFromPath(const wchar_t*);
 bool SupportsAlpha(int format);
 bool Transparent(MMDApp*);
-void BeginStill(MMDApp*, int format);
+struct StillFileIdentity {
+    std::uint32_t volume;
+    std::uint64_t file, lastWrite, size;
+    bool operator==(const StillFileIdentity& other) const noexcept {
+        return volume == other.volume && file == other.file && lastWrite == other.lastWrite && size == other.size;
+    }
+};
+std::optional<StillFileIdentity> ReadStillFileIdentity(const wchar_t* path) noexcept;
+void BeginStill(MMDApp*, int format, std::optional<StillFileIdentity> overwrite);
 bool StillActive(MMDApp*);
+void SetStillFrameReady(MMDApp*, bool ready);
+bool StillFrameReady(MMDApp*);
 void EndStill(MMDApp*);
 // Cancel only a pending still capture, without stopping or sampling playback.
 bool CancelStillCapture(MMDApp*);
 // Alpha render targets contain premultiplied colour. Image files use straight alpha.
 long SaveSurface(const wchar_t*, int format, IDirect3DSurface9*, bool transparent);
+long SaveStillSurface(MMDApp*, const wchar_t*, IDirect3DSurface9*, bool transparent, std::wstring& retained);
 const wchar_t* Text(MMDApp*, const wchar_t* zh, const wchar_t* en, const wchar_t* ja);
 std::uint32_t DefaultEndFrame(MMDApp*);
 // Actual scene tracks and audio, independent of the editor's playback range.

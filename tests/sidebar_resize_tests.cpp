@@ -11,10 +11,13 @@
 #include "mikumikustudio/plugin_menu.hpp"
 #include "mikumikustudio/plugin_menu.h"
 #include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include "mikumikustudio/bottom_panel_resize.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/adaptive_shadow.hpp"
 #include "mikumikustudio/system_settings.hpp"
+#include "mikumikustudio/ui_scale.hpp"
+#include "ui_scale_popup_fixture.hpp"
 #include "mikumikustudio/update_coordinator.hpp"
 #include "mikumikustudio/ui_metrics.hpp"
 #include "mikumikustudio/scene_ownership.hpp"
@@ -27,6 +30,8 @@
 #include "../src/plugins/scene_object_history.hpp"
 #include "../src/plugins/history_runtime.hpp"
 #include "../src/plugins/native_accessory_hud_history.hpp"
+#include "../src/window/bottom_panel_control_paint.hpp"
+#include "../src/window/light_slider_paint_buffer.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
 #include "mikumikustudio/plugin_storage.hpp"
 #include <thread>
@@ -41,12 +46,15 @@
 #include <fstream>
 #include <cmath>
 #include <filesystem>
+#include <initializer_list>
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
 
 using namespace mikumikustudio;
 namespace mikumikustudio {
+int ViewportToolAtPointForTest(MMDApp*);
 void BuildAccessoryOrderArray(MMDApp*, int);
 void ApplyAccessorySettingsDialog(MMDApp*, int, HWND);
 void DisablePlaybackMenus(HWND);
@@ -195,9 +203,83 @@ HDC WINAPI PreviewBeginPaint(HWND h,LPPAINTSTRUCT ps) {
 BOOL WINAPI PreviewEndPaint(HWND h,const PAINTSTRUCT* ps) {
     return previewDC?TRUE:realEndPaint(h,ps);
 }
-void SaveBottomPreview(MMDApp* app,const char* filename) {
+decltype(&InvalidateRect) realInvalidate = nullptr;
+HWND watchedSlider = nullptr;
+unsigned wholeSliderInvalidations = 0;
+BOOL WINAPI ObserveSliderInvalidation(HWND window, const RECT* area, BOOL erase) {
+    if (window == watchedSlider && !area) ++wholeSliderInvalidations;
+    return realInvalidate(window, area, erase);
+}
+#if !MMD_ORIGINAL_PROFILE
+struct TrackbarFallbackProbe {
+    HWND slider;
+    WNDPROC native;
+    unsigned paints = 0;
+    WPARAM paintArgument = 0;
+    unsigned erases = 0;
+    WPARAM eraseDc = 0;
+    unsigned prints = 0;
+    WPARAM printDc = 0;
+    LPARAM printFlags = 0;
+    unsigned keys = 0;
+};
+
+TrackbarFallbackProbe* trackbarFallbackProbe = nullptr;
+
+LRESULT CALLBACK ObserveNativeTrackbar(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    auto& probe = *trackbarFallbackProbe;
+    if (window == probe.slider) {
+        switch (message) {
+        case WM_PAINT: ++probe.paints; probe.paintArgument = wp; return 137;
+        case WM_ERASEBKGND: ++probe.erases; probe.eraseDc = wp; return 140;
+        case WM_PRINTCLIENT: ++probe.prints; probe.printDc = wp; probe.printFlags = lp; return 138;
+        case WM_KEYDOWN: ++probe.keys; return 139;
+        }
+    }
+    return CallWindowProcA(probe.native, window, message, wp, lp);
+}
+
+LRESULT CALLBACK ReportEmptyTrackbarGeometry(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+    if (message == TBM_GETTHUMBRECT) {
+        SetRectEmpty(reinterpret_cast<RECT*>(lp));
+        return 0;
+    }
+    return DefSubclassProc(window, message, wp, lp);
+}
+
+void CheckBottomTrackbarFallback(MMDApp* app, HWND slider) {
+    TrackbarFallbackProbe probe{slider, app->OriginalTrackbarProc()};
+    Check(probe.native && SetWindowSubclass(slider, ReportEmptyTrackbarGeometry, 1, 0),
+        "simulate a native trackbar before its thumb geometry is ready");
+    HDC dc = CreateCompatibleDC(nullptr);
+    Check(dc != nullptr, "create fallback test DC");
+    trackbarFallbackProbe = &probe;
+    app->OriginalTrackbarProc() = ObserveNativeTrackbar;
+    const WPARAM suppliedDc = reinterpret_cast<WPARAM>(dc);
+    const LRESULT erase = SendMessageW(slider, WM_ERASEBKGND, suppliedDc, 0);
+    previewDC = dc;
+    const LRESULT paint = SendMessageW(slider, WM_PAINT, 0, 0);
+    previewDC = nullptr;
+    const LPARAM flags = PRF_CLIENT | PRF_ERASEBKGND;
+    const LRESULT print = SendMessageW(slider, WM_PRINTCLIENT, suppliedDc, flags);
+    const LRESULT key = SendMessageW(slider, WM_KEYDOWN, VK_RIGHT, 0);
+    app->OriginalTrackbarProc() = probe.native;
+    trackbarFallbackProbe = nullptr;
+    RemoveWindowSubclass(slider, ReportEmptyTrackbarGeometry, 1);
+    DeleteDC(dc);
+    Check(erase == 140 && probe.erases == 1 && probe.eraseDc == suppliedDc,
+        "empty geometry leaves background erasure to the same native paint path");
+    Check(paint == 137 && probe.paints == 1 && probe.paintArgument == 0,
+        "empty geometry forwards the original WM_PAINT before the template validates it");
+    Check(print == 138 && probe.prints == 1 && probe.printDc == suppliedDc && probe.printFlags == flags,
+        "empty geometry preserves the original print destination, flags and result");
+    Check(key == 139 && probe.keys == 1, "the trackbar template forwards input to native code exactly once");
+}
+#endif
+void SaveBottomPreview(MMDApp* app,const char* filename,bool wholeBand=false) {
     HWND host=app->MainWindow();RECT client{};GetClientRect(host,&client);
-    const int width=client.right,height=160,top=client.bottom-height;
+    const int width=client.right,top=wholeBand?MainPanelLayout(app,client.bottom).bottomTop:client.bottom-160;
+    const int height=client.bottom-top;
     BITMAPINFO info{};info.bmiHeader={sizeof(BITMAPINFOHEADER),width,-height,1,32,BI_RGB};
     void* pixels=nullptr;HDC dc=CreateCompatibleDC(nullptr);
     HBITMAP bitmap=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&pixels,nullptr,0);
@@ -208,14 +290,14 @@ void SaveBottomPreview(MMDApp* app,const char* filename) {
     const bool camera=app->CameraMode()!=0;
     for(HWND child=GetWindow(host,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)) {
         const int id=GetDlgCtrlID(child);RECT rect=ControlBounds(host,id);
-        if(rect.top<client.bottom-157 || rect.top>=client.bottom)continue;
+        if(rect.top<(wholeBand?top:client.bottom-157) || rect.top>=client.bottom)continue;
         bool show=(id>=430&&id<=445)||id==530||id==32901||
                   (id>=402&&id<=414)||id==531||id==534||id==535;
         if(camera)show|=(id>=446&&id<=452)||id==453||id==469||id==566||
                         (id>=471&&id<=488)||id==32900;
         else show|=(id>=490&&id<=501)||id==502||(id>=504&&id<=528)||
                    id==32902||id==32904||id==32905||id==32906;
-        if(!show)continue;
+        if(!(wholeBand?(GetWindowLongW(child,GWL_STYLE)&WS_VISIBLE)!=0:show))continue;
         int saved=SaveDC(dc);IntersectClipRect(dc,rect.left,rect.top,rect.right,rect.bottom);
         SetViewportOrgEx(dc,rect.left,rect.top-top,nullptr);
         SendMessageW(child,WM_PRINT,reinterpret_cast<WPARAM>(dc),PRF_CLIENT|PRF_NONCLIENT|PRF_ERASEBKGND|PRF_CHILDREN);
@@ -254,6 +336,954 @@ struct GeometryProbe {
     void Reset(){for(auto& entry:entries)entry.changes=0;}
     void Once()const{for(const auto& entry:entries)if(entry.changes>1){std::printf("control=%d changes=%u\n",GetDlgCtrlID(entry.window),entry.changes);Check(false,"each control receives only its final geometry once per layout");}}
 };
+#if !MMD_ORIGINAL_PROFILE
+void CheckScaledViewportToolbar(MMDApp* app) {
+    const HWND window = app->MainWindow();
+    const auto panels = FramePanelLayout(app);
+    Check(FrameRectWithin(app->ViewportRect(), panels.overlay), "scene stays inside the scaled presentation bounds");
+    for (int id : {536, 544, 545, 546, 547, 548, 549, 551, 552, 553, 554, 555, 556, 557}) {
+        const auto bounds = ControlBounds(window, id);
+        Check(FrameRectWithin(bounds, id >= 551 ? panels.topBand : panels.bottomBand),
+              "native viewport toolbar controls fit their painted strip");
+    }
+    const auto active = app->ViewportInputActive();
+    const int mouseX = app->MouseX(), mouseY = app->MouseY();
+    const int iconLeft = panels.TopX(58), iconRight = panels.TopX(9);
+    const int iconTop = panels.TopY(-24);
+    const auto dc = CreateCompatibleDC(nullptr);
+    const auto bitmap = CreateBitmap(panels.overlay.right, panels.overlay.top, 1, 32, nullptr);
+    Check(dc && bitmap, "allocate the production viewport toolbar paint capture");
+    const auto previous = SelectObject(dc, bitmap);
+    HandlePaletteChanged2(dc);
+    bool iconPainted = false;
+    for (int y = iconTop; y < panels.overlay.top && !iconPainted; ++y) {
+        const auto background = GetPixel(dc, panels.overlay.right - 3, y);
+        for (int x = iconLeft; x < iconRight; ++x)
+            if (GetPixel(dc, x, y) != background) {
+                iconPainted = true;
+                break;
+            }
+    }
+    SelectObject(dc, previous);
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+    Check(iconPainted, "the scaled toolbar icon region contains its production GDI paint");
+    app->ViewportInputActive() = 1;
+    app->MouseY() = panels.TopY(-12);
+    app->MouseX() = panels.TopX(48);
+    Check(ViewportToolAtPointForTest(app) == 1, "the scaled zoom icon receives its displayed hit");
+    app->MouseX() = panels.TopX(18);
+    Check(ViewportToolAtPointForTest(app) == 2, "the scaled pan icon receives its displayed hit");
+    app->MouseY() = panels.overlay.top + 1;
+    Check(ViewportToolAtPointForTest(app) == 0, "the viewport immediately below the toolbar does not hit the pan icon");
+    app->ViewportInputActive() = active;
+    app->MouseX() = mouseX;
+    app->MouseY() = mouseY;
+}
+
+void CheckScaledTimeline(MMDApp* app, const RECT& client) {
+    const HWND window = app->MainWindow();
+    const auto geometry = MainPanelLayout(app, client.bottom);
+    const auto S = [&](int units) { return geometry.Pixels(units); };
+    const auto bar = ControlBounds(window, panel::kTimelineVScroll);
+    Check(bar.top == geometry.GridTop() + S(17) && bar.bottom == geometry.timelineBottom,
+        "the scaled timeline grid and vertical scrollbar share their layout");
+
+    constexpr int start = 1037, column = 7, target = start + column;
+    const int page = app->state.timelineScrollNPage;
+    Check(page > column + 1, "the scaled horizontal scrollbar has room for the fixture key");
+    Check(app->CameraMode() && app->CameraKeys(), "the timeline fixture has the real camera track");
+    auto* keys = app->CameraKeys();
+    const auto previousRoot = keys[0];
+    const auto previousKey = keys[1];
+    const int previousStart = app->TimelineStartFrame(), previousFrame = app->CurrentFrame();
+    const auto previousModified = app->SceneModified();
+    const HWND frameEdit = GetDlgItem(window, panel::kCurrentFrameEdit);
+    wchar_t frameText[32]{};
+    GetWindowTextW(frameEdit, frameText, static_cast<int>(std::size(frameText)));
+    keys[1] = keys[0];
+    keys[1].frame = target;
+    keys[1].next = 0;
+    keys[1].previous = 0;
+    keys[1].selected = 0;
+    keys[0].next = 1;
+    app->TimelineStartFrame() = start - page;
+    const HWND scrollbar = GetDlgItem(window, panel::kTimelineHScroll);
+    SendMessageW(window, WM_HSCROLL, SB_PAGEDOWN, reinterpret_cast<LPARAM>(scrollbar));
+    Check(app->TimelineStartFrame() == start && app->state.rowHitBand0[column] == 1,
+        "paging the native scrollbar puts the distant key in its expected column");
+
+    const auto keyX = [&](int frameColumn) { return S(6) + S(100 + 13 * frameColumn); };
+    const int markerY = geometry.GridTop() + S(22);
+    const auto dc = CreateCompatibleDC(nullptr);
+    const auto bitmap = CreateBitmap(client.right, client.bottom, 1, 32, nullptr);
+    Check(dc && bitmap, "allocate the production timeline paint capture");
+    const auto previous = SelectObject(dc, bitmap);
+    const auto ready = app->WindowLayoutReady();
+    app->WindowLayoutReady() = 0;
+    previewDC = dc;
+    HandleWindowPaint(app);
+    previewDC = nullptr;
+    app->WindowLayoutReady() = ready;
+    const int sourceX = 100 + 13 * column;
+    const auto keyPixel = GetPixel(app->PanelDC(), sourceX, 22);
+    Check(keyPixel != CLR_INVALID && keyPixel != GetPixel(app->PanelDC(), sourceX + 13, 22) &&
+          GetPixel(dc, keyX(column), markerY) == keyPixel,
+        "the distant camera key is painted at its scaled mouse target");
+    SelectObject(dc, previous);
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+
+    const auto click = [&](int x, int y, UINT message = WM_LBUTTONDOWN) {
+        SendMessageW(window, message, MK_LBUTTON, MAKELPARAM(x, y));
+        SendMessageW(window, WM_LBUTTONUP, 0, MAKELPARAM(x, y));
+    };
+    click(keyX(column), markerY);
+    Check(keys[1].selected != 0 && keys[1].frame == target,
+        "clicking the painted key on the scaled timeline selects the correct distant frame");
+    click(keyX(column - 2), markerY);
+    Check(!keys[1].selected, "a neighbouring empty cell does not select the distant key");
+    SendMessageW(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(keyX(column - 2), markerY));
+    SendMessageW(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(keyX(column + 1), markerY + S(12)));
+    SendMessageW(window, WM_LBUTTONUP, 0, MAKELPARAM(keyX(column + 1), markerY + S(12)));
+    Check(keys[1].selected != 0 && keys[1].frame == target,
+        "the scaled selection rectangle selects the distant key without moving it");
+
+    const int rulerY = geometry.GridTop() + S(7);
+    click(keyX(column + 1), rulerY, WM_LBUTTONDBLCLK);
+    Check(app->CurrentFrame() == target + 1, "double-clicking the scaled ruler jumps to the correct frame");
+    POINT wheel{keyX(column), markerY};
+    Check(ClientToScreen(window, &wheel) != FALSE, "convert the timeline wheel point to screen coordinates");
+    const float distance = app->CameraDistance();
+    app->MouseX() = app->SidebarWidth() + 20;
+    SendMessageW(window, WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA), MAKELPARAM(wheel.x, wheel.y));
+    Check(app->CameraDistance() == distance, "a wheel event over the timeline stays in the sidebar despite a stale pointer");
+
+    keys[0] = previousRoot;
+    keys[1] = previousKey;
+    app->TimelineStartFrame() = previousStart;
+    app->CurrentFrame() = previousFrame;
+    SetWindowTextW(frameEdit, frameText);
+    app->SceneModified() = previousModified;
+    SendMessageW(window, WM_HSCROLL, SB_ENDSCROLL, reinterpret_cast<LPARAM>(scrollbar));
+}
+
+void CheckBottomTrackbarPixels(MMDApp* app, bool firstPaint = false,
+    std::initializer_list<int> ids = {panel::kFovSlider, panel::kLightColorSliderR,
+        panel::kLightColorSliderG, panel::kLightColorSliderB, panel::kLightDirSliderX,
+        panel::kLightDirSliderY, panel::kLightDirSliderZ, panel::kSelfShadowRangeSlider,
+        panel::kFrameVolumeSlider});
+
+RECT CheckSquareBottomCurve(MMDApp* app) {
+    const auto window = app->MainWindow();
+    RECT client{};
+    GetClientRect(window, &client);
+    const RECT curve = BottomCurveRect(app, client.bottom);
+    const RECT selector = ControlBounds(window, panel::kInterpCurveCombo);
+    Check(curve.right > curve.left && curve.right - curve.left == curve.bottom - curve.top &&
+        curve.right <= selector.left && curve.bottom < client.bottom,
+        "the displayed interpolation preview is square and clear of its controls");
+    const POINT origin = BottomCurveDesignPoint(curve, {curve.left, curve.top});
+    const POINT end = BottomCurveDesignPoint(curve, {curve.right - 1, curve.bottom - 1});
+    Check(origin.x == 0 && origin.y == 0 && end.x == 127 && end.y == 127,
+        "interpolation input reaches both source edges with equal axis scaling");
+    return curve;
+}
+
+void CheckScalePopupInterruption(MMDApp* app) {
+    const HWND owner = app->MainWindow();
+    const auto openingBounds = ControlBounds(owner, 451);
+    const auto opening = ui_scale::Percent();
+    std::string saved;
+    const auto savedResult = system_settings::ReadSection("uiScaling", saved);
+    for (bool escape : {true, false}) {
+        Check(ui_scale_popup_fixture::Choose(owner, 137, false, [&](HWND dialog) {
+            const HWND slider = GetDlgItem(dialog, ui_scale::kSlider);
+            const auto drain = [&] {
+                MSG pending{};
+                while (PeekMessageW(&pending, dialog, WM_APP, WM_APP + 0x71, PM_REMOVE))
+                    DispatchMessageW(&pending);
+            };
+            RECT thumb{}, channel{};
+            SendMessageW(slider, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&thumb));
+            SendMessageW(slider, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
+            const int x = (thumb.left + thumb.right) / 2, y = (thumb.top + thumb.bottom) / 2;
+            Check(channel.right > x + 10, "the thumb has room to move right");
+            SendMessageW(slider, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+            Check(GetCapture() == slider, "the actual trackbar captures the thumb drag");
+            SendMessageW(slider, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(channel.right - 5, y));
+            drain();
+            Check(ui_scale::Percent() > 137, "the captured drag has changed the live preview");
+            if (escape) SetCapture(dialog);
+            else SendMessageW(dialog, WM_CANCELMODE, 0, 0);
+            drain();
+            wchar_t readout[12]{};
+            GetDlgItemTextW(dialog, ui_scale::kReadout, readout, 12);
+            Check(GetCapture() != slider && ui_scale::Percent() == 137 &&
+                  SendMessageW(slider, TBM_GETPOS, 0, 0) == 137 && !std::wcscmp(readout, L"137%"),
+                  "interrupted thumb drag restores the last preview and readout");
+            if (GetCapture() == dialog) ReleaseCapture();
+            SendMessageW(slider, WM_LBUTTONUP, 0, MAKELPARAM(channel.right - 5, y));
+            drain();
+            Check(ui_scale::Percent() == 137, "a stale release cannot reapply the interrupted drag");
+            if (escape) {
+                MSG key{};
+                key.hwnd = slider; key.message = WM_KEYDOWN; key.wParam = VK_ESCAPE;
+                Check(IsDialogMessageW(dialog, &key), "native dialog navigation consumes Escape");
+            } else {
+                SendMessageW(dialog, WM_CLOSE, 0, 0);
+            }
+        }, false), "the scale popup previews, then cancels back to its opening scale");
+        std::string after;
+        const auto bounds = ControlBounds(owner, 451);
+        Check(ui_scale::Percent() == opening && EqualRect(&bounds, &openingBounds) &&
+              system_settings::ReadSection("uiScaling", after) == savedResult && after == saved,
+              "Escape or close restores the layout and leaves persisted scale unchanged");
+    }
+    int released = 137;
+    Check(ui_scale_popup_fixture::Choose(owner, 137, false, [&](HWND dialog) {
+        const HWND slider = GetDlgItem(dialog, ui_scale::kSlider);
+        RECT thumb{}, channel{};
+        SendMessageW(slider, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&thumb));
+        SendMessageW(slider, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
+        const int y = (thumb.top + thumb.bottom) / 2;
+        SendMessageW(slider, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM((thumb.left + thumb.right) / 2, y));
+        Check(GetCapture() == slider, "the normal drag captures the thumb");
+        SendMessageW(slider, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(channel.right - 5, y));
+        SendMessageW(slider, WM_LBUTTONUP, 0, MAKELPARAM(channel.right - 5, y));
+        released = static_cast<int>(SendMessageW(slider, TBM_GETPOS, 0, 0));
+        Check(released > 137 && GetCapture() != slider, "normal release keeps the new choice");
+        SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+    }, false) && ui_scale::Percent() == released, "confirming after normal release applies the selected scale");
+    ui_scale::ApplyAtStartup();
+    Check(ui_scale::Percent() == released && ui_scale_popup_fixture::Choose(owner, opening),
+          "normal release persists the choice and the popup can return to its opening scale");
+    std::puts("PASS interface scale popup drag interruption and cancellation");
+}
+
+void CheckDpiScalingMenu(MMDApp* app) {
+    const HWND window = app->MainWindow();
+    const auto findHelp = [&] {
+        const HMENU bar = GetMenu(window);
+        for (int index = 0; index < GetMenuItemCount(bar); ++index) {
+            const auto help = GetSubMenu(bar, index);
+            if (!help || GetMenuState(help, 201, MF_BYCOMMAND) == UINT(-1)) continue;
+            if (GetMenuState(help, ui_scale::kMenuCommand, MF_BYCOMMAND) != UINT(-1)) return help;
+        }
+        return HMENU{};
+    };
+    const auto savedLanguage = app->EnglishUI();
+    for (const int lang : {0, 1, 2}) {
+        app->EnglishUI() = lang;
+        LocalizeUI(app);
+        ui_scale::RefreshMenu(app);
+        const auto help = findHelp();
+        MENUITEMINFOW item{sizeof(item)};
+        item.fMask = MIIM_SUBMENU;
+        wchar_t caption[128]{};
+        Check(help && GetMenuItemInfoW(help, ui_scale::kMenuCommand, FALSE, &item) && !item.hSubMenu &&
+              GetMenuStringW(help, ui_scale::kMenuCommand, caption, 128, MF_BYCOMMAND) > 0,
+            "Help has a direct interface scale command without a submenu in each language");
+    }
+
+    const HWND button = GetDlgItem(window, 451);
+    const HWND slider = GetDlgItem(window, panel::kFovSlider);
+    const HWND frameEdit = GetDlgItem(window, panel::kCurrentFrameEdit);
+    const auto originalFrameEdit = ControlBounds(window, panel::kCurrentFrameEdit);
+    const auto frameEditFont = SendMessageW(frameEdit, WM_GETFONT, 0, 0);
+    const auto originalButton = ControlBounds(window, 451);
+    const auto originalSlider = ControlBounds(window, panel::kFovSlider);
+    const auto originalViewport = FramePanelLayout(app);
+    const auto toolbarButton = GetDlgItem(window, 557);
+    const auto toolbarFont = SendMessageW(toolbarButton, WM_GETFONT, 0, 0);
+    const auto fontBefore = SendMessageW(button, WM_GETFONT, 0, 0);
+    const auto fittedBefore = BottomPanelFontPercent(app);
+    const auto sliderPosition = SendMessageW(slider, TBM_GETPOS, 0, 0);
+    RECT client{};
+    GetClientRect(window, &client);
+    const auto originalLayout = MainPanelLayout(app, client.bottom);
+    std::string originalSettings;
+    const auto originalSettingsResult = system_settings::ReadSection("uiScaling", originalSettings);
+    const auto frameBeforePreview = app->CurrentFrame();
+    const auto dirtyBeforePreview = app->SceneModified();
+    const auto presentsBefore = app->frameRate.presentedFrames;
+    Check(ui_scale_popup_fixture::Choose(window, 137, false, [&](HWND dialog) {
+        wchar_t readout[12]{};
+        GetDlgItemTextW(dialog, ui_scale::kReadout, readout, 12);
+        std::string stored;
+        Check(!std::wcscmp(readout, L"137%") && ui_scale::Percent() == 137 &&
+              MainPanelLayout(app, client.bottom).bottomTop < originalLayout.bottomTop,
+              "a non-preset value updates the readout and actual layout during thumb tracking");
+        Check(app->frameRate.presentedFrames > presentsBefore && app->CurrentFrame() == frameBeforePreview &&
+              app->SceneModified() == dirtyBeforePreview, "preview presents the current scene without moving the playhead or editing it");
+        Check(system_settings::ReadSection("uiScaling", stored) == originalSettingsResult && stored == originalSettings,
+              "tracking never persists the preview value");
+    }), "cancel the popup and restore the opening percentage");
+    const auto cancelledButton = ControlBounds(window, 451);
+    Check(EqualRect(&originalButton, &cancelledButton), "cancel restores native button geometry");
+    Check(ui_scale_popup_fixture::Choose(window, 137), "confirm a non-preset scale in the real popup");
+    ui_scale::ApplyAtStartup();
+    Check(ui_scale::Percent() == 137, "a confirmed non-preset percentage survives settings reload");
+    Check(ui_scale_popup_fixture::Choose(window, 125), "confirm 125 percent through the real popup");
+    const auto enlarged = ControlBounds(window, 451);
+    const auto enlargedLayout = MainPanelLayout(app, client.bottom);
+    Check(ui_scale::Percent() == 125 &&
+          enlarged.top < originalButton.top && enlarged.bottom - enlarged.top > originalButton.bottom - originalButton.top &&
+          (SendMessageW(button, WM_GETFONT, 0, 0) != fontBefore) == (BottomPanelFontPercent(app) != fittedBefore) &&
+          enlargedLayout.bottomTop == originalLayout.bottomTop - 40,
+        "the Help command scales the bottom template and fits its font to the available width");
+    Check(enlargedLayout.timelinePercent == 125 && SendMessageW(frameEdit, WM_GETFONT, 0, 0) != frameEditFont,
+        "the timeline and its frame field use the selected percentage when there is room");
+    const auto enlargedViewport = FramePanelLayout(app);
+    Check(enlargedViewport.topScale > originalViewport.topScale &&
+          enlargedViewport.bottomScale > originalViewport.bottomScale &&
+          enlargedViewport.topRowHeight == 31 &&
+          SendMessageW(toolbarButton, WM_GETFONT, 0, 0) != toolbarFont,
+        "the viewport toolbar and its native font resize on the same menu command");
+    CheckScaledViewportToolbar(app);
+    ui_scale::ApplyAtStartup();
+    Check(ui_scale::Percent() == 125, "the persisted app percentage is read at startup");
+    const int rulerX = app->SidebarWidth() / 2;
+    const int gripY = enlargedLayout.RulerTop() - 1;
+    SendMessageW(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(rulerX, gripY));
+    SendMessageW(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(rulerX, gripY + 16));
+    Check(app->bottomPanelSizing.dragging == kTimelineHeightGrip &&
+          MainPanelLayout(app, client.bottom).GridTop() == enlargedLayout.GridTop() + 16,
+        "the left divider moves the scaled ruler and grid together");
+    SendMessageW(window, WM_KEYDOWN, VK_ESCAPE, 0);
+    Check(MainPanelLayout(app, client.bottom).GridTop() == enlargedLayout.GridTop(),
+        "cancel restores the left divider at the scaled layout");
+    CheckScaledTimeline(app, client);
+    const int x = (app->SidebarWidth() + client.right) / 2;
+    const int y = enlargedLayout.bottomTop + 1;
+    SendMessageW(window, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+    SendMessageW(window, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x, y - 20));
+    Check(app->bottomPanelSizing.dragging == kBottomHeightGrip &&
+          MainPanelLayout(app, client.bottom).bottomTop == enlargedLayout.bottomTop - 20,
+        "the divider hit-test and drag agree at 125 percent");
+    SendMessageW(window, WM_KEYDOWN, VK_ESCAPE, 0);
+    Check(MainPanelLayout(app, client.bottom).bottomTop == enlargedLayout.bottomTop,
+        "Escape restores the scaled template height");
+    Check(ui_scale_popup_fixture::Choose(window, 200), "confirm 200 percent through the real popup");
+    CheckSquareBottomCurve(app);
+    const auto compact = MainPanelLayout(app, client.bottom);
+    Check(ui_scale::Percent() == 200 && compact.timelinePercent >= 125 && compact.timelinePercent < 200 &&
+          compact.timelineBottom - compact.GridTop() >= compact.Pixels(17 + 4 * 14),
+        "200 percent leaves at least four timeline rows in the short editor window");
+    CheckScaledTimeline(app, client);
+    CheckScaledViewportToolbar(app);
+    Check(ui_scale_popup_fixture::Choose(window, 100), "return to 100 percent through the real popup");
+    CheckSquareBottomCurve(app);
+    CheckBottomTrackbarPixels(app, true);
+    const auto restoredButton = ControlBounds(window, 451);
+    const auto restoredSlider = ControlBounds(window, panel::kFovSlider);
+    const auto restoredFrameEdit = ControlBounds(window, panel::kCurrentFrameEdit);
+    Check(ui_scale::Percent() == 100 && EqualRect(&originalButton, &restoredButton) &&
+          EqualRect(&originalSlider, &restoredSlider) && SendMessageW(button, WM_GETFONT, 0, 0) == fontBefore &&
+          SendMessageW(slider, TBM_GETPOS, 0, 0) == sliderPosition &&
+          EqualRect(&originalFrameEdit, &restoredFrameEdit) &&
+          SendMessageW(frameEdit, WM_GETFONT, 0, 0) == frameEditFont &&
+          SendMessageW(toolbarButton, WM_GETFONT, 0, 0) == toolbarFont,
+        "returning to 100 percent restores geometry, fonts and slider value");
+    app->EnglishUI() = savedLanguage;
+    LocalizeUI(app);
+}
+
+void CheckExpandedControlBackground(MMDApp* app) {
+    const HWND host = app->MainWindow();
+    struct Target { int id; UINT colorMessage; POINT margin; };
+    const Target controls[] = {
+        {446, WM_CTLCOLORBTN, {0, 0}}, // Camera Perspective
+        {451, WM_CTLCOLORBTN, {0, 0}}, // Camera Reset
+    };
+    for (const auto& target : controls) {
+        const HWND child = GetDlgItem(host, target.id);
+        RECT bounds{};
+        POINT origin{};
+        Check(child && GetClientRect(child, &bounds) && !IsRectEmpty(&bounds) &&
+              ClientToScreen(child, &origin) && ScreenToClient(host, &origin),
+            "locate a native control in the expanded bottom panel");
+        const HDC dc = CreateCompatibleDC(nullptr);
+        const HBITMAP bitmap = CreateBitmap(bounds.right, bounds.bottom, 1, 32, nullptr);
+        Check(dc && bitmap, "allocate a control background sample surface");
+        const auto previous = SelectObject(dc, bitmap);
+        SetViewportOrgEx(dc, -origin.x, -origin.y, nullptr);
+        HandlePaletteChanged(dc);
+        SetViewportOrgEx(dc, 0, 0, nullptr);
+        const auto expected = GetPixel(dc, target.margin.x, target.margin.y);
+        const COLORREF sentinel = RGB(1, 254, 1);
+        const auto brush = CreateSolidBrush(sentinel);
+        Check(brush && FillRect(dc, &bounds, brush), "seed the independent control surface");
+        const auto returned = reinterpret_cast<HBRUSH>(SendMessageW(host, target.colorMessage,
+            reinterpret_cast<WPARAM>(dc), reinterpret_cast<LPARAM>(child)));
+        if (returned) FillRect(dc, &bounds, returned);
+        const auto childColor = GetPixel(dc, target.margin.x, target.margin.y);
+        Check(FillRect(dc, &bounds, brush), "seed the native WM_PRINT surface");
+        DeleteObject(brush);
+        SendMessageW(child, WM_PRINT, reinterpret_cast<WPARAM>(dc),
+            PRF_CLIENT | PRF_ERASEBKGND | PRF_NONCLIENT);
+        const auto nativePaint = GetPixel(dc, target.margin.x, target.margin.y);
+        SelectObject(dc, previous);
+        DeleteObject(bitmap);
+        DeleteDC(dc);
+        if (childColor != expected)
+            std::printf("DIAG bottom control=%d gradient=%06lx native=%06lx\n", target.id, expected, childColor);
+        Check(expected != CLR_INVALID && childColor == expected,
+            "native button and slider backgrounds use the exact parent gradient after resizing");
+        if (nativePaint != expected)
+            std::printf("DIAG bottom control=%d gradient=%06lx painted=%06lx\n", target.id, expected, nativePaint);
+        Check(nativePaint == expected, "the native control paints its margin over the current panel gradient");
+    }
+}
+
+void CheckBottomTrackbarPixels(MMDApp* app, bool firstPaint, std::initializer_list<int> ids) {
+    const HWND host = app->MainWindow();
+    for (const int id : ids) {
+        const HWND slider = GetDlgItem(host, id);
+        RECT client{}, thumb{}, channel{};
+        POINT origin{};
+        Check(slider && GetClientRect(slider, &client) && !IsRectEmpty(&client) &&
+              ClientToScreen(slider, &origin) && ScreenToClient(host, &origin),
+            "get the actual trackbar rectangle in the resized bottom template");
+        const HDC dc = CreateCompatibleDC(nullptr);
+        const HBITMAP bitmap = CreateBitmap(client.right, client.bottom, 1, 32, nullptr);
+        Check(dc && bitmap, "allocate a native trackbar pixel surface");
+        const auto saved = SelectObject(dc, bitmap);
+        SetViewportOrgEx(dc, -origin.x, -origin.y, nullptr);
+        HandlePaletteChanged(dc);
+        SetViewportOrgEx(dc, 0, 0, nullptr);
+        const auto capture = [&] {
+            std::vector<COLORREF> pixels;
+            for (int y = 0; y < client.bottom; ++y)
+                for (int x = 0; x < client.right; ++x)
+                    pixels.push_back(GetPixel(dc, x, y));
+            return pixels;
+        };
+        const auto background = capture();
+        if (firstPaint) {
+            previewDC = dc;
+            SendMessageW(slider, WM_PAINT, 0, 0);
+            previewDC = nullptr;
+        } else {
+            SendMessageW(slider, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT);
+        }
+        const auto printed = capture();
+        SendMessageW(slider, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&thumb));
+        SendMessageW(slider, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
+        if (GetWindowLongPtrW(slider, GWL_STYLE) & TBS_VERT)
+            channel = {channel.top, channel.left, channel.bottom, channel.right};
+        const auto changed = [&](RECT region, bool excludeThumb) {
+            IntersectRect(&region, &region, &client);
+            unsigned count = 0;
+            for (int y = region.top; y < region.bottom; ++y)
+                for (int x = region.left; x < region.right; ++x) {
+                    if (excludeThumb && PtInRect(&thumb, {x, y})) continue;
+                    const auto index = y * client.right + x;
+                    count += background[index] != printed[index];
+                }
+            return count;
+        };
+        const auto thumbPixels = changed(thumb, false);
+        const auto trackPixels = changed(channel, true);
+        const auto margin = 2 * client.right + 2;
+        SelectObject(dc, saved);
+        DeleteObject(bitmap);
+        DeleteDC(dc);
+        if (thumbPixels < 8 || trackPixels < 8)
+            std::printf("DIAG native trackbar id=%d thumb=%u track=%u\n", id, thumbPixels, trackPixels);
+        Check(thumbPixels >= 8 && trackPixels >= 8,
+            "native trackbar draws a visible thumb and channel over the resized panel gradient");
+        Check(printed[margin] == background[margin],
+            "the native trackbar paints its margin with the template gradient");
+    }
+}
+
+#if !MMD_ORIGINAL_PROFILE
+constexpr UINT kTrackbarChainProbe = WM_APP + 0x155;
+
+LRESULT CALLBACK ExistingTrackbarSubclass(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR data) {
+    if (message == kTrackbarChainProbe) {
+        ++*reinterpret_cast<unsigned*>(data);
+        return 177;
+    }
+    return DefSubclassProc(window, message, wp, lp);
+}
+
+unsigned layoutBufferAttempts = 0;
+
+HDC WINAPI RefuseTrackbarBuffer(HDC) {
+    ++layoutBufferAttempts;
+    return nullptr;
+}
+
+int WINAPI TrackbarFixtureUpdateRegion(HWND window, HRGN region, BOOL) {
+    RECT client{};
+    if (!GetClientRect(window, &client) || IsRectEmpty(&client) ||
+        !SetRectRgn(region, client.left, client.top, client.right, client.bottom))
+        return ERROR;
+    return SIMPLEREGION;
+}
+
+void CheckNewTrackbarLayoutPaint(MMDApp* app, HWND slider) {
+    namespace buffer = ui::light_slider_paint_buffer;
+    const HWND main = app->MainWindow();
+    const auto priorDragging = app->SidebarResizeDragging();
+    buffer::GdiFunctions gdi{};
+    // The host stays hidden, so Windows may leave the real update region empty.
+    gdi.getUpdateRgn = TrackbarFixtureUpdateRegion;
+    gdi.createCompatibleDC = RefuseTrackbarBuffer;
+    buffer::ScopedFunctionsForTesting functions(gdi);
+
+    // A failed allocation exercises the native fallback after admission,
+    // without depending on the contents of the hidden window's display DC.
+    SendMessageW(slider, WM_UPDATEUISTATE, MAKEWPARAM(UIS_SET, UISF_HIDEFOCUS), 0);
+    SetCapture(main);
+    Check(GetCapture() == main &&
+        (SendMessageW(slider, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS),
+        "prepare a divider paint with mouse focus cues hidden");
+    layoutBufferAttempts = 0;
+    app->SidebarResizeDragging() = 1;
+    Check(InvalidateRect(slider, nullptr, TRUE), "invalidate the newly attached trackbar");
+    SendMessageW(slider, WM_PAINT, 0, 0);
+    if (ui_scale::Percent() > 100)
+        CheckBottomTrackbarPixels(app, true, {GetDlgCtrlID(slider)});
+    app->SidebarResizeDragging() = priorDragging;
+    ReleaseCapture();
+    if (ui_scale::Percent() == 100) {
+        Check(layoutBufferAttempts == 1,
+            "a new trackbar receives the native divider buffer without a hard-coded ID");
+    } else {
+        Check(layoutBufferAttempts == 0,
+            "the scaled template paints the new trackbar directly during divider drag");
+    }
+    CheckBottomTrackbarPixels(app, false, {GetDlgCtrlID(slider)});
+}
+
+void CheckNewBottomTrackbar(MMDApp* app, HWND existing) {
+    const HWND main = app->MainWindow();
+    const RECT bounds = ControlBounds(main, GetDlgCtrlID(existing));
+    Check(!ui::AttachBottomTrackbar(*app, GetDlgItem(main, panel::kCurrentFrameEdit)),
+        "the trackbar template declines a different native control class");
+    constexpr int id = 64001;
+    Check(!GetDlgItem(main, id), "pick a slider ID absent from the control catalog");
+    enum class Variant { Stock, Unicode, AlreadySubclassed };
+    for (const auto variant : {Variant::Stock, Variant::Unicode, Variant::AlreadySubclassed}) {
+        const auto menu = reinterpret_cast<HMENU>(static_cast<INT_PTR>(id));
+        const auto instance = GetModuleHandleW(nullptr);
+        const HWND slider = variant == Variant::Unicode
+            ? CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | TBS_NOTICKS,
+                bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
+                main, menu, instance, nullptr)
+            : CreateWindowExA(0, TRACKBAR_CLASSA, "", WS_CHILD | TBS_NOTICKS,
+                bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
+                main, menu, instance, nullptr);
+        Check(slider != nullptr, "create a native trackbar with the new ID");
+        unsigned forwarded = 0;
+        if (variant == Variant::AlreadySubclassed)
+            Check(SetWindowSubclass(slider, ExistingTrackbarSubclass, 1, reinterpret_cast<DWORD_PTR>(&forwarded)),
+                "attach another subclass before the template");
+        const WNDPROC original = app->OriginalTrackbarProc();
+        const auto before = GetWindowLongPtrW(slider, GWLP_WNDPROC);
+        InstallControlSubclass(app, slider, id);
+        const auto installed = GetWindowLongPtrW(slider, GWLP_WNDPROC);
+        if (variant != Variant::AlreadySubclassed)
+            Check(installed && installed != before, "the template attaches without an ID list entry");
+        Check(ui::AttachBottomTrackbar(*app, slider),
+            "the direct template entry point reports an already attached trackbar as ready");
+        Check(installed == GetWindowLongPtrW(slider, GWLP_WNDPROC) && app->OriginalTrackbarProc() == original,
+            "reinstalling preserves the existing forwarding chain");
+        if (variant == Variant::AlreadySubclassed)
+            Check(SendMessageW(slider, kTrackbarChainProbe, 0, 0) == 177 && forwarded == 1,
+                "the template forwards input to the existing subclass exactly once");
+        SendMessageW(slider, TBM_SETPOS, FALSE, 57);
+        Check(SendMessageW(slider, TBM_GETPOS, 0, 0) == 57, "native trackbar state remains available");
+        CheckBottomTrackbarPixels(app, true, {id});
+        CheckNewTrackbarLayoutPaint(app, slider);
+        if (variant == Variant::AlreadySubclassed) {
+            Check(RemoveWindowSubclass(slider, ExistingTrackbarSubclass, 1),
+                "the existing subclass can detach independently of the template");
+            CheckBottomTrackbarPixels(app, false, {id});
+        }
+        DestroyWindow(slider);
+    }
+    const HWND panel = CreateWindowExW(0, L"STATIC", L"", WS_CHILD, 0, 0, 200, 40,
+        main, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(panel != nullptr, "create a separate native child panel");
+    const HWND other = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD, 0, 0, 150, 24,
+        panel, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(other != nullptr, "create a trackbar owned by another panel");
+    const auto native = GetWindowLongPtrW(other, GWLP_WNDPROC);
+    Check(!ui::AttachBottomTrackbar(*app, other) && GetWindowLongPtrW(other, GWLP_WNDPROC) == native,
+        "a trackbar outside the main panel keeps its native window procedure");
+    DestroyWindow(panel);
+}
+#endif
+
+void CheckFrameOperationTitle(MMDApp* app) {
+    const int width = app->SidebarWidth();
+    const RECT title{0, 51, width, 66};
+    const HDC dc = CreateCompatibleDC(nullptr);
+    const HBITMAP bitmap = CreateBitmap(width, title.bottom - title.top, 1, 32, nullptr);
+    Check(dc && bitmap, "allocate offscreen frame operation title surface");
+    const HGDIOBJ previous = SelectObject(dc, bitmap);
+    SetViewportOrgEx(dc, 0, -title.top, nullptr);
+    const auto ready = app->WindowLayoutReady();
+    app->WindowLayoutReady() = 0;
+    forcedPaintRect = &title;
+    previewDC = dc;
+    HandleWindowPaint(app);
+    previewDC = nullptr;
+    forcedPaintRect = nullptr;
+    app->WindowLayoutReady() = ready;
+
+    int left = width, right = 0;
+    for (int y = title.top; y < title.bottom; ++y) {
+        const COLORREF background = GetPixel(dc, 8, y);
+        for (int x = 12; x < width - 12; ++x) {
+            if (GetPixel(dc, x, y) == background) continue;
+            left = std::min(left, x);
+            right = std::max(right, x);
+        }
+    }
+    SelectObject(dc, previous);
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+    Check(left < right && std::abs(left + right - width) <= 5,
+          "painted frame operation title is centered in the left panel");
+}
+
+void CheckVerticalPanelResize(MMDApp* app) {
+    const HWND host = app->MainWindow();
+    RECT client{};
+    GetClientRect(host, &client);
+    const auto layout = [&] { return MainPanelLayout(app, client.bottom); };
+    const auto original = layout();
+    const auto scrollBefore = ControlBounds(host, panel::kTimelineVScroll);
+    const auto horizontalBefore = ControlBounds(host, panel::kTimelineHScroll);
+    const auto stepBefore = ControlBounds(host, panel::kCurrentFrameEdit);
+    const auto firstLight = ControlBounds(host, panel::kLightColorSliderR);
+    const auto lastLight = ControlBounds(host, panel::kLightDirSliderZ);
+    const auto volumeBefore = ControlBounds(host, panel::kFrameVolumeSlider);
+    const RECT curveBefore = CheckSquareBottomCurve(app);
+    const auto viewBefore = app->ViewportRect();
+    const int sidebar = app->SidebarWidth();
+    const float sidebarRatio = app->SidebarRatio();
+    Check(original.heightBudget >= 84, "window has room for both vertical divider gestures");
+
+    const auto language = app->EnglishUI();
+    for (const int lang : {0, 1, 2}) {
+        app->EnglishUI() = lang;
+        LocalizeUI(app);
+        CheckFrameOperationTitle(app);
+        for (const int id : {panel::kUndoButton, panel::kRedoButton}) {
+            const HWND button = GetDlgItem(host, id);
+            const RECT bounds = ControlBounds(host, id);
+            wchar_t caption[64]{};
+            const int length = GetWindowTextW(button, caption, 64);
+            const HDC dc = GetDC(button);
+            Check(dc && length > 0, "measure a localized history button");
+            const auto font = reinterpret_cast<HFONT>(SendMessageW(button, WM_GETFONT, 0, 0));
+            const HGDIOBJ previous = SelectObject(dc, font ? font : GetStockObject(DEFAULT_GUI_FONT));
+            SIZE text{};
+            const BOOL measured = GetTextExtentPoint32W(dc, caption, length, &text);
+            SelectObject(dc, previous);
+            ReleaseDC(button, dc);
+            Check(measured && text.cx + 8 <= bounds.right - bounds.left &&
+                  text.cy + 4 <= bounds.bottom - bounds.top &&
+                  bounds.left >= 3 && bounds.right <= sidebar - 3 && bounds.bottom <= 47,
+                  "undo and redo captions fit inside their buttons and the history band");
+        }
+    }
+    app->EnglishUI() = language;
+    LocalizeUI(app);
+
+    const auto begin = [&](int grip, int x, int y) {
+        Check(HitBottomPanelEdge(app, x, y) == grip, "divider hits at its displayed edge");
+        SendMessageW(host, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(x, y));
+        Check(app->bottomPanelSizing.dragging == grip && GetCapture() == host,
+              "divider press takes capture");
+    };
+    const auto move = [&](int x, int y) {
+        SendMessageW(host, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(x, y));
+    };
+    const auto release = [&](int x, int y) {
+        SendMessageW(host, WM_LBUTTONUP, 0, MAKELPARAM(x, y));
+        Check(app->bottomPanelSizing.dragging < 0 && GetCapture() != host,
+              "divider release retires the gesture");
+    };
+
+    const int rulerX = sidebar / 2;
+    begin(kTimelineHeightGrip, rulerX, original.RulerTop() - 1);
+    move(rulerX + 10, original.RulerTop() + 23);
+    Check(layout().RulerTop() == original.RulerTop() + 24 &&
+          ControlBounds(host, panel::kTimelineVScroll).top == scrollBefore.top + 24 &&
+          ControlBounds(host, panel::kCurrentFrameEdit).top == stepBefore.top + 12 &&
+          EqualRect(&viewBefore, &app->ViewportRect()),
+          "left divider moves the ruler, step row and vertical scrollbar");
+    release(rulerX, original.RulerTop() + 35);
+    Check(layout().RulerTop() == original.RulerTop() + 36,
+          "left divider uses the release position");
+    Check(TimelineRulerDamage(app).top == layout().RulerTop(),
+          "timeline redraw follows the moved ruler");
+
+    const int bottomX = (sidebar + client.right) / 2;
+    const int bottomY = original.bottomTop + 1;
+    begin(kBottomHeightGrip, bottomX, bottomY);
+    move(bottomX, bottomY - 24);
+    Check(layout().bottomTop == original.bottomTop - 24 &&
+          ControlBounds(host, panel::kTimelineHScroll).top == horizontalBefore.top - 24 &&
+          app->ViewportRect().bottom < viewBefore.bottom,
+          "bottom divider reserves height in the viewport and moves the sidebar footer");
+    CheckExpandedControlBackground(app);
+    CheckBottomTrackbarPixels(app);
+    release(bottomX, bottomY - 48);
+    CheckBottomTrackbarPixels(app);
+    const int committedBottom = layout().bottomTop;
+    Check(committedBottom == original.bottomTop - 48, "bottom divider uses the release position");
+    const auto firstExpanded = ControlBounds(host, panel::kLightColorSliderR);
+    const auto lastExpanded = ControlBounds(host, panel::kLightDirSliderZ);
+    const auto volumeExpanded = ControlBounds(host, panel::kFrameVolumeSlider);
+    const auto expandedCurve = CheckSquareBottomCurve(app);
+    Check(firstExpanded.top < firstLight.top && lastExpanded.top < lastLight.top &&
+          lastExpanded.top - firstExpanded.top > lastLight.top - firstLight.top &&
+          volumeExpanded.bottom - volumeExpanded.top > volumeBefore.bottom - volumeBefore.top &&
+          expandedCurve.top < curveBefore.top && expandedCurve.bottom - expandedCurve.top >= curveBefore.bottom - curveBefore.top,
+        "the expanded template moves the square preview and grows the vertical slider");
+    Check(FramePresentationRect(app).bottom <= committedBottom,
+          "viewport presentation ends above the expanded bottom panels");
+    const auto panel = BottomPanelSpans(app).front();
+    Check(HitBottomPanelEdge(app, BottomPanelX(app, panel.right), committedBottom + 10) == panel.id,
+          "existing horizontal panel resizing still hits in the expanded band");
+
+    begin(kBottomHeightGrip, bottomX, committedBottom + 1);
+    move(bottomX, committedBottom - 10000);
+    const auto clamped = layout();
+    Check(clamped.timelineBottom - (clamped.GridTop() + 17) >= 4 * 14,
+          "maximum panel height leaves four timeline rows");
+    SendMessageW(host, WM_KEYDOWN, VK_ESCAPE, 0);
+    Check(layout().bottomTop == committedBottom && GetCapture() != host &&
+          app->bottomPanelSizing.dragging < 0,
+          "Escape restores the committed bottom height and releases capture");
+    CheckExpandedControlBackground(app);
+    CheckBottomTrackbarPixels(app);
+
+    begin(kBottomHeightGrip, bottomX, committedBottom + 1);
+    move(bottomX, bottomY);
+    Check(layout().bottomTop == original.bottomTop, "dragging the bottom divider back restores the original height");
+    watchedSlider = GetDlgItem(host, panel::kLightColorSliderR);
+    wholeSliderInvalidations = 0;
+    release(bottomX, bottomY);
+    watchedSlider = nullptr;
+    Check(wholeSliderInvalidations > 0, "releasing a restored divider invalidates the whole trackbar at rest");
+    CheckBottomTrackbarPixels(app, true);
+    const RECT restoredCurve = CheckSquareBottomCurve(app);
+    Check(EqualRect(&curveBefore, &restoredCurve), "the square interpolation preview returns to its exact original bounds");
+
+    const int committedRuler = layout().RulerTop();
+    begin(kTimelineHeightGrip, rulerX, committedRuler - 1);
+    move(rulerX, committedRuler - 20);
+    Check(layout().RulerTop() < committedRuler, "left divider moves before capture loss");
+    ReleaseCapture();
+    Check(layout().RulerTop() == committedRuler && GetCapture() != host &&
+          app->bottomPanelSizing.dragging < 0 &&
+          app->SidebarWidth() == sidebar && app->SidebarRatio() == sidebarRatio,
+          "capture loss restores the ruler and preserves the sidebar width");
+
+    begin(kTimelineHeightGrip, rulerX, committedRuler - 1);
+    move(rulerX, committedRuler + 8);
+    SendMessageW(host, WM_CANCELMODE, 0, 0);
+    Check(layout().RulerTop() == committedRuler && GetCapture() != host &&
+          app->bottomPanelSizing.dragging < 0,
+          "WM_CANCELMODE restores the ruler and releases capture");
+
+    app->bottomPanelSizing.extra[kTimelineHeightGrip] = original.timelineOffset;
+    HandleWindowSize(app);
+    const auto firstRestored = ControlBounds(host, panel::kLightColorSliderR);
+    const auto volumeRestored = ControlBounds(host, panel::kFrameVolumeSlider);
+    Check(EqualRect(&firstLight, &firstRestored) && EqualRect(&volumeBefore, &volumeRestored),
+        "restoring the default height restores exact template geometry");
+}
+
+void CheckResponsiveBottomPanel(MMDApp* app) {
+    const HWND host = app->MainWindow();
+    const auto checkLightActions = [&] {
+        const RECT reset = ControlBounds(host, 467), apply = ControlBounds(host, 468);
+        Check(reset.right > reset.left && reset.right < apply.left &&
+              reset.right - reset.left == apply.right - apply.left &&
+              reset.top == apply.top && reset.bottom == apply.bottom,
+              "lighting Reset and Register are exactly the same size on one row");
+    };
+    app->CameraMode() = 1;
+    app->EnglishUI() = kUiChinese;
+    LocalizeUI(app);
+    for (int id : {454, 489, 469, 566}) SendMessageW(host, WM_COMMAND, id, 0);
+    const RECT narrow = ControlBounds(host, 449);
+    RECT client{};
+    GetClientRect(host, &client);
+    const int dragX = client.right / 2;
+    const int gripY = MainPanelLayout(app, client.bottom).bottomTop + 1;
+    SendMessageW(host, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(dragX, gripY));
+    Check(app->bottomPanelSizing.dragging == kBottomHeightGrip, "the responsive height test captures the actual divider");
+    SendMessageW(host, WM_LBUTTONUP, 0, MAKELPARAM(dragX, gripY - 160));
+    const RECT first = ControlBounds(host, 449), second = ControlBounds(host, 450);
+    const RECT parent = ControlBounds(host, 474), bone = ControlBounds(host, 475);
+    Check(first.right - first.left >= narrow.right - narrow.left + 40 && first.right == second.right &&
+          first.bottom <= second.top && ControlBounds(host, 452).top >= second.bottom,
+        "dragging taller gives camera follow names full-width rows ahead of Register");
+    Check(parent.left == bone.left && parent.right == bone.right && parent.bottom <= bone.top,
+        "taller accessory panel gives the two parent names separate full-width rows");
+    const HWND combo = GetDlgItem(host, 450);
+    const wchar_t* longName = L"Very long follow target name with an imported model and its parent bone";
+    const auto row = SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(longName));
+    Check(row >= 0, "add an isolated long follow-name fixture");
+    SendMessageW(host, WM_COMMAND, MAKEWPARAM(450, CBN_DROPDOWN), reinterpret_cast<LPARAM>(combo));
+    Check(SendMessageW(combo, CB_GETDROPPEDWIDTH, 0, 0) > second.right - second.left + 70,
+        "the opened list requests enough width for a name longer than the closed field");
+    SendMessageW(combo, CB_DELETESTRING, row, 0);
+    SaveBottomPreview(app, "bottom-tall.bmp", true);
+
+    app->bottomPanelSizing.extra[2] = 140;
+    HandleWindowSize(app);
+    const RECT left = ControlBounds(host, 449), right = ControlBounds(host, 450), apply = ControlBounds(host, 452);
+    Check(left.top == right.top && right.top == apply.top && left.right < right.left && right.right < apply.left &&
+          left.right - left.left > narrow.right - narrow.left,
+        "a camera panel below twice its original width places the two names and Register on one row");
+
+    app->bottomPanelSizing.extra[2] = 0;
+    app->bottomPanelSizing.extra[4] = 130;
+    for (int id : {488, 470}) SendMessageW(host, WM_COMMAND, id, 0);
+    for (int rowIndex = 0; rowIndex < 3; ++rowIndex) {
+        const RECT rgb = ControlBounds(host, 455 + rowIndex), xyz = ControlBounds(host, 458 + rowIndex);
+        Check(rgb.top == xyz.top && rgb.right < xyz.left, "a wider light panel aligns its RGB and XYZ rows side by side");
+        const int id = 458 + rowIndex;
+        const HWND slider = GetDlgItem(host, id);
+        const auto originalPosition = SendMessageW(slider, TBM_GETPOS, 0, 0);
+        SetCapture(slider);
+        Check(GetCapture() == slider, "hold a second-column lighting slider during repaint");
+        for (const int position : {-65, 45}) {
+            SendMessageW(slider, TBM_SETPOS, TRUE, position);
+            SendMessageW(host, WM_HSCROLL, MAKEWPARAM(TB_THUMBTRACK, position), reinterpret_cast<LPARAM>(slider));
+            Check(SendMessageW(slider, TBM_GETPOS, 0, 0) == position &&
+                std::abs(app->LightDirection()[rowIndex] - position / 100.f) < 0.0001f,
+                "tracking the second-column slider updates its native value and the light direction");
+            CheckBottomTrackbarPixels(app, true, {id});
+        }
+        ReleaseCapture();
+        CheckBottomTrackbarPixels(app, true, {id});
+        SendMessageW(slider, TBM_SETPOS, TRUE, originalPosition);
+        SendMessageW(host, WM_HSCROLL, MAKEWPARAM(TB_ENDTRACK, 0), reinterpret_cast<LPARAM>(slider));
+    }
+    checkLightActions();
+    SaveBottomPreview(app, "bottom-wide.bmp", true);
+
+    app->bottomPanelSizing.extra[kBottomHeightGrip] = 0;
+    HandleWindowSize(app);
+    const int lightGrip = 4;
+    const auto spans = BottomPanelSpans(app);
+    const int lightEdge = BottomPanelX(app, BottomPanelSpan(spans, lightGrip).right);
+    const int lightY = MainPanelLayout(app, client.bottom).bottomTop + 10;
+    const RECT xyzWide = ControlBounds(host, panel::kLightDirSliderX);
+    Check(HitBottomPanelEdge(app, lightEdge, lightY) == lightGrip, "the actual lighting separator can resize its two columns");
+    SendMessageW(host, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(lightEdge, lightY));
+    SendMessageW(host, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(lightEdge - 65, lightY));
+    const RECT xyzNarrow = ControlBounds(host, panel::kLightDirSliderX);
+    Check(app->bottomPanelSizing.dragging == lightGrip &&
+        xyzNarrow.top > ControlBounds(host, panel::kLightColorSliderR).top,
+        "dragging the lighting separator narrower restores one column");
+    SendMessageW(host, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(lightEdge, lightY));
+    const RECT xyzRestored = ControlBounds(host, panel::kLightDirSliderX);
+    Check(EqualRect(&xyzWide, &xyzRestored), "dragging the separator back restores the second column");
+    CheckBottomTrackbarPixels(app, true, {458, 459, 460});
+    watchedSlider = GetDlgItem(host, panel::kLightDirSliderX);
+    wholeSliderInvalidations = 0;
+    SendMessageW(host, WM_LBUTTONUP, 0, MAKELPARAM(lightEdge, lightY));
+    watchedSlider = nullptr;
+    Check(app->bottomPanelSizing.dragging < 0 && wholeSliderInvalidations > 0,
+        "the restored second column receives a complete repaint when the divider is released");
+    CheckBottomTrackbarPixels(app, true, {458, 459, 460});
+
+    app->bottomPanelSizing.extra[4] = 0;
+    for (int id : {489, 567}) SendMessageW(host, WM_COMMAND, id, 0);
+    Check(ui_scale_popup_fixture::Choose(host, 200), "open the responsive bottom layout at 200 percent");
+    Check(ui_scale::Percent() == 200 && BottomPanelFontPercent(app) < 200,
+        "200 percent on a narrow host constrains font growth to available panel width");
+    checkLightActions();
+    for (int id : {562, 563, 564, panel::kAdaptiveShadowCheckbox, panel::kShadowFilterCheckbox, 565}) {
+        const HWND child = GetDlgItem(host, id);
+        RECT rect{};
+        GetClientRect(child, &rect);
+        const HDC dc = GetDC(child);
+        const auto old = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(child, WM_GETFONT, 0, 0)));
+        wchar_t text[64]{};
+        const int len = GetWindowTextW(child, text, 64);
+        SIZE size{};
+        TEXTMETRICW metrics{};
+        const bool measured = GetTextExtentPoint32W(dc, text, len, &size) && GetTextMetricsW(dc, &metrics);
+        SelectObject(dc, old);
+        ReleaseDC(child, dc);
+        const int reserved = id == panel::kAdaptiveShadowCheckbox || id == panel::kShadowFilterCheckbox
+            ? GetSystemMetrics(SM_CXMENUCHECK) + 4 : 6;
+        Check(len > 0 && measured && size.cx + reserved <= rect.right && metrics.tmHeight <= rect.bottom,
+            "Chinese shadow captions fit their actual button or checkbox client at 200 percent");
+    }
+    SaveBottomPreview(app, "bottom-200.bmp", true);
+    Check(ui_scale_popup_fixture::Choose(host, 100), "restore the responsive bottom layout at 100 percent");
+    checkLightActions();
+}
+
+void CheckNarrowBottomPanel(MMDApp* app) {
+    const HWND host = app->MainWindow();
+    app->CameraMode() = 1;
+    for (int option : {1, 2, 3, 6}) app->UiOptionFlag(option) = 1;
+    HandleWindowSize(app);
+    RECT client{}, outer{};
+    Check(GetClientRect(host, &client) && GetWindowRect(host, &outer), "measure the host and native frame");
+    constexpr int narrowWidth = 920;
+    const int frameWidth = outer.right - outer.left - client.right;
+    Check(SetWindowPos(host, nullptr, 0, 0, narrowWidth + frameWidth, outer.bottom - outer.top,
+                      SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE),
+          "narrow the actual editor window");
+    HandleWindowSize(app);
+    Check(GetClientRect(host, &client) && client.right == narrowWidth,
+          "test the narrow editor at its actual client width");
+
+    for (int requested : {100, 125, 100}) {
+        Check(ui_scale_popup_fixture::Choose(host, requested), "select the application scale in its actual popup");
+        const int fitted = BottomPanelFontPercent(app);
+        const RECT volume = ControlBounds(host, panel::kFrameVolumeSlider);
+        const auto span = BottomPanelSpans(app).back();
+        std::printf("NARROW-BOTTOM requested=%d fitted=%d client=%ld volumeRight=%ld bandRight=%d\n",
+                    ui_scale::Percent(), fitted, client.right, volume.right, BottomPanelX(app, span.right));
+        Check(ui_scale::Percent() == requested && fitted >= kMinimumBottomPanelWidthPercent && fitted < 100 &&
+              volume.left < volume.right && volume.right <= client.right && BottomPanelX(app, span.right) <= client.right,
+              "the complete bottom band including volume fits the editor at the requested scale");
+        CheckSquareBottomCurve(app);
+        CheckBottomTrackbarPixels(app, true);
+
+        const HWND combo = GetDlgItem(host, 450);
+        const RECT comboBounds = ControlBounds(host, 450);
+        const wchar_t* longName = L"Very long follow target name with an imported model and its parent bone";
+        const auto row = SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(longName));
+        Check(row >= 0 && comboBounds.left >= 0 && comboBounds.right <= client.right,
+              "the camera follow selector remains inside the narrow client");
+        SendMessageW(host, WM_COMMAND, MAKEWPARAM(450, CBN_DROPDOWN), reinterpret_cast<LPARAM>(combo));
+        Check(SendMessageW(combo, CB_GETDROPPEDWIDTH, 0, 0) > comboBounds.right - comboBounds.left + 70,
+              "the long camera follow name widens its dropdown using the fitted font");
+        SendMessageW(combo, CB_DELETESTRING, row, 0);
+
+        const HWND slider = GetDlgItem(host, panel::kLightDirSliderX);
+        const auto before = SendMessageW(slider, TBM_GETPOS, 0, 0);
+        const int target = before < 0 ? 37 : -37;
+        SendMessageW(slider, TBM_SETPOS, TRUE, target);
+        SendMessageW(host, WM_HSCROLL, MAKEWPARAM(TB_THUMBTRACK, target), reinterpret_cast<LPARAM>(slider));
+        Check(SendMessageW(slider, TBM_GETPOS, 0, 0) == target &&
+              std::abs(app->LightDirection()[0] - target / 100.f) < 0.0001f,
+              "the fitted lighting slider updates its live scene value");
+        CheckBottomTrackbarPixels(app, false, {panel::kLightDirSliderX});
+    }
+}
+#endif
+
 void CheckBottomPanelResize(MMDApp* app) {
     if (const wchar_t* path=_wgetenv(L"MMS_PANEL_PREVIEW_MODEL")) {
         Check(std::filesystem::exists(path),"preview model exists");
@@ -272,8 +1302,10 @@ void CheckBottomPanelResize(MMDApp* app) {
     auto drag=[&](int id,int delta,UINT ending=WM_LBUTTONUP) {
         int edge=0;
         for(auto p:BottomPanelSpans(app))if(p.id==id)edge=BottomPanelX(app,p.right);
+        Check(app->SidebarWidth()==601, "panel gesture starts with the exact sidebar width");
         SendMessageW(host,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(edge,y));
         Check(app->bottomPanelSizing.dragging==id,"right border captures the selected panel");
+        Check(app->SidebarWidth()==601, "capturing the panel divider preserves sidebar width");
         const int control=id==1?436:id==2?449:id==6?471:509;
         const auto beforeControl=ControlBounds(host,control);
         const int beforeExtra=app->bottomPanelSizing.extra[id];
@@ -283,15 +1315,16 @@ void CheckBottomPanelResize(MMDApp* app) {
         for(int unrelated:{400,427,434,544,550,554})Check(geometry.Count(GetDlgItem(host,unrelated))==0,"bottom drag leaves unrelated sidebar and viewport windows in place");
         geometry.Reset();
         const auto duringControl=ControlBounds(host,control);
-        Check(app->SidebarWidth()==601&&!app->bottomPanelSizing.relayout,
-              "bottom-only relayout preserves exact sidebar pixels and clears its batching scope");
+        Check(app->SidebarWidth()==601, "bottom-only relayout preserves exact sidebar width");
+        Check(!app->bottomPanelSizing.relayout, "bottom-only relayout clears its batching scope");
         Check(!EqualRect(&beforeControl,&duringControl) && beforeExtra!=app->bottomPanelSizing.extra[id],
               "panel controls follow effective pointer movement before release");
         const auto layouts=ui_metrics::counts[ui_metrics::Layout].load();
         SendMessageW(host,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(edge+delta,y));
         Check(ui_metrics::counts[ui_metrics::Layout].load()==layouts,"repeated bottom drag position skips layout");
         for(const auto& entry:geometry.entries)Check(entry.changes==0,"duplicate bottom position does not notify native geometry");
-        SendMessageW(host,ending,ending==WM_KEYDOWN?VK_ESCAPE:0,MAKELPARAM(edge+delta,y));
+        if(ending==WM_CAPTURECHANGED){Check(GetCapture()==host,"capture loss begins from captured host");ReleaseCapture();}
+        else SendMessageW(host,ending,ending==WM_KEYDOWN?VK_ESCAPE:0,MAKELPARAM(edge+delta,y));
         Check(app->bottomPanelSizing.dragging<0 && GetCapture()!=host,"panel drag releases capture");
         if(ending!=WM_LBUTTONUP){const auto restored=ControlBounds(host,control);
             Check(EqualRect(&beforeControl,&restored)&&app->bottomPanelSizing.extra[id]==beforeExtra,
@@ -755,6 +1788,10 @@ void CheckShadowFilter(MMDApp* app) {
 #include "plugins/scene_unsupported_abi_host_checks.inc"
 #include "plugins/slider_hover_host_checks.inc"
 #include "plugins/layout_refresh_host_checks.inc"
+#include "plugins/layout_takeover_host_checks.inc"
+#include "background_picture_reset_checks.hpp"
+#include "native_picture_history_checks.inc"
+#include "native_picture_gesture_checks.inc"
 #include "plugins/object_history_host_checks.inc"
 #include "plugins/import_picker_host_checks.inc"
 #include "plugins/edit_history_host_checks.inc"
@@ -765,12 +1802,19 @@ void CheckShadowFilter(MMDApp* app) {
 #include "plugins/camera_interpolation_host_checks.inc"
 #endif
 
+#if !MMD_ORIGINAL_PROFILE
+#include "bottom_panel_live_drag_checks.inc"
+#endif
+
 int main(int argc, char** argv) {
     const bool schedulerOnly=argc==2 && std::string(argv[1])=="--scheduler-only";
     if(schedulerOnly) SetEnvironmentVariableW(L"MMS_UI_METRICS",L"scheduler-test.metrics.jsonl");
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     bool sliderHoverUnaware=false;
 #if !MMD_ORIGINAL_PROFILE
+    const bool firstTrackbarPaint = argc == 2 && std::string(argv[1]) == "--bottom-trackbar-first-paint";
+    const bool liveDividerPaint = argc == 2 && std::string(argv[1]) == "--lighting-divider-live-paint";
+    sliderHoverUnaware = firstTrackbarPaint;
     if(argc==4&&std::string(argv[1])=="--slider-hover-only"){
         wchar_t requested[2]{};
         sliderHoverUnaware=GetEnvironmentVariableW(L"MMS_TEST_SLIDER_UNAWARE",requested,2)==1&&requested[0]==L'1';
@@ -780,6 +1824,10 @@ int main(int argc, char** argv) {
     Check(MH_Initialize() == MH_OK, "initialize hidden-window guards");
     Hook(&ShowWindow, &KeepHidden, &originalShow);
     Hook(&MessageBoxA, &UnexpectedA); Hook(&MessageBoxW, &UnexpectedW, &originalMessageBoxW);
+#if !MMD_ORIGINAL_PROFILE
+    if(argc==3 && std::string(argv[1])=="--layout-takeover-only") layout_takeover_host_checks::InstallInputGuards();
+    if (firstTrackbarPaint || liveDividerPaint) ui_scale::ApplyAtStartup();
+#endif
     auto* app = new MMDApp;
     // Match the other hidden-window fixtures: avoid a 661 KB value-initialized
     // temporary occupying the 1 MB test-thread stack during nested PMM loads.
@@ -789,6 +1837,88 @@ int main(int argc, char** argv) {
     SetWindowPos(window, nullptr, 0, 0, 1200,820, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     HandleWindowSize(app);
     Check(!IsWindowVisible(window), "production host stays hidden");
+#if !MMD_ORIGINAL_PROFILE
+    if (argc == 2 && std::string(argv[1]) == "--scale-popup-interruption") {
+        CheckScalePopupInterruption(app);
+        ShutdownCleanup(app); g_Block = nullptr; delete app;
+        return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--narrow-bottom-panel") {
+        Hook(&BeginPaint, &PreviewBeginPaint, &realBeginPaint);
+        Hook(&EndPaint, &PreviewEndPaint, &realEndPaint);
+        CheckNarrowBottomPanel(app);
+        ShutdownCleanup(app); g_Block = nullptr; delete app;
+        std::puts("PASS narrow bottom panel");
+        return 0;
+    }
+    if (liveDividerPaint) {
+        bottom_live_drag::Run(app);
+        ShutdownCleanup(app); g_Block = nullptr; delete app;
+        return 0;
+    }
+    if (firstTrackbarPaint) {
+        Hook(&BeginPaint, &PreviewBeginPaint, &realBeginPaint);
+        Hook(&EndPaint, &PreviewEndPaint, &realEndPaint);
+        Check(!GetCapture(), "start the editor before any drag");
+        const HWND slider = GetDlgItem(window, panel::kFovSlider);
+        Check(slider != nullptr, "get the native camera slider");
+        std::printf("DIAG startup interface scale=%d\n", ui_scale::Percent());
+        CheckBottomTrackbarPixels(app, true);
+        CheckBottomTrackbarPixels(app);
+        CheckNewBottomTrackbar(app, slider);
+        CheckBottomTrackbarFallback(app, slider);
+        ShutdownCleanup(app); g_Block = nullptr; delete app;
+        std::puts("Bottom trackbar first paint passed");
+        return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--vertical-panels-only") {
+        Hook(&BeginPaint, &PreviewBeginPaint, &realBeginPaint);
+        Hook(&EndPaint, &PreviewEndPaint, &realEndPaint);
+        Hook(&InvalidateRect, &ObserveSliderInvalidation, &realInvalidate);
+        CheckDpiScalingMenu(app);
+        CheckVerticalPanelResize(app);
+        CheckResponsiveBottomPanel(app);
+        ShutdownCleanup(app); g_Block = nullptr; delete app;
+        std::puts("Vertical panel resize regressions passed");
+        return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--picture-gesture-only") {
+        native_picture_gesture_checks::Run(app);
+        ShutdownCleanup(app); g_Block = nullptr; delete app;
+        return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--picture-history-only") {
+        native_picture_history_checks::Run(app);
+        ShutdownCleanup(app); g_Block = nullptr; delete app;
+        return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--picture-reset-only") {
+        bool closed = false;
+        try {
+            picture_reset_checks::Run(app);
+            ShutdownCleanup(app); closed = true;
+            picture_reset_checks::VerifyClosed();
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "FAIL picture reset: %s\n", error.what());
+            if (!closed) ShutdownCleanup(app);
+            g_Block = nullptr; delete app; return 1;
+        }
+        g_Block = nullptr; delete app;
+        std::puts("PASS picture asset real project reset, redisplay and shutdown");
+        return 0;
+    }
+#endif
+    if (argc == 2 && (std::string(argv[1]) == "--viewport-cursor-only" ||
+                      std::string(argv[1]) == "--scaled-viewport-cursor-only")) {
+        if (!build_profile::original && std::string(argv[1]) == "--scaled-viewport-cursor-only") {
+            Check(ui_scale_popup_fixture::Choose(window, 125), "select 125 percent through the real popup");
+            Check(FrameOverlayScale(app) > 1, "the live Help command enlarges the HUD on this host");
+        }
+        cursor_checks::Run(app);
+        ShutdownCleanup(app); g_Block = nullptr; delete app;
+        std::puts("Viewport cursor regressions passed");
+        return 0;
+    }
     if (argc == 4 && std::string(argv[1]) == "--slider-paint-only") {
         const bool bound = std::string(argv[3]) == "bound";
         try {
@@ -840,6 +1970,11 @@ int main(int argc, char** argv) {
     }
     if(argc==3 && std::string(argv[1])=="--layout-integration-only") {
         layout_refresh_host_checks::Run(app,std::string(argv[2])=="bound");ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
+    }
+    if(argc==3 && std::string(argv[1])=="--layout-takeover-only") {
+        Check(std::string(argv[2])=="ordinary" || std::string(argv[2])=="bound","valid layout takeover history mode");
+        layout_takeover_host_checks::Run(app,std::string(argv[2])=="bound");
+        ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
     }
     if(argc==2 && std::string(argv[1])=="--camera-interpolation-only") {
         camera_interpolation_host_checks::Run(app);ShutdownCleanup(app);g_Block=nullptr;delete app;return 0;
@@ -1002,7 +2137,8 @@ int main(int argc, char** argv) {
         const int width=app->SidebarWidth();const float ratio=app->SidebarRatio();const auto viewport=app->ViewportRect();
         begin();SendMessageW(window,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(650,100));
         Check(app->SidebarWidth()==650,"cancel case first publishes live geometry");
-        SendMessageW(window,cancel,cancel==WM_KEYDOWN?VK_ESCAPE:0,0);
+        if(cancel==WM_CAPTURECHANGED){Check(GetCapture()==window,"sidebar capture loss begins from captured host");ReleaseCapture();}
+        else SendMessageW(window,cancel,cancel==WM_KEYDOWN?VK_ESCAPE:0,0);
         SendMessageW(window,WM_LBUTTONUP,0,MAKELPARAM(650,100));
         Check(app->SidebarWidth()==width&&app->SidebarRatio()==ratio&&EqualRect(&viewport,&app->ViewportRect())&&
               !app->SidebarResizeDragging()&&!app->sidebarSizing.active&&GetCapture()!=window,

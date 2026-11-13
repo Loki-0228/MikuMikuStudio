@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <memory>
 
+namespace mikumikustudio::fileio { class SequentialFileReader; }
+
 namespace mikumikustudio::model_geometry_cache {
 enum class Format : std::uint8_t { pmd, pmx };
 struct Layout {
@@ -51,6 +53,10 @@ public:
     Session& operator=(const Session&) = delete;
     static Session Begin(int descriptor, Layout layout, std::int64_t vertexStart,
                          Cache* cache = nullptr, bool disabled = false) noexcept;
+    // Call at the start of PMX vertex data. The reader owns descriptor and
+    // must outlive the session. CapturePmx ends observation before tail reads.
+    static Session BeginPmx(int descriptor, Layout layout, fileio::SequentialFileReader& reader,
+                            Cache* cache = nullptr, bool disabled = false) noexcept;
     bool Enabled() const noexcept;
     bool Hit() const noexcept;
     std::int64_t VertexEnd() const noexcept;
@@ -69,6 +75,8 @@ public:
     void Commit() noexcept;
     void Invalidate() noexcept;
 private:
+    static Session BeginImpl(int descriptor, Layout layout, std::int64_t vertexStart,
+                             Cache*, bool disabled, fileio::SequentialFileReader*) noexcept;
     struct State;
     std::unique_ptr<State> state_;
 };

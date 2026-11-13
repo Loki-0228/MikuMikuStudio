@@ -16,11 +16,16 @@ namespace mikumikustudio::ui::light_slider_paint_buffer {
 // Synchronous UI-thread reader. It must only read the host's current divider
 // flags, must not dispatch messages or edit state, and must outlive Forward.
 // A captured main window alone does not identify an internal layout drag.
+// Only pass a context for trackbars already attached to the panel template.
 struct LayoutContext {
     HWND main=nullptr;
     void* user=nullptr;
     bool (*dragging)(void*) noexcept=nullptr;
 };
+inline bool CompactLightClient(int id, const RECT& client) noexcept {
+    return client.right == (id < 458 ? 136 : 132) &&
+        client.bottom == (id < 458 ? 18 : 20);
+}
 // The default table consists solely of Win7-era Win32/GDI calls. Tests may
 // substitute individual calls while the real HWND and native procedure remain.
 struct GdiFunctions {
@@ -90,15 +95,8 @@ inline bool NonemptyUpdate(HWND window,HRGN region,const GdiFunctions& api)noexc
     const int kind=api.getUpdateRgn(window,region,FALSE);
     return kind==SIMPLEREGION||kind==COMPLEXREGION;
 }
-inline bool LayoutSlider(int id)noexcept{
-    switch(id){
-    case 447:case 455:case 456:case 457:case 458:case 459:case 460:
-    case 505:case 510:case 515:case 520:case 534:case 560:return true;
-    default:return false;
-    }
-}
 inline bool LayoutDragging(HWND window,int id,const LayoutContext& layout)noexcept{
-    return layout.main&&layout.dragging&&LayoutSlider(id)&&GetCapture()==layout.main&&
+    return layout.main&&layout.dragging&&GetCapture()==layout.main&&
         GetParent(window)==layout.main&&GetDlgItem(layout.main,id)==window&&layout.dragging(layout.user);
 }
 } // namespace detail
@@ -114,16 +112,16 @@ public:
     ScopedFunctionsForTesting& operator=(const ScopedFunctionsForTesting&)=delete;
 };
 
-// Replace only the full-profile TrackbarSubclassProc's final native forwarding
-// call. Other messages, visible keyboard cues and foreign supplied HDCs keep
+// Other messages, visible keyboard cues and foreign supplied HDCs keep
 // their exact arguments and original return value. The buffer commits one
 // admitted native paint together; it does not make the whole layout or DWM
 // composition atomic, nor suppress a separately dispatched native paint.
-inline LRESULT Forward(WNDPROC native,HWND window,UINT message,WPARAM wp,LPARAM lp,const LayoutContext& layout={})noexcept{
+template<class Next>
+inline LRESULT ForwardTo(Next next,HWND window,UINT message,WPARAM wp,LPARAM lp,const LayoutContext& layout={})noexcept{
     const auto& api=detail::Functions();
     const auto direct=[&]()noexcept{
         if(message==WM_PAINT&&detail::active&&detail::active->window==window&&detail::active->destroyed)return LRESULT(0);
-        return CallWindowProcA(native,window,message,wp,lp);
+        return next(window,message,wp,lp);
     };
     if(message==WM_NCDESTROY){
         if(detail::active&&detail::active->window==window)detail::active->destroyed=true;
@@ -139,7 +137,7 @@ inline LRESULT Forward(WNDPROC native,HWND window,UINT message,WPARAM wp,LPARAM 
         if(message==WM_ERASEBKGND&&paint->beginning&&!paint->redirectingErase&&!paint->destroyed&&window==paint->window&&
             dc&&GetObjectType(dc)==OBJ_DC&&WindowFromDC(dc)==window){
             paint->redirectingErase=true;
-            const auto result=CallWindowProcA(native,window,message,reinterpret_cast<WPARAM>(paint->memory),lp);
+            const auto result=next(window,message,reinterpret_cast<WPARAM>(paint->memory),lp);
             paint->redirectingErase=false;return result;
         }
         return direct(); // Reentry never starts another buffer transaction.
@@ -168,7 +166,7 @@ inline LRESULT Forward(WNDPROC native,HWND window,UINT message,WPARAM wp,LPARAM 
             std::uint64_t(client.right)*std::uint64_t(client.bottom)>(std::uint64_t(1)<<20))return direct();
     }else{
         // Preserve the separately checked held-light route's exact sizes.
-        if(client.right!=(id<458?136:132)||client.bottom!=(id<458?18:20))return direct();
+        if(!CompactLightClient(id,client))return direct();
     }
     HWND parent=nullptr;RECT position{};
     if(layoutMode){parent=GetParent(window);if(!GetWindowRect(window,&position))return direct();}
@@ -219,7 +217,7 @@ inline LRESULT Forward(WNDPROC native,HWND window,UINT message,WPARAM wp,LPARAM 
         if(painting.destroyed)return 0; // Never address a recycled HWND.
         return direct(); // Native WM_PAINT has not run yet; call it once.
     }
-    const auto result=CallWindowProcA(native,window,WM_PAINT,reinterpret_cast<WPARAM>(resources.memory),lp);
+    const auto result=next(window,WM_PAINT,reinterpret_cast<WPARAM>(resources.memory),lp);
     // Native customdraw/parent callbacks can resize, move, reparent, replace or
     // destroy the window synchronously, or retire the divider gesture while
     // main still has capture. Do not commit an old surface afterwards.
@@ -237,6 +235,12 @@ inline LRESULT Forward(WNDPROC native,HWND window,UINT message,WPARAM wp,LPARAM 
     // the next ordinary paint, preserving the full region enlarged above.
     if((!copied||!ended)&&!painting.destroyed)detail::RetryDirect(window,sameWindow?resources.full:nullptr,api);
     return result;
+}
+
+inline LRESULT Forward(WNDPROC native,HWND window,UINT message,WPARAM wp,LPARAM lp,const LayoutContext& layout={})noexcept{
+    return ForwardTo([native](HWND child, UINT msg, WPARAM w, LPARAM l) {
+        return CallWindowProcA(native,child,msg,w,l);
+    },window,message,wp,lp,layout);
 }
 } // namespace mikumikustudio::ui::light_slider_paint_buffer
 #endif

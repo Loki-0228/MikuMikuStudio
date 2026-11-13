@@ -200,6 +200,48 @@ void PoseNumericEntryChecks() {
     } else std::puts("SKIP native numeric rotation: D3DX math library unavailable");
     Check(f.SelectionUnchanged()&&PoseRingDigest(f.first)==ring,"all numeric kinds preserve selection and legacy ring");
 }
+void PoseDraftSelectionChecks() {
+    for (bool shared : {false, true}) {
+        for (int change = 0; change < 7; ++change) {
+            PoseNumericFixture f;
+            std::optional<plugins::NativePoseTestBinding> binding;
+            if (shared) binding.emplace(*f.app, f.history);
+            const int field = panel::kReadoutPosXEdit;
+            EditSubclassProc(f.Edit(field), WM_SETFOCUS, 0, 0);
+            f.Type(field, "91.125");
+            if (change == 0) f.app->SetSelectedModelSlot(1);
+            if (change == 1) f.first.m->selectedBone = 1;
+            if (change == 2) f.app->CurrentFrame() = 18;
+            if (change == 3) f.app->CameraMode() = 1;
+            if (change == 4) f.app->AdvanceSceneGeneration();
+            if (change == 5) f.app->ModelSlot(0) = nullptr;
+            if (change == 6) {
+                plugins::ForgetSceneObject(f.first.raw());
+                plugins::SceneObjectIdentity(f.first.raw());
+            }
+            const auto first = f.first.Digest(), second = f.second.Digest();
+            const auto ring = PoseRingDigest(f.first), otherRing = PoseRingDigest(f.second);
+            f.app->CameraPositionX() = 6;
+            if (change % 2 == 0) f.LoseFocus(field);
+            else EditSubclassProc(f.Edit(field), WM_KEYDOWN, VK_RETURN, 0);
+            Check(f.first.Digest() == first && f.second.Digest() == second &&
+                PoseRingDigest(f.first) == ring && PoseRingDigest(f.second) == otherRing &&
+                !f.history.UndoCount() && !f.app->SceneModified() && f.app->CameraPositionX() == 6,
+                "stale bone draft changes neither target, camera, nor history");
+            Check(!SendMessageA(f.Edit(field), EM_GETMODIFY, 0, 0), "stale edit flag is consumed");
+
+            f.app->CameraMode() = 0;
+            f.app->ModelSlot(0) = f.first.raw();
+            f.app->SetSelectedModelSlot(0);
+            f.first.m->selectedBone = 0;
+            EditSubclassProc(f.Edit(field), WM_SETFOCUS, 0, 0);
+            f.Type(field, "7.125");
+            f.LoseFocus(field);
+            Check(f.first.bones[0].trans[0] == 7.125f &&
+                f.history.UndoCount() == unsigned(shared), "fresh numeric input commits through the active history route");
+        }
+    }
+}
 void PoseNumericFailureChecks() {
     PoseNumericFixture f;plugins::NativePoseTestBinding binding(*f.app,f.history);
     const auto before=f.first.Digest();unsigned failures=0;bool succeeded=false;
@@ -222,4 +264,6 @@ void PoseNumericFailureChecks() {
         "failed numeric branch preserves earlier redo and UI dirty state");
 }
 }
-void NativePoseScopeChecks() {PoseScopeBudgetAndCancellation();PoseNumericEntryChecks();PoseNumericFailureChecks();}
+void NativePoseScopeChecks() {
+    PoseScopeBudgetAndCancellation();PoseNumericEntryChecks();PoseDraftSelectionChecks();PoseNumericFailureChecks();
+}

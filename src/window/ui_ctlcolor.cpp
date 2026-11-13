@@ -45,8 +45,11 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/window_dpi_scope.hpp"
+#include "bottom_panel_control_paint.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -77,6 +80,40 @@ void FreeTimelineSelectionRecords(MMDApp* app, TimelineSelectionBand band) {
 // Forward declarations; bodies in the files noted.
 void PanelPaint(MMDApp* app);       // VA 0x00414610 (ui_panel_paint.cpp)
 void SelectionReeval(MMDApp* app);  // VA 0x00430510 (ui_selection_reeval.cpp)
+
+std::optional<ui::BottomPanelControlSurface> ui::BottomPanelControlSurface::Find(MMDApp& app, HWND child) {
+    const HWND main = app.MainWindow();
+    if (build_profile::original || !main || !child || app.FullscreenMode() || GetParent(child) != main ||
+        !(GetWindowLongPtrW(child, GWL_STYLE) & WS_CHILD)) return std::nullopt;
+
+    const WindowDpiScope dpi(main);
+    BottomPanelControlSurface surface(app);
+    if (!GetClientRect(main, &surface.host_) || !GetClientRect(child, &surface.client_) ||
+        IsRectEmpty(&surface.client_) || !ClientToScreen(child, &surface.origin_) ||
+        !ScreenToClient(main, &surface.origin_)) return std::nullopt;
+
+    const auto layout = MainPanelLayout(&app, surface.host_.bottom);
+    if (surface.origin_.y < layout.bottomTop + 3 || surface.origin_.y >= surface.host_.bottom)
+        return std::nullopt;
+    surface.expanded_ = layout.bottomExtra > 0;
+    return surface;
+}
+
+bool ui::BottomPanelControlSurface::PaintBackground(HDC dc) const {
+    const int saved = SaveDC(dc);
+    if (!saved) return false;
+    const bool canPaint = IntersectClipRect(dc, client_.left, client_.top, client_.right, client_.bottom) != ERROR &&
+        OffsetViewportOrgEx(dc, -origin_.x, -origin_.y, nullptr) != FALSE;
+    if (canPaint) PaintBottomPanelBackground(&app_, dc, host_);
+    RestoreDC(dc, saved);
+    return canPaint;
+}
+
+bool PaintBottomControlBackground(HWND control, HDC dc) {
+    if (!dc || !g_Block) return false;
+    const auto surface = ui::BottomPanelControlSurface::Find(*g_Block, control);
+    return surface && surface->PaintBackground(dc);
+}
 
 LRESULT HandleCtlColor(HWND control, HDC dc) {
     // Original themed controls return cached brushes; the scale caption also
@@ -171,6 +208,11 @@ LRESULT HandleCtlColor(HWND control, HDC dc) {
     if (ctrl == GetDlgItem(main, panel::kSelfShadowRangeSlider))  // 0x230 -> slot 8 (0xA04EC)
         return brushResult(8);
 
+    if (PaintBottomControlBackground(ctrl, dc)) {
+        SetBkMode(dc, TRANSPARENT);
+        return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+    }
+
     return 0;
 }
 
@@ -204,10 +246,20 @@ LRESULT HandleCtlColor(HWND control, HDC dc) {
 // =========================================================================//
 void HandleLButtonUp(MMDApp* app) {
     negative_frames::EndDrag(app);
+#if !MMD_ORIGINAL_PROFILE
+    const auto sidebarSerial = app->sidebarSizingSerial;
+    const auto bottomSerial = app->bottomPanelSizingSerial;
+#endif
     // Uncommitted capture loss/cancel restores live sidebar geometry. A normal
     // release retires its session in CommitSidebarResize before reaching here.
     CancelSidebarResize(app);
+#if !MMD_ORIGINAL_PROFILE
+    if (app->sidebarSizingSerial != sidebarSerial || app->bottomPanelSizingSerial != bottomSerial) return;
+#endif
     HandleViewportToolRelease(app);
+#if !MMD_ORIGINAL_PROFILE
+    if (app->sidebarSizingSerial != sidebarSerial || app->bottomPanelSizingSerial != bottomSerial) return;
+#endif
     const bool dragActive = app->SelectionBoxDragging() != 0;
     app->SidebarResizeDragging() = 0;
     app->WindowLayoutReady() = 1;
@@ -237,6 +289,9 @@ void HandleLButtonUp(MMDApp* app) {
         SelectionReeval(app);          // 0x430510
     }
 
+#if !MMD_ORIGINAL_PROFILE
+    if (app->sidebarSizingSerial != sidebarSerial || app->bottomPanelSizingSerial != bottomSerial) return;
+#endif
     app->PendingTimelineSelectionRow() = TimelineSelectionRow::None;
 }
 

@@ -1,10 +1,31 @@
 #pragma once
+#include <cstddef>
 #include "mikumikustudio/build_profile.hpp"
+
+namespace mikumikustudio {
+class MMDApp;
+struct PathResolutionWorkspace;
+namespace accessory_import {
+enum class MissingFileNotice { Show, Suppress };
+
+// Project recovery supplies its own prompt when the selected file cannot be opened.
+bool LoadObject(MMDApp* app, void* accessory, const wchar_t* path, MissingFileNotice notice);
+
+// Try the stored absolute file before using the legacy UserFile search.
+bool ResolveProjectReference(const char* storedPath, wchar_t* output, std::size_t capacity,
+                             PathResolutionWorkspace& workspace);
+
+// A VAC's mesh reference is relative to the descriptor directory. Preserve
+// legacy UserFile lookup for references that no longer exist there.
+bool ResolveVacMeshPath(const char* reference, const wchar_t* descriptorDirectory,
+                        wchar_t* output, std::size_t capacity, PathResolutionWorkspace& workspace);
+}
+}
+
 #if !MMD_ORIGINAL_PROFILE
 #include "mikumikustudio/d3dx_dyn.hpp"
 
 namespace mikumikustudio {
-class MMDApp;
 namespace mdl { struct AccessoryRecord; struct AccessoryKey; }
 namespace import_texture_cache { class Preparation; }
 namespace accessory_import {

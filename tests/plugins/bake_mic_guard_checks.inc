@@ -6,7 +6,9 @@
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
 #include "mikumikustudio/scene_sampling.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
 #include "mikumikustudio/window_dpi_scope.hpp"
 #include "../../src/plugins/history_runtime.hpp"
 #include <commctrl.h>
@@ -228,11 +230,30 @@ inline void Run(MMDApp* app) {
         },error)&&callbacks==2&&outputs==1,
             "actual preroll and output sampling both survive queued detached close and input");
         Alive(*app,mic);scene.Check();
+#if !MMD_ORIGINAL_PROFILE
+        MSG replay{};
+        Require(app->deferredSceneFloatingClose==mic &&
+            !PeekMessageW(&replay,mic,kSceneCloseReplayMessage,kSceneCloseReplayMessage,PM_NOREMOVE),
+            "the bake retains the detached close request without dispatching its replay");
+#endif
     }
     Require(!bake::UiLocked()&&IsWindowEnabled(mic),"bake completion restores the real detached window input state");
+#if !MMD_ORIGINAL_PROFILE
+    updates::SafePoint(app);
+    DispatchPosted(mic,WM_CLOSE); // A further close coalesces while the replay is queued.
+    Alive(*app,mic);
+    MSG replay{};
+    Require(PeekMessageW(&replay,mic,kSceneCloseReplayMessage,kSceneCloseReplayMessage,PM_REMOVE) &&
+        replay.hwnd==mic,"the first unlocked safe point queues one close for the detached window");
+    MSG duplicate{};
+    Require(!PeekMessageW(&duplicate,mic,kSceneCloseReplayMessage,kSceneCloseReplayMessage,PM_NOREMOVE),
+        "locked and unlocked close requests share a single detached replay");
+    DispatchMessageW(&replay);
+#else
     DispatchPosted(mic,WM_CLOSE);
+#endif
     Require(!app->FloatingWindow()&&!IsWindow(mic)&&IsWindow(app->MainWindow()),
-        "normal detached close after the bake unlock destroys only Mic and restores the main host");
+        "detached close after the bake unlock destroys only Mic and restores the main host");
     for(int id=536;id<=557;++id)
         Require(GetDlgItem(app->MainWindow(),id)&&GetParent(GetDlgItem(app->MainWindow(),id))==app->MainWindow(),
             "normal close reparents every production viewport control to the live main window");

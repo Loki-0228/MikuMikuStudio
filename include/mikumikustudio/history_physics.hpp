@@ -2,6 +2,9 @@
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "BulletCollision/BroadphaseCollision/btAxisSweep3.h"
+#include <mms/plugin.h>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -12,6 +15,12 @@ namespace plugins::resource_budget { class Collector; }
 class DynamicsWorld;
 class PhysicsScene;
 namespace history_physics {
+// Allocation-free bound for make_shared<Retained>(world, bodies, constraints),
+// including both shared allocations, the copied pointer buffers and vector
+// move/proxy storage. Counts are the validated source vector sizes. No saved
+// transition, world, or Bullet payload is created. Failure preserves bytes.
+MmsResult MeasureRetainedCapturePreparation(std::size_t bodyCount,
+    std::size_t constraintCount,std::uint64_t& bytes) noexcept;
 class ImportScene;
 struct ImportBroadphaseState;
 // These classes are internal to MMS. They do not change Bullet or plugin ABI.
@@ -40,6 +49,7 @@ public:
 // Destroy every published transition before stepping or destroying the world.
 class Retained {
     friend class ImportScene;
+    friend MmsResult MeasureRetainedCapturePreparation(std::size_t,std::size_t,std::uint64_t&) noexcept;
     struct Impl;
     std::shared_ptr<Impl> impl_;
 public:

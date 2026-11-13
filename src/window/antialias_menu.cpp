@@ -1,6 +1,7 @@
 #include "mikumikustudio/antialias.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/update_coordinator.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include <algorithm>
 
@@ -132,8 +133,12 @@ bool HandleMessage(MMDApp* app,UINT message,WPARAM wp,LPARAM lp) {
         std::wstring error;
         Initialize(app);
         if(LOWORD(wp)==kOffCommand) {
-            if(app->antialiasing.enabled && !Toggle(app,error))
-                MessageBoxW(app->MainWindow(),error.c_str(),DialogTitle(app),MB_OK|MB_ICONERROR);
+            // Turning AA off is a viewport change, not only a readout change.
+            if(app->antialiasing.enabled) {
+                if(!Toggle(app,error))
+                    MessageBoxW(app->MainWindow(),error.c_str(),DialogTitle(app),MB_OK|MB_ICONERROR);
+                updates::RequestViewport(app);
+            }
             return true;
         }
         const auto algorithm=Algorithm(LOWORD(wp)-kFirstCommand);
@@ -145,6 +150,8 @@ bool HandleMessage(MMDApp* app,UINT message,WPARAM wp,LPARAM lp) {
             app->antialiasing.enabled=wasEnabled;ApplyRenderState(app);RefreshMenu(app);
             MessageBoxW(app->MainWindow(),error.c_str(),DialogTitle(app),MB_OK|MB_ICONERROR);
         }
+        // Selecting an algorithm also changes the viewport, not only readouts.
+        updates::RequestViewport(app);
         return true;
     }
     return false;

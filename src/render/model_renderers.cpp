@@ -316,7 +316,9 @@ bool CachedTextureUsesAlpha(D3DRenderer* sub, const wchar_t* path) {
     const auto* entry = FindTextureResource(sub, path);
     if (!entry) return false;
     const auto flags = reinterpret_cast<const unsigned char*>(&entry->tag)[3];
-    return (flags & kTextureAlphaKnown) == 0 || (flags & kTextureUsesAlpha) != 0;
+    if ((flags & kTextureAlphaKnown) == 0)
+        return mikumikustudio::LegacyMmeLoaded();
+    return (flags & kTextureUsesAlpha) != 0;
 }
 
 bool ModelMaterialUsesAlpha(D3DRenderer* sub, const mdl::ModelRecord& state,
@@ -343,6 +345,8 @@ void SortTransparentModelMaterials(D3DRenderer* sub, unsigned char* model,
                                   IDirect3DIndexBuffer9* indices, UINT stride) {
     MMD_PERF_SCOPE(Sort);
     auto& state = *mdl::Mdl(model);
+    if (state.postLoadFlag2 != 0)
+        return;
     // CPU source indices stay untouched for saving and stable coplanar order.
     const auto* pmxIndices = native_mesh::Indices32(model);
     const auto* pmdIndices = native_mesh::Indices32(model) == nullptr ? mdl::Indices(model) : nullptr;
@@ -1016,7 +1020,7 @@ void ConfigureEffectMaterial(MMDApp* app, D3DRenderer* sub,
     const mdl::ModelMaterialRecord& record = mdl::Material(material);
 #if !MMD_ORIGINAL_PROFILE
     shadow_filter::ConfigureDetailReceiver(app, effect,
-        mdl::Mdl(model)->physicsMode != 2 || (record.flags & 8) != 0);
+        mdl::Mdl(model)->physicsMode != 2 || (record.flags & 8) != 0, model);
 #endif
     const float alpha = record.diffuse[3];
     const float diffuse[4] = {record.diffuse[0], record.diffuse[1],
@@ -1830,6 +1834,9 @@ struct AlphaGpu {
     Microsoft::WRL::ComPtr<IDirect3DIndexBuffer9> indices;
     UINT count=0;
     bool valid=false;
+    // Index representation cached in 'indices': true for sorted source indices
+    // of the original vertices, false for the expanded 0..count-1 layout.
+    bool originalLayout=false;
 };
 struct AlphaPlan {
     MMDApp* app=nullptr;
@@ -2038,34 +2045,45 @@ bool CollectAlphaGeometry(MMDApp* app, const std::vector<NativeAlphaDraw>& draws
 bool UploadAlphaGpu(IDirect3DDevice9* device,AlphaGpu& gpu,
                     const std::vector<transparent_geometry::Triangle>& sorted,bool originalVertices) {
     const UINT count=UINT(sorted.size()*3);
-    if(gpu.valid && count<=gpu.count){++alphaCacheStats.gpuHits;return true;}
-    if((!originalVertices && !gpu.vertices) || !gpu.indices || count>gpu.count) {
+    // A hot hit also needs the cached index representation to match the vertex
+    // layout; reusing capacity across layouts would keep the other layout's indices.
+    if(gpu.valid && gpu.originalLayout==originalVertices && count<=gpu.count){++alphaCacheStats.gpuHits;return true;}
+    // Reuse allocated buffers whenever their capacity covers this upload; allocate
+    // only the buffer that is missing. gpu.count is their shared capacity.
+    if(!gpu.indices || count>gpu.count) {
         gpu=AlphaGpu{};
-        if((!originalVertices && FAILED(device->CreateVertexBuffer(count*96,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,
-            D3DPOOL_DEFAULT,&gpu.vertices,nullptr))) ||
-           FAILED(device->CreateIndexBuffer(count*4,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,
+        if(FAILED(device->CreateIndexBuffer(count*4,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,D3DFMT_INDEX32,
             D3DPOOL_DEFAULT,&gpu.indices,nullptr))) {gpu=AlphaGpu{};return false;}
-        void* data=nullptr;
-        if(FAILED(gpu.indices->Lock(0,0,&data,0))) {gpu=AlphaGpu{};return false;}
-        for(UINT i=0;i<count;++i)static_cast<UINT*>(data)[i]=i;
-        if(FAILED(gpu.indices->Unlock())) {gpu=AlphaGpu{};return false;}
-        gpu.count=count;alphaCacheStats.allocations+=originalVertices?1:2;
+        gpu.count=count;++alphaCacheStats.allocations;
     }
+    if(!originalVertices && !gpu.vertices) {
+        if(FAILED(device->CreateVertexBuffer(gpu.count*96,D3DUSAGE_DYNAMIC|D3DUSAGE_WRITEONLY,0,
+            D3DPOOL_DEFAULT,&gpu.vertices,nullptr))) {gpu=AlphaGpu{};return false;}
+        ++alphaCacheStats.allocations;
+    }
+    // Every necessary upload rewrites the index buffer for the current vertex
+    // representation. Initializing it only at allocation leaves original source
+    // indices behind when the expanded layout later reuses the same capacity.
+    void* indexData=nullptr;
+    if(FAILED(gpu.indices->Lock(0,0,&indexData,D3DLOCK_DISCARD))) {gpu=AlphaGpu{};return false;}
+    auto* indexValues=static_cast<UINT*>(indexData);
     if(originalVertices) {
-        void* memory=nullptr;
-        if(FAILED(gpu.indices->Lock(0,0,&memory,D3DLOCK_DISCARD)))return false;
-        auto* indices=static_cast<UINT*>(memory);
-        for(const auto& triangle:sorted)for(auto index:triangle.sourceIndices)*indices++=index;
-        if(FAILED(gpu.indices->Unlock()))return false;
-        gpu.valid=true;++alphaCacheStats.uploads;return true;
+        for(const auto& triangle:sorted)for(auto index:triangle.sourceIndices)*indexValues++=index;
+    } else {
+        for(UINT i=0;i<count;++i)indexValues[i]=i;
     }
-    void* destination=nullptr;
-    if(FAILED(gpu.vertices->Lock(0,count*96,&destination,D3DLOCK_DISCARD)))return false;
-    auto* floats=static_cast<float*>(destination);
-    for(const auto& triangle:sorted)for(const auto& vertex:triangle.v) {
-        std::memcpy(floats,vertex.data,sizeof(vertex.data));floats+=24;
+    if(FAILED(gpu.indices->Unlock())) {gpu=AlphaGpu{};return false;}
+    if(!originalVertices) {
+        void* destination=nullptr;
+        if(FAILED(gpu.vertices->Lock(0,count*96,&destination,D3DLOCK_DISCARD))) {gpu=AlphaGpu{};return false;}
+        auto* floats=static_cast<float*>(destination);
+        for(const auto& triangle:sorted)for(const auto& vertex:triangle.v) {
+            std::memcpy(floats,vertex.data,sizeof(vertex.data));floats+=24;
+        }
+        if(FAILED(gpu.vertices->Unlock())) {gpu=AlphaGpu{};return false;}
     }
-    if(FAILED(gpu.vertices->Unlock()))return false;
+    // Commit the representation only after the complete upload succeeded.
+    gpu.originalLayout=originalVertices;
     gpu.valid=true;++alphaCacheStats.uploads;return true;
 }
 
@@ -3211,8 +3229,7 @@ static bool RenderShadowMapImpl(MMDApp* app, const float frameMatrix[16], bool c
         shadow_filter::MarkRendered(app, auxiliary && succeeded);
     }
     shadow_filter::FinalizeDepth(app, succeeded);
-    std::array<float,16> detailProjection{};
-    if (auto* detail = shadow_filter::PrepareDetail(app, succeeded, detailProjection)) {
+    const auto renderDetail=[&](shadow_filter::FineDepthTarget* detail,const std::array<float,16>& detailProjection) {
         shadow_filter::TargetScope scope;
         bool rendered = SUCCEEDED(scope.Begin(device, *detail));
         const auto objectBefore = app->ActiveRenderObject();
@@ -3245,7 +3262,18 @@ static bool RenderShadowMapImpl(MMDApp* app, const float frameMatrix[16], bool c
         if (FAILED(FxSetMatrix(effect, "matLightViewProj", &shadowMatrix))) rendered = false;
         if (FAILED(FxSetMatrix(effect, "matWorldViewProj",
             reinterpret_cast<const Matrix*>(&app->WorldViewProjection())))) rendered = false;
-        shadow_filter::MarkDetailRendered(app, rendered && succeeded);
+        return rendered && succeeded;
+    };
+    constexpr unsigned detailRenderOrder[]{1,0,2};
+    for(unsigned detailLayer:detailRenderOrder) {
+        std::array<float,16> detailProjection{};
+        if(auto* detail=shadow_filter::PrepareDetail(app,succeeded,detailProjection,detailLayer))
+            shadow_filter::MarkDetailRendered(app,renderDetail(detail,detailProjection),detailLayer);
+    }
+    for(auto* model:shadow_filter::PlannedModels(app)) {
+        std::array<float,16> projection{};
+        if(auto* target=shadow_filter::PrepareModel(app,model,succeeded,projection))
+            shadow_filter::MarkModelRendered(app,model,renderDetail(target,projection));
     }
 #endif
     app->ActiveRenderPass() = AccessoryRenderPass::None;

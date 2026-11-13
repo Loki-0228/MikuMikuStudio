@@ -5,7 +5,7 @@ void Run(MMDApp* app) {
     Check(GetEnvironmentVariableW(L"MMS_SCENE_TEST_MODEL",modelPath,32768)>0,"scene model fixture supplied");
     LoadModelFile(app,modelPath,false);
     Check(app->ModelSlot(0)!=nullptr,"load real scene fixture");
-    auto store=CreateSceneStore(app);SceneClient client;auto api=store->Api(client);
+    auto store=CreateSceneStore(app);SceneClient client;auto api=([&]{ MmsSceneApiV1 value{}; if (store->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     MmsSceneQueryV1 query{};query.h=Header<MmsSceneQueryV1>();query.time={0,1};query.channels=MMS_CHANNEL_BONES;
     MmsSnapshotV1 old{};Check(api.acquire(api.context,&query,&old)==MMS_OK,"acquire real bind scene");
     MmsSpan objects{},bones{};

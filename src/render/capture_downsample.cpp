@@ -14,6 +14,8 @@
 
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -39,41 +41,52 @@ std::uint32_t PackAverage(std::int32_t b, std::int32_t g,
 
 }  // namespace
 
-// PostDeviceReset releases the recording render target (captureSurface),
-// and nothing recreates it, so a device loss during a recording left the
-// recording consumers with a released surface.  Recreate it using the same
-// parameters as the initial creation in d3d_init.cpp, then re-point render
-// target 0 at it, since IDirect3DDevice9::Reset cleared that binding.
-// If creation fails, keep the back-buffer fallback the initial creation also
-// uses, so callers stop mirroring instead of rendering to a null target.
-// Defect RB-04.
-bool EnsureCaptureRenderTarget(MMDApp* app) {
+bool EnsureCaptureRenderTarget(MMDApp* app, bool rebindExisting) {
     D3DRenderer* renderer = app->Renderer();
     if (renderer == nullptr || renderer->device == nullptr)
         return false;
-    if (renderer->captureSurface != nullptr)
-        return true;
+    auto* device = renderer->device;
+    const auto bind = [device](IDirect3DSurface9* surface) {
+        const HRESULT result = device->SetRenderTarget(0, surface);
+        if (FAILED(result))
+            runtime_log::Write("EXPORT capture SetRenderTarget hr=0x%08lX", static_cast<unsigned long>(result));
+        return SUCCEEDED(result);
+    };
+    if (renderer->captureSurface)
+        return !rebindExisting || bind(renderer->captureSurface);
 
     IDirect3DSurface9* surface = nullptr;
-    const HRESULT created = renderer->device->CreateRenderTarget(
+    const HRESULT created = device->CreateRenderTarget(
         static_cast<UINT>(renderer->screenWidth),
         static_cast<UINT>(renderer->screenHeight), renderer->backbufferFormat,
         D3DMULTISAMPLE_NONE, 0, TRUE /*lockable*/, &surface, nullptr);
     if (FAILED(created) || surface == nullptr) {
-        if (surface != nullptr)
-            surface->Release();
-        renderer->multisampleAvailable = 1;
+        runtime_log::Write("EXPORT capture CreateRenderTarget hr=0x%08lX",
+                           static_cast<unsigned long>(created));
+        if (surface) surface->Release();
         return false;
     }
-    renderer->captureSurface = surface;
-    renderer->device->SetRenderTarget(0, surface);
-    return true;
+    if (bind(surface)) {
+        renderer->captureSurface = surface;
+        return true;
+    }
+    surface->Release();
+    return false;
 }
 
-ULONG DownsampleCaptureSurface(MMDApp* app) {
+void CancelExportAfterCaptureTargetFailure(MMDApp* app) {
+    FinishAviRecord(app);
+    MessageBoxW(app->MainWindow(), image_sequence::Text(app,
+        L"无法准备导出渲染目标，本次导出已取消。",
+        L"Could not prepare the export render target. Export was canceled.",
+        L"出力用のレンダーターゲットを準備できません。出力を中止しました。"),
+        L"MMS", MB_OK | MB_ICONERROR);
+}
+
+bool DownsampleCaptureSurface(MMDApp* app) {
     D3DRenderer* sub = app->Renderer();
     if (sub == nullptr || sub->device == nullptr)
-        return 0;
+        return false;
     auto* device = sub->device;
     const std::int32_t sourceWidth = sub->screenWidth;
     const std::int32_t sourceHeight = sub->screenHeight;
@@ -84,14 +97,14 @@ ULONG DownsampleCaptureSurface(MMDApp* app) {
     // Reject invalid sizes before allocation/readback as well as the loops.
     if (sourceWidth <= 0 || sourceHeight <= 0 || targetWidth <= 0 ||
         targetHeight <= 0 || targetWidth > sourceWidth || targetHeight > sourceHeight)
-        return 0;
+        return false;
 
     // Each device reset releases the readback source; nothing can be copied
     // until a recording consumer recreates it, and the loops below would then read
     // through a null surface.
     // Defect RB-04.
     if (sub->captureSurface == nullptr)
-        return 0;
+        return false;
 
     // The plain-surface allocation, the readback, and the lock all went
     // unchecked, so a failure still ran the pixel loops over an unallocated
@@ -104,7 +117,7 @@ ULONG DownsampleCaptureSurface(MMDApp* app) {
         systemSurface == nullptr) {
         if (systemSurface != nullptr)
             systemSurface->Release();
-        return 0;
+        return false;
     }
 
     D3DLOCKED_RECT locked{};
@@ -112,7 +125,7 @@ ULONG DownsampleCaptureSurface(MMDApp* app) {
                                            systemSurface)) ||
         FAILED(systemSurface->LockRect(&locked, nullptr, 0))) {
         systemSurface->Release();
-        return 0;
+        return false;
     }
 
     const std::int32_t widthGcd =
@@ -197,13 +210,13 @@ ULONG DownsampleCaptureSurface(MMDApp* app) {
         }
     }
 
-    systemSurface->UnlockRect();
+    const HRESULT unlocked = systemSurface->UnlockRect();
     RECT sourceRect{0, 0, targetWidth, targetHeight};
     POINT destinationPoint{0, 0};
-    device->UpdateSurface(systemSurface, &sourceRect,
-                          sub->backbufferSurface,
-                          &destinationPoint);
-    return systemSurface->Release();
+    const bool copied = SUCCEEDED(unlocked) && sub->backbufferSurface &&
+        SUCCEEDED(device->UpdateSurface(systemSurface, &sourceRect, sub->backbufferSurface, &destinationPoint));
+    systemSurface->Release();
+    return copied;
 }
 
 }  // namespace mikumikustudio

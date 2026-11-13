@@ -62,24 +62,58 @@ namespace mikumikustudio {
 
 namespace {
 
-void LayoutForcePasteRow(HWND hwnd, int side, int bottom, bool deferPaint = false) {
-    if (!GetDlgItem(hwnd, panel::kForcePasteButton)) return;
-    // The wrap shift also shortens the timeline panel and vertical scrollbar;
-    // see panel::TimelinePanelShift consumers in the painters and hit tests.
-    const int shift = panel::TimelinePanelShift(side);
-    const bool wrap = shift != 0;
-    const int y = bottom - 224 - shift;
-    const int start = wrap ? side / 2 - 119 : (std::min)(side / 2 - 119, side - 322);
-    const int ids[] = {420, 421, 422, 416, 423};
-    const int offsets[] = {0, 43, 86, 134, 189};
-    for (int i = 0; i < 5; ++i)
-        ui::MoveLayoutControl(hwnd, ids[i], start + offsets[i], y, i < 3 ? 40 : 50, 18, deferPaint);
-    ui::MoveLayoutControl(hwnd, panel::kForcePasteButton,
-        wrap ? side / 2 + 48 : start + 244, bottom - 224, 72, 18, deferPaint);
-    // At the minimum sidebar width, keep complete labels on a second row.
-    ui::MoveLayoutControl(hwnd, 427, side - 19, 162, 16, bottom - 410 - shift, deferPaint);
-    ui::MoveLayoutControl(hwnd, 428, 97, bottom - 247 - shift, side - 116, 16, deferPaint);
-    ui::MoveLayoutControl(hwnd, 429, 8, bottom - 247 - shift, 80, 18, deferPaint);
+void LayoutSidebarRows(MMDApp* app, HWND hwnd, int sidebar, int clientBottom, bool deferPaint) {
+    const auto layout = MainPanelLayout(app, clientBottom);
+    const int side = layout.DesignPixels(sidebar);
+    const auto move = [&](int id, int x, int y, int width, int height) {
+        const HWND control = GetDlgItem(hwnd, id);
+        ApplyTemplateUiFont(app, control, layout.timelinePercent);
+        const int origin = layout.Pixels(6);
+        const int left = origin + layout.Pixels(x - 6);
+        const int right = origin + layout.Pixels(x + width - 6);
+        ui::MoveLayoutWindow(control, left, y, std::max(1, right - left), layout.Pixels(height), deferPaint);
+    };
+    const auto top = [&](int y) { return layout.Pixels(y); };
+    move(400, side / 2 - 80, top(21), 70, 24);
+    move(401, side / 2 + 10, top(21), 70, 24);
+
+    const int stepOffset = layout.timelineOffset / 2;
+    move(418, side / 2 - 49, top(67) + stepOffset, 20, 24);
+    move(419, side / 2 + 29, top(67) + stepOffset, 20, 24);
+    move(533, side / 2 - 79, top(69) + stepOffset, 20, 22);
+    move(532, side / 2 + 59, top(69) + stepOffset, 20, 22);
+    move(417, side / 2 - 27, top(66) + stepOffset, 54, 24);
+    move(559, side - 30, top(69) + stepOffset, 20, 22);
+    move(558, 15, top(69) + stepOffset, 20, 22);
+
+    const int scrollTop = layout.GridTop() + layout.Pixels(17);
+    ui::MoveLayoutControl(hwnd, 427, sidebar - layout.Pixels(19), scrollTop,
+        layout.Pixels(16), std::max(0, layout.timelineBottom - scrollTop), deferPaint);
+    move(428, 97, layout.timelineBottom + top(1), side - 116, 16);
+    move(429, 8, layout.timelineBottom + top(1), 80, 18);
+
+    if (GetDlgItem(hwnd, panel::kForcePasteButton)) {
+        const int shift = panel::TimelinePanelShift(side);
+        const bool wrap = shift != 0;
+        const int y = layout.FooterY(224 + shift);
+        const int start = wrap ? side / 2 - 119 : std::min(side / 2 - 119, side - 322);
+        const int ids[] = {420, 421, 422, 416, 423};
+        const int offsets[] = {0, 43, 86, 134, 189};
+        for (int i = 0; i < 5; ++i)
+            move(ids[i], start + offsets[i], y, i < 3 ? 40 : 50, 18);
+        move(panel::kForcePasteButton, wrap ? side / 2 + 48 : start + 244, layout.FooterY(224), 72, 18);
+    } else {
+        move(416, side / 2 + 15, layout.FooterY(224), 50, 18);
+        move(423, side / 2 + 70, layout.FooterY(224), 50, 18);
+        move(420, side / 2 - 119, layout.FooterY(224), 40, 18);
+        move(421, side / 2 - 76, layout.FooterY(224), 40, 18);
+        move(422, side / 2 - 33, layout.FooterY(224), 40, 18);
+    }
+    move(425, side / 2 - 3, layout.FooterY(201), 50, 14);
+    move(426, side / 2 + 69, layout.FooterY(201), 50, 14);
+    move(434, side / 2 - 118, layout.FooterY(193), 100, 400);
+    move(415, side / 2 - 4, layout.FooterY(181), 60, 18);
+    move(424, side / 2 + 60, layout.FooterY(181), 60, 18);
 }
 
 // Visibility re-toggle loop body (0x444B4A..0x444B6F and the four siblings).
@@ -117,15 +151,33 @@ void HandleWindowSize(MMDApp* app) {
     }
 
     // Ordinary-window layout remains in its original 96-DPI coordinates.
-    RECT wr;
-    GetWindowRect(hwnd, &wr);
-    if (wr.right - wr.left > 2560)
-        SetWindowPos(hwnd, nullptr, wr.left, wr.top, 2560,
-                     wr.bottom - wr.top, SWP_NOZORDER);
-    GetWindowRect(hwnd, &wr);
-    if (wr.bottom - wr.top > 1920)
-        SetWindowPos(hwnd, nullptr, wr.left, wr.top, wr.right - wr.left,
-                     1920, SWP_NOZORDER);
+    // D3D limits apply to the client surface, not the title bar and borders.
+    // Before device initialization, allow modern desktop sizes as well.
+    LONG maxClientWidth = 16384, maxClientHeight = 16384;
+    if (const D3DRenderer* renderer = app->Renderer()) {
+        if (renderer->maxTextureWidth > 0) maxClientWidth = renderer->maxTextureWidth;
+        if (renderer->maxTextureHeight > 0) maxClientHeight = renderer->maxTextureHeight;
+        // Ordinary rendering uses a backbuffer sized to the largest monitor.
+        // During capture, its saved dimensions still describe the editor window.
+        const UINT backingWidth = app->RecordingWindow()
+            ? static_cast<UINT>(std::max(0, app->state.recRTW))
+            : renderer->presentParameters.BackBufferWidth;
+        const UINT backingHeight = app->RecordingWindow()
+            ? static_cast<UINT>(std::max(0, app->state.recRTH))
+            : renderer->presentParameters.BackBufferHeight;
+        if (backingWidth) maxClientWidth = std::min<UINT>(maxClientWidth, backingWidth);
+        if (backingHeight) maxClientHeight = std::min<UINT>(maxClientHeight, backingHeight);
+    }
+    RECT wr{}, client{};
+    if (GetWindowRect(hwnd, &wr) && GetClientRect(hwnd, &client)) {
+        const LONG width = wr.right - wr.left;
+        const LONG height = wr.bottom - wr.top;
+        const LONG excessWidth = std::max(0L, client.right - client.left - maxClientWidth);
+        const LONG excessHeight = std::max(0L, client.bottom - client.top - maxClientHeight);
+        if (excessWidth || excessHeight)
+            SetWindowPos(hwnd, nullptr, 0, 0, width - excessWidth, height - excessHeight,
+                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 
     // --- sidebar width (0x4433A4..0x4433F2) --------------------------------
     RECT cr1;
@@ -141,10 +193,16 @@ void HandleWindowSize(MMDApp* app) {
         std::int32_t newSidebar = static_cast<std::int32_t>(
             static_cast<double>(s.SidebarRatio()) *
             cr1.right);                                        // 0x4433CF
-        if (newSidebar < 250) newSidebar = 250;                                // 0x4433D9
+        // An unchanged client can encode the exact sidebar width in a float
+        // just below its pixel boundary. Keep the drag result in that case.
+        if (!build_profile::original && cr1.right > 0 &&
+            s.SidebarRatio() == static_cast<float>(static_cast<double>(sidebar) / cr1.right))
+            newSidebar = sidebar;
+        const int minimum = MainPanelLayout(app, cr1.bottom).Pixels(250);
+        if (newSidebar < minimum) newSidebar = minimum;                                // 0x4433D9
         const bool grew = sidebar < newSidebar;                        // 0x4433E0
         sidebar = newSidebar;                                          // 0x4433E6
-        if (grew) PanelPaint(app);                             // 0x4433EC
+        if (grew && ui_scale::Percent() == 100) PanelPaint(app); // 0x4433EC
     }
     const std::int32_t side = sidebar;
     // Plugin mounts depend on client/sidebar geometry, not bottom extra widths.
@@ -153,33 +211,7 @@ void HandleWindowSize(MMDApp* app) {
     GetClientRect(hwnd, &cb);                                  // 0x443563
     const std::int32_t bottom = cb.bottom;
 
-    // --- left tool row (0x4433F5..0x443555) --------------------------------
-    MoveCtrl(hwnd, 400, side / 2 - 80, 21, 70, 24);
-    MoveCtrl(hwnd, 401, side / 2 + 10, 21, 70, 24);
-    MoveCtrl(hwnd, 418, side / 2 - 49, 67, 20, 24);
-    MoveCtrl(hwnd, 419, side / 2 + 29, 67, 20, 24);
-    MoveCtrl(hwnd, 533, side / 2 - 79, 69, 20, 22);
-    MoveCtrl(hwnd, 532, side / 2 + 59, 69, 20, 22);
-    MoveCtrl(hwnd, 417, side / 2 - 27, 66, 54, 24);
-    MoveCtrl(hwnd, 559, side - 30, 69, 20, 22);
-    MoveCtrl(hwnd, 558, 15, 69, 20, 22);
-
-    // --- main grid, anchored to the client bottom (0x443563..0x443B00) -----
-    const int timelineShift = panel::TimelinePanelShift(side);
-    MoveCtrl(hwnd, 427, side - 19, 162, 16, bottom - 410 - timelineShift);
-    MoveCtrl(hwnd, 428, 97, bottom - 247 - timelineShift, side - 116, 16);
-    MoveCtrl(hwnd, 429, 8, bottom - 247 - timelineShift, 80, 18);
-    MoveCtrl(hwnd, 416, side / 2 + 15, bottom - 224, 50, 18);
-    MoveCtrl(hwnd, 423, side / 2 + 70, bottom - 224, 50, 18);
-    MoveCtrl(hwnd, 420, side / 2 - 119, bottom - 224, 40, 18);
-    MoveCtrl(hwnd, 421, side / 2 - 76, bottom - 224, 40, 18);
-    MoveCtrl(hwnd, 422, side / 2 - 33, bottom - 224, 40, 18);
-    LayoutForcePasteRow(hwnd, side, bottom, deferPaint);
-    MoveCtrl(hwnd, 425, side / 2 - 3, bottom - 201, 50, 14);
-    MoveCtrl(hwnd, 426, side / 2 + 69, bottom - 201, 50, 14);
-    MoveCtrl(hwnd, 434, side / 2 - 118, bottom - 193, 100, 400);
-    MoveCtrl(hwnd, 415, side / 2 - 4, bottom - 181, 60, 18);
-    MoveCtrl(hwnd, 424, side / 2 + 60, bottom - 181, 60, 18);
+    LayoutSidebarRows(app, hwnd, side, bottom, deferPaint);
     MoveCtrl(hwnd, 432, 144, bottom - 26, 63, 18);
     MoveCtrl(hwnd, 431, 144, bottom - 52, 63, 18);
     MoveCtrl(hwnd, 430, 144, bottom - 78, 63, 18);
@@ -380,6 +412,10 @@ void HandleWindowSize(MMDApp* app) {
     // --- refresh tail (0x444C9D..0x444CB0) ---------------------------------
     RefreshMainWindowViewport(app);
     LayoutViewportPanels(app);  // original tail call: `return sub_40CAC0(this);`
+    if (ui_scale::Percent() != 100 && !s.bottomPanelSizing.relayout && s.PanelDC() &&
+        !s.SceneMutationInProgress() && !s.sceneRecoveryPending) {
+        PanelPaint(app);
+    }
 }
 
 // was Sub442EB0, VA 0x00442EB0 - live relayout of the sidebar-anchored
@@ -393,38 +429,10 @@ void RelayoutSidebarControls(MMDApp* app) {
     const HWND hwnd = static_cast<HWND>(app->Hwnd());
     const int side = app->SidebarWidth();
     const bool deferPaint = app->SidebarResizeDragging() != 0 || (!MMD_ORIGINAL_PROFILE && ui::LayoutBatch::IsCollecting());
-    const auto MoveCtrl = [deferPaint](HWND parent, int id, int x, int y, int w, int h) {
-        ui::MoveLayoutControl(parent, id, x, y, w, h, deferPaint);
-    };
     RECT client{};
     GetClientRect(hwnd, &client);
 
-    MoveCtrl(hwnd, 400, side / 2 - 80, 21, 70, 24);
-    MoveCtrl(hwnd, 401, side / 2 + 10, 21, 70, 24);
-    MoveCtrl(hwnd, 418, side / 2 - 49, 67, 20, 24);
-    MoveCtrl(hwnd, 419, side / 2 + 29, 67, 20, 24);
-    MoveCtrl(hwnd, 533, side / 2 - 79, 69, 20, 22);
-    MoveCtrl(hwnd, 532, side / 2 + 59, 69, 20, 22);
-    MoveCtrl(hwnd, 417, side / 2 - 27, 66, 54, 24);
-    MoveCtrl(hwnd, 559, side - 30, 69, 20, 22);
-    MoveCtrl(hwnd, 558, 15, 69, 20, 22);
-
-    const int bottom = client.bottom;
-    const int timelineShift = panel::TimelinePanelShift(side);
-    MoveCtrl(hwnd, 427, side - 19, 162, 16, bottom - 410 - timelineShift);
-    MoveCtrl(hwnd, 428, 97, bottom - 247 - timelineShift, side - 116, 16);
-    MoveCtrl(hwnd, 429, 8, bottom - 247 - timelineShift, 80, 18);
-    MoveCtrl(hwnd, 416, side / 2 + 15, bottom - 224, 50, 18);
-    MoveCtrl(hwnd, 423, side / 2 + 70, bottom - 224, 50, 18);
-    MoveCtrl(hwnd, 420, side / 2 - 119, bottom - 224, 40, 18);
-    MoveCtrl(hwnd, 421, side / 2 - 76, bottom - 224, 40, 18);
-    MoveCtrl(hwnd, 422, side / 2 - 33, bottom - 224, 40, 18);
-    LayoutForcePasteRow(hwnd, side, bottom, deferPaint);
-    MoveCtrl(hwnd, 425, side / 2 - 3, bottom - 201, 50, 14);
-    MoveCtrl(hwnd, 426, side / 2 + 69, bottom - 201, 50, 14);
-    MoveCtrl(hwnd, 434, side / 2 - 118, bottom - 193, 100, 400);
-    MoveCtrl(hwnd, 415, side / 2 - 4, bottom - 181, 60, 18);
-    MoveCtrl(hwnd, 424, side / 2 + 60, bottom - 181, 60, 18);
+    LayoutSidebarRows(app, hwnd, side, client.bottom, deferPaint);
 
     if (!deferPaint) {
         ToggleVisible(hwnd, 400, 401);
@@ -439,6 +447,38 @@ void RelayoutSidebarControls(MMDApp* app) {
 namespace {
 void ApplySidebarGeometry(MMDApp& app, int width, float ratio) {
     if (width == app.SidebarWidth() && ratio == app.SidebarRatio()) return;
+    const auto epoch = app.sidebarSizingSerial;
+    const auto bottomEpoch = app.bottomPanelSizingSerial;
+    const auto token = app.sidebarSizing.layoutToken;
+    const auto active = app.sidebarSizing.active;
+    auto current = [&] {
+        if (build_profile::original) return true;
+        const bool side = (app.sidebarSizingSerial == epoch && app.sidebarSizing.layoutToken == token &&
+            app.sidebarSizing.active == active) || (!app.sidebarSizing.active && !app.sidebarSizing.preparing);
+        const bool bottom = app.bottomPanelSizingSerial == bottomEpoch ||
+            (app.bottomPanelSizing.dragging < 0 && !app.bottomPanelSizing.preparing);
+        // A failed nested attempt owns no new gesture and must not strand a
+        // partially applied batch. Continue only if its requested geometry is
+        // still current; an actual newer gesture or changed size wins.
+        return side && bottom && app.SidebarWidth() == width && app.SidebarRatio() == ratio;
+    };
+    struct ReadyScope {
+        MMDApp& app;
+        std::uint64_t side, bottom, token;
+        bool active, completed = false;
+        unsigned char previous;
+        ~ReadyScope() {
+            if (build_profile::original || completed) return;
+            const bool newerSide = (app.sidebarSizingSerial != side ||
+                app.sidebarSizing.layoutToken != token || app.sidebarSizing.active != active) &&
+                (app.sidebarSizing.active || app.sidebarSizing.preparing);
+            const bool newerBottom = app.bottomPanelSizingSerial != bottom &&
+                (app.bottomPanelSizing.dragging >= 0 || app.bottomPanelSizing.preparing);
+            // A failed nested start changes the serial without acquiring a
+            // gesture. Do not strand this scope's temporary not-ready flag.
+            if (!newerSide && !newerBottom) app.WindowLayoutReady() = previous;
+        }
+    } ready{app,epoch,bottomEpoch,token,active,false,app.WindowLayoutReady()};
     app.WindowLayoutReady() = 0;
     app.SidebarWidth() = width;
     app.SidebarRatio() = ratio;
@@ -454,12 +494,17 @@ void ApplySidebarGeometry(MMDApp& app, int width, float ratio) {
     // Their own layout applies before the viewport consumes its reserved height.
     ui::LayoutBatch batch;
     plugins::Layout(&app);
+    if (!current()) return;
     RelayoutSidebarControls(&app);
+    if (!current()) return;
     batch.Commit();
+    if (!current()) return;
     PanelPaint(&app);
+    if (!current()) return;
     app.WindowLayoutReady() = 1;
+    ready.completed = true;
     RECT damage{};GetClientRect(app.MainWindow(),&damage);
-    damage.bottom=std::max(0L,damage.bottom-157);
+    damage.bottom = std::max(0, MainPanelLayout(&app, damage.bottom).bottomTop + 3);
     ui::RepaintLayout(app.MainWindow(),batch.Changes(),damage);
 }
 }
@@ -468,27 +513,58 @@ void UpdateSidebarResize(MMDApp* app) {
         app->FullscreenMode() || app->FloatingWindow()) return;
     RECT client{};
     if (!GetClientRect(app->MainWindow(), &client) || client.right <= 5) return;
-    const int width = std::min(std::max(250, app->MouseX()), int(client.right) - 5);
+    const int width = std::min(std::max(MainPanelLayout(app, client.bottom).Pixels(250), app->MouseX()), int(client.right) - 5);
     ApplySidebarGeometry(*app, width, float(double(width) / client.right));
 }
 void CommitSidebarResize(MMDApp* app) {
     if (!app || !app->sidebarSizing.active) return;
+    const auto start = app->sidebarSizing;
+    const auto epoch = app->sidebarSizingSerial;
+    const auto bottomEpoch = app->bottomPanelSizingSerial;
     UpdateSidebarResize(app);
+#if !MMD_ORIGINAL_PROFILE
+    if (app->sidebarSizingSerial != epoch || app->sidebarSizing.epoch != start.epoch ||
+        app->sidebarSizing.layoutToken != start.layoutToken || !app->sidebarSizing.active) return;
+    if (app->bottomPanelSizingSerial != bottomEpoch &&
+        (app->bottomPanelSizing.dragging >= 0 || app->bottomPanelSizing.preparing)) return;
+#endif
     // ReleaseCapture synchronously sends WM_CAPTURECHANGED. Retire the gesture
     // first so that its cleanup cannot restore the committed starting geometry.
     app->sidebarSizing = {};
     app->SidebarResizeDragging() = 0;
     app->WindowLayoutReady() = 1;
+#if !MMD_ORIGINAL_PROFILE
+    plugins::EndLayoutInteraction(app,start.layoutToken);
+#endif
 }
 void CancelSidebarResize(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    if (app && app->sidebarSizing.preparing) {
+        app->sidebarSizing.preparing = false;
+        ++app->sidebarSizingSerial; // Invalidate the Begin continuation; it owns the local token.
+        return;
+    }
+#endif
     if (!app || !app->sidebarSizing.active) return;
     const auto start = app->sidebarSizing;
     app->sidebarSizing = {};
     // Retain the batching flag until the restored controls have been repainted.
     app->SidebarResizeDragging() = 1;
     ApplySidebarGeometry(*app, start.startWidth, start.startRatio);
+#if !MMD_ORIGINAL_PROFILE
+    if (!app->sidebarSizing.active && !app->sidebarSizing.preparing && !app->sidebarSizing.layoutToken) {
+#endif
     app->SidebarResizeDragging() = 0;
+#if !MMD_ORIGINAL_PROFILE
+    // The retired sidebar owns this flag, but a new bottom gesture owns the
+    // global readiness state. A failed nested attempt owns neither.
+    if (app->bottomPanelSizing.dragging < 0 && !app->bottomPanelSizing.preparing)
+#endif
     app->WindowLayoutReady() = 1;
+#if !MMD_ORIGINAL_PROFILE
+    }
+    plugins::EndLayoutInteraction(app,start.layoutToken);
+#endif
 }
 
 }  // namespace mikumikustudio

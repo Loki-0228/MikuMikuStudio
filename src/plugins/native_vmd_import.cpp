@@ -3,6 +3,7 @@
 #include "native_pose_scope.hpp"
 #include "native_vmd_source.hpp"
 #include "native_model_vmd_source.hpp"
+#include "../model/vmd_import_target.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "native_history_commands.hpp"
 #include "native_morph_commands.hpp"
@@ -34,6 +35,14 @@ bool ImportControlsReady(MMDApp& app) noexcept {
 }
 bool ImportReady(MMDApp& app,SharedHistory& history) noexcept {
     return ImportControlsReady(app)&&history.CheckNativeEdit()==MMS_OK&&ImportControlsReady(app);
+}
+// A modal dialog stops the frame poll from consuming the Enter that closed it.
+// Latch that press as consumed only while the key is still down, so a mouse or
+// Escape dismissal leaves the next Enter free.
+int ShowVmdMessage(MMDApp& app,HWND owner,const wchar_t* text,const wchar_t* caption,UINT flags) noexcept {
+    const int result=MessageBoxW(owner,text,caption,flags);
+    if(result!=0&&(GetKeyState(VK_RETURN)&0x8000))app.state.enterKeyState=3;
+    return result;
 }
 // Matching depends on the complete visible accessory set. Freeze it only for
 // the first publication; subsequent history uses the already resolved slots.
@@ -122,11 +131,11 @@ MmsResult PlanVmd(MMDApp& app,const char* ansiPath,const wchar_t* widePath,std::
 }
 MmsResult PlanGlobalVmdImport(MMDApp& app,const char* ansiPath,const wchar_t* widePath,std::shared_ptr<HistoryChange>& out)noexcept{return PlanVmd(app,ansiPath,widePath,out,nullptr);}
 
-bool TryImportBoundVmd(MMDApp* app,const char* ansiPath,const wchar_t* widePath,int& result) noexcept {
+bool TryImportBoundVmd(MMDApp* app,const char* ansiPath,const wchar_t* widePath,int& result,bool& committed) noexcept {
     if(!app)return false;auto* history=BoundNativePoseHistory(app);if(!history)return false;
     result=0;
     if(!ImportReady(*app,*history))return true;
-    bool committed=false,boneCurvesSkipped=false;
+    bool boneCurvesSkipped=false;
     const auto status=Boundary([&]()->MmsResult {
         std::shared_ptr<HistoryChange> change;std::array<bool,255> matched{};
         const bool modelMode=!app->CameraMode();
@@ -138,19 +147,18 @@ bool TryImportBoundVmd(MMDApp* app,const char* ansiPath,const wchar_t* widePath,
             const bool same=source.hasUnicodeNames?source.names.model==text_encoding::ModelName(target,false):
                 source.modelName==std::string(target.name,strnlen_s(target.name,sizeof(target.name)));
             if(!same){
-                auto* pointer=app->ModelSlot(slot);const auto identity=SceneObjectIdentity(pointer).id;
+                const VmdImportTarget importTarget(*app);
                 const auto bindingGeneration=BoundNativePoseGeneration(app);if(bindingGeneration==UINT64_MAX)return MMS_E_NOT_READY;
-                const auto frame=app->CurrentFrame();std::uint64_t revision=0;
+                std::uint64_t revision=0;
                 if(auto error=history->Revision(revision))return error;
                 const auto owner=app->MainWindow();const int language=app->EnglishUI();
                 const wchar_t* text=language==1?L"This motion is for a different model. Only matching names will be imported. Continue?":
                     language==2?L"此动作属于其他模型。只会导入名称匹配的轨道。是否继续？":L"別のモデル用のモーションです。同じ名前のトラックのみ読み込みます。続行しますか？";
-                if(!owner||MessageBoxW(owner,text,L"MMS VMD",MB_OKCANCEL|MB_ICONWARNING)!=IDOK)return MMS_OK;
+                if(!owner||ShowVmdMessage(*app,owner,text,L"MMS VMD",MB_OKCANCEL|MB_ICONWARNING)!=IDOK)return MMS_OK;
                 std::uint64_t currentRevision=0;
                 if(BoundNativePoseGeneration(app)!=bindingGeneration||BoundNativePoseHistory(app)!=history||
                     !ImportReady(*app,*history)||history->Revision(currentRevision)!=MMS_OK||currentRevision!=revision||
-                    app->CameraMode()||app->SelectedModelSlot()!=slot||app->CurrentFrame()!=frame||app->ModelSlot(slot)!=pointer||
-                    !SceneObjectPresent(pointer,identity))return MMS_E_STALE;
+                    !importTarget.Current(*app))return MMS_E_STALE;
             }
             ModelPasteReport report;
             if(auto error=PlanModelVmdImport(*app,slot,source,change,&report))return error;
@@ -187,7 +195,7 @@ bool TryImportBoundVmd(MMDApp* app,const char* ansiPath,const wchar_t* widePath,
             const wchar_t* text=language==1?L"Free curves require compatible bone tracks. Only the standard bone keys were imported.":
                 language==2?L"骨骼自由曲线与目标轨道不兼容，本次只读取了标准骨骼关键帧。":
                 L"自由カーブが対象のボーントラックと一致しません。標準ボーンキーのみ読み込みました。";
-            MessageBoxW(owner,text,L"MMS VMD",MB_OK|MB_ICONWARNING);
+            ShowVmdMessage(*app,owner,text,L"MMS VMD",MB_OK|MB_ICONWARNING);
         }
     }
     if(status!=MMS_OK&&committed){
@@ -209,7 +217,7 @@ bool TryImportBoundVmd(MMDApp* app,const char* ansiPath,const wchar_t* widePath,
                     L"内存或历史预算不足，无法导入 VMD。场景数据未修改。":L"VMD の読み込みに必要なメモリまたは履歴容量が不足しています。シーンは変更されていません。")
                 : (language==1?L"The VMD file or target contains invalid data. No scene data was changed.":language==2?
                     L"VMD 文件或目标数据无效。场景数据未修改。":L"VMD ファイルまたは対象データが不正です。シーンは変更されていません。");
-            MessageBoxW(owner,text,L"MMS VMD",MB_OK|MB_ICONWARNING);
+            ShowVmdMessage(*app,owner,text,L"MMS VMD",MB_OK|MB_ICONWARNING);
         }
     }
     return true;

@@ -340,18 +340,38 @@ void TimelineAdvance(MMDApp* app) {
     struct FinishStill {
         MMDApp* app;
         bool notify = image_sequence::StillActive(app);
-        bool failed = true;
+        HRESULT result = E_FAIL;
+        std::wstring retained;
         ~FinishStill() {
             CleanupStillCapture(app);
-            if (notify && failed) {
-                MessageBoxW(app->MainWindow(), image_sequence::Text(app,
+            if (notify && FAILED(result)) {
+                const bool collision = result == HRESULT_FROM_WIN32(ERROR_FILE_EXISTS) ||
+                    result == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) ||
+                    result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+                const auto* message = collision ? image_sequence::Text(app,
+                    L"保存位置的文件在导出期间发生了变化。请重新选择保存位置。",
+                    L"The destination file changed during export. Choose the save location again.",
+                    L"出力中に保存先のファイルが変わりました。保存先を選び直してください。") : image_sequence::Text(app,
                     L"图片导出失败，请检查图片格式、保存位置和剩余空间。",
                     L"Image export failed. Check the format, destination and free space.",
-                    L"画像を出力できません。形式、保存先、空き容量を確認してください。"),
-                    L"MMS", MB_OK | MB_ICONERROR);
+                    L"画像を出力できません。形式、保存先、空き容量を確認してください。");
+                if (!retained.empty()) {
+                    try {
+                        std::wstring recovery = message;
+                        recovery += image_sequence::Text(app, L"\n\n原图保存在：\n",
+                            L"\n\nThe original image was kept at:\n", L"\n\n元の画像の保存先：\n");
+                        recovery += retained;
+                        MessageBoxW(app->MainWindow(), recovery.c_str(), L"MMS", MB_OK | MB_ICONERROR);
+                        return;
+                    } catch (const std::bad_alloc&) {
+                        // Fall back to the ordinary failure message under memory pressure.
+                    }
+                }
+                MessageBoxW(app->MainWindow(), message, L"MMS", MB_OK | MB_ICONERROR);
             }
         }
     } finish{app};
+    if (!image_sequence::StillFrameReady(app)) return;
     D3DRenderer* renderer = app->Renderer();
     if (!renderer || !renderer->device) return;
     auto* device = renderer->device;
@@ -375,8 +395,7 @@ void TimelineAdvance(MMDApp* app) {
     if (FAILED(hr)) return;
 
     const wchar_t* path = app->CaptureSavePath();
-    finish.failed = FAILED(image_sequence::SaveSurface(path,
-        image_sequence::FormatFromPath(path), surface.Get(), transparent));
+    finish.result = image_sequence::SaveStillSurface(app, path, surface.Get(), transparent, finish.retained);
 }
 
 namespace {
@@ -496,7 +515,10 @@ PresentResult PresentScene(MMDApp* app) {
     //   else                       -> Present(&RECT@A0D40, same, A06B8, NULL)
     // Device loss waits with a shared message pump, including windowed mode.
     if (device_lost_wait::Pending(app)) return {false, D3DERR_DEVICELOST};
-    if(!FrameViewportRenderable(app))return {false,D3D_OK};
+    RECT presentation{};
+    const bool presentEditor = !s.FullscreenMode() && !s.RecordingWindow() &&
+        s.state.messageSeen != 0 && s.AviStereoOutput() == 0;
+    if(!FrameViewportRenderable(app,presentEditor ? &presentation : nullptr))return {false,D3D_OK};
     IDirect3DDevice9* device = nullptr;
     if (s.Renderer() != nullptr)
         device = s.Renderer()->device;                     // +0x1D4E0
@@ -521,16 +543,9 @@ PresentResult PresentScene(MMDApp* app) {
                 // A null destination fits the entire source to its client area.
                 hr = device->Present(&r, nullptr,
                                      s.RecordingWindow(), nullptr);
-            } else if (s.FloatingWindow() != nullptr) {
-                RECT r = FramePresentationRect(app);
-                hr = device->Present(&r, &r,
-                                     s.state.floatingWindow,
-                                     nullptr);
             } else {
-                RECT r = FramePresentationRect(app);
-                hr = device->Present(&r, &r,
-                                     static_cast<HWND>(s.Hwnd()),
-                                     nullptr);
+                const HWND window = s.FloatingWindow() ? s.FloatingWindow() : static_cast<HWND>(s.Hwnd());
+                hr = device->Present(&presentation, &presentation, window, nullptr);
             }
             frame_rate::Presented(app, SUCCEEDED(hr));
             if (SUCCEEDED(hr)) {
@@ -551,7 +566,9 @@ PresentResult PresentScene(MMDApp* app) {
 }
 
 void FrameDriver(MMDApp* app) {
-    if (!app || recording_state::Stopping(app) ||
+    // A half-loaded scene whose recovery reset was refused takes no frame,
+    // device recovery, plugin callback or render until a reset completes.
+    if (!app || app->sceneRecoveryPending || recording_state::Stopping(app) ||
         recording_state::Guard::Active(app->Recorder(), recording_state::Operation::GraphTeardown)) return;
     updates::FrameScope scope;
     if (!scope) return;
@@ -581,7 +598,9 @@ void FrameDriver(MMDApp* app) {
                                static_cast<int>(app->CurrentFrame()));
         }
     }
-    if (app->SceneMutationInProgress())
+    // The device recovery above may pump a message that quarantines the scene;
+    // re-check before plugin frame callbacks or a render read it.
+    if (app->SceneMutationInProgress() || app->sceneRecoveryPending)
         return;
     plugins::PluginFrameBegin(app);
     // A device event delivered at the frame boundary can pump a resize message.
@@ -727,7 +746,12 @@ void FrameDriver(MMDApp* app) {
     NormalizeCoordinateState(app);
     TraceCoordinateSelector(app);
     TraceFrameViewpoint(app);
+    const auto previousTool = s.ViewportToolOperation();
     MouseInteractionBegin(app);                                  // Per-frame logic.
+    // Passive motion only needs a frame when the viewport highlight changes.
+    if (!build_profile::original && s.MessageSeen() == 0 &&
+        previousTool != s.ViewportToolOperation())
+        s.MessageSeen() = 3;
     // 0x46FF02 poll done.  The original pump then walks, in this order:
     // the right/middle-button camera drags (x86 0x470BF5..0x47133D), the
     // non-letter edit-key chain whose panel focus sweep opens the ladder

@@ -102,6 +102,11 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/background_identity.hpp"
+#include "../plugins/native_picture_gesture.hpp"
+#include "mikumikustudio/background_picture_load.hpp"
+#endif
 #include <commdlg.h>
 #include <commctrl.h>
 #include <btBulletDynamicsCommon.h>
@@ -124,6 +129,7 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/scene_ownership.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/accessory_import.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/bone_combo.hpp"
 #include "mikumikustudio/panel_controls.hpp"
@@ -136,6 +142,8 @@
 #include "pmm_io_common.hpp"
 #include "pmm_identity.hpp"
 #include "pmm_input.hpp"
+#include "pmm_accessory_recovery.hpp"
+#include "project_relocation_context.hpp"
 
 #pragma comment(lib, "avifil32.lib")
 
@@ -355,6 +363,8 @@ namespace {
 // pattern extended).
 struct PmmV2LoadContext {
     MMDApp* s;
+    const std::filesystem::path projectDirectory;
+    project_relocation::Ticket relocation;
     HWND main;
     HINSTANCE hInst;
     PathResolutionWorkspace* paths;
@@ -381,6 +391,7 @@ struct PmmV2LoadContext {
 
     explicit PmmV2LoadContext(MMDApp* app)
         : s(app),
+          projectDirectory(std::filesystem::path(app->EnvFileName()).parent_path()),
           main(reinterpret_cast<HWND>(app->Hwnd())),
           hInst(static_cast<HINSTANCE>(app->HInstance())),
           paths(&app->PathWorkspace()),
@@ -430,10 +441,16 @@ public:
 
 static void AbortV2Load(MMDApp* s, pmm_io::Input& input,
                         ModelWorkspaceOwner& workspaces) {
+    project_relocation::LoadScope::FailCurrent(*s);
     input.Close();
     workspaces.Close();
-    ResetAppState(s);                                       // 0x44E540
-    HandleWindowSize(s);                                    // 0x443300
+    // Model cancellation uses the same failure recovery as accessory
+    // cancellation. Resize only after a successful reset or bounded retry.
+    if (ResetAfterLoadFailure(s)) {                         // 0x44E540
+        HandleWindowSize(s);                                // 0x443300
+        return;
+    }
+    throw SceneResetRefused{true};
 }
 
 // ---- 0x450040..0x45044C: dispose + scene-state reset + menu/checkbox
@@ -1209,9 +1226,11 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                 skippedWorkspace.skipped = 1;
                 unsigned char skippedLen = 0;
                 Rd(fd, &skippedLen, 1);
-                pmm_io::ReadText(fd, text, skippedLen, 20);
+                // PMM captions are uint8-length strings, independent of
+                // the model's 20-byte native mirrors and VMD header fields.
+                pmm_io::ReadText(fd, text, skippedLen, sizeof skippedWorkspace.modelName - 1);
                 Rd(fd, &skippedLen, 1);
-                pmm_io::ReadText(fd, text, skippedLen, 20);
+                pmm_io::ReadText(fd, text, skippedLen, sizeof skippedWorkspace.sourceName - 1);
                 pmm_io::ReadText(fd, text, 0x100, 255);
                 Rd(fd, &skippedWorkspace.boneGroupCount, 1);
                 LoadSceneV2_SkipRecordConsumption(fd, skippedWorkspace, text,
@@ -1227,52 +1246,81 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
             PmmModelLoadWorkspace& workspace = workspaces[modelIdx];
             workspace.modelSlot = slotByte;                      // 0x450559
 
+            // Each PMM caption can contain 255 bytes plus our terminator.
+            // Both the shared scratch and reconciliation fields reserve 256.
+            static_assert(sizeof ctx.text >= sizeof workspace.modelName &&
+                          sizeof ctx.text >= sizeof workspace.sourceName,
+                          "PMM caption scratch must fit both workspace fields");
             {  // stored model name (0x45054D..0x450592)
                 unsigned char len = 0;
                 Rd(fd, &len, 1);
-                pmm_io::ReadText(fd, text, len, 20);
+                pmm_io::ReadText(fd, text, len, sizeof workspace.modelName - 1);
                 text[len] = 0;
                 strcpy_s(workspace.modelName, 0x100, text);
             }
             {  // source model name (0x450597..0x4505D9)
                 unsigned char len = 0;
                 Rd(fd, &len, 1);
-                pmm_io::ReadText(fd, text, len, 20);
+                pmm_io::ReadText(fd, text, len, sizeof workspace.sourceName - 1);
                 text[len] = 0;
                 strcpy_s(workspace.sourceName, 0x100, text);
             }
             pmm_io::ReadText(fd, text, 0x100, 255);                                // 0x4505EF
-            ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
-                                text, widePath, 0x100,
-                                paths);
-
+            if (strnlen_s(text, sizeof(ctx.text)) == sizeof(ctx.text))
+                throw std::runtime_error("Unterminated PMM model path");
+            const auto reference = ctx.relocation.Locate(text, ctx.projectDirectory);
             unsigned char* model = slots[slotByte];
-            LogPmmModelAttempt(text, widePath, wrap,
-                               s->Physics(), false);
-            bool loaded = ModelLoadPMD(                          // 0x45065F
-                model, main, widePath, wrap,
-                static_cast<int>(
-                    reinterpret_cast<std::uintptr_t>(s->state.exeDir)),
-                0, s->EnglishUI(), s->Physics(),
-                paths);
-            LogPmmModelAttempt(text, widePath, wrap,
-                               s->Physics(), loaded);
+            widePath[0] = L'\0';
+            if (reference.tryLegacy)
+                ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap), text, widePath, 0x100, paths);
+            const auto* attempt = reference.exactPath.empty() ? widePath : reference.exactPath.c_str();
+            LogPmmModelAttempt(text, attempt, wrap, s->Physics(), false);
+            bool loaded = false;
+            if (!reference.exactPath.empty())
+                loaded = project_model::LoadExact(model, main, attempt, wrap, s->EnglishUI(), s->Physics(), paths);
+            else if (reference.tryLegacy)
+                loaded = ModelLoadPMD(model, main, widePath, wrap,
+                    static_cast<int>(reinterpret_cast<std::uintptr_t>(s->state.exeDir)),
+                    0, s->EnglishUI(), s->Physics(), paths);
+            LogPmmModelAttempt(text, attempt, wrap, s->Physics(), loaded);
             LogPmmModelStage(fd, "model-loaded", 0, 0, model);
             LogPmmHeapState(fd, "after-model-load");
 
             bool doSkip = false;
             bool skipFrom4 = false;  // r==4: counts/names already consumed
-            if (!loaded) {                                      // 0x45066C
+            std::wstring finalSelection;
+            ofnFile[0] = L'\0';
+            const auto loadSelection = [&]() {
+                if (!project_model::LoadExact(model, main, ofnFile, wrap, s->EnglishUI(), s->Physics(), paths))
+                    return false;
+                finalSelection = ofnFile;
+                return true;
+            };
+            while (!loaded) {                                   // 0x45066C
                 const char* name = UiUsesEnglishNames(s->EnglishUI()) && *workspace.sourceName
                     ? workspace.sourceName : workspace.modelName;
                 const auto label = text_encoding::Display(name);
                 const INT_PTR r = ShowProjectModelDialog(s, hInst, main,
                     ProjectModelIssue::MissingFile, label.c_str());
+                if (r == kLocateProjectEffect) {
+                    if (project_relocation::RecoverProjectEffect(*s, main)) {
+                        const auto mapped = ctx.relocation.Locate(text, ctx.projectDirectory);
+                        if (!mapped.exactPath.empty()) {
+                            if (mdl::Mdl(model)->modelDirectory[0]) {
+                                ModelDispose(model);
+                                std::memset(model, 0, mdl::kSize);
+                                ModelInitDefaults(model);
+                            }
+                            loaded = project_model::LoadExact(model, main, mapped.exactPath.c_str(), wrap,
+                                                              s->EnglishUI(), s->Physics(), paths);
+                        }
+                    }
+                    continue;
+                }
                 if (r == 2 || r == 4) { AbortV2Load(s, input, workspaceOwner); return false; }   // 0x45426C
                 if (r == 1) {                                   // 0x4506FD
                     SetCurrentDirectoryW(reinterpret_cast<const wchar_t*>(
                         s->state.exeDir));
-                    swprintf_s(ofnFile, 0x100, L"%s", ofnFile); // quirk
                     OPENFILENAMEW ofn;
                     std::memset(&ofn, 0, sizeof(ofn));
                     ofn.lStructSize = sizeof(ofn);
@@ -1284,10 +1332,10 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                     ofn.lpstrFilter = kWFilterModel;
                     ofn.lpstrFile = ofnFile;
                     ofn.nMaxFile = 0x100;
-                    ofn.Flags = OFN_FILEMUSTEXIST;
+                    ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
                     ofn.lpstrInitialDir =
-                        (GetMenuState(GetMenu(main), 0x12D, 0) & 8)
-                            ? reinterpret_cast<LPCWSTR>(s->state.dirModel)
+                        project_relocation::LoadScope::RememberPickerDirectory(main)
+                            ? project_relocation::LoadScope::PickerDirectory(*s, project_relocation::LoadScope::Picker::Model)
                             : kWUserModel;
                     ofn.lpstrDefExt = L"pmd;pmx";
                     ofn.nMaxFileTitle = 0x100;
@@ -1301,29 +1349,23 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                         // instead of aborting the whole project load.
                         doSkip = true;                          // 0x4508FC
                     } else {
-                    if (GetMenuState(GetMenu(main), 0x12D, 0) & 8) {
-                        wchar_t* d = ExtractDirFromPath(
-                            paths.projectDirectory,
-                            ofnFile, kPathFieldCapacity);
-                        wcscpy_s(reinterpret_cast<wchar_t*>(s->state.dirModel),
-                                 0x3E8, d);
-                    }
-                    if (!ModelLoadPMD(
-                            model, main, ofnFile, wrap,
-                            static_cast<int>(reinterpret_cast<
-                                std::uintptr_t>(s->state.exeDir)),
-                            0, s->EnglishUI(),
-                            s->Physics(),
-                            paths)) {                             // 0x45431A
-                        ShowUiMessage(s, main, UiMessage::OpenModelError, MB_OK, ofnFile);
-                        AbortV2Load(s, input, workspaceOwner);
-                        return false;
-                    }
+                        if (mdl::Mdl(model)->modelDirectory[0]) {
+                            ModelDispose(model);
+                            std::memset(model, 0, mdl::kSize);
+                            ModelInitDefaults(model);
+                        }
+                        if (!loadSelection()) {
+                            project_relocation::LoadScope::FailCurrent(*s);
+                            ShowUiMessage(s, main, UiMessage::OpenModelError, MB_OK, ofnFile);
+                            AbortV2Load(s, input, workspaceOwner);
+                            return false;
+                        }
                     }
                 } else if (r == 3) {
                     doSkip = true;                              // 0x4508FC
                 }
                 // other results fall through to the success path
+                break;
             }
 
             if (doSkip) {
@@ -1382,12 +1424,15 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                         unsigned char len = 0;
                         Rd(fd, &len, 1);
                         NameMapping& mapping = boneMappings[i];
-                        pmm_io::ReadText(fd, mapping.name, len, 15);
+                        // PMM stores the native 20-byte bone identity. The
+                        // 15-byte limit belongs to VMD and cannot reject PMM
+                        // fields emitted by our own WriteOriginalName path.
+                        pmm_io::ReadText(fd, mapping.name, len, sizeof mdl::Bones(model)[i].name);
                         mapping.name[len] = 0;
                         mapping.mappedIndex = i;
                         if (workspace.displayCount == loadedModel->boneCount) {
-                            if (!NameMappingMatches(mapping,
-                                                    mdl::Bones(model)[i])) {
+                            if (!NameMappingMatches(mapping, mdl::Bones(model)[i]) &&
+                                !text_encoding::MatchesOldPmxName(mapping.name, mdl::Bones(model)[i].jpText, sizeof mdl::Bones(model)[i].name)) {
                                 workspace.displaysMatch = 0;
                                 mapping.mappedIndex = -1;
                                 for (std::int32_t j = 0;
@@ -1442,12 +1487,14 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                         unsigned char len = 0;
                         Rd(fd, &len, 1);
                         NameMapping& mapping = morphMappings[i];
-                        pmm_io::ReadText(fd, mapping.name, len, 15);
+                        // Morph bindings use the same PMM 20-byte identity
+                        // width; preserve the separate VMD 15-byte contract.
+                        pmm_io::ReadText(fd, mapping.name, len, sizeof mdl::Morphs(model)[i].name);
                         mapping.name[len] = 0;
                         mapping.mappedIndex = i;
                         if (workspace.morphCount == loadedModel->morphCount) {
-                            if (!NameMappingMatches(mapping,
-                                                    mdl::Morphs(model)[i])) {
+                            if (!NameMappingMatches(mapping, mdl::Morphs(model)[i]) &&
+                                !text_encoding::MatchesOldPmxName(mapping.name, mdl::Morphs(model)[i].jpText, sizeof mdl::Morphs(model)[i].name)) {
                                 workspace.morphsMatch = 0;
                                 mapping.mappedIndex = -1;
                                 for (std::int32_t j = 0;
@@ -1597,6 +1644,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                     if (model != nullptr) {                      // 0x451A5A
                         ModelDispose(model);
                         free(model);
+                        slots[slotByte] = nullptr;
                     }
                     {
                         unsigned char* nm2 = static_cast<unsigned char*>(
@@ -1609,7 +1657,6 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                     }
                     SetCurrentDirectoryW(reinterpret_cast<const wchar_t*>(
                         s->state.exeDir));
-                    swprintf_s(ofnFile, 0x100, L"%s", ofnFile); // quirk
                     {
                         OPENFILENAMEW ofn;
                         std::memset(&ofn, 0, sizeof(ofn));
@@ -1622,11 +1669,10 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                         ofn.lpstrFilter = kWFilterModel;
                         ofn.lpstrFile = ofnFile;
                         ofn.nMaxFile = 0x100;
-                        ofn.Flags = OFN_FILEMUSTEXIST;
+                        ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
                         ofn.lpstrInitialDir =
-                            (GetMenuState(GetMenu(main), 0x12D, 0) & 8)
-                                ? reinterpret_cast<LPCWSTR>(
-                                      s->state.dirModel)
+                            project_relocation::LoadScope::RememberPickerDirectory(main)
+                                ? project_relocation::LoadScope::PickerDirectory(*s, project_relocation::LoadScope::Picker::Model)
                                 : kWUserModel;
                         ofn.lpstrDefExt = L"pmd;pmx";
                         ofn.nMaxFileTitle = 0x100;
@@ -1649,22 +1695,9 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                             firstPass = false;
                             break;
                         }
-                        if (GetMenuState(GetMenu(main), 0x12D, 0) & 8) {
-                            wchar_t* d = ExtractDirFromPath(
-                            paths.projectDirectory,
-                                ofnFile, kPathFieldCapacity);
-                            wcscpy_s(
-                                reinterpret_cast<wchar_t*>(s->state.dirModel),
-                                0x3E8, d);
-                        }
                     }
-                    if (!ModelLoadPMD(
-                            model, main, ofnFile, wrap,
-                            static_cast<int>(reinterpret_cast<
-                                std::uintptr_t>(s->state.exeDir)),
-                            0, s->EnglishUI(),
-                            s->Physics(),
-                            paths)) {                             // 0x4544FD
+                    if (!loadSelection()) {
+                        project_relocation::LoadScope::FailCurrent(*s);
                         ShowUiMessage(s, main, UiMessage::OpenModelError, MB_OK, ofnFile);
                         AbortV2Load(s, input, workspaceOwner);
                         return false;
@@ -1682,8 +1715,8 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                         NameMapping& mapping = boneMappings[i];
                         mapping.mappedIndex = i;
                         if (workspace.displayCount == reloadedModel->boneCount) {
-                            if (!NameMappingMatches(mapping,
-                                                    mdl::Bones(model)[i])) {
+                            if (!NameMappingMatches(mapping, mdl::Bones(model)[i]) &&
+                                !text_encoding::MatchesOldPmxName(mapping.name, mdl::Bones(model)[i].jpText, sizeof mdl::Bones(model)[i].name)) {
                                 workspace.displaysMatch = 0;
                                 mapping.mappedIndex = -1;
                                 for (std::int32_t j = 0;
@@ -1715,8 +1748,8 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                         NameMapping& mapping = morphMappings[i];
                         mapping.mappedIndex = i;
                         if (workspace.morphCount == reloadedModel->morphCount) {
-                            if (!NameMappingMatches(mapping,
-                                                    mdl::Morphs(model)[i])) {
+                            if (!NameMappingMatches(mapping, mdl::Morphs(model)[i]) &&
+                                !text_encoding::MatchesOldPmxName(mapping.name, mdl::Morphs(model)[i].jpText, sizeof mdl::Morphs(model)[i].name)) {
                                 workspace.morphsMatch = 0;
                                 mapping.mappedIndex = -1;
                                 for (std::int32_t j = 0;
@@ -1798,6 +1831,14 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
             } else {
                 LoadSceneV2_ModelStateLoad(ctx, fd, model, workspace,
                                            modelIdx, modelCount);
+                // The reconciliation loop can replace or discard a successful
+                // pick. Only this accepted record may teach later records.
+                if (!finalSelection.empty() && finalSelection == mdl::Mdl(model)->path) {
+                    ctx.relocation.Confirm(reference, finalSelection);
+                    if (project_relocation::LoadScope::RememberPickerDirectory(main))
+                        project_relocation::LoadScope::StagePickerDirectory(*s,
+                            project_relocation::LoadScope::Picker::Model, finalSelection.c_str());
+                }
             }
 
     return true;
@@ -2125,7 +2166,14 @@ static void LoadSceneV2_LightTrack(PmmV2LoadContext& ctx, int fd) {
 
 
 // ---- 0x45593E..0x456617: accessory-shadow name list + accessory block
-// (locate-and-retry dialog; the two abort paths return false) -----------
+// (file recovery loop after a failed load; skip continues, project abort
+// returns false) --------------------------------------------------------
+namespace {
+struct DuplicateAccessorySlot final : std::runtime_error {
+    DuplicateAccessorySlot() : std::runtime_error("Duplicate PMM accessory slot") {}
+};
+}
+
 static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, pmm_io::Input& input) {
     const int fd = input.Descriptor();
     auto* const s = ctx.s;
@@ -2137,9 +2185,6 @@ static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, pmm_io::Input& inp
     unsigned char** const slots = ctx.slots;
     char* const text = ctx.text;
     char* const mbPath = ctx.mbPath;
-    wchar_t* const wideTmp = ctx.wideTmp;
-    wchar_t* const ofnFile = ctx.ofnFile;
-    wchar_t* const ofnTitle = ctx.ofnTitle;
     // ---- light-misc tail (0x45593E..0x45595E) -----------------------------
     Rd(fd, &s->SelectedAccessorySlot(), 1);
     Rd(fd, &s->DisplayObjectListScrollPosition(), 4);
@@ -2191,6 +2236,9 @@ static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, pmm_io::Input& inp
             Rd(fd, &discardedAccByte, 1);
             continue;
         }
+        // The first record already owns a mesh and material arrays. Leave it
+        // reachable by the scene reset instead of overwriting its only owner.
+        if (accs[accSlot]) throw DuplicateAccessorySlot{};
         auto* acc = static_cast<mdl::AccessoryRecord*>(operator new(
             sizeof(mdl::AccessoryRecord)));
         if (acc != nullptr) IdentityCtor(acc);
@@ -2199,80 +2247,23 @@ static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, pmm_io::Input& inp
         Sub04B0Init(accs[accSlot]);                             // 0x4C4760
         pmm_io::ReadText(fd, accName, 0x64, 99);                                  // 0x455ABE
         // The fixed-length name field above is read in full, all 0x64 bytes, and
-        // is then used as a C string by the %s conversions of the open-file
-        // dialog below; a name that fills the field has no terminator, so %s
-        // reads past accName, and the 0x100-byte destination given to
-        // sprintf_s can no longer hold the formatted result.  Forcing the last
-        // byte to NUL fixes this; the read length, and with it the stream
-        // position, is unchanged.
+        // is used as a C string by the recovery prompt and the display-name
+        // conversion below; a name that fills the field has no terminator, so
+        // reading it as a C string runs past accName.  Forcing the last byte to
+        // NUL fixes this; the read length, and with it the stream position, is
+        // unchanged.
         // Defect B3-22.
-        accName[sizeof accName - 1] = '\0';
         pmm_io::ReadText(fd, mbPath, 0x100, 255);                                  // 0x455AD1
-        ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
-                            mbPath, wideTmp, 0x100,
-                            paths);
-        if (!LoadAccessoryObject(s, accs[accSlot], wideTmp)) {  // 0x4C5F40
-            if (s->EnglishUI() != 0)
-                sprintf_s(text, 0x100,
-                          "Cannot open file:%s.\n\nPlease select accessory "
-                          "of %s.",
-                          accName, accName);
-            else
-                sprintf_s(text, 0x100, kJpCannotOpenAcc, accName, accName);
-            LegacyUiMessageBoxA(main, text,
-                        s->EnglishUI() != 0 ? "open file" : kJpOpenCaption,
-                        0);
-            SetCurrentDirectoryW(reinterpret_cast<const wchar_t*>(
-                s->state.exeDir));
-            swprintf_s(ofnFile, 0x100, L"%s", ofnFile);         // quirk
-            OPENFILENAMEW ofn;
-            std::memset(&ofn, 0, sizeof(ofn));
-            ofn.lStructSize = sizeof(ofn);
-            ofn.hwndOwner =
-                s->state.floatingWindow
-                    ? reinterpret_cast<HWND>(
-                          s->state.floatingWindow)
-                    : main;
-            ofn.lpstrFilter =
-                s->EnglishUI() != 0 ? kWFilterAccEn : kWFilterAccJp;
-            ofn.lpstrFile = ofnFile;
-            ofn.nMaxFile = 0x100;
-            ofn.Flags = OFN_FILEMUSTEXIST;
-            ofn.lpstrInitialDir =
-                (GetMenuState(GetMenu(main), 0x12D, 0) & 8)
-                    ? reinterpret_cast<LPCWSTR>(s->state.dirAccs)
-                    : kWUserAcc;                     // 0x7FF7CB49F294
-            ofn.lpstrDefExt = L"x";
-            ofn.nMaxFileTitle = 0x100;
-            ofn.lpstrFileTitle = ofnTitle;
-            ofn.lpstrTitle =
-                s->EnglishUI() != 0
-                    ? L"open file"
-                    : reinterpret_cast<LPCWSTR>(kWOpenFile);
-            if (!GetUiOpenFileNameW(&ofn)) {                      // 0x456779
-                // Closing the picker without a file skips this accessory's
-                // file: the accessory keeps its initialised (empty) record and
-                // its remaining stream records are still consumed below,
-                // instead of aborting the whole project load.
-            } else {
-            if (GetMenuState(GetMenu(main), 0x12D, 0) & 8) {
-                wchar_t* d = ExtractDirFromPath(
-                    paths.projectDirectory,
-                    ofnFile, kPathFieldCapacity);
-                wcscpy_s(reinterpret_cast<wchar_t*>(s->state.dirAccs),
-                         0x3E8, d);                  // 0x7FF7CB49F33C
-            }
-            if (!LoadAccessoryObject(s, accs[accSlot], ofnFile)) {
-                input.Close();                                 // 0x456764
-                ResetAppState(s);
-                return false;
-            }
-            }
+        accName[sizeof accName - 1] = '\0';
+        if (!LoadProjectAccessory(s, accs[accSlot], mbPath, accName, paths, ctx.projectDirectory)) {
+            project_relocation::LoadScope::FailCurrent(*s);
+            input.Close();
+            if (!ResetAfterLoadFailure(s)) throw SceneResetRefused{false};
+            return false;
         }
         mdl::AccessoryRecord& accessory =
             *mdl::Accessory(accs[accSlot]);
         Rd(fd, &accessory.order, 1);                             // 0x455D93
-        accName[sizeof accName - 1] = '\0';
         const auto displayName = text_encoding::LegacyFilename(accName, accessory.sourcePath);
         text_encoding::EncodeDisplay(accessory.name, sizeof accessory.name, displayName.c_str());
         // Replace the shadow-list label using the resolved Unicode filename.
@@ -2360,7 +2351,11 @@ static bool LoadSceneV2_AccessoryBlock(PmmV2LoadContext& ctx, pmm_io::Input& inp
 
 // ---- 0x456617..0x45776E: config block + label_708 menu/checkbox run
 // (the goto stays inside this function) ---------------------------------
-static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
+static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd
+#if !MMD_ORIGINAL_PROFILE
+    , const plugins::background_identity::Mutation& projectScope, std::uint64_t expectedScene
+#endif
+) {
     auto* const s = ctx.s;
     HWND const main = ctx.main;
     PathResolutionWorkspace& paths = *ctx.paths;
@@ -2499,6 +2494,16 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
         Rd(fd, &p2, 4);
         Rd(fd, &p3, 4);
         pmm_io::ReadText(fd, mbPath, 0x100, 255);                                  // 0x456E58
+#if !MMD_ORIGINAL_PROFILE
+        Rd(fd, &b, 1);                                           // 0x456EAF
+        wchar_t pictureRequest[256]{};
+        const bool pictureResolved = mbPath[0] == 0 ||
+            ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap), mbPath,
+                               pictureRequest, 0x100, paths);
+        float pictureScale = 0;
+        std::memcpy(&pictureScale, &p3, sizeof p3);
+        (void)LoadProjectBackgroundPicture(s, pictureRequest, p1, p2, pictureScale, b != 0, projectScope, expectedScene, !pictureResolved);
+#else
         ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
                             mbPath,
                             s->PictureBackgroundPath(),
@@ -2522,6 +2527,7 @@ static void LoadSceneV2_ConfigBlock(PmmV2LoadContext& ctx, int fd) {
             s->PictureBackgroundEnabled() = 0;
             CheckMenuItem(GetMenu(main), 0xE9, 0);
         }
+#endif
     }
     {
         unsigned char b = 0;
@@ -3297,6 +3303,10 @@ static void LoadSceneV2_SuccessTail(PmmV2LoadContext& ctx,
     }
     // record array free (0x458EB2..0x458F25)
     workspaceOwner.Close();
+#if !MMD_ORIGINAL_PROFILE
+    // Extension curves and the saved model selection are both ready here.
+    SelectionReeval(s);
+#endif
     InvalidateRect(main, nullptr, FALSE);                       // 0x458F36
     RelayoutSidebarControls(s);                                               // 0x442EB0
     s->PhysicsResetPending() = 1;                               // 0x458F43
@@ -3322,8 +3332,16 @@ bool TryLoadSceneV2(MMDApp* app, pmm_io::Input& input, bool& replaced) {  // was
     auto* s = app;
     PmmV2LoadContext ctx(app);
     if (!plugins::BeginProjectSceneReplacement(app)) throw std::runtime_error("history scene replacement refused");
+#if !MMD_ORIGINAL_PROFILE
+    plugins::CancelPictureGesture(*app);
+    plugins::background_identity::Mutation mediaMutation(app, true, true);
+#endif
     replaced = true;
     AcceptProjectSceneReplacement(app);
+    ctx.relocation = project_relocation::LoadScope::Accepted(*app);
+#if !MMD_ORIGINAL_PROFILE
+    const auto pictureProjectScene = app->SceneGeneration();
+#endif
     pmm_settings::Reset(*app);
     input.EnableReadAhead();
 
@@ -3372,8 +3390,16 @@ bool TryLoadSceneV2(MMDApp* app, pmm_io::Input& input, bool& replaced) {  // was
         workspaceOwner.Close();
         return false;
     }
-    LoadSceneV2_ConfigBlock(ctx, fd);                   // 0x456617..0x45776E
+    LoadSceneV2_ConfigBlock(ctx, fd
+#if !MMD_ORIGINAL_PROFILE
+        , mediaMutation, pictureProjectScene
+#endif
+    );                                                 // 0x456617..0x45776E
     LoadSceneV2_PhysicsTracksAndClose(ctx, input, modelCount, workspaces);  // 0x45777C..0x458112
+    if (!project_relocation::ConfirmRemainingProjectEffects(*s, ctx.main)) {
+        AbortV2Load(s, input, workspaceOwner);
+        return false;
+    }
     LoadSceneV2_SuccessTail(ctx, workspaceOwner, modelCount);    // 0x458120..0x458F53
     native_mesh::ProjectOpened(app, app->EnvFileName());
     mmv4mms::ProjectOpened(app, app->EnvFileName());
@@ -3385,7 +3411,31 @@ bool TryLoadSceneV2(MMDApp* app, pmm_io::Input& input, bool& replaced) {  // was
 void LoadSceneV2(MMDApp* app, int fd) {
     pmm_io::Input input(fd);
     bool replaced = false;
-    (void)TryLoadSceneV2(app, input, replaced);
+    const auto layoutReady = app->WindowLayoutReady();
+    project_relocation::LoadScope relocation(*app, project_relocation::LoadScope::FreezePath(app->EnvFileName()));
+    try {
+        if (relocation.Run([&] { return TryLoadSceneV2(app, input, replaced); }))
+            relocation.Complete();
+    } catch (const DuplicateAccessorySlot&) {
+        wchar_t path[_countof(app->state.envFileName)]{};
+        wcsncpy_s(path, app->EnvFileName(), _TRUNCATE);
+        {
+            ScopedSceneMutation mutation(*app);
+            if (!ReportInvalidProjectLoad(app, input, replaced, path))
+                (void)RecoverSceneResetRefusal(app, false, false);
+        }
+        // The legacy entry has no shell identity guard. Drop the rejected
+        // base directory and reopen the layout gate after a completed reset.
+        app->EnvFileName()[0] = L'\0';
+        app->PathWorkspace().projectDirectory[0] = L'\0';
+        if (!app->sceneRecoveryPending) app->WindowLayoutReady() = layoutReady;
+    } catch (const SceneResetRefused& refused) {
+        // This entry owns only its input, not a caller-prepared plugin load
+        // transaction; reuse the same bounded recovery and never let the
+        // private signal escape.
+        input.Close();
+        (void)RecoverSceneResetRefusal(app, false, refused.restoreWindowSize);
+    }
 }
 
 }  // namespace mikumikustudio

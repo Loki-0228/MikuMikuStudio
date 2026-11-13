@@ -112,8 +112,10 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
     const bool mfRecording = IsBuiltInH264Recording(s.Recorder());
     std::wstring sequenceError;
     const bool sequenceComplete = image_sequence::Finish(app, reachedRequestedEnd, sequenceError);
+    std::int32_t mfFailure = 0;
+    std::wstring mfRetained;
     const bool mfComplete = mfRecording &&
-        FinishBuiltInH264Recording(s.Recorder(), expectedFrames);
+        FinishBuiltInH264Recording(s.Recorder(), reachedRequestedEnd ? expectedFrames : 0, &mfFailure, &mfRetained);
     const bool movRecording = IsPngMovRecording(s.Recorder());
     std::wstring movError;
     bool movComplete = false;
@@ -136,9 +138,7 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
             device->SetRenderTarget(0, *backBuffer);        // 0x464A81
     }
     if (s.state.aviStereoOutput != 0) {                     // 0xA0D61
-        s.state.fullscreenMode = 0;                    // 0x464B0B
-        ApplyFullscreenWindowState(app);                                     // 0x464B11
-        PostDeviceReset(app);                               // 0x464B18
+        recording_state::RestoreFullscreenEditor(app);
         s.state.aviStereoOutput = 0;                    // 0x464B1D
     } else {
         const std::int32_t winW = s.state.recRTW;
@@ -214,6 +214,29 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
     // restoration, so stale edit text cannot seek or register a frame.
     s.state.recordPlaybackStartPending = 0;
     s.state.frameStepPlayback = 0;
+    if (FAILED(mfFailure)) {
+        if (!mfRetained.empty() || mfFailure == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) ||
+            mfFailure == HRESULT_FROM_WIN32(ERROR_FILE_EXISTS) ||
+            mfFailure == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)) {
+            std::wstring message = image_sequence::Text(app,
+                L"无法写入当前视频目标。请重新选择输出路径，或确认覆盖后重试。",
+                L"The video could not be written to the selected destination. Choose the path again or confirm replacement and retry.",
+                L"指定した出力先に動画を書き込めませんでした。出力先を選び直すか、上書きを確認して再試行してください。");
+            message += L"\n\n";
+            message += s.AviOutputPath();
+            if (!mfRetained.empty()) {
+                message += image_sequence::Text(app,
+                    L"\n\n先前的视频保留在：\n", L"\n\nThe previous video was kept at:\n", L"\n\n以前の動画の保存先：\n");
+                message += mfRetained;
+            }
+            MessageBoxW(s.MainWindow(), message.c_str(), L"H.264", MB_OK | MB_ICONERROR);
+        } else {
+            wchar_t message[192]{};
+            swprintf_s(message, L"Media Foundation 视频编码失败（0x%08lX）。",
+                       static_cast<unsigned long>(mfFailure));
+            MessageBoxW(s.MainWindow(), message, L"H.264 导出", MB_OK | MB_ICONERROR);
+        }
+    }
     if (!movError.empty()) MessageBoxW(static_cast<HWND>(s.Hwnd()), movError.c_str(), L"MOV export", MB_OK | MB_ICONERROR);
     if (!sequenceError.empty()) MessageBoxW(s.MainWindow(), sequenceError.c_str(),
         image_sequence::Text(app, L"导出图片序列", L"Image sequence export", L"連番画像出力"), MB_OK | MB_ICONERROR);

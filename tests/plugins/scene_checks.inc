@@ -62,7 +62,8 @@ static void SceneChecks() {
         if(nested) { MmsSnapshotV1 ignored{}; nestedResult = api.acquire(api.context,&query,&ignored); }
         out = current; return MMS_OK;
     }, [&](MmsId id) { return identities.Known(id); });
-    SceneClient client, stranger; api = store.Api(client); auto other = store.Api(stranger);
+    SceneClient client, stranger; MmsSceneApiV1 other{};
+    CHECK(store.Api(client, api) == MMS_OK && store.Api(stranger, other) == MMS_OK);
     MmsSceneQueryV1 query{}; query.h = Header<MmsSceneQueryV1>(); query.time = {2,60}; query.channels = MMS_CHANNEL_BONES;
     MmsSnapshotV1 old{};
     CHECK(api.acquire(api.context,&query,&old)==MMS_OK && store.HasLeases(client));

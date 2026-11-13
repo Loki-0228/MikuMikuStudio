@@ -1,9 +1,11 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "cache_manager_dialog.hpp"
+#include "native_dialog_backdrop.hpp"
 #include "mikumikustudio/cache_manager.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ui_scale.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 #include <commctrl.h>
 #include <algorithm>
@@ -40,7 +42,9 @@ struct Context {
     cache::Snapshot snapshot;
     std::future<Work> work;
     std::wstring selected;
-    bool closing=false,updating=false;
+    RECT usageKinds{};
+    int usageGap=0;
+    bool closing=false,updating=false,confirmingClear=false;
 };
 const wchar_t* Tr(const Context& c,const wchar_t* zh,const wchar_t* en,const wchar_t* ja) {return Text(c.language,zh,en,ja);}
 const wchar_t* Error(const Context& c) {return Tr(c,L"缓存操作未完成。请检查缓存和 data 文件夹是否可写，或稍后重试。",
@@ -49,13 +53,14 @@ const wchar_t* Error(const Context& c) {return Tr(c,L"缓存操作未完成。�
 bool Busy(const Context& c) {return c.work.valid();}
 int Selected(HWND dialog) {return ListView_GetNextItem(GetDlgItem(dialog,Projects),-1,LVNI_SELECTED);}
 void EnableActions(HWND dialog,Context& c) {
-    const bool available=!Busy(c),enabled=IsDlgButtonChecked(dialog,Enabled)==BST_CHECKED;
+    const bool available=!Busy(c)&&!c.confirmingClear,enabled=IsDlgButtonChecked(dialog,Enabled)==BST_CHECKED;
     for(int id:{Enabled,Limit,Recent,Apply,ClearReclaimable,ClearAll})EnableWindow(GetDlgItem(dialog,id),available);
     EnableWindow(GetDlgItem(dialog,Automatic),available&&enabled);
     const int row=Selected(dialog);
     const bool selected=available && row>=0 && std::size_t(row)<c.snapshot.projects.size();
     EnableWindow(GetDlgItem(dialog,Pin),selected);
-    EnableWindow(GetDlgItem(dialog,ClearProject),selected && c.snapshot.projects[row].reclaimableBytes>0);
+    // 占用可能只是瞬时；按“仍有独占缓存候选”启用，失败后可再次尝试，由 Clean 重新检查并跳过使用中的文件。
+    EnableWindow(GetDlgItem(dialog,ClearProject),selected && c.snapshot.projects[row].totalBytes>c.snapshot.projects[row].sharedBytes);
     SetDlgItemTextW(dialog,Pin,selected && c.snapshot.projects[row].pinned?
         Tr(c,L"取消固定",L"Unpin",L"固定を解除"):Tr(c,L"固定保留",L"Pin",L"固定して保持"));
 }
@@ -64,17 +69,22 @@ void Selection(HWND dialog,Context& c) {
     c.selected=row>=0 && std::size_t(row)<c.snapshot.projects.size()?c.snapshot.projects[row].path:L"";
     SetDlgItemTextW(dialog,Path,c.selected.c_str());EnableActions(dialog,c);
 }
-void LayoutUsageRow(HWND dialog) {
+RECT ChildBounds(HWND dialog, HWND child) {
+    RECT bounds{};
+    GetWindowRect(child,&bounds);
+    MapWindowPoints(nullptr,dialog,reinterpret_cast<POINT*>(&bounds),2);
+    return bounds;
+}
+void LayoutUsageRow(HWND dialog,const Context& c) {
     HWND summary=GetDlgItem(dialog,Summary),kinds=GetDlgItem(dialog,Kinds);
-    RECT bounds{},preferred{154,0,350,6};GetWindowRect(summary,&bounds);
-    MapWindowPoints(nullptr,dialog,reinterpret_cast<POINT*>(&bounds),2);MapDialogRect(dialog,&preferred);
+    const RECT bounds=ChildBounds(dialog,summary);
     wchar_t text[512]{};GetWindowTextW(summary,text,512);HDC dc=GetDC(summary);
     auto previous=SelectObject(dc,reinterpret_cast<HFONT>(SendMessageW(summary,WM_GETFONT,0,0)));
     SIZE size{};GetTextExtentPoint32W(dc,text,int(std::wcslen(text)),&size);
     SelectObject(dc,previous);ReleaseDC(summary,dc);
-    const int split=std::max(preferred.left,bounds.left+size.cx+preferred.bottom);
-    SetWindowPos(summary,nullptr,0,0,split-bounds.left-preferred.bottom/2,bounds.bottom-bounds.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
-    SetWindowPos(kinds,nullptr,split,bounds.top,std::max<LONG>(0,preferred.right-split),bounds.bottom-bounds.top,SWP_NOZORDER|SWP_NOACTIVATE);
+    const LONG split=std::clamp(bounds.left+size.cx+c.usageGap,c.usageKinds.left,c.usageKinds.right);
+    SetWindowPos(summary,nullptr,0,0,split-bounds.left-c.usageGap/2,bounds.bottom-bounds.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+    SetWindowPos(kinds,nullptr,split,bounds.top,c.usageKinds.right-split,bounds.bottom-bounds.top,SWP_NOZORDER|SWP_NOACTIVATE);
 }
 void Fill(HWND dialog,Context& c,bool settings) {
     const auto& s=c.snapshot;
@@ -90,7 +100,7 @@ void Fill(HWND dialog,Context& c,bool settings) {
     SetDlgItemTextW(dialog,Summary,text);
     const auto fx=Size(s.effectBytes),textures=Size(s.textureBytes);
     swprintf_s(text,Tr(c,L"MME 效果 %ls    纹理 %ls",L"MME effects %ls    Textures %ls",L"MME エフェクト %ls    テクスチャ %ls"),fx.c_str(),textures.c_str());SetDlgItemTextW(dialog,Kinds,text);
-    LayoutUsageRow(dialog);
+    LayoutUsageRow(dialog,c);
     HWND list=GetDlgItem(dialog,Projects);c.updating=true;SendMessageW(list,WM_SETREDRAW,FALSE,0);ListView_DeleteAllItems(list);
     for(std::size_t i=0;i<s.projects.size();++i) {
         const auto& p=s.projects[i];const std::filesystem::path path(p.path);
@@ -109,7 +119,7 @@ void Fill(HWND dialog,Context& c,bool settings) {
 }
 void Start(HWND dialog,Context& c,std::function<Work()> operation) {
     try{c.work=std::async(std::launch::async,std::move(operation));}
-    catch(...){SetDlgItemTextW(dialog,Status,Error(c));return;}
+    catch(...){SetDlgItemTextW(dialog,Status,Error(c));EnableActions(dialog,c);return;}
     SetDlgItemTextW(dialog,Status,Tr(c,L"正在处理…",L"Working…",L"処理中…"));
     SetTimer(dialog,1,75,nullptr);EnableActions(dialog,c);
 }
@@ -173,24 +183,38 @@ INT_PTR CALLBACK DialogProc(HWND dialog,UINT msg,WPARAM wp,LPARAM lp) {
         const wchar_t* names[]={Tr(*c,L"工程",L"Project",L"プロジェクト"),Tr(*c,L"上次打开",L"Last opened",L"最終オープン"),
             Tr(*c,L"独占",L"Exclusive",L"専用"),Tr(*c,L"共享",L"Shared",L"共有"),Tr(*c,L"可释放",L"Releasable",L"解放可能"),Tr(*c,L"状态",L"Status",L"状態")};
         HWND list=GetDlgItem(dialog,Projects);ListView_SetExtendedListViewStyle(list,LVS_EX_FULLROWSELECT|LVS_EX_DOUBLEBUFFER|LVS_EX_LABELTIP);
-        const int widths[]={90,76,41,41,41,39};
-        for(int col=0;col<6;++col){RECT width{0,0,widths[col],0};MapDialogRect(dialog,&width);LVCOLUMNW column{};
-            column.mask=LVCF_TEXT|LVCF_WIDTH;column.pszText=const_cast<wchar_t*>(names[col]);column.cx=width.right;SendMessageW(list,LVM_INSERTCOLUMNW,col,reinterpret_cast<LPARAM>(&column));}
+        int widths[]={90,76,41,41,41,39};
+        for(int& width:widths){RECT units{0,0,width,0};MapDialogRect(dialog,&units);width=units.right;}
+        RECT baseList{},scaledList{};
+        GetClientRect(list,&baseList);
+        native_dialog_backdrop::Attach(dialog,ui_scale::Percent(),85);
+        GetClientRect(list,&scaledList);
+        c->usageKinds=ChildBounds(dialog,GetDlgItem(dialog,Kinds));
+        c->usageGap=std::max<LONG>(0,c->usageKinds.left-ChildBounds(dialog,GetDlgItem(dialog,Summary)).right);
+        for(int col=0;col<6;++col){LVCOLUMNW column{};
+            column.mask=LVCF_TEXT|LVCF_WIDTH;column.pszText=const_cast<wchar_t*>(names[col]);
+            column.cx=baseList.right>0?MulDiv(widths[col],scaledList.right,baseList.right):widths[col];
+            SendMessageW(list,LVM_INSERTCOLUMNW,col,reinterpret_cast<LPARAM>(&column));}
         SendDlgItemMessageW(dialog,Limit,EM_SETLIMITTEXT,12,0);SendDlgItemMessageW(dialog,Recent,EM_SETLIMITTEXT,3,0);
         AddTooltips(dialog,*c);
         c->snapshot.settings=cache::Current();Fill(dialog,*c,true);
-        Start(dialog,*c,[]{Work out;out.snapshot=cache::Inspect();return out;});return TRUE;
+        Start(dialog,*c,[]{Work out;out.snapshot=cache::Inspect();return out;});
+        return TRUE;
     }
     if(!c)return FALSE;
     if(msg==WM_TIMER && wp==1 && Busy(*c)) {
         if(c->work.wait_for(std::chrono::milliseconds(0))!=std::future_status::ready)return TRUE;
         KillTimer(dialog,1);
+        bool completed=false;
         try{auto result=c->work.get();c->snapshot=std::move(result.snapshot);Fill(dialog,*c,true);
             if(!result.error.empty() || !c->snapshot.error.empty())SetDlgItemTextW(dialog,Status,Error(*c));
             else if(!result.message.empty())SetDlgItemTextW(dialog,Status,result.message.c_str());
             else SetDlgItemTextW(dialog,Status,c->snapshot.projects.empty()?Tr(*c,L"暂无工程记录。成功打开工程后会自动登记缓存。",L"No project history yet. Opening a project records its cache.",L"履歴はありません。プロジェクトを開くとキャッシュを記録します。"):L"");
+            completed=result.error.empty()&&c->snapshot.error.empty()&&result.cleaned.skipped==0;
         }catch(...){SetDlgItemTextW(dialog,Status,Error(*c));EnableActions(dialog,*c);}
-        if(c->closing)EndDialog(dialog,IDCANCEL);return TRUE;
+        // Keep incomplete results visible; a retry must not inherit this close request.
+        const bool close=c->closing&&completed;c->closing=false;
+        if(close)EndDialog(dialog,IDCANCEL);return TRUE;
     }
     if(msg==WM_NOTIFY) {
         const auto* notification=reinterpret_cast<NMHDR*>(lp);
@@ -198,10 +222,12 @@ INT_PTR CALLBACK DialogProc(HWND dialog,UINT msg,WPARAM wp,LPARAM lp) {
         return FALSE;
     }
     if(msg==WM_CLOSE || (msg==WM_COMMAND && LOWORD(wp)==IDCANCEL)) {
+        if(c->confirmingClear){c->closing=true;return TRUE;}
         if(Busy(*c)){c->closing=true;SetDlgItemTextW(dialog,Status,Tr(*c,L"操作完成后关闭…",L"Closing when the operation finishes…",L"処理の完了後に閉じます…"));}
         else EndDialog(dialog,IDCANCEL);return TRUE;
     }
     if(msg!=WM_COMMAND)return FALSE;
+    if(c->confirmingClear || c->closing)return TRUE;
     const auto id=LOWORD(wp);
     if(id==Enabled){EnableActions(dialog,*c);return TRUE;}
     if(Busy(*c))return TRUE;
@@ -212,9 +238,19 @@ INT_PTR CALLBACK DialogProc(HWND dialog,UINT msg,WPARAM wp,LPARAM lp) {
     if(id==Apply || id==ClearProject || id==ClearReclaimable || id==ClearAll) {
         cache::Settings settings;if(!ReadSettings(dialog,*c,settings))return TRUE;
         if(id==ClearProject && c->selected.empty())return TRUE;
-        if(id==ClearAll && MessageBoxW(dialog,Tr(*c,L"清空可删除的磁盘缓存？下次打开工程时会重新生成。正在使用的缓存会跳过。",
-            L"Clear deletable disk cache? It will be rebuilt when needed. In-use files will be skipped.",L"削除可能なキャッシュを消去しますか？必要時に再生成し、使用中のファイルは残します。"),
-            Tr(*c,L"缓存管理",L"Cache management",L"キャッシュ管理"),MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2)!=IDYES)return TRUE;
+        if(id==ClearAll) {
+            // The confirmation pumps messages before a worker exists. Hold
+            // other actions and let a pending close cancel this clear request.
+            c->confirmingClear=true;
+            EnableActions(dialog,*c);
+            const int answer=native_dialog_backdrop::ConfirmYesNo(dialog,Tr(*c,L"清空可删除的磁盘缓存？下次打开工程时会重新生成。正在使用的缓存会跳过。",
+                L"Clear deletable disk cache? It will be rebuilt when needed. In-use files will be skipped.",L"削除可能なキャッシュを消去しますか？必要時に再生成し、使用中のファイルは残します。"),
+                Tr(*c,L"缓存管理",L"Cache management",L"キャッシュ管理"));
+            c->confirmingClear=false;
+            if(!IsWindow(dialog))return TRUE;
+            if(c->closing){EndDialog(dialog,IDCANCEL);return TRUE;}
+            if(answer!=IDYES){EnableActions(dialog,*c);return TRUE;}
+        }
         const auto project=c->selected;const auto language=c->language;
         Start(dialog,*c,[settings,id,project,language] {
             Work out;

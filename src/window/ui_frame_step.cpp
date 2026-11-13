@@ -1,4 +1,5 @@
 #include "mikumikustudio/negative_frames.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 // ===========================================================================
 // Left frame-editor refresh and single-frame stepping helpers.
@@ -148,8 +149,7 @@ void RefreshTimeline(MMDApp* app, bool forward) {
     if (app->WaveEnabled() != 0 && app->CurrentFrame()>=0) {
         TimelineDrawTicks(app->state.timelineStartFrame,
                           app->SidebarWidth());
-        RECT rect{6, 95,
-                  app->SidebarWidth() - 3, 146};
+        RECT rect = TimelineRulerDamage(app);
         InvalidateRect(static_cast<HWND>(app->Hwnd()), &rect, FALSE);
         if (app->state.wavPlaysOnFrameMove != 0) {
             const bool seek =
@@ -225,8 +225,7 @@ void RefreshAfterFrameApply(MMDApp* app) {
     if (app->WaveEnabled() != 0 && app->CurrentFrame()>=0) {
         TimelineDrawTicks(app->state.timelineStartFrame,
                           app->SidebarWidth());
-        RECT rect{6, 95,
-                  app->SidebarWidth() - 3, 146};
+        RECT rect = TimelineRulerDamage(app);
         InvalidateRect(static_cast<HWND>(app->Hwnd()), &rect, FALSE);
     }
 

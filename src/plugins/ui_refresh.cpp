@@ -970,7 +970,7 @@ void UiRefreshQueue::SyncTopology() noexcept {
         std::map<MmsHandle, TreeNode> candidate;
         for (const auto& [id, element] : registry_.elements) {
             if (element.nativeObserved) continue;
-            const auto parent = registry_.elements.find(String(element.desc.parentId));
+            const auto parent = registry_.elements.find(String(registry_.EffectiveParent(element)));
             candidate.emplace(element.handle, TreeNode{parent == registry_.elements.end() ? 0 : parent->second.handle,
                 String(element.desc.ownerPlugin), element.desc.kind});
         }

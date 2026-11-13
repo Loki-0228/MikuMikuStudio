@@ -440,6 +440,23 @@ struct ResourceState::Exchange::Impl {
     }
 };
 ResourceState::ResourceState(std::unique_ptr<Impl> value):impl_(std::move(value)){}
+MmsResult MeasureResourceStateCapturePreparation(std::uint64_t& bytes)noexcept{
+#if defined(_MSVC_STL_VERSION) && _MSVC_STL_VERSION == 143 && _MSVC_STL_UPDATE == 202503L && !_HAS_CXX23
+    std::uint64_t measured=0;
+    const auto add=[&](std::uint64_t amount)noexcept{
+        if(amount>=UINT64_MAX-measured)return false;
+        measured+=amount;return true;
+    };
+    // Capture uses three raw-new allocations. The default-constructed parked
+    // node handle is empty and buys neither a tree sentinel nor a proxy. The
+    // live scale map remains borrowed, including its shapes and pose storage.
+    if(!add(sizeof(ResourceState))||!add(sizeof(ResourceState::Impl))||
+        !add(sizeof(std::_Ref_count<ResourceState>)))return MMS_E_MEMORY;
+    bytes=measured;return MMS_OK;
+#else
+    (void)bytes;return MMS_E_NOT_READY;
+#endif
+}
 ResourceState::~ResourceState() {
     // An active wrapper can be a failed, still-borrowed capture. Its map node
     // remains owned by the live model until an explicit Retire/exchange.

@@ -6,6 +6,7 @@ namespace mikumikustudio::cache_business {
 struct PublishedIndex::State {
     cache_catalog::Snapshot source;
     Manifest manifest;
+    SourceRegistry sources;
     Index index;
     std::vector<cache_files::ReadLease> leases;
 };
@@ -33,6 +34,8 @@ ReadResult FromFile(cache_files::Result result) noexcept {
     case FileResult::Corrupt:
     case FileResult::Conflict:
     case FileResult::DeletePending:
+    case FileResult::Cancelled:
+    case FileResult::CleanupRequired:
         return ReadResult::RecoveryRequired;
     }
     return ReadResult::RecoveryRequired;
@@ -57,6 +60,10 @@ const Manifest& PublishedIndex::Description() const noexcept {
     static const Manifest empty;
     return state_ ? state_->manifest : empty;
 }
+const SourceRegistry& PublishedIndex::Sources() const noexcept {
+    static const SourceRegistry empty;
+    return state_ ? state_->sources : empty;
+}
 
 ReadResult LoadPublishedIndex(const cache_catalog::Snapshot& source,
     const cache_files::Directory& pages, PublishedIndex& output) noexcept {
@@ -64,8 +71,11 @@ ReadResult LoadPublishedIndex(const cache_catalog::Snapshot& source,
     try {
         auto candidate = std::make_unique<PublishedIndex::State>();
         const auto& bytes = source.Bytes();
-        auto result = DecodeManifest(bytes.data(), bytes.size(), candidate->manifest);
+        BusinessRoot root;
+        auto result = DecodeBusinessRoot(bytes.data(), bytes.size(), root);
         if (result != Result::Ok) return FromCodec(result);
+        candidate->manifest = std::move(root.legacy);
+        candidate->sources = std::move(root.sources);
         if (candidate->manifest.storeOwner != source.StoreId())
             return ReadResult::RecoveryRequired;
 
@@ -89,6 +99,8 @@ ReadResult LoadPublishedIndex(const cache_catalog::Snapshot& source,
             candidate->leases.push_back(std::move(lease));
         }
         result = Assemble(candidate->manifest, decoded, candidate->index);
+        if (result != Result::Ok) return FromCodec(result);
+        result = ValidateSourcesAgainstIndex(candidate->sources, candidate->index);
         if (result != Result::Ok) return FromCodec(result);
 
         output.state_.swap(candidate);

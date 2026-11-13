@@ -2,6 +2,7 @@
 #include "ui_property_draft.hpp"
 #include "mikumikustudio/plugin_input_focus.hpp"
 #include <commctrl.h>
+#include <imm.h>
 #include <array>
 #include <atomic>
 #include <limits>
@@ -27,6 +28,8 @@ struct NativePropertyInput::Impl {
     bool haveSnapshot = false, destroying = false, updating = false, oversized = false;
     bool refreshing = false, readingBack = false, submitting = false, visible = true, imeEnter = false, focusQueued = false;
     bool applyingState = false, haveState = false, stateEnabled = true, stateReadOnly = false, stateVisible = true;
+    bool layoutSuspended = false;
+    uint64_t layoutSuspendSerial = 0;
     UINT_PTR focusSerial = 0;
     uint64_t displayGeneration = 1;
 
@@ -73,9 +76,58 @@ struct NativePropertyInput::Impl {
         if (font) DeleteObject(font); font = nullptr;
     }
     void ClearDraft() noexcept {
+        ++layoutSuspendSerial;
         if (intent) intent->store(false, std::memory_order_relaxed);
         intent.reset();
         draft.Cancel(); draftOrigin = {}; invalid.fill(false); imeEnter = false; focusQueued = false; ++focusSerial; ++displayGeneration;
+    }
+    void SuspendLayoutDraft() noexcept {
+        if (layoutSuspended) return;
+        layoutSuspended = true;
+        const auto serial = ++layoutSuspendSerial;
+        if (intent) intent->store(false, std::memory_order_relaxed);
+        intent.reset(); focusQueued = false; ++focusSerial; ++displayGeneration;
+        // Cancel conversion, never accept it as a side effect of hiding.
+        // The EDIT retains already entered text and its existing selection.
+        if (draft.Composing()) {
+            Flag writing(updating);
+            const auto root = window;
+            const auto count = fields.size();
+            if (count > 4) { CancelInternal(); Report(MMS_E_FAILED); return; }
+            std::array<HWND, 4> original{};
+            std::copy(fields.begin(), fields.end(), original.begin());
+            const auto current = [&]() noexcept {
+                if (destroying || !layoutSuspended || layoutSuspendSerial != serial || window != root ||
+                    !IsWindow(root) || fields.size() != count) return false;
+                for (size_t i = 0; i < count; ++i)
+                    if (fields[i] != original[i] || !IsWindow(original[i]) || GetParent(original[i]) != root) return false;
+                const auto element = registry.elements.find(elementId);
+                return element != registry.elements.end() &&
+                    registry.ControlVisibility(element->second) == ControlLayoutVisibility::TemporaryHidden;
+            };
+            bool cancelled = true;
+            for (size_t i = 0; i < count; ++i) {
+                if (!current()) return;
+                const auto field = original[i];
+                if (const auto context = ImmGetContext(field)) {
+                    if (!current()) { ImmReleaseContext(field, context); return; }
+                    cancelled = (ImmNotifyIME(context, NI_COMPOSITIONSTR, CPS_CANCEL, 0) != FALSE) && cancelled;
+                    ImmReleaseContext(field, context);
+                    if (!current()) return;
+                }
+            }
+            if (!current()) return;
+            draft.SetComposing(false); imeEnter = false;
+            if (!cancelled) { CancelInternal(); Report(MMS_E_FAILED); }
+        }
+    }
+    bool SuspendHiddenLayout() noexcept {
+        const auto found = registry.elements.find(elementId);
+        const auto visibility = found == registry.elements.end() ? ControlLayoutVisibility::PersistentHidden :
+            registry.ControlVisibility(found->second);
+        if (visibility == ControlLayoutVisibility::TemporaryHidden) { SuspendLayoutDraft(); return true; }
+        if (visibility == ControlLayoutVisibility::PersistentHidden) { CancelInternal(); return true; }
+        return false;
     }
     bool Contains(HWND focus) const noexcept { return focus && (focus == window || IsChild(window, focus)); }
     const std::wstring& DisplayLabel() const noexcept { return haveState ? stateLabel : cachedLabel; }
@@ -172,7 +224,7 @@ struct NativePropertyInput::Impl {
         focused = std::find(fields.begin(), fields.end(), beforeDestroy);
         if (focused != fields.end()) focusIndex = size_t(focused - fields.begin());
         for (HWND field : fields) { RemoveWindowSubclass(field, FieldProc, reinterpret_cast<UINT_PTR>(this)); DestroyWindow(field); }
-        fields.swap(next); invalid.fill(false);
+        fields.swap(next); invalid.fill(false); ++layoutSuspendSerial;
         ++displayGeneration;
         for (HWND field : fields) ShowWindow(field, SW_SHOWNA);
         const HWND afterDestroy = GetFocus();
@@ -540,19 +592,19 @@ struct NativePropertyInput::Impl {
         });
     }
     bool Start() {
-        if (destroying || updating || applyingState || !StateEditable() || !haveSnapshot || !snapshot.editable || oversized || !visible || !IsWindowEnabled(window)) return false;
+        if (destroying || updating || applyingState || layoutSuspended || !StateEditable() || !haveSnapshot || !snapshot.editable || oversized || !visible || !IsWindowEnabled(window)) return false;
         if (draft.Active()) return true;
         const auto result = Boundary([&]() -> MmsResult {
             auto origin = snapshot;
             auto next = std::make_shared<std::atomic<bool>>(true);
             if (const auto begun = draft.Begin(snapshot.value.View(), snapshot.sceneRevision)) return begun;
-            draftOrigin = std::move(origin); intent = std::move(next); ++displayGeneration; return MMS_OK;
+            draftOrigin = std::move(origin); intent = std::move(next); ++displayGeneration; ++layoutSuspendSerial; return MMS_OK;
         });
         if (result) Report(result);
         return !result;
     }
     void NewInputIntent() noexcept {
-        ++displayGeneration;
+        ++displayGeneration; ++layoutSuspendSerial;
         if (intent) intent->store(false, std::memory_order_relaxed);
         // Allocation failure leaves the existing request invalid. The raw
         // fields remain available and the next explicit submit can retry.
@@ -583,7 +635,11 @@ struct NativePropertyInput::Impl {
     }
     void Submit() {
         Work guard(*this);
-        if (destroying || submitting || updating || applyingState || !StateEditable() || !draft.Active() || draft.Composing()) return;
+        if (destroying || submitting || updating || applyingState) return;
+        // Effective layout changes precede the queued native refresh. A blur
+        // already in the queue must observe that change before it can edit.
+        if (SuspendHiddenLayout()) return;
+        if (!visible || layoutSuspended || !StateEditable() || !draft.Active() || draft.Composing()) return;
         Flag submission(submitting);
         if (!intent || !intent->load(std::memory_order_relaxed)) NewInputIntent();
         const auto request = intent;
@@ -595,12 +651,15 @@ struct NativePropertyInput::Impl {
         for (bool failure : invalid) if (failure) { Report(MMS_E_ARGUMENT); return; }
         PropertyInputSnapshot current;
         auto result = registry.CapturePropertyInput(elementId, current);
+        if (SuspendHiddenLayout()) return;
         if (!CurrentIntent(request)) { Report(MMS_E_STALE); return; }
         if (!result && (current.property != origin.property || current.element != origin.element)) result = MMS_E_STALE;
         UiPropertyValue candidate; bool changed = false;
         if (!result) result = draft.Prepare(current.value.View(), current.sceneRevision, candidate, changed);
+        if (SuspendHiddenLayout()) return;
         if (!CurrentIntent(request)) { Report(MMS_E_STALE); return; }
         if (!result && changed) result = registry.CommitPropertyInput(origin, candidate.View());
+        if (result && SuspendHiddenLayout()) return;
         // Escape/hide may already have cancelled, or a reentrant EN_CHANGE
         // may own a replacement draft. Neither belongs to this old request.
         if (!CurrentIntent(request)) { if (result) Report(result); return; }
@@ -609,7 +668,7 @@ struct NativePropertyInput::Impl {
         Report(result);
     }
     void QueueFocus() noexcept {
-        if (!destroying && !updating && draft.Active() && !focusQueued) {
+        if (!destroying && !updating && visible && !layoutSuspended && draft.Active() && !focusQueued) {
             const auto serial = ++focusSerial;
             if (PostMessageW(window, kCheckFocus, serial, 0)) focusQueued = true;
         }
@@ -642,7 +701,8 @@ struct NativePropertyInput::Impl {
             } else if (message == WM_SIZE) self.Layout();
             else if (message == WM_SHOWWINDOW) {
                 self.visible = wp != 0;
-                if (!wp && (self.draft.Active() || self.draft.Composing() || self.intent)) self.CancelInternal();
+                if (!wp && !self.layoutSuspended && (self.draft.Active() || self.draft.Composing() || self.intent) &&
+                    !self.SuspendHiddenLayout()) self.CancelInternal();
             }
             else if (message == WM_ENABLE) {
                 if (!wp && (self.draft.Active() || self.draft.Composing() || self.intent)) self.CancelInternal();
@@ -669,7 +729,11 @@ struct NativePropertyInput::Impl {
                 (compositionTab ? DLGC_WANTTAB : 0);
         }
         if (message == WM_IME_ENDCOMPOSITION) {
+            const auto root = self.window;
+            const auto serial = self.layoutSuspendSerial;
             const auto answer = DefSubclassProc(hwnd, message, wp, lp);
+            if (self.destroying || self.window != root || self.layoutSuspendSerial != serial || !IsWindow(hwnd) ||
+                std::find(self.fields.begin(), self.fields.end(), hwnd) == self.fields.end()) return answer;
             if (self.draft.Active() || self.draft.Composing()) {
                 self.imeEnter = self.imeEnter || (GetKeyState(VK_RETURN) & 0x8000) != 0;
                 self.draft.SetComposing(false); ++self.displayGeneration; self.QueueFocus();
@@ -720,8 +784,15 @@ MmsResult NativePropertyInput::RepairLabel() {
     return Boundary([&]() -> MmsResult { const auto caption = impl_->DisplayLabel(); Impl::Caption(impl_->label, caption); return MMS_OK; });
 }
 void NativePropertyInput::Cancel() noexcept { Impl::Work work(*impl_); impl_->CancelInternal(); }
-void NativePropertyInput::LayoutVisible(bool visible) noexcept {
-    Impl::Work work(*impl_); impl_->visible = visible; if (!visible) impl_->CancelInternal();
+bool NativePropertyInput::LayoutSuspended() const noexcept { return impl_->layoutSuspended; }
+void NativePropertyInput::LayoutVisible(bool visible, bool preserveDraft) noexcept {
+    Impl::Work work(*impl_); impl_->visible = visible;
+    if (!visible && preserveDraft) impl_->SuspendLayoutDraft();
+    else {
+        if (impl_->layoutSuspended) ++impl_->layoutSuspendSerial;
+        impl_->layoutSuspended = false;
+        if (!visible) impl_->CancelInternal();
+    }
 }
 
 }

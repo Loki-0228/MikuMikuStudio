@@ -82,6 +82,25 @@ struct RealIdentityModelPasteFixture : ModelPasteFixture {
         for(unsigned index=0;index<displays;++index)first.m->displayKeys[index].allocated=1;
     }
 };
+thread_local HWND missingBoundPasteOwner = nullptr;
+thread_local HWND missingBoundPasteWarning = nullptr;
+
+LRESULT CALLBACK ObserveMissingBoundPaste(int code, WPARAM wp, LPARAM lp) {
+    if (code == HCBT_ACTIVATE && missingBoundPasteOwner) {
+        const auto window = reinterpret_cast<HWND>(wp);
+        if (GetWindow(window, GW_OWNER) == missingBoundPasteOwner) {
+            if (window == missingBoundPasteWarning) return CallNextHookEx(nullptr, code, wp, lp);
+            wchar_t title[64]{};
+            GetWindowTextW(window, title, std::size(title));
+            Check(!missingBoundPasteWarning && std::wcscmp(title, L"Paste keyframes") == 0 &&
+                  GetDlgItem(window, IDOK), "bound missing target opens one localized warning");
+            missingBoundPasteWarning = window;
+            Check(PostMessageW(window, WM_CLOSE, 0, 0) != FALSE, "dismiss the bound paste warning");
+        }
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+
 void RealSameModelIdentityPasteChecks() {
     using Mode=plugins::SharedHistory::RecordingMode;
     // Single-family routes must consume the same private resolved-source plan
@@ -154,7 +173,20 @@ void RealSameModelIdentityPasteChecks() {
             (targetExists?1:frame_clipboard::kMissingTarget),
             "cross-model identity resolves the same-name occurrence or reports it missing");
         const ModelKeyState before(f.second);const auto ring=PoseRingDigest(f.second);const auto selection=f.second.selected;
+        HHOOK warningHook = nullptr;
+        if (!targetExists) {
+            f.app->EnglishUI() = 1;
+            missingBoundPasteOwner = f.app->MainWindow();
+            missingBoundPasteWarning = nullptr;
+            warningHook = SetWindowsHookExW(WH_CBT, ObserveMissingBoundPaste, nullptr, GetCurrentThreadId());
+            Check(warningHook && missingBoundPasteOwner, "observe the bound paste command on its fixture window");
+        }
         f.app->CurrentFrame()=40;CmdControl400(f.app.get(),f.app->MainWindow(),421,0);
+        if (warningHook) {
+            Check(UnhookWindowsHookEx(warningHook) && missingBoundPasteWarning &&
+                  !IsWindow(missingBoundPasteWarning), "bound warning closes before command completion");
+            missingBoundPasteOwner = missingBoundPasteWarning = nullptr;
+        }
         const auto capacity=mdl::BoneKeyCapacity(f.second.m->boneKeys);
         Check(FindRealCopyKey(f.second.m->boneKeys,capacity,0,40)<0,
             "cross-model paste never writes the first duplicate bone track");

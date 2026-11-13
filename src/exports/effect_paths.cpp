@@ -11,6 +11,7 @@
 #include "mikumikustudio/pmm_paths.hpp"
 #include "mikumikustudio/local_data_path.hpp"
 #include "effect_compile_cache.hpp"
+#include "../io/project_relocation.hpp"
 #include <atomic>
 #include <cstring>
 #include <cwchar>
@@ -31,6 +32,13 @@ struct RelativeAssignment {
 };
 std::mutex assignmentMutex;
 std::vector<RelativeAssignment> assignments;
+std::set<fs::path> effectReferences;
+fs::path assignmentSource;
+struct ProjectRelocation {
+    fs::path source;
+    std::weak_ptr<const project_relocation::RootMappings> roots;
+    DWORD thread = 0;
+} projectRelocation;
 // MMHack consumes notifications on a later frame. Never recycle a published
 // alias for another project while that notification may still be queued.
 // Refuse new aliases at the bound instead of retaining unbounded session data.
@@ -95,6 +103,18 @@ bool RegularFile(const fs::path& path) {
     const DWORD attributes = GetFileAttributesW(path.c_str());
     return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
 }
+bool MissingFile(const fs::path& path) {
+    if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) return false;
+    const DWORD error = GetLastError();
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+}
+
+// Caller holds assignmentMutex.
+void ClearAssignments() {
+    assignments.clear();
+    effectReferences.clear();
+    assignmentSource.clear();
+}
 fs::path ExecutableDirectory() {
     return local_data::ExecutableDirectory();
 }
@@ -139,9 +159,15 @@ bool ReadAssignmentBytes(HANDLE file, bool preservePosition, std::string& bytes,
     return true;
 }
 
-void ReadAssignments(const fs::path& emm, HANDLE opened = INVALID_HANDLE_VALUE,
-                     DWORD* positionFailure = nullptr) {
-    std::vector<RelativeAssignment> next;
+struct AssignmentTable {
+    std::vector<RelativeAssignment> paths;
+    std::set<fs::path> references;
+    std::set<std::vector<fs::path>> referenceSpellings;
+};
+
+AssignmentTable ReadAssignmentTable(const fs::path& emm, HANDLE opened, DWORD* positionFailure,
+                                    bool collectSpellings) {
+    AssignmentTable table;
     std::set<std::pair<fs::path, fs::path>> seen;
     const auto executable = ExecutableDirectory();
     // A packaged legacy MME lives in this installation's cache, so its
@@ -179,36 +205,67 @@ void ReadAssignments(const fs::path& emm, HANDLE opened = INVALID_HANDLE_VALUE,
             }
         }
         if (loaded) {
+                bool effectSection = false;
                 for (std::size_t offset = 0; offset < bytes.size();) {
                     const auto end = bytes.find('\n', offset);
                     auto line = Trim(bytes.substr(offset, end == std::string::npos ? end : end - offset));
                     offset = end == std::string::npos ? bytes.size() : end + 1;
                     if (line.empty() || line.front() == ';' || line.front() == '#') continue;
+                    if (line.front() == '[') {
+                        effectSection = _stricmp(line.c_str(), "[Effect]") == 0 ||
+                            (_strnicmp(line.c_str(), "[Effect@", 8) == 0 && line.back() == ']');
+                        continue;
+                    }
                     const auto equal = line.find('=');
                     if (equal == std::string::npos) continue;
                     const auto value = Trim(line.substr(equal + 1));
                     if (value.empty() || value.find('\0') != std::string::npos) continue;
                     // Decode before looking for separators: CP932 can contain
                     // 0x5c inside a character, not just as a directory separator.
+                    std::vector<fs::path> spellings;
                     for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
                         std::wstring decoded;
                         if (!text_encoding::Decode(value.c_str(), cp, decoded)) continue;
                         const fs::path relative(decoded);
-                        if (relative.empty() || relative.has_root_path() || !relative.has_extension()) continue;
+                        if (relative.empty() || !relative.has_extension()) continue;
+                        if (effectSection && _wcsicmp(relative.extension().c_str(), L".fx") == 0 &&
+                            (relative.is_absolute() || !relative.has_root_path())) {
+                            const auto anchored = relative.is_absolute() ? relative : emm.parent_path() / relative;
+                            const auto normalized = project_relocation::NormalizeFile(anchored.lexically_normal().native());
+                            if (!normalized.empty()) {
+                                table.references.emplace(normalized);
+                                if (collectSpellings) spellings.emplace_back(normalized);
+                            }
+                        }
+                        if (relative.has_root_path()) continue;
                         const auto legacy = (executable / relative).lexically_normal();
                         const auto local = (emm.parent_path() / relative).lexically_normal();
-                        if (seen.emplace(legacy, local).second) next.push_back({legacy, local});
+                        if (seen.emplace(legacy, local).second) table.paths.push_back({legacy, local});
                         if (!moduleDirectory.empty()) {
                             const auto moduleLegacy = (moduleDirectory / relative).lexically_normal();
                             if (seen.emplace(moduleLegacy, local).second)
-                                next.push_back({moduleLegacy, local});
+                                table.paths.push_back({moduleLegacy, local});
                         }
+                    }
+                    if (!spellings.empty()) {
+                        std::sort(spellings.begin(), spellings.end());
+                        spellings.erase(std::unique(spellings.begin(), spellings.end()), spellings.end());
+                        table.referenceSpellings.insert(std::move(spellings));
                     }
                 }
         }
     }
+    return table;
+}
+
+void ReadAssignments(const fs::path& emm, HANDLE opened = INVALID_HANDLE_VALUE,
+                     DWORD* positionFailure = nullptr) {
+    auto source = emm.lexically_normal();
+    auto table = ReadAssignmentTable(emm, opened, positionFailure, false);
     std::lock_guard<std::mutex> lock(assignmentMutex);
-    assignments.swap(next); // A project without EMM must not retain old aliases.
+    assignments.swap(table.paths); // A project without EMM must not retain old aliases.
+    effectReferences.swap(table.references);
+    assignmentSource.swap(source);
 }
 
 bool RelativePath(const wchar_t* filename, std::wstring& resolved) {
@@ -224,6 +281,204 @@ bool RelativePath(const wchar_t* filename, std::wstring& resolved) {
         }
     }
     return false;
+}
+
+// Caller holds assignmentMutex.
+bool RelocationCurrent() {
+    return projectRelocation.thread == GetCurrentThreadId() && assignmentSource == projectRelocation.source &&
+        !projectRelocation.roots.expired() && !effectReferences.empty();
+}
+
+bool RelocatedEffectPath(const wchar_t* filename, std::wstring& resolved) {
+    const auto* extension = filename ? std::wcsrchr(filename, L'.') : nullptr;
+    if (!extension || _wcsicmp(extension, L".fx") != 0) return false;
+    std::lock_guard<std::mutex> lock(assignmentMutex);
+    // RootMappings belongs to the UI thread. The weak alias expires on reset,
+    // cancellation or scene replacement, including delayed legacy callbacks.
+    if (!RelocationCurrent()) return false;
+    const auto roots = projectRelocation.roots.lock();
+    auto path = fs::path(filename).lexically_normal();
+    if (!path.has_root_path()) path = (ExecutableDirectory() / path).lexically_normal();
+    if (!roots || !MissingFile(path)) return false;
+
+    const auto candidateFor = [&](const fs::path& old) {
+        const auto normalized = project_relocation::NormalizeFile(old.native());
+        if (effectReferences.find(normalized) == effectReferences.end() || !MissingFile(old)) return std::wstring{};
+        auto result = roots->Infer(normalized);
+        if (result.status != project_relocation::Status::Candidate || !RegularFile(result.path)) return std::wstring{};
+        return std::move(result.path);
+    };
+    auto candidate = candidateFor(path);
+    for (const auto& entry : assignments) {
+        if (entry.legacy != path || entry.local == path) continue;
+        auto mapped = candidateFor(entry.local);
+        if (mapped.empty()) continue;
+        if (!candidate.empty() && candidate != mapped) return false;
+        candidate = std::move(mapped);
+    }
+    if (candidate.empty()) return false;
+    resolved = std::move(candidate);
+    return true;
+}
+
+// GetFullPathNameA can only return a spelling that the active code page
+// represents. A real source outside that code page is written as UTF-8 bytes
+// instead, following the native byte-capacity contract: a short buffer reports
+// the required size including the terminator without writing anything, and a
+// successful call returns the byte length without the terminator and points
+// lpFilePart at the last path component.
+bool WriteUtf8FullPath(const std::wstring& source, LPSTR buffer, DWORD length,
+                       LPSTR* filePart, DWORD incomingError, DWORD& written) {
+    std::string encoded;
+    if (!text_encoding::EncodeExact(source.c_str(), CP_UTF8, encoded)) return false;
+    // A longer path cannot be described by the native DWORD contract.
+    if (encoded.size() >= (std::numeric_limits<DWORD>::max)()) return false;
+    const DWORD required = static_cast<DWORD>(encoded.size() + 1);
+    SetLastError(incomingError);
+    if (!buffer || length < required) {
+        written = required;
+        return true;
+    }
+    std::memcpy(buffer, encoded.c_str(), required);
+    if (filePart) {
+        std::size_t offset = 0;
+        for (std::size_t index = encoded.size(); index > 0; --index) {
+            const char character = encoded[index - 1];
+            if (character == '\\' || character == '/') {
+                offset = index;
+                break;
+            }
+        }
+        *filePart = buffer + offset;
+    }
+    written = static_cast<DWORD>(encoded.size());
+    return true;
+}
+
+// Normalize a decoded spelling against the process's real current directory.
+// Nothing here guesses the directory the EXE lives in.
+bool NormalizeAgainstCwd(const std::wstring& decoded, std::wstring& normalized) {
+    normalized.clear();
+    if (decoded.empty()) return false;
+    std::vector<wchar_t> buffer(32768);
+    const DWORD length = ::GetFullPathNameW(decoded.c_str(),
+        static_cast<DWORD>(buffer.size()), buffer.data(), nullptr);
+    if (!length || length >= static_cast<DWORD>(buffer.size())) return false;
+    normalized.assign(buffer.data(), length);
+    return true;
+}
+
+// Accept a spelling only when the exact bytes decode strictly and normalize to
+// an existing regular file.
+bool ExistingRegularPath(const char* bytes, UINT codePage, std::wstring& path) {
+    std::wstring decoded;
+    if (!text_encoding::Decode(bytes, codePage, decoded)) return false;
+    std::wstring normalized;
+    if (!NormalizeAgainstCwd(decoded, normalized) ||
+        !RegularFile(fs::path(normalized))) return false;
+    path = std::move(normalized);
+    return true;
+}
+
+bool RelocatedEffectBytes(const char* bytes, std::wstring& result, UINT* codePage = nullptr) {
+    const auto* extension = bytes ? std::strrchr(bytes, '.') : nullptr;
+    if (!extension || _stricmp(extension, ".fx") != 0) return false;
+    {
+        std::lock_guard<std::mutex> lock(assignmentMutex);
+        if (!RelocationCurrent()) return false;
+    }
+    std::wstring candidate;
+    UINT matchedCodePage = 0;
+    for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
+        std::wstring decoded, path;
+        if (!text_encoding::Decode(bytes, cp, decoded) || !RelocatedEffectPath(decoded.c_str(), path)) continue;
+        if (!candidate.empty() && candidate != path) return false;
+        if (!matchedCodePage) matchedCodePage = cp;
+        candidate = std::move(path);
+    }
+    if (candidate.empty()) return false;
+    std::wstring native, absolute;
+    if (text_encoding::Decode(bytes, GetACP(), native) && NormalizeAgainstCwd(native, absolute) &&
+        !MissingFile(absolute)) return false;
+    result = std::move(candidate);
+    if (codePage) *codePage = matchedCodePage;
+    return true;
+}
+
+// MMEffect expands relative EMM effect entries against its own module
+// directory and normalizes them with GetFullPathNameA. The adapter already
+// maps the exact legacy spelling to the project file for reads, but that
+// mapping is transient: MME keeps the module-relative expansion, so a later
+// Save As records a spelling the next load cannot resolve. Replace the
+// normalized result with the mapped project file's real absolute path so MME
+// holds the real source identity through load and every following save.
+// A source the active code page cannot represent is persisted as UTF-8, and a
+// restarted process without that assignment accepts the saved real UTF-8 file.
+// Only an exact assignment mapping whose local file is a regular file, or an
+// existing regular file named by a strict UTF-8 decode, may change the result.
+// Unmapped names, absolute non-aliases, missing or directory targets, invalid
+// parameters and allocation failures keep the native behavior, including
+// buffer sizing, lpFilePart, output and LastError.
+DWORD WINAPI EffectFullPathNameA(LPCSTR filename, DWORD length, LPSTR buffer,
+                                 LPSTR* filePart) {
+    const DWORD incomingError = GetLastError();
+    try {
+        // Interpret the input only for a valid size query or a usable buffer.
+        if (filename && *filename && (buffer || length == 0)) {
+            std::wstring source;
+            bool mapped = false;
+            // Decode the original bytes before normalizing: GetFullPathNameA
+            // first would already have replaced bytes the active code page
+            // cannot represent.
+            for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
+                std::wstring decoded;
+                if (!text_encoding::Decode(filename, cp, decoded)) continue;
+                std::wstring normalized;
+                if (!NormalizeAgainstCwd(decoded, normalized)) continue;
+                if (RelativePath(normalized.c_str(), source)) {
+                    mapped = true;
+                    break;
+                }
+            }
+            if (!mapped) mapped = RelocatedEffectBytes(filename, source);
+            bool utf8Source = false;
+            if (!mapped) {
+                // A restarted process has no assignment for a source that was
+                // persisted as UTF-8. The native ACP meaning wins when those
+                // same bytes already name an existing file, so ambiguous
+                // input is never claimed.
+                std::wstring acpPath;
+                std::wstring utf8Path;
+                if (!ExistingRegularPath(filename, GetACP(), acpPath) &&
+                    ExistingRegularPath(filename, CP_UTF8, utf8Path)) {
+                    source.swap(utf8Path);
+                    utf8Source = true;
+                }
+            }
+            if (mapped || utf8Source) {
+                // A mapped local path was only lexically normalized. Apply the
+                // same trailing dot/space and separator rules the native call
+                // would, and keep the native path when that check fails.
+                std::wstring normalizedSource;
+                if (NormalizeAgainstCwd(source, normalizedSource)) {
+                    // MME calls ANSI Win32 APIs, so a lossless ACP spelling
+                    // keeps the native call; anything else is returned as
+                    // UTF-8 bytes.
+                    std::string encoded;
+                    if (text_encoding::EncodeExact(normalizedSource.c_str(), GetACP(), encoded)) {
+                        SetLastError(incomingError);
+                        return ::GetFullPathNameA(encoded.c_str(), length, buffer, filePart);
+                    }
+                    DWORD written = 0;
+                    if (WriteUtf8FullPath(normalizedSource, buffer, length, filePart,
+                                          incomingError, written))
+                        return written;
+                }
+            }
+        }
+    } catch (...) { /* Compatibility preparation must not escape a native API. */ }
+    SetLastError(incomingError);
+    return ::GetFullPathNameA(filename, length, buffer, filePart);
 }
 
 HANDLE TrackAssignmentRead(HANDLE file, bool readOnly, DWORD attributes) noexcept {
@@ -243,14 +498,14 @@ HANDLE TrackAssignmentRead(HANDLE file, bool readOnly, DWORD attributes) noexcep
                 if (attributes & FILE_FLAG_OVERLAPPED) {
                     // Never issue synchronous reads on an asynchronous handle.
                     std::lock_guard<std::mutex> lock(assignmentMutex);
-                    assignments.clear();
+                    ClearAssignments();
                 } else ReadAssignments(path, file, &positionFailure);
             }
         }
     } catch (...) {
         // An unreadable new assignment must not reuse the previous project.
         std::lock_guard<std::mutex> lock(assignmentMutex);
-        assignments.clear();
+        ClearAssignments();
     }
     if (positionFailure) {
         // This newly opened handle is still private to the wrapper. Do not
@@ -278,6 +533,7 @@ bool ExistingPath(const char* bytes, std::wstring& path, UINT& codePage,
             return true;
         }
     }
+    if (allowProjectAliases && RelocatedEffectBytes(bytes, path, &codePage)) return true;
     bool nonAscii = false;
     for (const unsigned char* p = reinterpret_cast<const unsigned char*>(bytes); *p; ++p)
         nonAscii |= *p >= 0x80;
@@ -544,7 +800,7 @@ HRESULT WINAPI TraceEffectFile(IDirect3DDevice9* device, LPCWSTR filename, const
     const auto create = originalEffectFile.load(std::memory_order_acquire);
     std::wstring resolved;
     const wchar_t* actual = filename;
-    try { if (RelativePath(filename, resolved)) actual = resolved.c_str(); }
+    try { if (RelativePath(filename, resolved) || RelocatedEffectPath(filename, resolved)) actual = resolved.c_str(); }
     catch (...) { /* Keep the original compiler input on lookup failure. */ }
     runtime_log::WritePath("MME_EFFECT_FILE", actual);
     runtime_log::Write("MME_EFFECT_CREATE function=%p device=%p include=%p pool=%p macros=%p flags=0x%08lX",
@@ -601,6 +857,8 @@ void PatchImports(HMODULE module) {
                         reinterpret_cast<void*>(&OpenEffectFile)},
         {"MultiByteToWideChar", reinterpret_cast<void*>(&MultiByteToWideChar),
                                 reinterpret_cast<void*>(&DecodeEffectPath)},
+        {"GetFullPathNameA", reinterpret_cast<void*>(&GetFullPathNameA),
+                             reinterpret_cast<void*>(&EffectFullPathNameA)},
         {"GetModuleFileNameA", reinterpret_cast<void*>(&GetModuleFileNameA),
                                reinterpret_cast<void*>(&EffectModuleFileNameA)},
     };
@@ -682,12 +940,63 @@ void PrepareEffectProjectPaths(const wchar_t* project) {
             ReadAssignments(pmm_paths::Effect(fs::absolute(project)));
         } else {
             std::lock_guard<std::mutex> lock(assignmentMutex);
-            assignments.clear();
+            ClearAssignments();
+            projectRelocation = {};
         }
     } catch (...) {
         std::lock_guard<std::mutex> lock(assignmentMutex);
-        assignments.clear();
+        ClearAssignments();
     }
+}
+
+std::vector<std::wstring> MissingProjectEffects(const wchar_t* project) {
+    const PreserveLastError error;
+    if (!project || !*project || !LegacyMmeLoaded()) return {};
+    const auto source = pmm_paths::Effect(fs::absolute(project)).lexically_normal();
+    // Recovery reads its own sidecar. MMEffect can read another EMM while a
+    // project is still loading, so its live alias table may be unrelated.
+    const auto table = ReadAssignmentTable(source, INVALID_HANDLE_VALUE, nullptr, true);
+    std::set<fs::path> availableAliases;
+    for (const auto& entry : table.paths)
+        if (table.references.count(entry.local) && !MissingFile(entry.legacy))
+            availableAliases.insert(entry.local);
+    std::set<std::wstring> missing;
+    for (const auto& spellings : table.referenceSpellings) {
+        if (std::all_of(spellings.begin(), spellings.end(), [&](const auto& path) {
+                return !availableAliases.count(path) && MissingFile(path);
+            }))
+            for (const auto& path : spellings) missing.insert(path.native());
+    }
+    return {missing.begin(), missing.end()};
+}
+
+bool CompileLegacyMmeRecoveryEffect(IDirect3DDevice9* device, const wchar_t* path) {
+    const auto compile = originalEffectFile.load(std::memory_order_acquire);
+    if (!device || !compile || !LegacyMmeLoaded() || !RegularFile(path)) return false;
+    DWORD mipFilter = 0;
+    device->GetSamplerState(1, D3DSAMP_MIPFILTER, &mipFilter);
+    struct Macro { const char* name; const char* value; };
+    const Macro macros[] = {{"_INDEX", "PSIZE15"},
+        {mipFilter ? "MME_MIPMAP" : nullptr, mipFilter ? "" : nullptr}, {nullptr, nullptr}};
+    // Use an independent effect here; the plugin binds its own effect after
+    // the PMM's model slots are complete.
+    constexpr DWORD backwardsCompatibility = 0x1000;
+    void* effect = nullptr;
+    const HRESULT result = compile(device, path, macros, nullptr, backwardsCompatibility, nullptr, &effect, nullptr);
+    if (effect) static_cast<IUnknown*>(effect)->Release();
+    runtime_log::Write("MME recovery FX compile hr=0x%08lX", static_cast<unsigned long>(result));
+    return SUCCEEDED(result) && effect;
+}
+
+void PublishEffectProjectRelocation(const wchar_t* project,
+        std::weak_ptr<const project_relocation::RootMappings> roots) noexcept {
+    const PreserveLastError error;
+    try {
+        if (!project || !*project || roots.expired()) return;
+        auto source = pmm_paths::Effect(fs::absolute(project)).lexically_normal();
+        std::lock_guard<std::mutex> lock(assignmentMutex);
+        projectRelocation = {std::move(source), std::move(roots), GetCurrentThreadId()};
+    } catch (...) { /* Optional path recovery cannot fail an accepted PMM. */ }
 }
 
 std::wstring EffectProjectNotificationPath(const wchar_t* project) noexcept {

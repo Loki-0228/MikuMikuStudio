@@ -286,15 +286,6 @@ static void CheckCameraHoldSamples() {
     };
     check();
     Check(curve_host::Write(*app, curve_host::Kind::Camera, 0, channels, error), "write one-frame camera hold fixture");
-    app->PlaybackActive() = 1;
-    curve_host::Apply(app.get(), curve_host::Kind::Camera, 12.5);
-    Check(app->CameraPositionAxis(0) == 5.f, "default playback holds an adjacent camera interval");
-    app->PlaybackTiming().interpolate = true;
-    curve_host::Apply(app.get(), curve_host::Kind::Camera, 12.5);
-    Check(app->CameraPositionAxis(0) > 5.f && app->CameraPositionAxis(0) < 11.f,
-          "continuous playback samples the authored native timing between adjacent camera frames");
-    app->PlaybackActive() = 0;
-    app->PlaybackTiming().interpolate = false;
     for (unsigned i = 0; i < 4; ++i)
         Check(app->CameraKeys()[i].frame == frames[i] && app->CameraKeys()[i].eye[0] == positions[i],
             "unchanged curve write preserves both sides of the native camera cut");
@@ -668,7 +659,15 @@ int main(){
     INITCOMMONCONTROLSEX common{sizeof(common),ICC_STANDARD_CLASSES};InitCommonControlsEx(&common);
     HWND parent=CreateWindowExW(0,L"STATIC",L"curve host test",WS_OVERLAPPEDWINDOW,0,0,1100,760,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     Check(parent!=nullptr,"hidden host window");
-    HMENU menu=CreateMenu(),file=CreatePopupMenu();AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(file),L"File");SetMenu(parent,menu);
+    HMENU menu = CreateMenu(), file = CreatePopupMenu();
+    Check(menu && file &&
+          AppendMenuW(file, MF_STRING, 209, L"Load motion data") &&
+          AppendMenuW(file, MF_STRING, 210, L"Save motion data") &&
+          AppendMenuW(file, MF_SEPARATOR, 0, nullptr) &&
+          AppendMenuW(file, MF_STRING, 206, L"Load audio") &&
+          AppendMenuW(file, MF_STRING, 200, L"Exit") &&
+          AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"File") &&
+          SetMenu(parent, menu), "file menu fixture");
     for(int id=471;id<=487;++id){
         const bool combo=id==471||id==474||id==475;
         auto control=CreateWindowExW(0,combo?L"COMBOBOX":id>=478&&id<=485?L"EDIT":L"BUTTON",L"",WS_CHILD|(combo?CBS_DROPDOWNLIST:0),868,620,100,22,parent,reinterpret_cast<HMENU>(INT_PTR(id)),GetModuleHandleW(nullptr),nullptr);
@@ -692,7 +691,14 @@ int main(){
     curve_host::LayoutControls(app.get());
     for(unsigned lang=0;lang<3;++lang){app->EnglishUI()=uint8_t(lang);curve_host::Localize(app.get());
         wchar_t text[64]{};GetWindowTextW(GetDlgItem(parent,472),text,64);Check(wcslen(text)>0,"localized load label");
-        Check(GetMenuState(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND)!=UINT(-1),"explicit accessory VMD menu exists");
+        MENUITEMINFOW separator{};
+        separator.cbSize = sizeof(separator);
+        separator.fMask = MIIM_FTYPE;
+        Check(GetMenuItemCount(file) == 6 && GetMenuItemID(file, 0) == 209 &&
+              GetMenuItemID(file, 1) == 210 && GetMenuItemID(file, 2) == curve_editor::kAccessoryMotionMenu &&
+              GetMenuItemInfoW(file, 3, TRUE, &separator) && (separator.fType & MFT_SEPARATOR) &&
+              GetMenuItemID(file, 4) == 206 && GetMenuItemID(file, 5) == 200,
+              "accessory motion menu stays in the motion group through localization");
         const int previousMode=app->CameraMode();
         for(int mode:{0,1,0,1}) {
             app->CameraMode()=mode;curve_host::Localize(app.get());

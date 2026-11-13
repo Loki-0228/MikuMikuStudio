@@ -7,6 +7,15 @@
 #include "mikumikustudio/history_physics.hpp"
 
 namespace mikumikustudio::plugins {
+#if !MMD_ORIGINAL_PROFILE
+// Allocation-free checked bound for SceneObjectIdentity(token), including new
+// registry nodes and Entry's empty element-map sentinel/proxies/move storage.
+// Existing live identities cost zero. Registered-but-absent identities and
+// exhausted generation/capacity return non-success. Do not create IDs, call Get
+// or mutate either registry;
+// on failure bytes is unchanged. Opaque OS entropy/CRT storage is excluded.
+MmsResult MeasureSceneObjectIdentityPreparation(const void* token,std::uint64_t& bytes) noexcept;
+#endif
 // One shared owner per native object. The active scene owns the live object;
 // this holder owns it while absent. Callers must use this lifecycle for every
 // removal and release all holders before destroying the app/physics world.
@@ -23,6 +32,9 @@ class RetainedSceneObject : public std::enable_shared_from_this<RetainedSceneObj
         const std::vector<std::shared_ptr<RetainedSceneObject>>&, uint64_t, bool,
         std::shared_ptr<HistoryChange>&, std::unique_ptr<PreparedHistoryChange>&);
     friend std::shared_ptr<RetainedSceneObject> RetainSceneObject(MMDApp&, uint32_t, unsigned);
+#if !MMD_ORIGINAL_PROFILE
+    friend MmsResult MeasureGlobalDeletionParentPreparation(MMDApp&,unsigned,std::uint64_t&) noexcept;
+#endif
     static std::shared_ptr<HistoryChange> MakeImport(std::shared_ptr<RetainedSceneObject>,
         std::shared_ptr<import_texture_cache::Retained>, std::unique_ptr<import_texture_cache::Publication>,
         std::unique_ptr<history_physics::ImportScene::Publication>);
@@ -94,4 +106,14 @@ public:
         std::shared_ptr<import_texture_cache::Retained>, std::unique_ptr<import_texture_cache::Publication>);
 };
 std::shared_ptr<RetainedSceneObject> RetainSceneObject(MMDApp&, uint32_t kind, unsigned slot);
+#if !MMD_ORIGINAL_PROFILE
+// Read-only checked allocation bound for RetainSceneObject(app, MODEL, slot).
+// Caller holds the scene gate. Existing live holders cost zero. Fresh holders
+// include physics bookkeeping capture, not resident model/mesh/Bullet resources.
+// An object without a published identity is NOT_READY: cancellable preparation
+// must not register permanent identities. Failure leaves bytes unchanged.
+MmsResult MeasureGlobalDeletionParentPreparation(MMDApp&,unsigned slot,std::uint64_t& bytes) noexcept;
+// Same query for model deletion's sentinel-based budget API.
+std::uint64_t ModelDeletionOwnerPreparationBytes(MMDApp&,unsigned modelSlot) noexcept;
+#endif
 }

@@ -65,6 +65,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <optional>
 
 #include "mikumikustudio/adaptive_shadow.hpp"
 #include "mikumikustudio/mmd_app.hpp"
@@ -77,11 +78,12 @@
 #include "mikumikustudio/bone_scale.hpp"
 #include "transform_edit_layout.hpp"
 #if !MMD_ORIGINAL_PROFILE
+#include "mikumikustudio/plugin_scene.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_global_commands.hpp"
 #include "../plugins/native_morph_commands.hpp"
-#include "light_slider_paint_buffer.hpp"
+#include "bottom_panel_control_paint.hpp"
 #endif
 
 namespace mikumikustudio {
@@ -104,6 +106,82 @@ namespace {
 // Active model = slot array app+0x780 indexed by byte app+0x910.
 unsigned char* SlotModel(MMDApp* app) {
     return app->SelectedModel();
+}
+
+bool IsBoneReadout(int id) noexcept {
+    return (id >= panel::kReadoutPosXEdit && id <= panel::kReadoutRotZEdit) ||
+        id == panel::kReadoutScaleXEdit || id == panel::kReadoutScaleYEdit ||
+        id == panel::kReadoutScaleZEdit;
+}
+
+struct BoneReadoutDraft {
+    MMDApp* app;
+    HWND field, owner;
+    std::uint64_t scene;
+    int frame;
+    unsigned slot;
+    unsigned char* model;
+    const mdl::BoneRecord* table = nullptr;
+    int bone = -1;
+#if !MMD_ORIGINAL_PROFILE
+    MmsObjectRef identity{};
+#endif
+
+    bool Current(MMDApp& live) const noexcept {
+        if (app != &live || live.CameraMode() || live.sceneRecoveryPending ||
+            live.SceneMutationInProgress() || live.SceneGeneration() != scene ||
+            live.CurrentFrame() != frame || live.SelectedModelSlot() != slot ||
+            live.SelectedModel() != model || !model || !table || bone < 0 ||
+            owner != (live.FloatingWindow() ? live.FloatingWindow() : live.MainWindow()))
+            return false;
+#if !MMD_ORIGINAL_PROFILE
+        if (identity.id.lo || identity.id.hi) {
+            MmsObjectRef current{};
+            if (!plugins::FindSceneObjectIdentity(model, current) || current.id.lo != identity.id.lo ||
+                current.id.hi != identity.id.hi || current.generation != identity.generation)
+                return false;
+        }
+#endif
+        const auto& native = *mdl::Mdl(model);
+        return native.boneTable == table && native.selectedBone == bone &&
+            static_cast<unsigned>(bone) < native.boneCount;
+    }
+};
+
+// Only one field can receive keyboard focus on this UI thread.
+thread_local std::optional<BoneReadoutDraft> boneReadoutDraft;
+
+void BeginBoneReadoutDraft(MMDApp& app, HWND field, int id) {
+    const HWND owner = app.FloatingWindow() ? app.FloatingWindow() : app.MainWindow();
+    if (!IsBoneReadout(id) || app.CameraMode() || GetDlgItem(owner, id) != field) return;
+    auto* model = app.SelectedModel();
+    BoneReadoutDraft draft{&app, field, owner, app.SceneGeneration(), app.CurrentFrame(),
+        app.SelectedModelSlot(), model};
+    if (model) {
+        const auto& native = *mdl::Mdl(model);
+        draft.table = native.boneTable;
+        draft.bone = native.selectedBone;
+#if !MMD_ORIGINAL_PROFILE
+        plugins::FindSceneObjectIdentity(model, draft.identity);
+#endif
+    }
+    boneReadoutDraft = draft;
+}
+
+bool DiscardStaleBoneReadout(MMDApp& app, HWND field) {
+    if (!boneReadoutDraft || boneReadoutDraft->field != field) return false;
+    const auto draft = *boneReadoutDraft;
+    boneReadoutDraft.reset();
+    if (draft.Current(app)) return false;
+    app.state.enterKeyState = 3;
+    if (!SendMessageA(field, EM_GETMODIFY, 0, 0)) return true;
+    SendMessageA(field, EM_SETMODIFY, FALSE, 0);
+    if (g_Block == &app && IsWindow(field) && !app.sceneRecoveryPending &&
+        !app.SceneMutationInProgress() && !app.FrameStepPlayback() &&
+        !app.state.recordPlaybackStartPending &&
+        GetParent(field) == (app.FloatingWindow() ? app.FloatingWindow() : app.MainWindow()))
+        PostViewRefresh(&app);
+    return true;
 }
 
 // Light accessory = array app+0x9DD70 indexed by byte app+0x9E170.
@@ -362,6 +440,14 @@ void CommitEditControlTail(MMDApp* app, HWND edit) {  // was Sub44BEF0
     if (base == nullptr)
         base = app->MainWindow();
     const bool cameraMode = app->CameraMode() != 0;
+    if (!cameraMode && edit && IsBoneReadout(GetDlgCtrlID(edit)) &&
+        GetParent(edit) == base) {
+        const auto* model = app->SelectedModel();
+        const auto* native = model ? mdl::Mdl(model) : nullptr;
+        if (!native || !native->boneTable || !native->bonePhysicsState ||
+            native->selectedBone < 0 || static_cast<unsigned>(native->selectedBone) >= native->boneCount)
+            return;
+    }
 #if !MMD_ORIGINAL_PROFILE
     if(CommitBoundCameraNumber(app,edit,base))return;
     if(CommitBoundPoseNumber(app,edit,base))return;
@@ -757,20 +843,25 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
     const auto windowProc = prefixMessage ? GetWindowLongPtrW(hWnd, GWLP_WNDPROC) : 0;
     const DWORD thread = prefixMessage ? GetWindowThreadProcessId(hWnd, nullptr) : 0;
 
-    if (Msg == WM_KEYDOWN) {
+    if (Msg == WM_SETFOCUS) {
+        BeginBoneReadoutDraft(*app, hWnd, controlId);
+    } else if (Msg == WM_NCDESTROY) {
+        if (boneReadoutDraft && boneReadoutDraft->field == hWnd) boneReadoutDraft.reset();
+    } else if (Msg == WM_KEYDOWN) {
         if (wParam == 13) {                          // VK_RETURN
             // Moving focus commits through WM_KILLFOCUS. Do not create a
             // second undo entry for the same value when Enter is pressed.
-            if (GetFocus() != hWnd)
+            if (GetFocus() != hWnd && !DiscardStaleBoneReadout(*app, hWnd))
                 CommitEditControl(app, hWnd);
-            SetFocus(app->MainWindow());
+            if (g_Block == app) SetFocus(app->MainWindow());
             return 0;
         }
     } else if (Msg == WM_KILLFOCUS) {
         // wParam is the next focus window, not the field being edited.
         // The typing is being committed: let the view refresh echo it back.
         bool boundPose=false;
-        bool shouldCommit=true;
+        bool shouldCommit = !DiscardStaleBoneReadout(*app, hWnd);
+        if (g_Block != app || !IsWindow(hWnd)) return 0;
 #if !MMD_ORIGINAL_PROFILE
         HWND base=app->FloatingWindow()?app->FloatingWindow():app->MainWindow();
         int kind=-1,axis=-1;
@@ -829,48 +920,17 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
 // ---------------------------------------------------------------------------
 // VA 0x0040EC90 - trackbar subclass proc.
 // ---------------------------------------------------------------------------
+#if MMD_ORIGINAL_PROFILE
 LRESULT CALLBACK TrackbarSubclassProc(HWND hWnd, UINT Msg, WPARAM wParam,
                                       LPARAM lParam) {
     MMDApp* app = g_Block;
-#if !MMD_ORIGINAL_PROFILE
-    // Mouse dragging should not flash the keyboard focus rectangle around the
-    // complete slider. Preserve native focus/capture and restore the cue for
-    // keyboard or programmatic focus, including Tab navigation into this HWND.
-    static thread_local HWND mouseFocusTarget = nullptr;
-    struct RestoreMouseFocusTarget {
-        HWND& target; HWND previous;
-        ~RestoreMouseFocusTarget() { target = previous; }
-    } restoreMouseFocusTarget{mouseFocusTarget, mouseFocusTarget};
-    const bool mouseFocus = Msg == WM_LBUTTONDOWN || Msg == WM_LBUTTONDBLCLK;
-    if (mouseFocus) mouseFocusTarget = hWnd;
-    const bool keyboardNavigation = Msg == WM_KEYDOWN &&
-        (wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN ||
-         wParam == VK_HOME || wParam == VK_END || wParam == VK_PRIOR || wParam == VK_NEXT || wParam == VK_TAB);
-    if (mouseFocus || keyboardNavigation || (Msg == WM_SETFOCUS && mouseFocusTarget != hWnd)) {
-        const bool hidden = (SendMessageW(hWnd, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS) != 0;
-        if (hidden != mouseFocus)
-            SendMessageW(hWnd, WM_UPDATEUISTATE, MAKEWPARAM(mouseFocus ? UIS_SET : UIS_CLEAR, UISF_HIDEFOCUS), 0);
-    }
-#endif
-    // Keep native WM_PAINT initialization and input. The full profile can
-    // commit one complete native paint during a captured divider gesture or
-    // the separately admitted held-light route; other input stays native.
     if (Msg == WM_LBUTTONUP)
         SetFocus(app->MainWindow());
-#if !MMD_ORIGINAL_PROFILE
-    const ui::light_slider_paint_buffer::LayoutContext layout{
-        app->MainWindow(),app,[](void* host) noexcept {
-            auto& value=*static_cast<MMDApp*>(host);
-            return value.SidebarResizeDragging()!=0||value.bottomPanelSizing.dragging>=0;
-        }};
-    return ui::light_slider_paint_buffer::Forward(
-        app->OriginalTrackbarProc(), hWnd, Msg, wParam, lParam, layout);
-#else
     return CallWindowProcA(
         app->OriginalTrackbarProc(),
         hWnd, Msg, wParam, lParam);
-#endif
 }
+#endif
 
 // ---------------------------------------------------------------------------
 // The 42 SetWindowLongPtrA(GWLP_WNDPROC) install sites of sub_466D20
@@ -886,10 +946,12 @@ void InstallControlSubclasses(MMDApp* app, HWND hwnd) {
         506, 511, 516, 521, 544, 545, 546, 547, 548, 549, 550, 554, 561,
         572, 575, 577,
     };
+#if MMD_ORIGINAL_PROFILE
     static const int kTrackIds[] = {
         447, 455, 456, 457, 458, 459, 460,
         505, 510, 515, 520, 534, 560,
     };
+#endif
 
     HWND firstEdit = GetDlgItem(hwnd, panel::kCurrentFrameEdit);
     app->OriginalEditProc() = reinterpret_cast<WNDPROC>(
@@ -897,11 +959,13 @@ void InstallControlSubclasses(MMDApp* app, HWND hwnd) {
     SetWindowLongPtrA(firstEdit, GWLP_WNDPROC,
                    reinterpret_cast<LONG_PTR>(EditSubclassProc));
 
+#if MMD_ORIGINAL_PROFILE
     HWND firstTrack = GetDlgItem(hwnd, panel::kFovSlider);
     app->OriginalTrackbarProc() = reinterpret_cast<WNDPROC>(
         GetWindowLongPtrA(firstTrack, GWLP_WNDPROC));    // 0x4686E2
     SetWindowLongPtrA(firstTrack, GWLP_WNDPROC,
                    reinterpret_cast<LONG_PTR>(TrackbarSubclassProc));
+#endif
 
     for (int id : kEditIds) {
         if (id == 417)
@@ -909,12 +973,17 @@ void InstallControlSubclasses(MMDApp* app, HWND hwnd) {
         SetWindowLongPtrA(GetDlgItem(hwnd, id), GWLP_WNDPROC,
                        reinterpret_cast<LONG_PTR>(EditSubclassProc));
     }
+#if MMD_ORIGINAL_PROFILE
     for (int id : kTrackIds) {
         if (id == 447)
             continue;
         SetWindowLongPtrA(GetDlgItem(hwnd, id), GWLP_WNDPROC,
                        reinterpret_cast<LONG_PTR>(TrackbarSubclassProc));
     }
+#else
+    for (HWND control = GetWindow(hwnd, GW_CHILD); control; control = GetWindow(control, GW_HWNDNEXT))
+        ui::AttachBottomTrackbar(*app, control);
+#endif
 }
 
 void InstallControlSubclass(MMDApp* app, HWND control, int id) {
@@ -924,10 +993,12 @@ void InstallControlSubclass(MMDApp* app, HWND control, int id) {
         506, 511, 516, 521, 544, 545, 546, 547, 548, 549, 550, 554, 561,
         572, 575, 577,
     };
+#if MMD_ORIGINAL_PROFILE
     static const int kTrackIds[] = {
         447, 455, 456, 457, 458, 459, 460,
         505, 510, 515, 520, 534, 560,
     };
+#endif
     if (control == nullptr)
         return;
     for (int editId : kEditIds) {
@@ -941,6 +1012,7 @@ void InstallControlSubclass(MMDApp* app, HWND control, int id) {
                        reinterpret_cast<LONG_PTR>(EditSubclassProc));
         return;
     }
+#if MMD_ORIGINAL_PROFILE
     for (int trackId : kTrackIds) {
         if (id != trackId)
             continue;
@@ -952,6 +1024,9 @@ void InstallControlSubclass(MMDApp* app, HWND control, int id) {
                        reinterpret_cast<LONG_PTR>(TrackbarSubclassProc));
         return;
     }
+#else
+    ui::AttachBottomTrackbar(*app, control);
+#endif
 }
 
 }  // namespace mikumikustudio

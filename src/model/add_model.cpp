@@ -5,8 +5,9 @@
 // this+1920,
 // allocates the 0x4CCF4 block (operator new + memset + default init
 // 0x4A8DC0), runs the loader 0x4BF3E0, and on success registers the model
-// name in the three comboboxes (436/474/449 via CB_ADDSTRING), selects it
-// (CB_SETCURSEL), refreshes the bone/morph selectors (0x42F1E0 chain),
+// name in the three comboboxes (436/474/449 via CB_ADDSTRING, one
+// CB_SETITEMDATA = slot per created row), selects it (CB_SETCURSEL),
+// refreshes the bone/morph selectors (0x42F1E0 chain),
 // resets the manipulation radios (BM_SETCHECK), enables the model-dependent
 // menu items, and toggles the physics menu-item state (SetMenuItemInfoA).
 // On failure the model is disposed (0x48F830) and the slot cleared.
@@ -54,6 +55,21 @@ HMENU HelpMenuFromBar(HMENU menu) {
     return nullptr;
 }
 
+// The model combos are managed selectors: row zero carries item data -1 and
+// every model row must carry its real slot, otherwise model_order::Resolve
+// refuses the list (see model_order_projection.hpp). Register the row this
+// combo itself created; a negative CB_ADDSTRING result is not a row to
+// address with CB_SETITEMDATA.
+LRESULT AddModelComboRow(HWND hwnd, int comboId, const wchar_t* name, int slot) {
+    const HWND combo = GetDlgItem(hwnd, comboId);
+    const LRESULT row = SendMessageW(combo, CB_ADDSTRING, 0,
+                                     reinterpret_cast<LPARAM>(name));
+    if (row >= 0)
+        SendMessageW(combo, CB_SETITEMDATA, static_cast<WPARAM>(row),
+                     static_cast<LPARAM>(slot));
+    return row;
+}
+
 }  // namespace
 
 void LoadModelFile(MMDApp* app, const wchar_t* path, bool showModelInfo) { // 0x460430
@@ -96,13 +112,10 @@ void LoadModelFile(MMDApp* app, const wchar_t* path, bool showModelInfo) { // 0x
                      app->PathWorkspace())) {       // 0x4BF3E0
         app->SceneModified() = 1;
         const auto name = text_encoding::ModelLabel(*mdl::Mdl(model), UiUsesEnglishNames(app->EnglishUI()));
-        mdl::Mdl(model)->comboSelIndex = static_cast<std::uint8_t>(SendMessageW(
-            GetDlgItem(hwnd, panel::kMainComboModel), CB_ADDSTRING, 0,
-            reinterpret_cast<LPARAM>(name.c_str())));
-        SendMessageW(GetDlgItem(hwnd, panel::kMainComboGround), CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(name.c_str()));
-        SendMessageW(GetDlgItem(hwnd, panel::kMainComboNormal), CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(name.c_str()));
+        mdl::Mdl(model)->comboSelIndex = static_cast<std::uint8_t>(
+            AddModelComboRow(hwnd, panel::kMainComboModel, name.c_str(), slot));
+        AddModelComboRow(hwnd, panel::kMainComboGround, name.c_str(), slot);
+        AddModelComboRow(hwnd, panel::kMainComboNormal, name.c_str(), slot);
         mdl::Mdl(model)->comboSelIndex2 = mdl::Mdl(model)->comboSelIndex;
         SendMessageA(GetDlgItem(hwnd, panel::kMainComboModel), CB_SETCURSEL,
                      mdl::Mdl(model)->comboSelIndex, 0);

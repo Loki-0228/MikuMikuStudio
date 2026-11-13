@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -10,7 +11,7 @@
 // Internal Win7 file primitives for the cache manager. This layer does not grant
 // cache policy, capacity, pinning or eviction permission. The manager owns those.
 namespace mikumikustudio::cache_files {
-enum class Result { Ok, Missing, Invalid, Corrupt, Busy, Io, Conflict, Limit, DeletePending };
+enum class Result { Ok, Missing, Invalid, Corrupt, Busy, Io, Conflict, Limit, DeletePending, Cancelled, CleanupRequired };
 enum class Kind : std::uint32_t { Effect = 1, Texture = 2, CatalogSnapshot = 3, CatalogCommit = 4, CatalogCheckpoint = 5, IndexPage = 6, CatalogIntent = 7 };
 using Owner = std::array<std::uint8_t, 16>;
 using Digest = std::array<std::uint8_t, 32>;
@@ -26,9 +27,60 @@ struct Identity {
     std::uint64_t fileIndex = 0;
     std::uint64_t fileBytes = 0;
 };
+// Mark only the inventoried file for deletion on the handle that verifies it.
+// The caller supplies the cache policy and the authorized path.
+Result DeleteObservedFile(const std::filesystem::path& path, const Identity& expected) noexcept;
 struct DirectoryIdentity {
     std::uint32_t volume = 0;
     std::uint64_t fileIndex = 0;
+};
+enum class ObservationKind { File, Directory };
+struct ObservationLimits {
+    std::uint32_t maximumStreams = 128;
+    std::size_t maximumStreamBufferBytes = 256 * 1024;
+};
+struct FileObservation {
+    Identity identity{}; // fileBytes is the default stream's logical length
+    std::uint64_t allocationBytes = 0; // default stream, not whole-volume usage
+    // Full reported stream totals, including the default stream when present;
+    // do not add identity.fileBytes/allocationBytes to these a second time.
+    std::uint64_t streamLogicalBytes = 0, streamAllocationBytes = 0;
+    std::uint32_t attributes = 0, links = 0, streamCount = 0;
+    ObservationKind kind = ObservationKind::File;
+    bool deletePending = false, namedStreamsSupported = false;
+};
+struct InventoryEntry {
+    std::wstring relativePath; // root is empty; all children use backslashes
+    std::uint32_t depth = 0;
+    FileObservation observed;
+};
+struct InventoryLimits {
+    std::size_t maximumEntries = 4096;
+    std::uint32_t maximumDepth = 16;
+    std::size_t maximumNameCodeUnits = 1024 * 1024;
+    std::size_t maximumDirectoryGuards = 1024;
+    ObservationLimits observation;
+};
+struct InventoryState;
+// Metadata snapshots, not immutable data pins or an atomic tree snapshot.
+// Holds the original ancestor chain and visited directory guards, but closes
+// ordinary file metadata handles after observing them. External writers may
+// change files or create new entries after observation. Cooperative admission
+// must use its common writer lock. Nothing here grants ownership or deletion.
+class InventorySnapshot {
+public:
+    InventorySnapshot() noexcept;
+    ~InventorySnapshot();
+    InventorySnapshot(InventorySnapshot&&) noexcept;
+    InventorySnapshot& operator=(InventorySnapshot&&) noexcept;
+    InventorySnapshot(const InventorySnapshot&) = delete;
+    InventorySnapshot& operator=(const InventorySnapshot&) = delete;
+    bool IsValid() const noexcept;
+    const DirectoryIdentity& RootIdentity() const noexcept;
+    const std::vector<InventoryEntry>& Entries() const noexcept;
+private:
+    friend class Directory;
+    std::unique_ptr<InventoryState> state_;
 };
 struct BlobInfo {
     std::wstring name;
@@ -51,6 +103,87 @@ struct DirectoryState;
 struct LeaseState;
 struct LockState;
 struct PreparedWriteState;
+struct RawSourceWriteState;
+struct RawSourceLeaseState;
+struct RawSourceCleanupState;
+struct RawSourceInfo {
+    std::wstring name;
+    Identity identity{};
+    Digest payloadDigest{};
+    std::uint64_t payloadBytes = 0;
+};
+struct RawSourcePlan {
+    std::wstring name;
+    Identity createdIdentity{};
+    std::uint64_t sourceBytes = 0;
+};
+// Receipt for a failed CREATE_NEW operation whose same-handle cleanup failed.
+// The upper layer must retain it and account for the pending file. No identity
+// query or path lookup is necessary to retry deletion of this exact handle.
+class RawSourceCleanup {
+public:
+    RawSourceCleanup() noexcept;
+    ~RawSourceCleanup();
+    RawSourceCleanup(RawSourceCleanup&&) noexcept;
+    RawSourceCleanup& operator=(RawSourceCleanup&&) noexcept;
+    RawSourceCleanup(const RawSourceCleanup&) = delete;
+    RawSourceCleanup& operator=(const RawSourceCleanup&) = delete;
+    bool IsValid() const noexcept;
+    const std::wstring& Name() const noexcept;
+    Result Abort() noexcept;
+    Result Observe(FileObservation& output, const ObservationLimits& limits = {}) const noexcept;
+    // Destruction/move replacement only closes; never discards a file by name.
+private:
+    friend class Directory;
+    std::unique_ptr<RawSourceCleanupState> state_;
+};
+// Raw encoded bytes have no cache envelope and can be opened by a decoder.
+// These primitives grant no quota, ownership recovery or cleanup permission.
+// Objects may move between threads; calls on one object must be serialized.
+class RawSourceLease {
+public:
+    RawSourceLease() noexcept;
+    ~RawSourceLease();
+    RawSourceLease(RawSourceLease&&) noexcept;
+    RawSourceLease& operator=(RawSourceLease&&) noexcept;
+    RawSourceLease(const RawSourceLease&) = delete;
+    RawSourceLease& operator=(const RawSourceLease&) = delete;
+    bool IsValid() const noexcept;
+    const RawSourceInfo& Info() const noexcept;
+    // Fixed volume-GUID absolute path. Keep this lease alive through every
+    // decoder open/use; closing it does not remove or authorize removing a file.
+    const std::wstring& Path() const noexcept;
+private:
+    friend class Directory;
+    friend class RawSourceWrite;
+    std::unique_ptr<RawSourceLeaseState> state_;
+};
+class RawSourceWrite {
+public:
+    RawSourceWrite() noexcept;
+    ~RawSourceWrite();
+    RawSourceWrite(RawSourceWrite&&) noexcept;
+    RawSourceWrite& operator=(RawSourceWrite&&) noexcept;
+    RawSourceWrite(const RawSourceWrite&) = delete;
+    RawSourceWrite& operator=(const RawSourceWrite&) = delete;
+    bool IsValid() const noexcept;
+    const RawSourcePlan& Plan() const noexcept;
+    // Same-handle metadata only. A valid plan with an already closed writer
+    // returns Busy; observation never reopens it by name.
+    Result Observe(FileObservation& output, const ObservationLimits& limits = {}) const noexcept;
+    // Failure preserves output and the cleanup plan, including after closing
+    // the exclusive writer. Retrying restarts the bounded streaming copy.
+    // Cancellation is polled between chunks, never invokes user code.
+    Result Complete(RawSourceLease& output, const std::atomic_bool* cancelled = nullptr) noexcept;
+    // Explicit same-handle disposition. A closed writer is reopened only after
+    // identity verification. DeletePending is not physical reclamation.
+    Result Abort() noexcept;
+    // Destruction/move replacement only closes handles: the upper layer must
+    // preserve plans and account for every uncompleted or pending file.
+private:
+    friend class Directory;
+    std::unique_ptr<RawSourceWriteState> state_;
+};
 
 class PreparedWrite {
 public:
@@ -62,6 +195,7 @@ public:
     PreparedWrite& operator=(const PreparedWrite&) = delete;
     bool IsValid() const noexcept;
     const WritePlan& Plan() const noexcept;
+    Result Observe(FileObservation& output, const ObservationLimits& limits = {}) const noexcept;
     // Checks this pinned handle against the plan. Short files are incomplete;
     // full-length files must pass envelope/digest verification. Failure leaves
     // complete unchanged and never authorizes recovery by itself.
@@ -107,6 +241,7 @@ public:
     FileLock(const FileLock&) = delete;
     FileLock& operator=(const FileLock&) = delete;
     bool IsValid() const noexcept;
+    Result Observe(FileObservation& output, const ObservationLimits& limits = {}) const noexcept;
 private:
     friend class Directory;
     std::unique_ptr<LockState> state_;
@@ -128,6 +263,38 @@ public:
     // Shares the already pinned directory and all ancestor guards without
     // resolving a DOS path again. Failure preserves output; self-share is valid.
     Result Share(Directory& output) const noexcept;
+    // Source must be a nonempty disk file without a final reparse
+    // point, with a 1..16 ASCII alphanumeric extension. The extension is retained
+    // in lowercase: <32 random lowercase hex>.raw.<extension>. Success creates
+    // only a zero-length file; persist its intent before Complete. Failure
+    // preserves output. cleanup must be empty (otherwise Busy, no changes).
+    // CleanupRequired is the ONLY result publishing cleanup: identity capture
+    // and same-handle deletion both failed; retain its exclusive handle until
+    // explicit Abort succeeds. All other results leave cleanup empty. Never
+    // infer ownership from name or silently discard a cleanup receipt.
+    // Source hard links are allowed: the read pin blocks writers through every
+    // link. Cache generations themselves must always have exactly one link.
+    Result PrepareRawSource(const wchar_t* originalPath, std::uint64_t maximumBytes,
+        RawSourceWrite& output, RawSourceCleanup& cleanup) const noexcept;
+    // Caller must first verify a durable intent authorizing this exact root
+    // and plan. Neither a filename nor a matching identity establishes ownership.
+    // Opens exclusively with READ|DELETE, checks single-link identity and a
+    // length no greater than sourceBytes, then returns same-handle cleanup.
+    // Does not read the original source, resume copying or adopt unknown files.
+    // A nonempty output is Busy; all failures preserve output and disk contents.
+    Result RecoverRawSourceCleanup(const DirectoryIdentity& expectedRoot,
+        const RawSourcePlan& plan, RawSourceCleanup& output) const noexcept;
+    // Completed capture recovery: the caller supplies a trusted durable record.
+    // Verifies root, exact immutable identity/length and the full payload digest
+    // under one exclusive READ|DELETE handle. Success only returns that handle
+    // as a cleanup receipt; it does not delete or grant ownership by filename.
+    // Nonempty output is Busy; every failure preserves output and file bytes.
+    Result RecoverRawSourceCleanup(const DirectoryIdentity& expectedRoot,
+        const RawSourceInfo& captured, RawSourceCleanup& output) const noexcept;
+    Result AcquireRawSource(const RawSourceInfo& expected, RawSourceLease& output) const noexcept;
+    // Verifies identity, length and digest under an exclusive handle. Active
+    // read leases make this Busy; successful disposition returns DeletePending.
+    Result RemoveRawSource(const RawSourceInfo& expected) const noexcept;
     // Identity of the protected directory handle, not a blob's size/identity.
     Result GetIdentity(DirectoryIdentity& output) const noexcept;
     // Opens one validated child using this directory's pinned volume path.
@@ -135,6 +302,9 @@ public:
     Result Child(const std::wstring& name, bool create, Directory& output) const noexcept;
     // Per-open byte locks can move between threads. No callbacks under this lock.
     Result Lock(std::uint32_t waitMilliseconds, FileLock& output) const noexcept;
+    // Same exclusion protocol, but never creates a missing .lock file. Used by
+    // read-only budget inspection; Missing/Busy/errors preserve output.
+    Result LockExisting(std::uint32_t waitMilliseconds, FileLock& output) const noexcept;
     // Creates a unique generation, computes SHA-256, writes and flushes it.
     // The manager publishes its index only after success. A process crash may
     // leave an orphan, which manager recovery must account for before new writes.
@@ -160,7 +330,23 @@ public:
     // Includes foreign names for strict metadata-store validation, without
     // opening or deleting entries. Excludes only the OS dot entries.
     Result EnumerateAll(std::size_t maximumEntries, std::vector<std::wstring>& output) const noexcept;
+    // Includes root (depth 0, one entry/guard) and unknown ordinary files and
+    // directories. Hard links remain separate rows; callers decide accounting
+    // by identity. Reparse points, inaccessible data, changing observations and
+    // incomplete/unsupported stream queries fail, preserving the old output.
+    // Every directory is enumerated twice; metadata and named streams are
+    // observed twice on the same handle. This detects changes during sampling,
+    // not future changes or a globally simultaneous filesystem state.
+    // Limits: entries 1..65536; depth 0..64; summed relative-path UTF-16 code
+    // units 0..16 Mi; subtree directory guards 1..4096. Observation limits:
+    // streams 1..4096, buffer bytes 32..4 MiB. Exceeded configured bounds =>
+    // Limit; invalid parameters => Invalid. No payload reads or implicit retry.
+    // Stream totals include the unnamed data stream when reported and all ADS
+    // (including directory ADS). They do not measure MFT/whole-volume metadata.
+    Result Inventory(const InventoryLimits&, InventorySnapshot& output,
+        const std::atomic_bool* cancelled = nullptr) const noexcept;
 private:
+    Result LockImpl(std::uint32_t waitMilliseconds, FileLock& output, bool create) const noexcept;
     Result EnumerateNames(std::size_t maximumEntries, std::vector<std::wstring>& output, bool candidatesOnly) const noexcept;
     std::shared_ptr<DirectoryState> state_;
 };

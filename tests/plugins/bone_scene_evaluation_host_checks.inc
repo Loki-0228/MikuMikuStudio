@@ -23,7 +23,7 @@ bool SameId(const BoneSceneIdentity& a,const BoneSceneIdentity& b) {
 }
 Inputs PublishInputs(MMDApp* app) {
     using namespace mikumikustudio::plugins;
-    auto store=CreateSceneStore(app);SceneClient client;auto api=store->Api(client);
+    auto store=CreateSceneStore(app);SceneClient client;auto api=([&]{ MmsSceneApiV1 value{}; if (store->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     MmsSceneQueryV1 q{};q.h=Header<MmsSceneQueryV1>();q.stage=MMS_STAGE_BIND;q.flags=MMS_SCENE_CURRENT_TIME;q.channels=MMS_CHANNEL_BONES;
     MmsSnapshotV1 bind{};Check(api.acquire(api.context,&q,&bind)==MMS_OK,"publish real host scene identities");
     MmsSpan objects{};Check(api.objects(api.context,bind.handle,&objects)==MMS_OK&&objects.count==3,"three actual model identities available");

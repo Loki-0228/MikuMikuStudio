@@ -9,6 +9,7 @@
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/bone_scale_gizmo.hpp"
+#include "mikumikustudio/bone_edit_axes.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
@@ -91,15 +92,23 @@ bool ValidModel(MMDApp& app,const mdl::ModelRecord& m,int operation)noexcept{
     for(unsigned i=0;i<m.boneCount;++i){const auto& b=m.boneTable[i];
         if(b.parent< -1||(b.parent>=0&&unsigned(b.parent)>=m.boneCount)||!std::memchr(b.name,0,sizeof(b.name)))return false;
     }
-    const auto& selected=m.boneTable[m.selectedBone];
-    if(selected.tailBone>=0&&unsigned(selected.tailBone)<m.boneCount)return true;
     const bool rotation=(operation>=3&&operation<=5)||(operation>=9&&operation<=11);
-    if(rotation&&(selected.flags&mdl::kBoneFlagFixedAxis)&&m.physicsMode!=2&&
-        (selected.type==mdl::BoneType::UnderIk||selected.type==mdl::BoneType::FixedAxis))return false;
     const bool localAxis=EffectiveCoordinateState(&app)==0&&
         ((operation>=9&&operation<=11&&app.state.physicsEditorJointPage!=1)||(operation>=12&&operation<=14)||(operation>=23&&operation<=25));
-    const bool explicitAxes=m.physicsMode==2&&(selected.localAxes[0]!=0||selected.localAxes[1]!=0||selected.localAxes[2]!=0);
-    return !localAxis||explicitAxes||!NamedLocalAxisTail(selected);
+    // In-place rotation now evaluates each marked joint, including selected
+    // descendants. Validate every axis dependency before reserving or writing
+    // any part of the group; changing selectedBone temporarily would invalidate
+    // the shared gesture and make the result depend on iteration order.
+    for(unsigned i=0;i<m.boneCount;++i){
+        const auto& bone=m.boneTable[i];
+        if(i!=unsigned(m.selectedBone)&&(!rotation||!m.boneSelection[i]||!BoneRotatesInPlace(bone.type)))continue;
+        if(bone.tailBone>=0&&unsigned(bone.tailBone)<m.boneCount)continue;
+        if(rotation&&(bone.flags&mdl::kBoneFlagFixedAxis)&&m.physicsMode!=2&&
+            (bone.type==mdl::BoneType::UnderIk||bone.type==mdl::BoneType::FixedAxis))return false;
+        const bool explicitAxes=m.physicsMode==2&&(bone.localAxes[0]!=0||bone.localAxes[1]!=0||bone.localAxes[2]!=0);
+        if(localAxis&&!explicitAxes&&NamedLocalAxisTail(bone))return false;
+    }
+    return true;
 }
 struct Change final:HistoryChange,std::enable_shared_from_this<Change>{
     MMDApp& app;const unsigned slot;unsigned char* const model;const MmsObjectRef identity;
@@ -243,7 +252,9 @@ thread_local std::unique_ptr<Gesture> gesture;
 int ModelHudOperationForMode(int mode)noexcept{return mode>=1&&mode<=3?mode+2:mode>=4&&mode<=6?mode+5:mode>=7&&mode<=9?mode-1:
     mode>=10&&mode<=12?mode+2:mode>=19&&mode<=26?mode+3:0;}
 bool ModelHudOperation(MMDApp& app,int operation)noexcept{return ((operation>=3&&operation<=14)||(operation>=22&&operation<=29))&&
-    !app.CameraMode()&&app.SelectedModelSlot()<kModelSlotCount&&app.SelectedModel()&&ValidModel(app,*mdl::Mdl(app.SelectedModel()),operation);}
+    !app.CameraMode()&&app.SelectedModelSlot()<kModelSlotCount&&app.SelectedModel()&&
+    (operation>=22||SelectedBoneHudAllows(&app,operation<=5||(operation>=9&&operation<=11)))&&
+    ValidModel(app,*mdl::Mdl(app.SelectedModel()),operation);}
 bool ModelHudGestureActive(const MMDApp& app)noexcept{return gesture&&gesture->app==&app;}
 std::shared_ptr<const HistoryChange> ModelHudPreviewSource(MMDApp& app)noexcept{return ModelHudGestureActive(app)?gesture->change:nullptr;}
 MmsResult BeginModelHudGesture(MMDApp& app,SharedHistory& history,HWND owner,int operation)noexcept{
@@ -258,11 +269,15 @@ MmsResult BeginModelHudGesture(MMDApp& app,SharedHistory& history,HWND owner,int
         if(auto r=history.PrepareNative("Drag model HUD",next->change,next->transaction,SharedHistory::NativeIntent::Adjustment))return r;
         if(operation>=22&&next->change->selection[next->change->selected]==0){next->change->autoSelected=true;
             next->change->selection[next->change->selected]=next->change->selectionAfter[next->change->selected]=1;}
-        gesture=std::move(next);return MMS_OK;
+        gesture=std::move(next);
+        if(operation>=9&&operation<=11)BeginBoneHudPreview(&app,operation-9);
+        else ResetBoneHudPreview(&app);
+        return MMS_OK;
     });
 }
 bool CancelModelHudGesture(MMDApp& app)noexcept{
     if(!ModelHudGestureActive(app))return false;auto current=std::move(gesture);
+    ResetBoneHudPreview(&app);
     const bool restored=current->Rollback();current->CancelHint();current->transaction.reset();
     FinishModelHudInteraction(&app,current->change->operation,current->change->editMode);
     if(current->owner&&GetCapture()==current->owner)ReleaseCapture();if(restored)updates::RequestViewport(&app);return restored;
@@ -292,6 +307,7 @@ void RecordModelHudRefreshHint(MMDApp& app)noexcept{if(!ModelHudGestureActive(ap
     gesture->dirtyAfter=app.state.viewDirty;gesture->layoutAfter=app.state.windowLayoutReady;}
 MmsResult EndModelHudGesture(MMDApp& app,bool& changed)noexcept{
     changed=false;if(!ModelHudGestureActive(app))return MMS_E_NOT_READY;auto current=std::move(gesture);
+    ResetBoneHudPreview(&app);
     if(!Ready(app)||(current->owner&&GetCapture()!=current->owner)||!current->Current()){
         current->Rollback();current->CancelHint();return MMS_E_STALE;}
     if(!current->change->GeometryChanged()){current->Rollback();current->CancelHint();return MMS_OK;}

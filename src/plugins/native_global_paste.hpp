@@ -35,6 +35,10 @@ struct GlobalPasteSource {
     std::vector<mdl::AccessoryClipboardKey> accessories;
     std::uint32_t frameOffset = 0;
 };
+// Own all raw global clipboard records without reading the playhead or
+// resolving targets/attachments. Preserve relative frames and every field;
+// frameOffset stays zero. Any failure leaves out empty.
+MmsResult CaptureGlobalPastePayload(MMDApp&, GlobalPasteSource&) noexcept;
 struct GlobalPasteFamilyResult {
     std::shared_ptr<GlobalPastePart> part;
     std::uint32_t maximumInsertedFrame = 0;

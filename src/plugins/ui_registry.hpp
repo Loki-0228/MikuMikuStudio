@@ -6,6 +6,7 @@
 #include <mms/ui.h>
 #include <mms/surface.h>
 #include <mms/layout.h>
+#include <mms/layout_session.h>
 #include <mms/refresh_state.h>
 #include <map>
 #include <deque>
@@ -64,6 +65,28 @@ struct SurfaceRecord {
     std::shared_ptr<Arena> arena;
     MmsUiSurfaceDescV1 desc{};
 };
+struct EffectiveElementLayout {
+    bool visible = true;
+    float width = 0, height = 0;
+    MmsUiLayoutHintsV1 hints{};
+};
+enum class ControlLayoutVisibility { Visible, PersistentHidden, TemporaryHidden };
+// Public and native adapters share these preview sessions and identities.
+enum LayoutPreviewField : uint32_t { PreviewVisible = 1, PreviewSize = 2, PreviewOrder = 4, PreviewParent = 8 };
+enum HostLayoutMount : uint32_t {
+    HostLayoutToolbar = 1, HostLayoutProperties = 2,
+    HostLayoutLeft = 4, HostLayoutRight = 8, HostLayoutWorkspace = 16, HostLayoutAll = 31
+};
+struct LayoutPreviewValue {
+    MmsHandle element = 0;
+    uint32_t fields = 0;
+    bool visible = true;
+    float width = 0, height = 0;
+    int32_t order = 0;
+    MmsHandle parent = 0;
+};
+enum class LayoutPreviewState { Active, RolledBack, Committed, Revoked };
+struct LayoutPreviewInfo { uint64_t revision = 0; LayoutPreviewState state = LayoutPreviewState::Active; uint32_t reasons = 0; };
 struct StateContentBudget { std::atomic<uint64_t> bytes{0}; };
 struct ButtonStateContent {
     uint32_t fields = 0;
@@ -102,6 +125,30 @@ class UiRegistry {
     std::unique_ptr<Preferences> preferences_;
     uint64_t preferencesRevision_ = 1;
     std::deque<std::string> layoutUndo_, layoutRedo_;
+    struct LayoutParentDependency {
+        MmsHandle element = 0, dependency = 0;
+        std::shared_ptr<Arena> arena;
+        MmsString parent{};
+    };
+    struct LayoutPreview {
+        UiClient* owner = nullptr;
+        LayoutPreviewInfo info{1, LayoutPreviewState::Active};
+        std::vector<LayoutPreviewValue> values;
+        std::vector<LayoutParentDependency> parents;
+        bool applied = false;
+    };
+    std::map<MmsHandle, LayoutPreview> layoutPreviews_;
+    uint64_t hostLayoutTokens_[5]{};
+    void RevokeLayoutPreviewFields(MmsHandle, uint32_t, uint32_t reason = MMS_LAYOUT_SESSION_PERSISTENT_EDIT) noexcept;
+    void RevokeAllLayoutPreviews() noexcept;
+    void ReconcileLayoutPreviews(const std::map<std::string, ElementRecord>& next, MmsHandle committedPreview = 0) noexcept;
+    MmsResult ValidateLayoutPreview(UiClient&, const std::vector<LayoutPreviewValue>&, bool values) const;
+    MmsString PreviewParentOf(const ElementRecord&, const std::map<std::string, ElementRecord>&,
+        const std::vector<LayoutPreviewValue>* candidate = nullptr) const noexcept;
+    bool ValidParentPreview(const ElementRecord&, MmsHandle, const std::map<std::string, ElementRecord>&,
+        const std::vector<LayoutPreviewValue>* candidate = nullptr) const noexcept;
+    std::vector<LayoutParentDependency> CaptureParentDependencies(const std::vector<LayoutPreviewValue>&) const;
+    void ReconcileParentPreviews(const std::map<std::string, ElementRecord>&) noexcept;
     std::function<void()> changed_;
     std::unique_ptr<UiCatalog> catalog_;
     uint64_t geometryRevision_ = 0, geometryUiRevision_ = 0;
@@ -139,7 +186,7 @@ class UiRegistry {
     MmsResult Stage(UiClient&, MmsHandle, MmsString, MmsObjectRef, const MmsValue*);
     MmsResult Begin(UiClient&, uint64_t, MmsHandle*);
     MmsResult Apply(UiClient&, MmsHandle, const MmsLayoutOpV1*);
-    MmsResult Commit(UiClient&, MmsHandle);
+    MmsResult Commit(UiClient&, MmsHandle, MmsHandle preview = 0);
     void Release(UiClient&, MmsHandle, unsigned kind);
     bool Allowed(const MmsUiElementV1&, const std::map<std::string, ElementRecord>&) const;
     MmsResult MergePreferences(std::map<std::string, ElementRecord>&,
@@ -148,6 +195,8 @@ class UiRegistry {
     MmsResult UndoLayout();
     MmsResult RedoLayout();
     void RecordLayoutHistory(const std::string& before);
+    enum class LayoutHistoryTransfer { None, Undo, Redo };
+    MmsResult ImportPreferencesImpl(std::string_view, LayoutHistoryTransfer);
     std::unique_ptr<Preferences> CapturePreferences(const std::map<std::string, ElementRecord>&,
         const std::map<std::string, Json>&) const;
 public:
@@ -167,6 +216,23 @@ public:
     MmsUiSurfaceApiV1 SurfaceApi(UiClient&);
     MmsUiLayoutApiV1 LayoutApi(UiClient&);
     MmsUiLayoutApiV1_1 LayoutHistoryApi(UiClient&);
+    MmsUiLayoutSessionApiV1 LayoutSessionApi(UiClient&, uint32_t minor = 0);
+    MmsUiLayoutSessionApiV1_2 LayoutSessionApi12(UiClient&);
+    EffectiveElementLayout EffectiveLayout(const ElementRecord&) const noexcept;
+    // Borrowed registration-arena text, valid until the next registry mutation.
+    MmsString EffectiveParent(const ElementRecord&) const noexcept;
+    ControlLayoutVisibility ControlVisibility(const ElementRecord&) const noexcept;
+    bool HasLayoutPreviewFields(MmsHandle, uint32_t fields) const noexcept;
+    MmsResult BeginLayoutPreview(UiClient&, const std::vector<LayoutPreviewValue>&, MmsHandle&);
+    MmsResult ApplyLayoutPreview(UiClient&, MmsHandle, uint64_t, const std::vector<LayoutPreviewValue>&);
+    MmsResult QueryLayoutPreview(UiClient&, MmsHandle, LayoutPreviewInfo&) const;
+    MmsResult EndLayoutPreview(UiClient&, MmsHandle, uint64_t, bool commit);
+    MmsResult ReleaseLayoutPreview(UiClient&, MmsHandle);
+    void RevokeLayoutPreviews(UiClient&) noexcept;
+    MmsResult BeginHostLayout(uint32_t mounts, uint64_t& out);
+    void EndHostLayout(uint64_t token) noexcept;
+    bool IsHostLayoutCurrent(uint32_t mounts, uint64_t token) const noexcept;
+    bool GeometryReady() const noexcept;
     MmsUiRefreshStateContentApiV1 StateContentApi(UiClient&);
     UiRefreshQueue& Refresh() noexcept { return refresh_; }
     // Request adapter work without editing registry/preferences revisions.

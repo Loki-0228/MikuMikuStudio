@@ -31,7 +31,7 @@ struct BindLease {
 };
 bool Id(MmsId a,MmsId b) { return a.lo==b.lo&&a.hi==b.hi; }
 Expected ReadBind(MMDApp* app,const mdl::ModelRecord& model) {
-    auto store=CreateSceneStore(app);SceneClient client;auto api=store->Api(client);
+    auto store=CreateSceneStore(app);SceneClient client;auto api=([&]{ MmsSceneApiV1 value{}; if (store->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     MmsSceneQueryV1 query{};query.h=Header<MmsSceneQueryV1>();query.stage=MMS_STAGE_BIND;
     query.flags=MMS_SCENE_CURRENT_TIME;query.channels=MMS_CHANNEL_MESH|MMS_CHANNEL_BINDING|MMS_CHANNEL_BONES|MMS_CHANNEL_MATERIALS;
     MmsSnapshotV1 snapshot{};Check(api.acquire(api.context,&query,&snapshot)==MMS_OK,"real BIND geometry succeeds");

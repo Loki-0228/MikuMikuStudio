@@ -26,6 +26,9 @@ constexpr std::size_t kMaximumKeys =
         ? (std::numeric_limits<std::size_t>::max)() / sizeof(Key)
         : static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)());
 bool Validate(const Track&, std::string& error);
+// Explicit signed-authoring validation in frame_limits::minimum..maximum.
+// All other checks match Validate; codec/edit/Bake admission remains unchanged.
+bool ValidateSigned(const Track&, std::string& error);
 // Clamps outside the first/last frame; Bezier time is inverted, not assumed linear.
 Sample Evaluate(const Track&, double frame);
 void UpdateAutomatic(Track&);

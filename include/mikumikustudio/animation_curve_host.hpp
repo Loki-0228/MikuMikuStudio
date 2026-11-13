@@ -13,6 +13,21 @@ namespace mikumikustudio { class MMDApp; }
 namespace mikumikustudio::plugins::resource_budget { class Collector; }
 namespace mikumikustudio::curve_host {
 enum class Kind { Camera, Light, Shadow, Gravity, Accessory };
+#if !MMD_ORIGINAL_PROFILE
+struct CopyAuthoringTarget { Kind kind = Kind::Camera; int slot = 0; };
+struct CopyAuthoring {
+    Kind kind = Kind::Camera;
+    int slot = 0;
+    std::vector<curve_editor::Channel> channels;
+};
+// Detached, absolute-frame authoring for precisely the requested native tracks.
+// Keeps first-request order, omits absent/stale authors, and never synchronizes
+// live authoring or pending legacy registrations. All lanes retain their sparse
+// neighbours; the native clipboard alone determines which keys will be pasted.
+// Failure clears out and sets error; allocation failure propagates to the caller.
+bool CaptureCopyAuthoring(MMDApp&, const std::vector<CopyAuthoringTarget>&,
+                          std::vector<CopyAuthoring>& out, std::wstring& error);
+#endif
 bool Read(MMDApp&, Kind, int slot, std::vector<curve_editor::Channel>&, std::wstring&);
 bool Write(MMDApp&, Kind, int slot, const std::vector<curve_editor::Channel>&, std::wstring&);
 // The motion importer validates raw controls/geometry before calling this.
@@ -68,6 +83,10 @@ class LegacyRegistrationBatch {
     void Flush() noexcept;
     friend void NotifyLegacyRegistered(MMDApp*, Kind, int, int) noexcept;
     friend void FlushLegacyRegistrations(MMDApp*) noexcept;
+#if !MMD_ORIGINAL_PROFILE
+    friend bool CaptureCopyAuthoring(MMDApp&, const std::vector<CopyAuthoringTarget>&,
+                                     std::vector<CopyAuthoring>&, std::wstring&);
+#endif
 public:
     explicit LegacyRegistrationBatch(MMDApp*) noexcept;
     ~LegacyRegistrationBatch() noexcept;
@@ -314,6 +333,8 @@ public:
 class TrackAuthoring {
     struct Impl;
     std::shared_ptr<Impl> impl_;
+    friend std::int32_t MeasureGlobalDeletionRetimingPreparation(const TrackAuthoring&,
+        const NativeKeyView&,const std::vector<std::pair<int,int>>&,bool,std::uint32_t,std::uint64_t&) noexcept;
 public:
     TrackAuthoring(MMDApp&, Kind, int slot = 0);
     ~TrackAuthoring();
@@ -327,6 +348,8 @@ public:
         std::unique_ptr<Impl> impl_;
         explicit Target(std::unique_ptr<Impl>);
         friend class TrackAuthoring;
+        friend std::int32_t MeasureGlobalDeletionRetimingPreparation(const TrackAuthoring&,
+            const NativeKeyView&,const std::vector<std::pair<int,int>>&,bool,std::uint32_t,std::uint64_t&) noexcept;
     public:
         ~Target();
         bool IsCurrent() const noexcept;

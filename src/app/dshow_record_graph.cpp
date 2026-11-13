@@ -66,8 +66,10 @@
 #include <memory>
 
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/recording_output_path.hpp"
 #include "mikumikustudio/dshow_recorder.hpp"
 #include "mikumikustudio/mf_h264_recorder.hpp"
+#include "mikumikustudio/ui_language.hpp"
 #include "mikumikustudio/wave_audio_context.hpp"
 #include "mmdxshow.hpp"
 
@@ -112,6 +114,21 @@ void ReleaseCom(T*& object) {
         object->Release();
         object = nullptr;
     }
+}
+
+// Port-added message for an AVI compressor that cannot be bound.  The original
+// build fell back to raw AVI here and replaced the previous output, so the
+// export now stops before the mux and the writer exist.  Columns follow
+// kUiJapanese / kUiEnglish / kUiChinese like the other recording messages; the
+// English sentence is the fixed regression-contract text.
+const wchar_t* SelectedCompressorUnavailableText(unsigned char uiLanguage) {
+    if (uiLanguage == kUiChinese)
+        return L"所选的 AVI 编码器不可用。请选择其他编码器后重试。";
+    if (uiLanguage == kUiJapanese)
+        return L"選択した AVI コンプレッサーは使用できません。"
+               L"別のコーデックを選択して、もう一度お試しください。";
+    return L"The selected AVI compressor is unavailable. "
+           L"Select another codec and retry.";
 }
 
 void DeleteEnumeratedMediaType(AM_MEDIA_TYPE* type) {
@@ -236,9 +253,10 @@ IPin* FindOutputPin(DShowRecorder* /*rec*/, IBaseFilter* filter, int skip) {
 // ===========================================================================
 // Releases this[0]/this[1], walks the video-compressor moniker enumeration
 // skipping this[25] entries, BindToObject's the moniker into this[0]
-// (IID_IBaseFilter) and QIs IAMVfwCompressDialogs into this[1].  On success
-// the moniker/enumerator/devEnum are left unreleased exactly like the
-// original; every failure path releases them and leaves this[0] null.
+// (IID_IBaseFilter) and QIs IAMVfwCompressDialogs into this[1].  Every path
+// releases the moniker/enumerator/devEnum and leaves this[0] null when the
+// bind fails; the success path releases them too (the original left them
+// dangling, see "port-added" below).
 // =========================================================================//
 void BindSelectedCompressor(DShowRecorder* rec) {
     ReleaseCom(rec->compressor);
@@ -277,13 +295,18 @@ void BindSelectedCompressor(DShowRecorder* rec) {
         enumMon->Next(1, &mon, &fetched);
     }
     if (mon != nullptr) {
-        mon->BindToObject(nullptr, nullptr, IID_IBaseFilter,
-                          reinterpret_cast<void**>(&rec->compressor));
-        if (rec->compressor != nullptr)
+        // Port-added: a failed BindToObject must leave this[0] null so the
+        // caller can report the missing encoder instead of recording raw AVI.
+        const HRESULT hr = mon->BindToObject(
+            nullptr, nullptr, IID_IBaseFilter,
+            reinterpret_cast<void**>(&rec->compressor));
+        if (SUCCEEDED(hr) && rec->compressor != nullptr)
             rec->compressor->QueryInterface(
                 IID_IAMVfwCompressDialogs,
                 reinterpret_cast<void**>(&rec->compressorDialogs));
-        return;  // original leaks moniker + enumerators here
+        else
+            ReleaseCom(rec->compressor);
+        mon->Release();
     }
     enumMon->Release();
     devEnum->Release();
@@ -598,7 +621,9 @@ void ShowCodecConfigDialog(DShowRecorder* rec, HWND hDlg) {
 // ===========================================================================
 // Full build order (each failure shows its EN/JP "DirectShow" MessageBox,
 // tears the graph down through 0x409320 and returns false):
-//   1. release [11]/[8]/[4]/[3]; rebind the compressor (0x409170) if [0]
+//   1. release [11]/[8]/[4]/[3]; a non-negative selectedCodec re-binds the
+//      compressor (0x409170) and a failed bind stops the export; the raw row
+//      (-1) drops any stale compressor
 //   2. FilterGraph -> [3]; MMDxShow source -> [4]; AddFilter "File Source"
 //   3. IPushSource QI -> [26]; GetRate must be >= 1.02 or "dll is too old";
 //      SetBitmapInfo(recStruct, 40, fps)
@@ -620,9 +645,9 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
                          void* outPath,
                void* config, float fps, std::uint32_t forceArgb,
                std::uint32_t averageBitrate,
-               const wchar_t* wavPath, float seconds,
+               std::uint64_t audioStartSample, std::uint64_t audioSampleCount,
                const WaveAudioContext* audio,
-               unsigned char uiLanguage) {
+               unsigned char uiLanguage, const recording_output_path::Selection* approved) {
 #if MMD_ORIGINAL_PROFILE
     if (rec->selectedCodec < -1) {
         MessageBoxW(hwnd, L"This MMD 9.32 profile supports AVI output only.",
@@ -643,12 +668,17 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
         const auto* output = static_cast<const std::int32_t*>(config);
         const auto width = output[1];
         const auto height = output[2];
+        bool destinationChanged = false;
         if (StartBuiltInH264Recording(rec, static_cast<const wchar_t*>(outPath),
                                       width, height, fps, audio,
                                       rec->selectedCodec == kSystemH264Codec,
                                       averageBitrate,
-                                      hwnd, uiLanguage))
+                                      hwnd, uiLanguage, approved, &destinationChanged))
             return true;
+        if (destinationChanged) {
+            recording_output_path::ReportChangedSelection(hwnd, approved->path.c_str(), uiLanguage);
+            return false;
+        }
         MessageBoxW(hwnd,
                     L"无法启动 MP4/H.264 编码。请检查 Media Foundation 编码器、音轨格式和输出路径。\n"
                     L"Could not start MP4/H.264 encoding. Check the installed Media Foundation encoders, audio format, and output path.",
@@ -660,8 +690,24 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
     ReleaseCom(rec->sourceOutput);
     ReleaseCom(rec->videoSource);
     ReleaseCom(rec->graph);
-    if (rec->compressor != nullptr)
+    // Only the raw row (selectedCodec == -1) is uncompressed output here;
+    // every non-negative value names a video-compressor moniker.  Bind it
+    // before the mux and the writer create the output file, so an encoder
+    // that is missing or can no longer be bound fails the export instead of
+    // silently replacing the previous file with a raw AVI.
+    if (rec->selectedCodec >= 0) {
         BindSelectedCompressor(rec);                             // 0x409B3E
+        if (rec->compressor == nullptr) {
+            MessageBoxW(hwnd, SelectedCompressorUnavailableText(uiLanguage),
+                        L"DirectShow", MB_OK | MB_ICONERROR);
+            return false;
+        }
+    } else {
+        // A compressor left over from an earlier selection must never take
+        // part in a raw recording.
+        ReleaseCom(rec->compressor);
+        ReleaseCom(rec->compressorDialogs);
+    }
 
     // 1: filter graph + MMDxShow source
     CoCreateInstance(CLSID_FilterGraph, nullptr, CLSCTX_INPROC_SERVER,
@@ -870,11 +916,10 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
         return false;
     }
 
-    // 6: optional wave branch (wavPath == 0 skips silently; a failed
-    // AddSourceFilter is what shows the "read WAVE" message)
-    if (wavPath != nullptr) {
+    // 6: optional PCM branch. Set the segment at the WAV parser before Run.
+    if (audio != nullptr && audioSampleCount != 0) {
         IBaseFilter* waveSrc = nullptr;
-        graph->AddSourceFilter(wavPath, L"Source", &waveSrc);     // -> [18]
+        graph->AddSourceFilter(audio->path, L"Source", &waveSrc);
         rec->waveSource = waveSrc;
         if (waveSrc == nullptr) {
             MessageBoxA(hwnd, english
@@ -904,24 +949,33 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
                 graph->AddFilter(grabber2, L"AudioGrabber");
             rec->audioGrabberInput = FindInputPin(rec, grabber2, 0);
             rec->audioGrabberOutput = FindOutputPin(rec, grabber2, 0);
-            graph->Connect(
-                rec->waveOutput, rec->audioGrabberInput);
-            if (graph->Connect(
-                    rec->audioGrabberOutput, rec->muxAudioInput) >= 0) {
-                // bound the audio stream: StartAt(now), StopAt(seconds)
-                IAMStreamControl* stream = nullptr;
-                IPin* muxAudioIn = rec->muxAudioInput;
-                if (muxAudioIn != nullptr)
-                    muxAudioIn->QueryInterface(
-                        IID_IAMStreamControl,
-                        reinterpret_cast<void**>(&stream));
-                if (stream != nullptr) {
-                    stream->StartAt(nullptr, 0);                  // 0x40A43B
-                    REFERENCE_TIME stop =
-                        static_cast<REFERENCE_TIME>(
-                            static_cast<double>(seconds) * 10000000.0);
-                    stream->StopAt(&stop, 0, 0);                  // 0x40A46B
-                    stream->Release();
+            if (SUCCEEDED(graph->Connect(rec->waveOutput, rec->audioGrabberInput)) &&
+                SUCCEEDED(graph->Connect(rec->audioGrabberOutput, rec->muxAudioInput))) {
+                IPin* parser = nullptr;
+                IMediaSeeking* seeking = nullptr;
+                if (SUCCEEDED(rec->audioGrabberInput->ConnectedTo(&parser))) {
+                    parser->QueryInterface(IID_IMediaSeeking, reinterpret_cast<void**>(&seeking));
+                    parser->Release();
+                }
+                const auto sampleRate = audio->format.nSamplesPerSec;
+                // The parser rounds the requested start down and the stop up
+                // to PCM boundaries. Round the 100 ns conversion inward.
+                constexpr std::uint64_t ticksPerSecond = 10000000;
+                REFERENCE_TIME start = (audioStartSample * ticksPerSecond + sampleRate - 1) / sampleRate;
+                REFERENCE_TIME stop = (audioStartSample + audioSampleCount) * ticksPerSecond / sampleRate;
+                const bool positioned = seeking && SUCCEEDED(seeking->SetPositions(
+                    &start, AM_SEEKING_AbsolutePositioning, &stop, AM_SEEKING_AbsolutePositioning));
+                if (seeking) seeking->Release();
+                if (!positioned) {
+                    const wchar_t* messages[] = {
+                        L"WAVE ファイルを指定範囲に設定できません。AVI の出力を中止しました。",
+                        L"Could not set the requested WAVE range. AVI export was stopped.",
+                        L"无法设置 WAV 音频范围，AVI 导出已停止。"
+                    };
+                    MessageBoxW(hwnd, messages[uiLanguage <= 2 ? uiLanguage : 1],
+                                L"DirectShow", MB_OK | MB_ICONERROR);
+                    TeardownDShowGraph(rec);
+                    return false;
                 }
                 IConfigAviMux* aviMux = nullptr;
                 if (mux != nullptr)

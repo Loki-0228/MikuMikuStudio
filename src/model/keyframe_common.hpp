@@ -17,6 +17,13 @@
 namespace mikumikustudio {
 namespace kfa {
 
+// VMD import owns these cursors and can reuse the last visited key on
+// each track while publishing successive file records on the caller.
+bool RegisterBoneKeyAtCursor(unsigned char* model, unsigned char* record,
+                             int frameOffset, int boneIndex, int& cursor);
+bool RegisterMorphKeyAtCursor(unsigned char* model, int morphIndex,
+                              std::uint32_t frame, float value, int& cursor);
+
 // memcpy-based record accessors - no alignment or type-punning assumptions.
 inline std::uint32_t Rd32(const unsigned char* p) {
     std::uint32_t v;

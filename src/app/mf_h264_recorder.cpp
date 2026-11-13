@@ -24,12 +24,15 @@
 #include <mutex>
 #include <numeric>
 #include <new>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
 #include "mikumikustudio/dshow_recorder.hpp"
 #include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/mf_h264_recorder.hpp"
+#include "mikumikustudio/recording_output_path.hpp"
+#include "../media/staged_output_publication.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/ui_language.hpp"
 #include "mikumikustudio/wave_audio_context.hpp"
@@ -40,6 +43,9 @@ namespace {
 
 struct Recording {
     IMFSinkWriter* writer = nullptr;
+    std::wstring destination;
+    std::wstring temporary;
+    std::optional<recording_output_path::FileIdentity> originalDestination;
     DWORD videoStream = 0;
     DWORD audioStream = 0;
     bool hasAudio = false;
@@ -59,6 +65,7 @@ struct Recording {
     bool nv12Input = false;
     std::uint32_t fpsNumerator = 30;
     std::uint32_t fpsDenominator = 1;
+    HRESULT writeFailure = S_OK;
     HWND owner = nullptr;
     bool mfStarted = false;
     unsigned char uiLanguage = kUiJapanese;
@@ -67,10 +74,76 @@ struct Recording {
         if (audioFile != INVALID_HANDLE_VALUE)
             CloseHandle(audioFile);
         ReleaseSinkWriterQuietly(writer);
+        if (!temporary.empty() && !DeleteFileW(temporary.c_str())) {
+            const DWORD error = GetLastError();
+            if (error != ERROR_FILE_NOT_FOUND)
+                runtime_log::Write("H264 export could not remove temporary output: Win32 %lu", error);
+        }
         if (mfStarted)
             MFShutdown();
     }
 };
+
+HRESULT PublishRecording(Recording& recording, std::wstring* retainedPrevious) noexcept {
+    try {
+        std::wstring backup;
+        if (recording.originalDestination) {
+            backup = recording.temporary;
+            backup.replace(backup.size() - 4, 4, L".bak");
+        }
+        std::wstring retained;
+        const HRESULT result = staged_output::Publish(recording.temporary, recording.destination,
+            recording.originalDestination, std::move(backup), retained);
+        if (SUCCEEDED(result)) recording.temporary.clear();
+        if (!retained.empty()) {
+            runtime_log::WritePath("H264 previous output retained at", retained.c_str());
+            if (FAILED(result) && retainedPrevious) retainedPrevious->swap(retained);
+        }
+        return result;
+    } catch (const std::bad_alloc&) {
+        return E_OUTOFMEMORY;
+    } catch (...) {
+        return E_FAIL;
+    }
+}
+
+HRESULT PrepareRecordingOutput(Recording& recording, const wchar_t* path,
+                               const recording_output_path::Selection* approved, bool* destinationChanged) {
+    recording_output_path::Selection current;
+    const DWORD inspected = recording_output_path::ReadSelection(path, current);
+    if (inspected != ERROR_SUCCESS) return HRESULT_FROM_WIN32(inspected);
+    if (approved && !recording_output_path::SameSelection(*approved, current)) {
+        if (destinationChanged) *destinationChanged = true;
+        return HRESULT_FROM_WIN32(ERROR_FILE_EXISTS);
+    }
+    recording.destination = std::move(current.path);
+    recording.originalDestination = current.existing;
+    const auto directory = std::filesystem::path(recording.destination).parent_path();
+    // Keep an MP4 suffix for the URL-based sink writer and stay within the
+    // ordinary Win32 path limit when the selected directory is very deep.
+    const auto room = MAX_PATH - 1 - static_cast<std::ptrdiff_t>(directory.native().size()) - 1 - 4;
+    const auto digits = static_cast<std::size_t>((std::clamp)(room, std::ptrdiff_t{1}, std::ptrdiff_t{8}));
+    for (unsigned attempt = 0; attempt < 32; ++attempt) {
+        GUID id{};
+        const HRESULT generated = CoCreateGuid(&id);
+        if (FAILED(generated)) return generated;
+        wchar_t name[9]{};
+        swprintf_s(name, L"%08lX", id.Data1);
+        std::wstring temporary = (directory / (std::wstring(name, digits) + L".mp4")).native();
+        if (_wcsicmp(temporary.c_str(), recording.destination.c_str()) == 0) continue;
+        const HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+                                        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) {
+            const DWORD status = GetLastError();
+            if (status == ERROR_FILE_EXISTS || status == ERROR_ALREADY_EXISTS) continue;
+            return HRESULT_FROM_WIN32(status);
+        }
+        recording.temporary.swap(temporary);
+        if (!CloseHandle(file)) return HRESULT_FROM_WIN32(GetLastError());
+        return S_OK;
+    }
+    return HRESULT_FROM_WIN32(ERROR_FILE_EXISTS);
+}
 
 std::mutex gRecordingsMutex;
 std::unordered_map<const DShowRecorder*, std::unique_ptr<Recording>> gRecordings;
@@ -865,13 +938,6 @@ LRESULT CALLBACK EncoderSettingsWndProc(HWND hwnd, UINT message,
     return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
-void ReportFailure(HWND owner, HRESULT hr) {
-    wchar_t message[192]{};
-    swprintf_s(message, L"Media Foundation 视频编码失败（0x%08lX）。",
-                static_cast<unsigned long>(hr));
-    MessageBoxW(owner, message, L"H.264 导出", MB_OK | MB_ICONERROR);
-}
-
 void SetVideoAttributes(IMFMediaType* type, GUID subtype,
                         std::uint32_t width, std::uint32_t height,
                         std::uint32_t fpsNumerator,
@@ -1486,8 +1552,11 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
                                bool enableSystemEncoders,
                                std::uint32_t averageBitrate,
                                void* ownerWindow,
-                               unsigned char uiLanguage) {
-    if (recorder == nullptr || path == nullptr || width <= 0 || height <= 0 ||
+                               unsigned char uiLanguage,
+                               const recording_output_path::Selection* approved,
+                               bool* destinationChanged) {
+    if (destinationChanged) *destinationChanged = false;
+    if (recorder == nullptr || path == nullptr || *path == L'\0' || width <= 0 || height <= 0 ||
         width > 16384 || height > 16384 || (width & 1) != 0 ||
         (height & 1) != 0 || !std::isfinite(fps) || fps <= 0.0f)
         return false;
@@ -1535,9 +1604,15 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
 
     recording->width = width;
     recording->height = height;
+    hr = PrepareRecordingOutput(*recording, path, approved, destinationChanged);
+    if (FAILED(hr)) {
+        runtime_log::Write("H264 export could not reserve temporary output: 0x%08lX",
+                           static_cast<unsigned long>(hr));
+        return false;
+    }
     bool hardwareActive = enableSystemEncoders && !g_hardwareEncoderUnsafe;
     ApplyResult settings;
-    hr = StartH264SinkWriterGuarded(recording.get(), path, width, height, fps,
+    hr = StartH264SinkWriterGuarded(recording.get(), recording->temporary.c_str(), width, height, fps,
                                   audio, hardwareActive, averageBitrate, settings);
     if (FAILED(hr) && hardwareActive) {
         g_hardwareEncoderUnsafe = true;
@@ -1546,7 +1621,7 @@ bool StartBuiltInH264Recording(DShowRecorder* recorder, const wchar_t* path,
         recording->videoStream = 0;
         recording->audioStream = 0;
         settings = ApplyResult{};
-        hr = StartH264SinkWriterGuarded(recording.get(), path, width, height, fps,
+        hr = StartH264SinkWriterGuarded(recording.get(), recording->temporary.c_str(), width, height, fps,
                                       audio, false, averageBitrate, settings);
         if (SUCCEEDED(hr))
             ReportHardwareFallbackOnce(recording->owner, recording->uiLanguage);
@@ -1566,12 +1641,15 @@ bool IsBuiltInH264Recording(const DShowRecorder* recorder) {
 
 bool WriteBuiltInH264Frame(DShowRecorder* recorder, const void* bgra,
                            std::size_t bytes) {
-    if (bgra == nullptr) return false;
     std::lock_guard<std::mutex> lock(gRecordingsMutex);
     const auto found = gRecordings.find(recorder);
     if (found == gRecordings.end()) return false;
     Recording& recording = *found->second;
-    if (bytes != recording.frameBytes) return false;
+    if (FAILED(recording.writeFailure)) return false;
+    if (bgra == nullptr || bytes != recording.frameBytes) {
+        recording.writeFailure = E_INVALIDARG;
+        return false;
+    }
 
     IMFMediaBuffer* buffer = nullptr;
     IMFSample* sample = nullptr;
@@ -1614,13 +1692,15 @@ bool WriteBuiltInH264Frame(DShowRecorder* recorder, const void* bgra,
             recording.audioSampleRate / 10'000'000ull;
         hr = WriteAudioSamplesThrough(recording, audioSamplesToWrite);
     }
-    if (FAILED(hr))
-        ReportFailure(recording.owner, hr);
+    if (FAILED(hr)) recording.writeFailure = hr;
     return SUCCEEDED(hr);
 }
 
 bool FinishBuiltInH264Recording(DShowRecorder* recorder,
-                                std::uint64_t expectedFrames) {
+                                std::uint64_t expectedFrames,
+                                std::int32_t* failure, std::wstring* retainedPrevious) {
+    if (failure) *failure = 0;
+    if (retainedPrevious) retainedPrevious->clear();
     std::unique_ptr<Recording> recording;
     {
         std::lock_guard<std::mutex> lock(gRecordingsMutex);
@@ -1629,6 +1709,15 @@ bool FinishBuiltInH264Recording(DShowRecorder* recorder,
         recording = std::move(found->second);
         gRecordings.erase(found);
     }
+    if (FAILED(recording->writeFailure)) {
+        if (failure) *failure = recording->writeFailure;
+        return false;
+    }
+    const bool completeFrameCount = expectedFrames != 0 &&
+        recording->frameIndex == expectedFrames;
+    const bool keepPartial = expectedFrames == 0 && !recording->originalDestination &&
+        recording->frameIndex != 0;
+    if (!completeFrameCount && !keepPartial) return false;
     const std::uint64_t audioSamplesAtVideoEnd =
         recording->frameIndex * recording->frameDuration *
         recording->audioSampleRate / 10'000'000ull;
@@ -1637,10 +1726,10 @@ bool FinishBuiltInH264Recording(DShowRecorder* recorder,
               recording->audioDataBytes / recording->audioBlockAlign,
               audioSamplesAtVideoEnd);
     HRESULT hr = WriteAudioSamplesThrough(*recording, totalAudioSamples);
-    const bool completeFrameCount = expectedFrames != 0 &&
-        recording->frameIndex == expectedFrames;
     if (SUCCEEDED(hr)) hr = recording->writer->Finalize();
-    if (FAILED(hr)) ReportFailure(recording->owner, hr);
+    if (SUCCEEDED(hr)) ReleaseSinkWriterQuietly(recording->writer);
+    if (SUCCEEDED(hr)) hr = PublishRecording(*recording, retainedPrevious);
+    if (FAILED(hr) && failure) *failure = hr;
     return SUCCEEDED(hr) && completeFrameCount;
 }
 

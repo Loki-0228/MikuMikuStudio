@@ -48,9 +48,25 @@ struct Hooks {
     ~Hooks(){Unhook();probe.Reset();factory.Reset();if(window)DestroyWindow(window);if(library)FreeLibrary(library);}
 };
 State* active=nullptr;
-std::unique_ptr<Hooks> hooks;
 struct ObserverRegistration { DrawObserver* value=nullptr;DWORD thread=0; };
 std::array<ObserverRegistration,2> observers{};
+// Set once, when the global owner below starts destruction. A plain bool runs
+// no destructor, so teardown in later translation units can still test it after
+// the rest of this file's globals are gone.
+bool shuttingDown=false;
+// Owns the native draw hooks. Its destructor marks the shutdown first, then
+// clears callbacks and lets the real hook, device and library resources be
+// released exactly once. Later unregistration only sees the flag.
+struct HookOwner {
+    std::unique_ptr<Hooks> value;
+    ~HookOwner(){
+        shuttingDown=true;
+        active=nullptr;
+        for(auto& entry:observers)entry={};
+        value.reset();
+    }
+};
+HookOwner hooks;
 thread_local bool observing=false;
 thread_local unsigned observerSilence=0;
 thread_local const void* sourceObject=nullptr;
@@ -180,6 +196,8 @@ void Capture(State& s,IDirect3DDevice9* device,D3DPRIMITIVETYPE type,INT base,UI
     mesh.name=prefix+std::to_string(ordinal);s.meshes.push_back(std::move(mesh));
 }
 HRESULT WINAPI Hook(IDirect3DDevice9* device,D3DPRIMITIVETYPE type,INT base,UINT min,UINT count,UINT start,UINT primitives) {
+    // During teardown the observers are already released; forward the draw.
+    if(shuttingDown)return fallbackIndexed(device,type,base,min,count,start,primitives);
     if(observing||observerSilence)return fallbackIndexed(device,type,base,min,count,start,primitives);
     observing=true;
     for(const auto& observer:observers)if(observer.value&&observer.thread==GetCurrentThreadId())
@@ -194,6 +212,7 @@ HRESULT WINAPI Hook(IDirect3DDevice9* device,D3DPRIMITIVETYPE type,INT base,UINT
     return fallbackIndexed(device,type,base,min,count,start,primitives);
 }
 void UnsupportedDraw(IDirect3DDevice9* device,D3DPRIMITIVETYPE type,UINT count) {
+    if(shuttingDown)return;
     if(observing||observerSilence)return;
     observing=true;
     for(const auto& observer:observers)if(observer.value&&observer.thread==GetCurrentThreadId())
@@ -244,33 +263,41 @@ void Hooks::Unhook() noexcept {
         installed=0;
 }
 void DropUnusedHooks(){
+    // Static teardown in another translation unit can call back here after the
+    // owner released its hooks. Test the flag before touching the pointer.
+    if(shuttingDown)return;
     const bool registered=std::any_of(observers.begin(),observers.end(),[](const auto& entry){return entry.value!=nullptr;});
     // A callback may unregister itself. Never free the trampoline while its
     // native hook is still on the stack; the next outside teardown can drop it.
-    if(!active&&!registered&&!observing)hooks.reset();
+    // A normal runtime drop leaves hooks re-creatable by Observe or Session.
+    if(!active&&!registered&&!observing)hooks.value.reset();
 }
 }
 struct Session::Impl:State {
     Impl(MMDApp& app,bool selected):State(app,selected) {
+        if(shuttingDown)throw std::runtime_error("Geometry capture is shutting down");
         if(active)throw std::runtime_error("A geometry export is already running");
-        if(!hooks)hooks=std::make_unique<Hooks>(app);
+        if(!hooks.value)hooks.value=std::make_unique<Hooks>(app);
         active=this;
     }
     ~Impl(){if(active==this)active=nullptr;DropUnusedHooks();}
 };
 bool Observe(MMDApp& app,DrawObserver* value,std::string& error) {
     error.clear();
+    if(shuttingDown){error="Geometry capture is shutting down";return false;}
     if(!value){error="The native draw observer is null";return false;}
     for(auto& registered:observers)if(registered.value==value) {
         registered.thread=GetCurrentThreadId();return true;
     }
     const auto free=std::find_if(observers.begin(),observers.end(),[](const auto& entry){return entry.value==nullptr;});
     if(free==observers.end()){error="Two native draw observers are already active";return false;}
-    try{if(!hooks)hooks=std::make_unique<Hooks>(app);}
+    try{if(!hooks.value)hooks.value=std::make_unique<Hooks>(app);}
     catch(const std::exception& e){error=e.what();return false;}
     *free={value,GetCurrentThreadId()};return true;
 }
 void StopObserving(DrawObserver* value){
+    // Unregistration that arrives after the owner is gone is idempotent.
+    if(shuttingDown)return;
     for(auto& registered:observers)if(registered.value==value)registered={};
     DropUnusedHooks();
 }

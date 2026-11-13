@@ -16,3 +16,18 @@
 // original bytes verbatim - scripts/dialog_rc.py verifies that round-trip).
 // See res/README.md.
 // =========================================================================//
+
+#include <windows.h>
+
+// Shared resource for the project recovery dialog in both build profiles.
+9171 DIALOGEX 0, 0, 350, 154
+STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION ""
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT "", 1001, 10, 8, 330, 20
+    LISTBOX 1002, 10, 29, 330, 88, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_TABSTOP | WS_HSCROLL | WS_VSCROLL
+    PUSHBUTTON "", 1003, 10, 128, 105, 16
+    DEFPUSHBUTTON "", IDOK, 161, 128, 102, 16
+    PUSHBUTTON "", IDCANCEL, 272, 128, 68, 16
+END

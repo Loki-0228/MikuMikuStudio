@@ -83,6 +83,7 @@ enum class BoneType : unsigned char {
 // Flag word (BoneRecord::flags).  PMD loads set only Visible on every bone;
 // PMX loads keep the file's bits verbatim (bit order = PMX 2.0 spec).
 constexpr std::uint16_t kBoneFlagTailIsBone = 0x0001;     // tail is a bone index (else vec3 offset, +464)
+constexpr std::uint16_t kBoneFlagRotatable = 0x0002;     // PMX rotation editable
 constexpr std::uint16_t kBoneFlagMovable = 0x0004;        // translation editable; PMX loader -> BoneType::Move
 constexpr std::uint16_t kBoneFlagVisible = 0x0008;        // drawn/pickable; PMD loader sets it on every bone
 constexpr std::uint16_t kBoneFlagIk = 0x0020;             // bone carries an IK chain record

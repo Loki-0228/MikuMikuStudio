@@ -11,10 +11,20 @@
 
 #include "mikumikustudio/globals.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include "../plugins/background_identity.hpp"
+#endif
 
 namespace mikumikustudio {
 
 void MMDApp::InitDefaults() {
+#if !MMD_ORIGINAL_PROFILE
+    // Identity services fail closed if registration cannot be completed.
+    (void)plugins::background_identity::Register(this);
+#endif
     auto& s = *this;
 
     s.ViewOffsetX() = 0.0f;

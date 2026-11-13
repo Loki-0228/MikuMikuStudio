@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <map>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -23,6 +24,102 @@ template<class T> void Unique(std::vector<T*>& values) {
     std::sort(values.begin(),values.end(),std::less<T*>{});
     values.erase(std::unique(values.begin(),values.end()),values.end());
 }
+// These allocation shapes follow the repository's VS 2022 14.44 STL headers.
+// Other STL revisions must be audited before admitting a fresh capture; a
+// reusable owner does not depend on any allocation layout. No guessed fallback.
+#if !MMD_ORIGINAL_PROFILE
+#if defined(_MSVC_STL_VERSION) && _MSVC_STL_VERSION == 143 && _MSVC_STL_UPDATE == 202503L && !_HAS_CXX23
+struct CaptureBytes {
+    std::uint64_t value=0;bool valid=true;
+    void Add(std::uint64_t bytes)noexcept{
+        if(!valid)return;
+        if(bytes>=UINT64_MAX-value){valid=false;return;}
+        value+=bytes;
+    }
+    template<class T>void Allocation(std::size_t count)noexcept{
+        if(!valid)return;
+        if(count>(std::numeric_limits<std::size_t>::max)()/sizeof(T)){valid=false;return;}
+        auto bytes=std::uint64_t(count)*sizeof(T);
+        // std::allocator adds this header/alignment slack for large x86/x64
+        // allocations. General CRT heap metadata remains outside this ledger.
+#if defined(_M_IX86) || defined(_M_X64)
+        if(bytes>=std::_Big_allocation_threshold
+#ifdef __cpp_aligned_new
+            &&alignof(T)<=__STDCPP_DEFAULT_NEW_ALIGNMENT__
+#endif
+        ){
+            if(bytes>(std::numeric_limits<std::size_t>::max)()-std::_Non_user_size){valid=false;return;}
+            bytes+=std::_Non_user_size;
+        }
+#endif
+        Add(bytes);
+    }
+    void VectorProxy()noexcept{
+#if _ITERATOR_DEBUG_LEVEL != 0
+        Allocation<std::_Container_proxy>(1);
+#endif
+    }
+    template<class T>static std::size_t VectorLimit()noexcept{
+        return (std::min)(std::size_t((std::numeric_limits<std::ptrdiff_t>::max)()),
+            (std::numeric_limits<std::size_t>::max)()/sizeof(T));
+    }
+    template<class T>void Reserved(std::size_t count)noexcept{
+        if(count>VectorLimit<T>()){valid=false;return;}
+        VectorProxy();if(count)Allocation<T>(count);
+    }
+    template<class T>void Growing(std::size_t count)noexcept{
+        const auto limit=VectorLimit<T>();if(count>limit){valid=false;return;}
+        VectorProxy();std::size_t capacity=0;
+        // Each push_back reallocation uses max(size+1,capacity+capacity/2).
+        // Sum every actual capacity, so retired buffers are not refunded and
+        // simultaneous old/new storage is bounded without a safety multiplier.
+        while(valid&&capacity<count){const auto required=capacity+1;
+            capacity=capacity>limit-capacity/2?limit:(std::max)(required,capacity+capacity/2);
+            Allocation<T>(capacity);
+        }
+    }
+    template<class T>void SeparateShared()noexcept{Add(sizeof(T));Add(sizeof(std::_Ref_count<T>));}
+};
+#endif
+struct CaptureCounts { std::size_t bodies=0,motions=0,joints=0; };
+MmsResult InspectCapture(const mdl::ModelRecord& model,btDiscreteDynamicsWorld* world,CaptureCounts& counts)noexcept{
+    if((model.rigidCount&&!model.rigidTable)||(model.jointCount&&!model.jointTable)||
+        ((model.rigidCount||model.jointCount)&&!world))return MMS_E_ARGUMENT;
+    for(unsigned i=0;i<model.rigidCount;++i){
+        auto* body=static_cast<btRigidBody*>(model.rigidTable[i].body);if(!body)continue;
+        for(unsigned previous=0;previous<i;++previous)
+            if(model.rigidTable[previous].body==body)return MMS_E_ARGUMENT;
+        if(!physics_scale::BaseShape(body))return MMS_E_ARGUMENT;
+        ++counts.bodies;if(body->getMotionState())++counts.motions;
+    }
+    const auto contains=[&](const btRigidBody* body){
+        for(unsigned i=0;i<model.rigidCount;++i)if(model.rigidTable[i].body==body)return true;
+        return false;
+    };
+    const int worldCount=world?world->getNumConstraints():0;if(worldCount<0)return MMS_E_ARGUMENT;
+    for(unsigned i=0;i<model.jointCount;++i){
+        const auto& joint=model.jointTable[i];const auto id=joint.constraint;if(id<0)continue;
+        btTypedConstraint* found=nullptr;
+        for(int j=0;j<worldCount;++j){auto* candidate=world->getConstraint(j);if(!candidate)return MMS_E_ARGUMENT;
+            if(candidate->getUid()==id){if(found)return MMS_E_ARGUMENT;found=candidate;}}
+        if(!found){
+            const auto a=joint.rigidA,b=joint.rigidB;
+            if(a<0||b<0||unsigned(a)>=model.rigidCount||unsigned(b)>=model.rigidCount||
+                !model.rigidTable[a].body||!model.rigidTable[b].body)continue;
+            return MMS_E_ARGUMENT;
+        }
+        for(unsigned previous=0;previous<i;++previous)
+            if(model.jointTable[previous].constraint==id)return MMS_E_ARGUMENT;
+        if(!contains(&found->getRigidBodyA())||!contains(&found->getRigidBodyB()))return MMS_E_ARGUMENT;
+        ++counts.joints;
+    }
+    if(auto* dynamics=dynamic_cast<DynamicsWorld*>(world)){
+        // Retained::Impl uses a checked reference cast to this exact family.
+        if(!dynamic_cast<history_physics::Broadphase*>(dynamics->getBroadphase()))return MMS_E_NOT_READY;
+    }else if(counts.bodies||counts.joints)return MMS_E_NOT_READY;
+    return MMS_OK;
+}
+#endif
 }
 struct ModelPhysicsVersion::Impl {
     mdl::RigidRecord* rigids;
@@ -207,6 +304,46 @@ ModelPhysicsResources::~ModelPhysicsResources() {
 std::shared_ptr<ModelPhysicsResources> ModelPhysicsResources::Find(unsigned char* model)noexcept {
     const auto found=owners.find(model);return found==owners.end()?nullptr:found->second.observed.lock();
 }
+#if !MMD_ORIGINAL_PROFILE
+MmsResult ModelPhysicsResources::MeasureCapturePreparation(unsigned char* model,std::uint64_t& bytes)noexcept{
+    if(!model)return MMS_E_ARGUMENT;
+    if(auto found=Find(model)){
+        if(!found->IsCurrent(found->Current()))return MMS_E_STALE;
+        bytes=0;return MMS_OK;
+    }
+#if defined(_MSVC_STL_VERSION) && _MSVC_STL_VERSION == 143 && _MSVC_STL_UPDATE == 202503L && !_HAS_CXX23
+    const auto& native=*mdl::Mdl(model);auto* world=native.scenePtr?native.scenePtr->world:nullptr;
+    CaptureBytes measured;
+    measured.Add(sizeof(ModelPhysicsVersion::Impl));measured.SeparateShared<ModelPhysicsVersion>();
+    measured.Add(sizeof(Impl));measured.SeparateShared<ModelPhysicsResources>();
+    measured.Reserved<void*>(native.rigidCount);measured.Reserved<int>(native.jointCount);
+    if(!measured.valid)return MMS_E_MEMORY;
+    CaptureCounts counts;if(const auto result=InspectCapture(native,world,counts))return result;
+    measured.Growing<btRigidBody*>(counts.bodies);
+    measured.Growing<btCollisionShape*>(counts.bodies); // bodyShapes
+    measured.Growing<btMotionState*>(counts.bodies); // bodyMotions includes nulls
+    measured.Growing<btCollisionShape*>(counts.bodies); // shapes capacity before Unique
+    measured.Growing<btMotionState*>(counts.motions); // motions capacity before Unique
+    measured.Growing<btTypedConstraint*>(counts.joints);
+    if(!measured.valid)return MMS_E_MEMORY;
+    if(owners.find(model)==owners.end()){
+        if(owners.size()==owners.max_size())return MMS_E_MEMORY;
+        measured.Allocation<std::_Tree_node<decltype(owners)::value_type,void*>>(1);
+    }
+    if(!measured.valid)return MMS_E_MEMORY;
+    std::uint64_t nested=0;
+    if(dynamic_cast<DynamicsWorld*>(world)){
+        if(const auto result=history_physics::MeasureRetainedCapturePreparation(counts.bodies,counts.joints,nested))return result;
+        measured.Add(nested);if(!measured.valid)return MMS_E_MEMORY;
+    }
+    if(const auto result=physics_scale::MeasureResourceStateCapturePreparation(nested))return result;
+    measured.Add(nested);if(!measured.valid)return MMS_E_MEMORY;
+    bytes=measured.value;return MMS_OK;
+#else
+    return MMS_E_NOT_READY;
+#endif
+}
+#endif
 std::shared_ptr<ModelPhysicsResources> ModelPhysicsResources::Capture(unsigned char* model) {
     if(!model)throw std::invalid_argument("null model physics owner");
     if(auto found=Find(model)) {

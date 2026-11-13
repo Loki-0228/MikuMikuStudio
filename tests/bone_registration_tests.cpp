@@ -496,13 +496,17 @@ void SelectedBoneMovement() {
     Check(edit != nullptr, "create native bone coordinate edit");
     app->OriginalEditProc() = reinterpret_cast<WNDPROC>(GetWindowLongPtrA(edit, GWLP_WNDPROC));
     InstallControlSubclass(app.get(), edit, panel::kReadoutPosXEdit);
-    SetWindowTextA(edit, "12.5");
+    SendMessageA(edit, EM_SETSEL, 0, -1);
+    SendMessageA(edit, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>("12.5"));
+    Check(SendMessageA(edit, EM_GETMODIFY, 0, 0), "typed coordinate marks an actual pending edit");
     SendMessageA(edit, WM_KILLFOCUS, reinterpret_cast<WPARAM>(window), 0);
     Check(f.bones[2].trans[0] == 12.5f && f.physics[2],
           "leaving a coordinate field commits that field to the selected bone");
     SetFocus(edit);
     Check(GetFocus() == edit, "coordinate edit receives thread focus");
-    SetWindowTextA(edit, "13.5");
+    SendMessageA(edit, EM_SETSEL, 0, -1);
+    SendMessageA(edit, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>("13.5"));
+    Check(SendMessageA(edit, EM_GETMODIFY, 0, 0), "replacement coordinate remains a user edit before Enter");
     const auto undoBeforeEnter = f.model->undoState[0];
     SendMessageA(edit, WM_KEYDOWN, VK_RETURN, 0);
     Check(f.bones[2].trans[0] == 13.5f && GetFocus() == window &&
@@ -567,7 +571,9 @@ void SelectedBoneMovement() {
     BoneEditModes(app.get());
     Check(std::fabs(f.bones[2].trans[0] - before - 1.f) < .0001f,
           "axis control moves the remaining selected bone");
-    SetWindowTextA(edit, "8.25");
+    SendMessageA(edit, EM_SETSEL, 0, -1);
+    SendMessageA(edit, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>("8.25"));
+    Check(SendMessageA(edit, EM_GETMODIFY, 0, 0), "coordinate for the remaining selection is an actual user edit");
     SendMessageA(edit, WM_KILLFOCUS, reinterpret_cast<WPARAM>(window), 0);
     Check(f.bones[2].trans[0] == 8.25f && f.bones[3].trans[0] == 0,
           "coordinate edit follows the remaining selection and leaves the old target unchanged");

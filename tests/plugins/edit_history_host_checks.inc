@@ -523,7 +523,7 @@ void Run(MMDApp* app, bool curveMotionOnly = false) {
         history->Collect();
     }
     Check(RefreshBoundObjectUi(*app,*history),"refresh original accessory list after the duplicate-name fixture");
-    auto scene = CreateSceneStore(app); SceneClient client; auto api = scene->Api(client);
+    auto scene = CreateSceneStore(app); SceneClient client; auto api = ([&]{ MmsSceneApiV1 value{}; if (scene->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     const auto revisionMatches = [&] {
         MmsSceneQueryV1 query{}; query.h = Header<MmsSceneQueryV1>(); query.flags = MMS_SCENE_CURRENT_TIME;
         MmsSnapshotV1 snapshot{}; uint64_t revision = 0;

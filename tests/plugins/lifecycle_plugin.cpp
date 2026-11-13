@@ -11,11 +11,13 @@
 #include <cstdio>
 #include <thread>
 #include <new>
+#include <stdexcept>
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 template<class T> static MmsHeader H() { return {sizeof(T), 1, 0}; }
 static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; MmsSceneApiV1 scene{}; MmsRenderApiV1 render{};
+    MmsStorageApiV1 storage{}; MmsHandle savedLease=0; MmsBytes savedBytes{};
     mms::sdk::RefreshServices refresh; mms::sdk::RefreshTicket refreshTicket;
     uint32_t enabled = 1, checked = 0, visible = 1;
     unsigned stateToggle = 0;
@@ -27,6 +29,12 @@ struct Plugin { MmsHostV1 host; MmsUiApiV1 ui{}; MmsUiSurfaceApiV1 surface{}; Mm
     unsigned frameCallbacks = 0, phaseBegins = 0, phaseEnds = 0; };
 static bool PropertiesMode(const Plugin* p) { return p->id == "org.example.gui-properties-panel"; }
 static Plugin* refreshProbe = nullptr;
+static Plugin* storageProbe = nullptr;
+// Host-driven serializer controls. The host-event probe enables the serializer
+// for a fixture whose id is not the storage profile, then makes exactly the next
+// reset consume a commitLoad that violates the ABI's no-fail contract.
+static Plugin* lifecycleProbe = nullptr;
+static bool serializerCommitThrow = false;
 // Test-only hook: production-style event dispatch can synchronously re-enter
 // host frame entries without changing the fixture when no hook is installed.
 using RenderReentryHook = void (MMS_CALL*)(void*);
@@ -254,7 +262,12 @@ static MmsResult RegisterSerializer(Plugin* p){
         auto* p=static_cast<Plugin*>(context);if(schema && (schema!=1 || bytes.bytes!=sizeof(int)))return MMS_E_VERSION;
         p->candidateValue=0;if(schema)std::memcpy(&p->candidateValue,bytes.data,sizeof(int));*out=1;Log(p,"SERIALIZER_PREPARE");return MMS_OK;
     };
-    s.commitLoad=[](void* context,MmsHandle){auto* p=static_cast<Plugin*>(context);p->projectValue=p->candidateValue;Log(p,"SERIALIZER_COMMIT");};
+    s.commitLoad=[](void* context,MmsHandle){
+        auto* p=static_cast<Plugin*>(context);
+        // A real exception object, not an error code, is the contract violation
+        // under test; the host boundary must catch it and still finish the reset.
+        if(serializerCommitThrow){Log(p,"SERIALIZER_COMMIT_THROW_BEGIN");throw std::runtime_error("test serializer commitLoad failure");}
+        p->projectValue=p->candidateValue;Log(p,"SERIALIZER_COMMIT");};
     s.cancelLoad=[](void* context,MmsHandle){Log(static_cast<Plugin*>(context),"SERIALIZER_CANCEL");};
     s.save=[](void* context,MmsBytes* bytes,uint32_t* schema,MmsHandle* out)->MmsResult{
         auto* p=static_cast<Plugin*>(context);wchar_t fail[8]{};if(GetEnvironmentVariableW(L"MMS_TEST_SERIALIZER_FAIL",fail,8))return MMS_E_FAILED;
@@ -310,6 +323,12 @@ static MmsResult MMS_CALL Start(void* context) {
     auto r = p->ui.registerCommand(p->ui.context, &command, &p->command); if (r) return r;
     r = InitRender(p); if (r) return r;
     if(p->id.find("storage")!=std::string::npos){r=RegisterSerializer(p);if(r)return r;}
+    if(p->id.find("storagelease")!=std::string::npos) {
+        r=p->host.queryService(p->host.context,S("mms.storage"),1,0,sizeof(p->storage),&p->storage);if(r)return r;
+        uint32_t schema=0;r=p->storage.readSaved(p->storage.context,&p->savedBytes,&schema,&p->savedLease);
+        if(r || schema!=1 || p->savedBytes.bytes!=sizeof(int)) return r?r:MMS_E_FAILED;
+        storageProbe=p;Log(p,"STORAGE_LEASE_ACQUIRED");
+    }
     if(p->id.find("scenelease")!=std::string::npos) {r=ReadScene(p,true);if(r)return r;}
     if (p->id.find("failstart") != std::string::npos) return MMS_E_FAILED;
     if (p->id.find("gui") != std::string::npos) {
@@ -379,6 +398,7 @@ static MmsResult MMS_CALL Start(void* context) {
         Log(p, "PANELS_REGISTERED");
     }
     if (p->id.find("gui-refresh") != std::string::npos) refreshProbe = p;
+    lifecycleProbe = p;
     return MMS_OK;
 }
 static void MMS_CALL Event(void* context, const MmsEventV1* event) {
@@ -396,8 +416,25 @@ static void MMS_CALL Event(void* context, const MmsEventV1* event) {
         if(event->payloadVersion!=1 || event->payload.bytes!=sizeof(MmsProjectEventV1)) {
             Log(p,"PROJECT_CLOSED_PAYLOAD_FAIL");return;
         }
-        Log(p,"EVENT_PROJECT_CLOSED");return;
+        Log(p,"EVENT_PROJECT_CLOSED");
+        // The host builds this payload only when it dispatches the queued event,
+        // so reading the path here proves the deferred string outlived the queue.
+        // The ABI path is UTF-8; append its bytes verbatim to keep the text exact.
+        const auto& project=*static_cast<const MmsProjectEventV1*>(event->payload.data);
+        std::string marker="EVENT_PROJECT_CLOSED_PATH data=";
+        marker+=project.path.data?"non-null":"null";
+        marker+=" bytes="+std::to_string(project.path.bytes)+" text=";
+        if(project.path.data)marker.append(project.path.data,size_t(project.path.bytes));
+        Log(p,marker.c_str());
+        // The identity captured before the host cleared the project is the only
+        // externally visible proof that close consumed the current identity.
+        char identity[128]{};
+        std::snprintf(identity,sizeof(identity),"EVENT_PROJECT_CLOSED_ID nonzero=%u lo=%016llx hi=%016llx",
+            (project.projectId.lo||project.projectId.hi)?1u:0u,
+            static_cast<unsigned long long>(project.projectId.lo),static_cast<unsigned long long>(project.projectId.hi));
+        Log(p,identity);return;
     }
+    if(event->kind==MMS_EVENT_SCENE_RESET) { Log(p,"EVENT_SCENE_RESET");return; }
     if(event->kind==MMS_EVENT_COMMAND_STATE_CHANGED) {
         if(event->payloadVersion!=1 || event->payload.bytes!=sizeof(MmsRevisionEventV1)) {
             Log(p,"COMMAND_STATE_PAYLOAD_FAIL");return;
@@ -490,13 +527,21 @@ static MmsResult MMS_CALL Stop(void* context) {
         // rather than a plugin BUSY result, must retain this module/context.
         Log(p, "STOP_REFRESH_TICKET_RETAINED"); return MMS_OK;
     }
+    if (p->snapshot && p->stops==1) { Log(p,"STOP_SCENE_BUSY"); return MMS_E_BUSY; }
+    if (p->savedLease && p->id.find("storagelease-busy")!=std::string::npos) {
+        if (p->stops==1) { Log(p,"STOP_STORAGE_BUSY");return MMS_E_BUSY; }
+        p->storage.releaseSaved(p->storage.context,p->savedLease);p->savedLease=0;Log(p,"STOP_STORAGE_RELEASED");
+    }
+    if (p->savedLease && p->id.find("storagelease-hold")!=std::string::npos) {
+        Log(p,"STOP_STORAGE_RETAINED");return MMS_OK;
+    }
     if(p->snapshot && p->stops>1) {
         std::thread worker([&] {MmsSpan objects{};
             if(p->scene.objects(p->scene.context,p->snapshot,&objects)==MMS_OK)Log(p,"STOP_SCENE_READ_PASS");
             p->scene.release(p->scene.context,p->snapshot);p->snapshot=0;
         });worker.join();
     }
-    if (p->id.find("busy") != std::string::npos && p->stops < 3) { Log(p, "STOP_BUSY"); return MMS_E_BUSY; }
+    if ((p->id == "org.example.busy" || p->id == "org.example.render-busy") && p->stops < 3) { Log(p, "STOP_BUSY"); return MMS_E_BUSY; }
     if(p->serializer){auto r=p->host.unregisterProvider(p->host.context,p->serializer);if(r)return r;p->serializer=0;}
     if (PropertiesMode(p)) {
         for (auto& item : p->propertyButtons) if (item) { auto r = p->ui.unregisterItem(p->ui.context, item); if (r) return r; item = 0; }
@@ -508,7 +553,29 @@ static MmsResult MMS_CALL Stop(void* context) {
     if (p->command) { auto r = p->ui.unregisterItem(p->ui.context, p->command); if (r) return r; p->command = 0; }
     Log(p, "STOP_OK"); return MMS_OK;
 }
-static void MMS_CALL Destroy(void* context) { auto* p = static_cast<Plugin*>(context); Log(p, "DESTROY"); if (refreshProbe == p) refreshProbe = nullptr; if (renderProbeApi.context == p->render.context) renderProbeApi = {}; deviceEventHook = nullptr; deviceEventContext = nullptr; delete p; }
+static void MMS_CALL Destroy(void* context) { auto* p = static_cast<Plugin*>(context); Log(p, "DESTROY"); if (refreshProbe == p) refreshProbe = nullptr; if (storageProbe == p) storageProbe = nullptr; if (lifecycleProbe == p) lifecycleProbe = nullptr; if (renderProbeApi.context == p->render.context) renderProbeApi = {}; deviceEventHook = nullptr; deviceEventContext = nullptr; delete p; }
+extern "C" __declspec(dllexport) uint32_t MMS_CALL StorageLeaseProbeStops() { return storageProbe ? static_cast<uint32_t>(storageProbe->stops) : 0; }
+extern "C" __declspec(dllexport) MmsResult MMS_CALL StorageLeaseProbeRelease() {
+    if (!storageProbe || !storageProbe->savedLease) return MMS_E_NOT_READY;
+    auto* p=storageProbe;int value=0;std::memcpy(&value,p->savedBytes.data,sizeof(value));
+    if (value!=42) return MMS_E_FAILED;
+    p->storage.releaseSaved(p->storage.context,p->savedLease);p->savedLease=0;return MMS_OK;
+}
+// Host-event probe controls. Enabling the serializer here leaves the plugin-id
+// storage profile untouched, and arming commitLoad targets only the next reset
+// the host drives; both hide the fault behind the same production entries.
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsTestEnableSerializer() {
+    auto* p = lifecycleProbe;
+    if (!p) return MMS_E_NOT_READY;
+    if (p->serializer) return MMS_OK;
+    const auto result = RegisterSerializer(p);
+    if (result == MMS_OK) Log(p, "SERIALIZER_PROVIDER_ENABLED");
+    return result;
+}
+extern "C" __declspec(dllexport) void MMS_CALL MmsTestSetSerializerCommitThrow(uint32_t enabled) {
+    serializerCommitThrow = enabled != 0;
+    if (lifecycleProbe) Log(lifecycleProbe, serializerCommitThrow ? "SERIALIZER_COMMIT_THROW_ARMED" : "SERIALIZER_COMMIT_THROW_DISARMED");
+}
 extern "C" __declspec(dllexport) MmsResult MMS_CALL RefreshProbeState(MmsUiRefreshStateV1* out) {
     if (!refreshProbe || !refreshProbe->refreshTicket) return MMS_E_NOT_READY;
     if (!out) return MMS_E_ARGUMENT;

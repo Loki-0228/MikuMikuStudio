@@ -174,6 +174,29 @@ bool ReadMany(const MMDApp& app, const std::vector<int>& morphs,
 bool ReadManyDetached(const MMDApp& app, const std::vector<int>& morphs,
                       std::vector<animation_curve::Track>& out, std::wstring& error);
 
+#if !MMD_ORIGINAL_PROFILE
+// Preview the effective interval of a single marked, visible authored morph.
+// A marked continuation takes its incoming interval; a marked head alone
+// takes the first interval. Leave the native selection and pose untouched.
+bool ReadSelectedPreview(const unsigned char* model, animation_curve::Track& interval);
+
+struct CopyAuthoring {
+    int morph = -1;
+    animation_curve::Track track;
+};
+// Owned effective authoring for a native copy snapshot, captured at a UI safe
+// point. Validates indices and preserves their first-occurrence order, omitting
+// morphs without authoring. Keeps every adjacent key at its absolute source
+// frame, regardless of native selection marks; paste filtering is the caller's.
+// Derives only requested authors privately, never initializes/prunes the live
+// registry or synchronizes its caches, and never reads unrelated native chains.
+// No authoring is success with an empty output. Invalid requested authoring or
+// its native chain returns false with error. Allocation failures propagate to
+// the caller. Every failure clears out and leaves the entire source untouched.
+bool CaptureCopyAuthoring(const unsigned char* model, const std::vector<int>& selectedMorphs,
+                          std::vector<CopyAuthoring>& out, std::string& error);
+#endif
+
 // Authored-state queries.  They check the model identity but do not derive
 // against the native pool, so they stay cheap enough for a UI refresh.  They
 // answer for the effective curve, that is for what is in force right now; the
@@ -310,6 +333,9 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+#if !MMD_ORIGINAL_PROFILE
+    friend std::uint64_t DeletionPreparationBytes(const unsigned char*, std::size_t) noexcept;
+#endif
     friend bool CaptureLayers(const unsigned char*, AuthoredLayers&, std::string&);
     friend bool LayersTracks(const AuthoredLayers&, std::vector<animation_curve::NamedTrack>&,
                              std::string&);
@@ -322,6 +348,11 @@ private:
 };
 
 #if !MMD_ORIGINAL_PROFILE
+// Read-only, allocation-free bound for one AuthoredLayers capture and the
+// largest sequential source/target SampleLayersTarget scratch. Counts copied
+// layers, native traversal, effective-track growth and reconciliation nodes.
+// Does not initialize the registry. Overflow returns UINT64_MAX.
+std::uint64_t DeletionPreparationBytes(const unsigned char* model, std::size_t nativeCapacity) noexcept;
 // Immutable registered morph weights, before group/flip expansion or model
 // deformation. Capture must run at a UI safe point. No live pointers, cursors,
 // authoring caches or current unregistered pose values survive in this object.

@@ -1,5 +1,6 @@
 #pragma once
 #include "storage_store.hpp"
+#include <stdexcept>
 
 namespace mikumikustudio::plugins {
 struct PluginProject {
@@ -14,6 +15,10 @@ fs::path PluginSidecar(const fs::path&);
 // These take an exclusive same-directory lock. Recovery touches only paths
 // derived from the requested project and a validated hexadecimal save ID.
 void RecoverProjectPair(const fs::path& target);
+class ProjectSaveRecoveryError final : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
 PluginProject ReadPluginProject(const fs::path& target);
 // stagedMain is a complete, closed PMM in the target directory. This function
 // does not delete it. step is a fault-injection hook used only by tests.

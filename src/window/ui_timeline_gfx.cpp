@@ -48,6 +48,7 @@
 #include <cstdint>
 
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 
 namespace mikumikustudio {
@@ -62,7 +63,10 @@ void TimelineDrawTicks(int frameOffset, int width) {
 
     const double firstColumn = 13.0 * frameOffset - 101.0;
     const double samplesPerColumn = 30.0 / app->PlaybackTiming().playbackFps;
-    int xMax = width - 10;
+    RECT client{};
+    GetClientRect(app->MainWindow(), &client);
+    const auto layout = MainPanelLayout(app, client.bottom);
+    const int xMax = layout.DesignPixels(width) - 10;
 
     HDC strip = audio->timelineDC;
     char* bufA = reinterpret_cast<char*>(audio->waveformMax);

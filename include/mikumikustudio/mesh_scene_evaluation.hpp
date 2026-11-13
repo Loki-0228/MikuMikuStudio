@@ -2,6 +2,7 @@
 #include "mikumikustudio/bone_scene_evaluation.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "mikumikustudio/mesh_evaluation.hpp"
+#include "mikumikustudio/mesh_scene_references.hpp"
 
 namespace mikumikustudio {
 class MeshDefinitionSnapshot;
@@ -49,7 +50,7 @@ class MeshSceneSource final {
     std::unique_ptr<Impl> impl_;
     MeshSceneSource();
     static std::unique_ptr<MeshSceneSource> CaptureImpl(const BoneSceneModelInput*,
-        std::uint32_t, std::uint64_t, bool);
+        std::uint32_t, std::uint64_t, bool, bool);
 public:
     ~MeshSceneSource();
     MeshSceneSource(const MeshSceneSource&) = delete;
@@ -64,9 +65,21 @@ public:
     // allocate per-material output values.
     static std::unique_ptr<MeshSceneSource> CaptureWithMaterials(const BoneSceneModelInput*,
         std::uint32_t count, std::uint64_t maxRetainedBytes = 512ull * 1024 * 1024);
+    // Explicitly capture bounded native paths and raw toon/sphere flags at the
+    // same safe point. The source owns references, not external files or pixels.
+    // Non-terminated paths are rejected; the older capture paths remain unchanged.
+    static std::unique_ptr<MeshSceneSource> CaptureWithMaterialReferences(const BoneSceneModelInput*,
+        std::uint32_t count, std::uint64_t maxRetainedBytes = 512ull * 1024 * 1024);
     std::uint32_t ModelCount() const noexcept;
     std::uint64_t RetainedBytes() const noexcept;
     bool HasMaterials() const noexcept;
+    bool HasMaterialReferences() const noexcept;
+    // An invalid index or a source without references leaves out unchanged.
+    bool MaterialReferencesAt(std::uint32_t model, std::uint32_t material,
+        MeshSceneMaterialReferences& out) const noexcept;
+    // Returns raw model data without decoding names or resolving shared slots.
+    // Failure leaves out unchanged.
+    bool ToonTableReferencesAt(std::uint32_t model, MeshSceneToonTableReferences& out) const noexcept;
     // Frozen topology and bind data captured alongside this scene; index order
     // matches BoneSceneFrame::ModelAt. Borrowed until the source is destroyed.
     const MeshDefinitionSnapshot* MeshAt(std::uint32_t index) const noexcept;

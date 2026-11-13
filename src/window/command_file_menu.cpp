@@ -119,6 +119,7 @@
 #include "mikumikustudio/wic_mov_recorder.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include <Windows.h>
+#include "mikumikustudio/recording_output_path.hpp"
 #include <commctrl.h>
 #include <commdlg.h>
 
@@ -142,6 +143,7 @@
 #include "../plugins/native_center_offset.hpp"
 #include "../plugins/native_key_commands.hpp"
 #include "../plugins/native_history_commands.hpp"
+#include "../plugins/native_picture_history.hpp"
 #include "../plugins/native_camera_multiply.hpp"
 #include "../plugins/native_morph_category.hpp"
 #include "../plugins/native_morph_tools.hpp"
@@ -358,8 +360,6 @@ void LoadVsqFile(MMDApp* app, const wchar_t* path);  // VA 0x00435FE0 VSQ load
 void CopyDirPathW(wchar_t* dest, const wchar_t* src); // VA 0x0042AE20 (media_load.cpp) path copy
 // 0x42AE40 path copy - real port in src/media/media_load.cpp as CopyPathW
 void CopyPathW(wchar_t* dest, const wchar_t* src);
-void StartAviRecordFullscreen(MMDApp* app);        // VA 0x00464760 (avi_record_start.cpp)
-void StartAviRecordWindow(MMDApp* app);            // VA 0x0045E820 (avi_record_start.cpp)
 void RegisterMorphKeyCurrent(unsigned char* model, int morph,
                int frame);                         // VA 0x0049EEE0 frame
                                                    // register (blink keys)
@@ -659,9 +659,115 @@ static bool TryBoundMorphTool(MMDApp* app,plugins::NativeMorphTool tool) noexcep
 // EndDialog(2).  CBN_SELCHANGE on 0x274 -> RebindCodecOnComboChange (codec
 // bind) + app+0xA0CD8 update; button 0x2D4 -> ShowCodecConfigDialog (the
 // codec's own config dialog + state capture).
+namespace {
+struct VideoRecordingParameters {
+    int start, end, width, height, stereoWidthMultiplier;
+    float fps;
+    bool includeWave, closeAfterExport, stereo;
+
+    void Apply(MMDApp& app) const {
+        app.AviRecordStartFrame() = start;
+        app.AviRecordEndFrame() = end;
+        app.AviIncludeWave() = includeWave;
+        app.AviCloseAfterExport() = closeAfterExport;
+        app.AviStereoOutput() = stereo;
+        app.AviStereoWidthMultiplier() = stereoWidthMultiplier;
+        app.AviOutputWidth() = width;
+        app.AviOutputHeight() = height;
+        app.AviRecordFps() = fps;
+        app.LastVideoExportFps() = fps;
+    }
+};
+
+struct VideoExportOptions {
+    HWND owner;
+    std::uint64_t scene;
+    wchar_t path[kPathFieldCapacity]{};
+    std::optional<VideoRecordingParameters> parameters;
+#if !MMD_ORIGINAL_PROFILE
+    recording_output_path::Selection approved;
+#endif
+
+    bool Current(MMDApp* app) const {
+        return app && IsWindow(owner) && app->MainWindow() == owner &&
+            app->SceneGeneration() == scene && !app->sceneRecoveryPending &&
+            !app->SceneMutationInProgress() && !app->PlaybackActive() && !app->RecordingWindow();
+    }
+};
+
+bool ChooseVideoDestination(MMDApp* app, HWND owner, wchar_t (&path)[kPathFieldCapacity]) {
+    OPENFILENAMEW picker{};
+    picker.lStructSize = sizeof(picker);
+    picker.hwndOwner = owner;
+    picker.lpstrFile = path;
+    picker.nMaxFile = kPathFieldCapacity;
+    picker.lpstrInitialDir = (GetMenuState(GetMenu(MainHwnd(app)), 0x12D, 0) & MF_CHECKED)
+        ? app->DirUser() : L"UserFile";
+    picker.nFilterIndex = 1;
+    picker.lpstrTitle = app->EnglishUI() ? L"output video file" : L"動画出力";
+#if MMD_ORIGINAL_PROFILE
+    picker.lpstrFilter = L"AVI files (*.avi)\0*.avi\0";
+    picker.Flags = OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY;
+    picker.lpstrDefExt = L"avi";
+#else
+    // The encoder decides the final extension in the settings dialog.
+    picker.lpstrFilter = L"Video files (*.mp4;*.avi;*.mov)\0*.mp4;*.avi;*.mov\0MP4 video (*.mp4)\0*.mp4\0AVI video (*.avi)\0*.avi\0PNG transparent MOV (*.mov)\0*.mov\0";
+    picker.Flags = OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    picker.lpstrDefExt = L"mp4";
+#endif
+    return GetUiSaveFileNameW(&picker) != FALSE;
+}
+
+void AddVideoDestinationButton(HWND dialog, MMDApp* app) {
+    RECT bounds{152, 30, 252, 46};
+    if (!MapDialogRect(dialog, &bounds)) return;
+    const HWND button = CreateWindowExW(0, L"BUTTON", image_sequence::Text(app,
+        L"更改输出文件…", L"Change output file…", L"出力ファイルを変更…"),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, dialog,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kVideoChangeDestinationButton)),
+        static_cast<HINSTANCE>(app->HInstance()), nullptr);
+    if (!button) return;
+    SendMessageW(button, WM_SETFONT, SendMessageW(dialog, WM_GETFONT, 0, 0), FALSE);
+    SetWindowPos(button, GetDlgItem(dialog, panel::kAviEndFrameEdit), 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+#if !MMD_ORIGINAL_PROFILE
+bool ConfirmVideoSelection(MMDApp* app, HWND dialog, const wchar_t* destination,
+                           recording_output_path::Selection& selected) {
+    DWORD error = recording_output_path::ReadSelection(destination, selected);
+    if (error == ERROR_SUCCESS && selected.path.size() >= kPathFieldCapacity)
+        error = ERROR_FILENAME_EXCED_RANGE;
+    if (error != ERROR_SUCCESS) {
+        const auto message = recording_output_path::FailureMessage(destination, error, app->EnglishUI());
+        MessageBoxW(dialog, message.c_str(), recording_output_path::FailureCaption(app->EnglishUI()),
+                    MB_OK | MB_ICONERROR);
+        return false;
+    }
+    if (!selected.existing) return true;
+
+    std::wstring message = image_sequence::Text(app,
+        L"以下视频文件已存在，是否覆盖？", L"This video file already exists. Replace it?",
+        L"次の動画ファイルはすでに存在します。上書きしますか？");
+    message += L"\n\n";
+    message += selected.path;
+    return MessageBoxW(dialog, message.c_str(), image_sequence::Text(app,
+        L"确认覆盖", L"Confirm replacement", L"上書きの確認"),
+        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
+}
+#endif
+}
+
 INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                                 LPARAM lParam) {  // was Sub40F2F0, VA 0x0040F2F0
     MMDApp* app = g_Block;
+    if (msg == WM_INITDIALOG) SetWindowLongPtrW(hDlg, DWLP_USER, lParam);
+    auto* options = reinterpret_cast<VideoExportOptions*>(GetWindowLongPtrW(hDlg, DWLP_USER));
+    if (options && (msg == WM_COMMAND || msg == WM_INITDIALOG) && !options->Current(app)) {
+        EndDialog(hDlg, IDCANCEL);
+        return TRUE;
+    }
     if (const auto handled = export_save_prompt::HandleMessage(hDlg, app, msg, wParam, lParam)) return handled;
     if (msg == WM_INITDIALOG) {
         MakeDialogTopmostIfRequested(app, hDlg);
@@ -699,8 +805,6 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         SetDlgItemTextA(hDlg, panel::kAviFpsEdit, fpsText);
         SetDlgItemInt(hDlg, panel::kAviWidthEdit, app->RenderWidth(), TRUE);
         SetDlgItemInt(hDlg, panel::kAviHeightEdit, app->RenderHeight(), TRUE);
-        app->AviOutputWidth() = app->RenderWidth();
-        app->AviOutputHeight() = app->RenderHeight();
         const wchar_t* closeText = app->EnglishUI() == 1
             ? L"Close MMS after successful export"
             : app->EnglishUI() == 2 ? L"导出成功后关闭 MMS"
@@ -723,11 +827,12 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         app->AviCodecSelection() = FillCodecCombo(
             app->Recorder(), GetDlgItem(hDlg, panel::kAviCodecCombo),
             app->EnglishUI());
+        if (options) AddVideoDestinationButton(hDlg, app);
 #if MMD_ORIGINAL_PROFILE
         EnableWindow(GetDlgItem(hDlg, panel::kAviSettingsButton), FALSE);
 #else
         EnableWindow(GetDlgItem(hDlg, panel::kAviSettingsButton), TRUE);
-        if (const wchar_t* extension = wcsrchr(app->AviOutputPath(), L'.');
+        if (const wchar_t* extension = wcsrchr(options ? options->path : app->AviOutputPath(), L'.');
             extension && _wcsicmp(extension, L".mov") == 0) {
             const HWND combo = GetDlgItem(hDlg, panel::kAviCodecCombo);
             const int rows = static_cast<int>(SendMessageW(combo, CB_GETCOUNT, 0, 0));
@@ -743,27 +848,28 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         }
 #endif
     } else if (msg == WM_COMMAND) {
+        if (options && LOWORD(wParam) == panel::kVideoChangeDestinationButton && HIWORD(wParam) == BN_CLICKED) {
+            recording_state::Guard choosing(hDlg, recording_state::Operation::VideoOptions);
+            if (!choosing) return TRUE;
+            wchar_t candidate[kPathFieldCapacity]{};
+            wcscpy_s(candidate, options->path);
+            const bool picked = ChooseVideoDestination(app, hDlg, candidate);
+            if (!IsWindow(hDlg)) return TRUE;
+            if (!options->Current(app)) {
+                EndDialog(hDlg, IDCANCEL);
+                return TRUE;
+            }
+            if (picked) wcscpy_s(options->path, candidate);
+            return TRUE;
+        }
         if (LOWORD(wParam) == 1) {  // IDOK
-            app->AviRecordStartFrame() =
-                ReadIntFromEdit(hDlg, panel::kAviStartFrameEdit);
-            app->AviRecordEndFrame() =
-                ReadIntFromEdit(hDlg, panel::kAviEndFrameEdit);
-            const float fps = ReadFloatFromEdit(hDlg, panel::kAviFpsEdit);
-            app->AviIncludeWave() =
-                IsDlgButtonChecked(hDlg, panel::kAviWaveCheckbox) == 1 ? 1 : 0;
-            app->AviCloseAfterExport() = IsDlgButtonChecked(
-                hDlg, panel::kAviCloseAfterExportCheckbox) == BST_CHECKED;
-            app->AviStereoOutput() =
-                IsDlgButtonChecked(hDlg, panel::kAvi3dVisionCheckbox) == 1 ? 1 : 0;
-            app->AviStereoWidthMultiplier() =
-                (IsDlgButtonChecked(hDlg, panel::kAviLeftHalfCheckbox) != 1) + 1;
-            app->AviOutputWidth() = ReadIntFromEdit(hDlg, panel::kAviWidthEdit);
-            app->AviOutputHeight() = ReadIntFromEdit(hDlg, panel::kAviHeightEdit);
+            recording_state::Guard confirming(hDlg, recording_state::Operation::VideoOptions);
+            if (!confirming) return TRUE;
             const LRESULT codecKind = SendMessageW(
                 GetDlgItem(hDlg, panel::kAviCodecCombo), CB_GETITEMDATA,
                 SendMessageW(GetDlgItem(hDlg, panel::kAviCodecCombo),
                              CB_GETCURSEL, 0, 0), 0);
-            wchar_t* outputPath = app->AviOutputPath();
+            wchar_t* outputPath = options ? options->path : app->AviOutputPath();
             wchar_t* slash = wcsrchr(outputPath, L'\\');
             wchar_t* forwardSlash = wcsrchr(outputPath, L'/');
             if (forwardSlash != nullptr && (slash == nullptr || forwardSlash > slash))
@@ -783,16 +889,28 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                 (codecKind == kBuiltInH264Codec || codecKind == kSystemH264Codec)
                     ? L".mp4" : codecKind == kNativePngMovCodec ? L".mov" : L".avi";
 #endif
-            wcscpy_s(ext, 256 - static_cast<std::size_t>(ext - outputPath),
-                     wantedExtension);
+            const auto extensionCapacity = kPathFieldCapacity - static_cast<std::size_t>(ext - outputPath);
+            if (wcslen(wantedExtension) >= extensionCapacity) {
+                const auto message = recording_output_path::FailureMessage(
+                    outputPath, ERROR_FILENAME_EXCED_RANGE, app->EnglishUI());
+                MessageBoxW(hDlg, message.c_str(),
+                    recording_output_path::FailureCaption(app->EnglishUI()), MB_OK | MB_ICONERROR);
+                EndDialog(hDlg, IDCANCEL);
+                return TRUE;
+            }
+
+            const auto startFrame = ReadIntFromEdit(hDlg, panel::kAviStartFrameEdit);
+            const auto endFrame = ReadIntFromEdit(hDlg, panel::kAviEndFrameEdit);
+            const float fps = ReadFloatFromEdit(hDlg, panel::kAviFpsEdit);
+            const bool stereo = IsDlgButtonChecked(hDlg, panel::kAvi3dVisionCheckbox) == BST_CHECKED;
+            const auto width = ReadIntFromEdit(hDlg, panel::kAviWidthEdit);
+            const auto height = ReadIntFromEdit(hDlg, panel::kAviHeightEdit);
             const bool dimensionsValid =
-                app->AviOutputWidth() >= 2 && app->AviOutputHeight() >= 2 &&
-                app->AviOutputWidth() <= 16384 && app->AviOutputHeight() <= 16384 &&
+                width >= 2 && height >= 2 && width <= 16384 && height <= 16384 &&
                 ((codecKind != kBuiltInH264Codec && codecKind != kSystemH264Codec) ||
-                 ((app->AviOutputWidth() & 1) == 0 &&
-                  (app->AviOutputHeight() & 1) == 0));
+                 ((width & 1) == 0 && (height & 1) == 0));
 #if !MMD_ORIGINAL_PROFILE
-            if (codecKind == kNativePngMovCodec && app->AviStereoOutput()) {
+            if (codecKind == kNativePngMovCodec && stereo) {
                 MessageBoxW(hDlg, L"透明 MOV 输出暂不支持 3D Vision。请关闭该选项。", L"MOV export", MB_OK | MB_ICONWARNING);
                 return TRUE;
             }
@@ -804,9 +922,65 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                     L"帧率必须在 0.001 到 240 FPS 之间。"};
                 MessageBoxW(hDlg, messages[app->EnglishUI() <= 2 ? app->EnglishUI() : 1],
                     L"FPS", MB_OK | MB_ICONWARNING);
-            } else if (app->AviRecordEndFrame() >= app->AviRecordStartFrame() && dimensionsValid) {
-                app->AviRecordFps() = fps;
-                app->LastVideoExportFps() = fps;
+            } else if (endFrame >= startFrame && dimensionsValid) {
+                const bool containerChanged = _wcsicmp(ext, wantedExtension) != 0;
+                const std::wstring destination = containerChanged
+                    ? std::wstring(outputPath, ext) + wantedExtension : std::wstring(outputPath);
+                if (!recording_output_path::ProtectBackgroundVideo(hDlg, destination.c_str(),
+                        app->AviBackgroundPath(), app->EnglishUI())) return TRUE;
+#if !MMD_ORIGINAL_PROFILE
+                if (options) {
+                    recording_output_path::Selection selected;
+                    const bool confirmed = ConfirmVideoSelection(app, hDlg, destination.c_str(), selected);
+                    if (!IsWindow(hDlg)) return TRUE;
+                    if (!options->Current(app)) {
+                        EndDialog(hDlg, IDCANCEL);
+                        return TRUE;
+                    }
+                    if (!confirmed) return TRUE;
+                    wcscpy_s(outputPath, kPathFieldCapacity, selected.path.c_str());
+                    options->approved = std::move(selected);
+                } else
+#endif
+                // The Save dialog only confirmed the path it returned. A
+                // container change can name a different existing output.
+                if (containerChanged) {
+                    const DWORD attributes = GetFileAttributesW(destination.c_str());
+                    const DWORD error = attributes == INVALID_FILE_ATTRIBUTES ? GetLastError() : ERROR_SUCCESS;
+                    if (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION ||
+                        (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY))) {
+                        const auto message = recording_output_path::FailureMessage(destination.c_str(),
+                            error == ERROR_SUCCESS ? ERROR_ACCESS_DENIED : error, app->EnglishUI());
+                        MessageBoxW(hDlg, message.c_str(),
+                            recording_output_path::FailureCaption(app->EnglishUI()), MB_OK | MB_ICONERROR);
+                        return TRUE;
+                    }
+                    if (attributes != INVALID_FILE_ATTRIBUTES) {
+                        std::wstring message = image_sequence::Text(app,
+                            L"所选编码器将写入以下文件。该文件已存在，是否覆盖？",
+                            L"The selected encoder will write to this existing file. Replace it?",
+                            L"選択したエンコーダーは次の既存ファイルに出力します。上書きしますか？");
+                        message += L"\n\n";
+                        message += destination;
+                        const int answer = MessageBoxW(hDlg, message.c_str(), image_sequence::Text(app,
+                            L"确认覆盖", L"Confirm replacement", L"上書きの確認"),
+                            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+                        if (!IsWindow(hDlg)) return TRUE;
+                        if (options && !options->Current(app)) {
+                            EndDialog(hDlg, IDCANCEL);
+                            return TRUE;
+                        }
+                        if (answer != IDYES)
+                            return TRUE;
+                    }
+                    wcscpy_s(ext, extensionCapacity, wantedExtension);
+                }
+                const VideoRecordingParameters parameters{startFrame, endFrame, width, height,
+                    1 + (IsDlgButtonChecked(hDlg, panel::kAviLeftHalfCheckbox) != BST_CHECKED), fps,
+                    IsDlgButtonChecked(hDlg, panel::kAviWaveCheckbox) == BST_CHECKED,
+                    IsDlgButtonChecked(hDlg, panel::kAviCloseAfterExportCheckbox) == BST_CHECKED, stereo};
+                if (options) options->parameters = parameters;
+                else parameters.Apply(*app);
                 EndDialog(hDlg, 1);
             } else if (!dimensionsValid) {
 #if MMD_ORIGINAL_PROFILE
@@ -2006,61 +2180,37 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     // 0x260 JP) and Sub464760 / Sub45E820 depending on app+0xA0D61.
     // ------------------------------------------------------------------
     case 223: {
+        recording_state::Guard choosing(app, recording_state::Operation::VideoOptions);
+        if (!choosing) break;
+        VideoExportOptions options{MainHwnd(app), app->SceneGeneration()};
+        if (!options.Current(app)) break;
         app->state.dialogFlags[3] = 1;
         app->state.enterKeyState = 1;
         SetCurrentDirectoryW(app->ExeDir());
-        wchar_t path[0x100];
-        swprintf_s(path, 0x100, kFmt529688, L"", L"");
-        OPENFILENAMEW ofn;
-        memset(&ofn, 0, sizeof(ofn));
-        ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = MainHwnd(app);
-#if MMD_ORIGINAL_PROFILE
-        ofn.lpstrFilter = L"AVI files (*.avi)\0*.avi\0";
-#else
-        ofn.lpstrFilter = L"Video files (*.mp4;*.avi;*.mov)\0*.mp4;*.avi;*.mov\0MP4 video (*.mp4)\0*.mp4\0AVI video (*.avi)\0*.avi\0PNG transparent MOV (*.mov)\0*.mov\0";
-#endif
-        ofn.lpstrFile = path;
-        if ((GetMenuState(GetMenu(MainHwnd(app)), 0x12D, 0) & 8) != 0) {
-            ofn.lpstrInitialDir = app->DirUser();          // 0xA1540
-        } else {
-            ofn.lpstrInitialDir = L"UserFile";             // 0x529780
-        }
-        ofn.nFilterIndex = 1;
-        ofn.nMaxFile = 0x100;
-        ofn.Flags = (OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY);
-#if MMD_ORIGINAL_PROFILE
-        ofn.lpstrDefExt = L"avi";
-#else
-        ofn.lpstrDefExt = L"mp4";
-#endif
-        wchar_t fileTitle[0x100];
-        ofn.nMaxFileTitle = 0x100;
-        ofn.lpstrFileTitle = fileTitle;
-        ofn.lpstrTitle = app->EnglishUI() != 0
-                             ? L"output video file"
-                             : L"\x52D5\x753B\x51FA\x529B";
-        if (!GetUiSaveFileNameW(&ofn)) {
-            break;
-        }
-        if ((GetMenuState(GetMenu(MainHwnd(app)), 0x12D, 0) & 8) != 0) {
-            wchar_t* dir = ExtractDirFromPath(
-                app->PathWorkspace().projectDirectory, path, kPathFieldCapacity);
-            CopyDirPathW(app->DirUser(), dir);   // 0x42AE20
-        }
-        CopyPathW(app->AviOutputPath(), path);  // 0x42AE40
+        if (!ChooseVideoDestination(app, options.owner, options.path) || !options.Current(app)) break;
         app->state.enterKeyState = 1;
         const std::intptr_t r = UiDialogBoxParamA(
             static_cast<HINSTANCE>(app->HInstance()),
             MAKEINTRESOURCEA(app->EnglishUI() != 0 ? 0x28E : 0x260),
-            MainHwnd(app), AviOutDlgProc, 0);
-        if (r == 2) {  // IDCANCEL
-            break;
+            options.owner, AviOutDlgProc, reinterpret_cast<LPARAM>(&options));
+        if (r != IDOK || !options.Current(app) || !options.parameters) break;
+        if (!recording_output_path::ProtectBackgroundVideo(options.owner, options.path,
+                app->AviBackgroundPath(), app->EnglishUI())) break;
+        const recording_output_path::Selection* approved = nullptr;
+#if !MMD_ORIGINAL_PROFILE
+        if (options.approved.path.empty()) break;
+        approved = &options.approved;
+#endif
+        CopyPathW(app->AviOutputPath(), options.path);
+        options.parameters->Apply(*app);
+        if ((GetMenuState(GetMenu(MainHwnd(app)), 0x12D, 0) & 8) != 0) {
+            wchar_t directory[kPathFieldCapacity]{};
+            CopyDirPathW(app->DirUser(), ExtractDirFromPath(directory, app->AviOutputPath(), kPathFieldCapacity));
         }
         if (app->AviStereoOutput() != 0) {
-            StartAviRecordFullscreen(app);  // 0x464760
+            StartAviRecordFullscreen(app, approved);  // 0x464760
         } else {
-            StartAviRecordWindow(app);  // 0x45E820
+            StartAviRecordWindow(app, approved);  // 0x45E820
         }
         break;
     }
@@ -2745,6 +2895,9 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
     // LoadBackgroundPicture (was Sub4337A0) and the dirty flag.
     // ------------------------------------------------------------------
     case 232: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryPickBoundPicture(app)) break;
+#endif
         app->state.enterKeyState = 1;
         SetCurrentDirectoryW(app->ExeDir());
         wchar_t path[0x100];
@@ -2806,14 +2959,20 @@ void CmdFileMenu(MMDApp* app, HWND hwnd, std::uint16_t id, std::uint16_t notify)
                 app->PathWorkspace().projectDirectory, path, kPathFieldCapacity);
             CopyDirPathW(app->DirBg(), dir);                 // 0x42AE20
         }
-        CopyPathW(app->state.pictureBackgroundPath,
-                  path);                                  // 0x42AE40
-        LoadBackgroundPicture(app);                       // 0x4337A0 picture
+#if MMD_ORIGINAL_PROFILE
+        CopyPathW(app->state.pictureBackgroundPath, path);
+        LoadBackgroundPicture(app);
         app->SceneModified() = 1;
+#else
+        (void)TryReplaceBackgroundPicture(app, path);
+#endif
         break;
     }
 
     case 233: {
+#if !MMD_ORIGINAL_PROFILE
+        if (plugins::TryToggleBoundPicture(app)) break;
+#endif
         app->state.dialogFlags[12] = 1;
         if (app->state.pictureBackgroundEnabled != 0) {
             app->state.pictureBackgroundEnabled = 0;

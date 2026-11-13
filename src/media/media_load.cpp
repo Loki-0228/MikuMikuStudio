@@ -27,7 +27,16 @@
 #include "mikumikustudio/native_media.hpp"
 #include <algorithm>
 #include <cmath>
+#include <utility>
 #include <Windows.h>
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/background_identity.hpp"
+#include "../plugins/native_picture_gesture.hpp"
+#include "mikumikustudio/background_picture_source.hpp"
+#include "mikumikustudio/background_picture_policy.hpp"
+#include "mikumikustudio/background_picture_load.hpp"
+#include "background_picture_decode.hpp"
+#endif
 #include <d3d9.h>
 #include <vfw.h>
 
@@ -102,13 +111,6 @@ bool WsOpenOk(const wchar_t* path) {
     return false;
 }
 
-// Shared tail of the 0x433250 failure paths (0x433332..0x43334A):
-// clear the stored AVI path, drop the display flag.
-void AviFailTail(MMDApp* app) {
-    swprintf_s(app->AviBackgroundPath(), 0x100, L"");              // 0x507499
-    app->AviBackgroundEnabled() = 0;                                // 0x43333F
-}
-
 // 背景媒体（AVI/图片）的纵横比参数，AVI 路径与图片路径共用。
 // x64 定谳（全 SSE 单精度，求值序即下式书写序）：
 //   AVI   sub_7FF7CB487A20 @0x7ff7cb487ec5..0x7ff7cb487f1b
@@ -159,258 +161,169 @@ void CopyPathW(wchar_t* dest, const wchar_t* src) {
     wcscpy_s(dest, 0x100, src);                                     // 0x506292
 }
 
-// ---------------------------------------------------------------------------
-// VA 0x00433250 - LoadAviFile(this=app).  Reads the path from app+0x9E1EC
-// after resolving it under the UserFile tree (0x4089F0).  Handles stored at
-// app+0x9E3FC (PAVIFILE), +0x9E400 (PAVISTREAM), +0x9E404 (GETFRAME).
-// ---------------------------------------------------------------------------
-void LoadAviFile(MMDApp* app) {
-#if MMD_ORIGINAL_PROFILE
-    if (!original_import::Reference(app->AviBackgroundPath(), app->Hwnd(), app->EnglishUI())) {
-        AviFailTail(app);
-        return;
+namespace {
+
+struct AviInput {
+    PAVIFILE file = nullptr;
+    PAVISTREAM stream = nullptr;
+    PGETFRAME reader = nullptr;
+
+    ~AviInput() {
+        if (reader) AVIStreamGetFrameClose(reader);
+        if (stream) AVIStreamRelease(stream);
+        if (file) AVIFileRelease(file);
     }
-    ResolveUserFilePath(app->PathWorkspace(), app->AviBackgroundPath());
-    if (!original_import::Reference(app->PathWorkspace().resolvedPath,
-            app->Hwnd(), app->EnglishUI())) {
-        AviFailTail(app);
-        return;
+};
+
+void SwapAviInput(MMDApp& app, AviInput& input) {
+    auto* file = static_cast<PAVIFILE>(app.AviFile());
+    auto* stream = static_cast<PAVISTREAM>(app.AviStream());
+    auto* reader = static_cast<PGETFRAME>(app.AviFrameReader());
+    app.AviFile() = input.file;
+    app.AviStream() = input.stream;
+    app.AviFrameReader() = input.reader;
+    input.file = file;
+    input.stream = stream;
+    input.reader = reader;
+}
+
+void ClearVideoSurface(MMDApp& app) {
+    if (auto* surface = app.AviBackgroundSurface()) {
+        app.AviBackgroundSurface() = nullptr;
+        surface->Release();
+    }
+}
+
+void ClearProjectVideo(MMDApp& app) {
+    media::ReleaseVideo(&app);
+    AviInput retired;
+    SwapAviInput(app, retired);
+    ClearVideoSurface(app);
+    app.AviBackgroundPath()[0] = L'\0';
+    app.AviBackgroundEnabled() = 0;
+    CheckMenuItem(GetMenu(app.MainWindow()), 0xD8, MF_UNCHECKED);
+}
+
+bool PrepareAvi(MMDApp& app, const wchar_t* path, AviInput& input, int& width, int& height) {
+    const bool english = app.EnglishUI() != 0;
+    const auto fail = [&](const char* en, const char* jp) {
+        MessageBoxA(app.MainWindow(), english ? en : jp, english ? "open AVI file" : kMsgAviCaptionJp, 0);
+        return false;
+    };
+    if (AVIFileOpenW(&input.file, path, OF_READ | OF_SHARE_DENY_NONE, nullptr) != 0)
+        return fail("Cannot open AVI file!!", kMsgAviOpenFailJp);
+    AVIFILEINFOA info{};
+    if (AVIFileInfoA(input.file, &info, sizeof(info)) != 0)
+        return fail("Cannot read AVIFILEINFO!!", kMsgAviInfoFailJp);
+
+    // Keep the video stream with the lowest priority value.
+    unsigned short priority = 0xFFFF;
+    for (DWORD i = 0; i < info.dwStreams; ++i) {
+        AviInput candidate;
+        if (AVIFileGetStream(input.file, &candidate.stream, 0, i) != 0)
+            return fail("Failed AVIFileGetStream", kMsgAviGetStreamFailJp);
+        AVISTREAMINFOA streamInfo{};
+        if (AVIStreamInfoA(candidate.stream, &streamInfo, sizeof(streamInfo)) != 0)
+            return fail("Failed AVIStreamInfo", kMsgAviStreamInfoFailJp);
+        if (streamInfo.fccType == streamtypeVIDEO && (!input.stream || streamInfo.wPriority < priority)) {
+            std::swap(input.stream, candidate.stream);
+            priority = streamInfo.wPriority;
+        }
+    }
+    if (input.stream)
+        input.reader = AVIStreamGetFrameOpen(input.stream, nullptr);
+    if (!input.reader)
+        return fail("Cannot open AVI file", kMsgAviOpenFail2Jp);
+    const auto* frame = static_cast<const BITMAPINFOHEADER*>(AVIStreamGetFrame(input.reader, 0));
+    if (!frame || frame->biWidth <= 0 || frame->biHeight == 0)
+        return fail("Cannot open AVI file", kMsgAviOpenFail2Jp);
+    width = frame->biWidth;
+    height = frame->biHeight;
+    return true;
+}
+
+bool ReplaceVideoCandidate(MMDApp& app, const wchar_t* input) {
+#if MMD_ORIGINAL_PROFILE
+    if (!original_import::Reference(input, app.Hwnd(), app.EnglishUI())) return false;
+#endif
+    auto paths = app.PathWorkspace();
+    const wchar_t* path = ResolveUserFilePath(paths, input);
+    // Keep the requested extension when the resolver finds no file, so the
+    // corresponding importer can report the failure.
+    if (!*path) path = input;
+#if MMD_ORIGINAL_PROFILE
+    if (!original_import::Reference(path, app.Hwnd(), app.EnglishUI())) return false;
+    if (!media::IsVideoPath(path)) {
+        MessageBoxW(app.MainWindow(), L"This MMD 9.32 profile supports AVI backgrounds only.",
+                    L"AVI import", MB_OK | MB_ICONERROR);
+        return false;
     }
 #endif
-    media::ReleaseVideo(app);
-    auto& s = *app;
-    HWND hwnd = static_cast<HWND>(s.Hwnd());
 
-    // release any previously open AVI 0x433269..0x4332B6
-    if (s.AviFrameReader() != nullptr) {
-        AVIStreamGetFrameClose(static_cast<PGETFRAME>(s.AviFrameReader()));
-        s.AviFrameReader() = nullptr;
-    }
-    if (s.AviStream() != nullptr) {
-        AVIStreamRelease(static_cast<PAVISTREAM>(s.AviStream()));
-        s.AviStream() = nullptr;
-    }
-    if (s.AviFile() != nullptr) {
-        AVIFileRelease(static_cast<PAVIFILE>(s.AviFile()));
-        s.AviFile() = nullptr;
-    }
-
-    PathResolutionWorkspace& paths = app->PathWorkspace();
-    ResolveUserFilePath(paths, s.AviBackgroundPath());            // 0x4089F0
-    wchar_t path[0x100];
-    wcscpy_s(path, 0x100,
-             paths.resolvedPath);                                  // 0x506292
-
-#if MMD_ORIGINAL_PROFILE
-    if (!media::IsVideoPath(path)) {
-        MessageBoxW(hwnd, L"This MMD 9.32 profile supports AVI backgrounds only.",
-                    L"AVI import", MB_OK | MB_ICONERROR);
-        AviFailTail(app);
-        return;
-    }
-#else
-    if (media::IsModernVideoPath(path)) {
-        int width = 0, height = 0;
+    int width = 0, height = 0;
+    LONG start = 0, end = 0;
+    bool thirtyFps = true;
+    AviInput avi;
+#if !MMD_ORIGINAL_PROFILE
+    const bool modern = media::IsModernVideoPath(path);
+    if (modern) {
         double duration = 0;
         std::wstring error;
-        if (!media::OpenVideo(app, path, width, height, duration, error, 1024)) {
-            MessageBoxW(hwnd, error.c_str(), L"Video import", MB_OK | MB_ICONERROR);
-            AviFailTail(app);
-            return;
+        if (!media::OpenVideo(&app, path, width, height, duration, error, 1024)) {
+            MessageBoxW(app.MainWindow(), error.c_str(), L"Video import", MB_OK | MB_ICONERROR);
+            return false;
         }
-        wcscpy_s(s.AviBackgroundPath(), 0x100, path);
-        s.AviFrameWidth() = width;
-        s.AviFrameHeight() = height;
-        s.AviStreamStartFrame() = 0;
-        s.AviStreamEndFrame() = static_cast<LONG>(std::min(2147483646.0, std::ceil(duration * 30.0)));
-        s.AviUsesThirtyFpsTiming() = 1;
-        s.AviOffsetX() = 0;
-        float scale = 0;
-        std::int32_t pos = 0;
-        MediaAspect(app, width, height, scale, pos);
-        s.AviScale() = scale;
-        s.AviOffsetY() = pos;
-        if (s.AviBackgroundSurface()) {
-            s.AviBackgroundSurface()->Release();
-            s.AviBackgroundSurface() = nullptr;
-        }
-        s.AviBackgroundEnabled() = 1;
-        CheckMenuItem(GetMenu(hwnd), 0xD8, MF_CHECKED);
-        AviBgOverlayRefresh(app);
-        return;
-    }
-
+        end = static_cast<LONG>(std::min(2147483646.0, std::ceil(duration * 30.0)));
+    } else
 #endif
-    PAVIFILE file = nullptr;
-    if (AVIFileOpenW(&file, path, 0x40 /* OF_SHARE_DENY_NONE */,
-                     nullptr) != 0) {                               // 0x522E80
-        MessageBoxA(hwnd,
-                    s.EnglishUI() != 0 ? "Cannot open AVI file!!"
-                                       : kMsgAviOpenFailJp,
-                    s.EnglishUI() != 0 ? "open AVI file" : kMsgAviCaptionJp,
-                    0);                                             // 0x4332FB
-        s.AviFile() = nullptr;                                      // 0x43333D
-        AviFailTail(app);
-        return;
-    }
-    s.AviFile() = file;
-
-    // x64 在 AVIFileOpenW 成功后立即把解析后的绝对路径回写存储槽
-    // (wcscpy_s app+651448, @0x7ff7cb487b62)——PMM 保存/重开时原版
-    // 保留的正是这条解析后路径；图片侧同款回写见 0x43386D（本文件
-    // LoadBackgroundPicture 内 wcscpy_s(stored, 0x100, path)）。
-    wcscpy_s(s.AviBackgroundPath(), 0x100, path);
-
-    AVIFILEINFOA info{};
-    if (AVIFileInfoA(file, &info, 0x6C) != 0) {                     // 0x522E7A
-        MessageBoxA(hwnd,
-                    s.EnglishUI() != 0 ? "Cannot read AVIFILEINFO!!"
-                                       : kMsgAviInfoFailJp,
-                    s.EnglishUI() != 0 ? "open AVI file" : kMsgAviCaptionJp,
-                    0);                                             // 0x43337C
-        AVIFileRelease(file);                                       // 0x4333A1
-        s.AviFile() = nullptr;
-        AviFailTail(app);
-        return;
+    {
+        if (!PrepareAvi(app, path, avi, width, height)) return false;
+        start = AVIStreamStart(avi.stream);
+        end = start + AVIStreamLength(avi.stream);
+        thirtyFps = AVIStreamSampleToTime(avi.stream, 1) == 33;
     }
 
-    // stream scan 0x4333CC..0x43346E: keep the 'vids' stream with the
-    // LOWEST wPriority (initial best 0xFFFF); non-video streams are
-    // released immediately.
-    PAVISTREAM best = nullptr;
-    unsigned short bestPrio = 0xFFFF;
-    for (DWORD i = 0; i < info.dwStreams; ++i) {
-        PAVISTREAM stream = nullptr;
-        if (AVIFileGetStream(file, &stream, 0, i) != 0) {           // 0x522E74
-            MessageBoxA(hwnd,
-                        s.EnglishUI() != 0 ? "Failed AVIFileGetStream"
-                                           : kMsgAviGetStreamFailJp,
-                        s.EnglishUI() != 0 ? "open AVI file"
-                                           : kMsgAviCaptionJp,
-                        0);                                         // 0x4333F3
-            // Deliberate hardening: the original does not release the best
-            // stream on this failure path either. Both failure exits reach
-            // 0x140067D3F, which calls MessageBoxA and then AVIFileRelease(file)
-            // at 0x140067D4C; the best stream (app+0x9F2E0, written only at
-            // 0x140067C68) is left untouched there. The port releases it
-            // instead.
-            // Defect CB-08.
-            if (best != nullptr)
-                AVIStreamRelease(best);
-            best = nullptr;
-            AVIFileRelease(file);
-            s.AviFile() = nullptr;
-            AviFailTail(app);
-            return;
-        }
-        AVISTREAMINFOA si{};
-        if (AVIStreamInfoA(stream, &si, 0x8C) != 0) {               // 0x522E6E
-            MessageBoxA(hwnd,
-                        s.EnglishUI() != 0 ? "Failed AVIStreamInfo"
-                                           : kMsgAviStreamInfoFailJp,
-                        s.EnglishUI() != 0 ? "open AVI file"
-                                           : kMsgAviCaptionJp,
-                        0);                                         // 0x43340F
-            // Deliberate hardening: the original also leaks the best stream in
-            // this failure path. It reaches 0x140067D3F and only calls
-            // AVIFileRelease(file) at 0x140067D4C, leaving best unreleased. The
-            // port releases it as well.
-            // Defect CB-08.
-            if (best != nullptr)
-                AVIStreamRelease(best);
-            best = nullptr;
-            AVIFileRelease(file);
-            s.AviFile() = nullptr;
-            AviFailTail(app);
-            return;
-        }
-        if (si.fccType == 0x73646976 /* 'vids' */) {                 // 0x433417
-            if (best == nullptr || si.wPriority < bestPrio) {       // 0x43343C
-                if (best != nullptr)
-                    AVIStreamRelease(best);                         // 0x433444
-                best = stream;
-                bestPrio = si.wPriority;                            // 0x433458
-            } else {
-                AVIStreamRelease(stream);
-            }
-        } else {
-            AVIStreamRelease(stream);                               // 0x433425
-        }
-    }
+#if !MMD_ORIGINAL_PROFILE
+    plugins::background_identity::Mutation mutation(&app, false, true);
+    plugins::CancelPictureGesture(app);
+    if (!modern) media::ReleaseVideo(&app);
+#endif
+    SwapAviInput(app, avi);
+    ClearVideoSurface(app);
+    CopyPathW(app.AviBackgroundPath(), path);
+    app.AviFrameWidth() = width;
+    app.AviFrameHeight() = height;
+    app.AviStreamStartFrame() = start;
+    app.AviStreamEndFrame() = end;
+    app.AviUsesThirtyFpsTiming() = thirtyFps;
+    app.AviOffsetX() = 0;
+    MediaAspect(&app, width, height, app.AviScale(), app.AviOffsetY());
+    app.AviBackgroundEnabled() = 1;
+    const auto menu = GetMenu(app.MainWindow());
+    CheckMenuItem(menu, 0xD8, MF_CHECKED);
+    AviBgOverlayRefresh(&app);
+    if (!app.AviBackgroundEnabled()) CheckMenuItem(menu, 0xD8, MF_UNCHECKED);
+    return app.AviBackgroundEnabled() != 0;
+}
 
-    if (best == nullptr) {                                          // 0x433474
-        MessageBoxA(hwnd,
-                    s.EnglishUI() != 0 ? "Cannot open AVI file"
-                                       : kMsgAviOpenFail2Jp,
-                    s.EnglishUI() != 0 ? "open AVI file" : kMsgAviCaptionJp,
-                    0);                                             // 0x433483
-        AVIFileRelease(file);
-        s.AviFile() = nullptr;
-        AviFailTail(app);
-        return;
-    }
-    s.AviStream() = best;
+}  // namespace
 
-    PGETFRAME pgf = AVIStreamGetFrameOpen(best, nullptr);  // 0x522E68 (2 args; the
-                                              // VC9 header carried a 3rd, ignored)
-    s.AviFrameReader() = pgf;                                      // 0x433540
-    if (pgf == nullptr) {
-        AVIStreamRelease(best);                                     // 0x433551
-        s.AviStream() = nullptr;
-        MessageBoxA(hwnd,
-                    s.EnglishUI() != 0 ? "Cannot open AVI file"
-                                       : kMsgAviOpenFail2Jp,
-                    s.EnglishUI() != 0 ? "open AVI file" : kMsgAviCaptionJp,
-                    0);                                             // 0x43354A
-        AVIFileRelease(file);
-        s.AviFile() = nullptr;
-        AviFailTail(app);
-        return;
-    }
+bool TryReplaceBackgroundVideo(MMDApp* app, const wchar_t* path) {
+    if (!path || !*path || wcsnlen_s(path, kPathFieldCapacity) == kPathFieldCapacity) return false;
+    return ReplaceVideoCandidate(*app, path);
+}
 
-    s.AviStreamStartFrame() = AVIStreamStart(best);                  // 0x522E62
-    s.AviStreamEndFrame() =
-        s.AviStreamStartFrame() + AVIStreamLength(best);             // 0x522E5C
-    const LONG frameMs = AVIStreamSampleToTime(best, 1);            // 0x522E56
-    s.AviUsesThirtyFpsTiming() =
-        (frameMs > 0x20 && frameMs < 0x22) ? 1 : 0;                 // 0x4335E7
-
-    LPBITMAPINFOHEADER header =
-        static_cast<LPBITMAPINFOHEADER>(AVIStreamGetFrame(pgf, 0)); // 0x522E38
-    if (header == nullptr) {                                        // 0x433613
-        AVIStreamGetFrameClose(pgf);                                // 0x433624
-        s.AviFrameReader() = nullptr;
-        AVIStreamRelease(best);
-        s.AviStream() = nullptr;
-        AVIFileRelease(file);
-        s.AviFile() = nullptr;
-        MessageBoxA(hwnd,
-                    s.EnglishUI() != 0 ? "Cannot open AVI file"
-                                       : kMsgAviOpenFail2Jp,
-                    s.EnglishUI() != 0 ? "open AVI file" : kMsgAviCaptionJp,
-                    0);                                             // 0x433653
-        s.AviBackgroundEnabled() = 0;                               // 0x433695
-        swprintf_s(s.AviBackgroundPath(), 0x100, L"");
-        return;
-    }
-
-    // success: record frame geometry + aspect fields 0x4336A8..0x433733
-    s.AviFrameWidth() = header->biWidth;                            // 0x4336B1
-    s.AviFrameHeight() = header->biHeight;                          // 0x4336C6
-    s.AviOffsetX() = 0;                                             // 0x4336EF
-    float scale = 0.0f;
-    std::int32_t pos = 0;
-    MediaAspect(app, header->biWidth, header->biHeight, scale, pos);
-    s.AviScale() = scale;
-    s.AviOffsetY() = pos;
-    CheckMenuItem(GetMenu(hwnd), 0xD8, MF_CHECKED);                 // 0x433731
-
-    if (s.AviBackgroundSurface() != nullptr) {                       // 0x433752
-        s.AviBackgroundSurface()->Release();
-        s.AviBackgroundSurface() = nullptr;
-    }
-    s.AviBackgroundEnabled() = 1;                                   // 0x43376C
-    AviBgOverlayRefresh(app);                                                 // 0x433776
+// PMM supplies its own path. A failed load must leave this project without a
+// background video even when the preceding project had one.
+void LoadAviFile(MMDApp* app) {
+    wchar_t path[kPathFieldCapacity];
+    CopyPathW(path, app->AviBackgroundPath());
+#if !MMD_ORIGINAL_PROFILE
+    plugins::background_identity::Mutation mutation(app, false, true);
+    plugins::CancelPictureGesture(*app);
+#endif
+    ClearProjectVideo(*app);
+    ReplaceVideoCandidate(*app, path);
 }
 
 // ---------------------------------------------------------------------------
@@ -418,7 +331,205 @@ void LoadAviFile(MMDApp* app) {
 // app+0x9E448 after UserFile resolution; D3DX texture at app+0x9E42C.
 // (Supersedes the was-Sub4337A0 stub, since deleted from stubs.cpp.)
 // ---------------------------------------------------------------------------
+#if !MMD_ORIGINAL_PROFILE
+namespace {
+struct ProjectPicturePlacement { std::int32_t x, y; float scale; bool visible, resolutionFailed; };
+bool ReplacePictureCandidate(MMDApp* app, const wchar_t* input, const ProjectPicturePlacement* project) {
+    // Cancellation precedes the mutation gate: inside it the old picture is
+    // intentionally unqueryable, so its still-owned preview cannot be restored.
+    if (app) plugins::CancelPictureGesture(*app);
+    if (!app || !input || (!input[0] && !project)) return false;
+    const auto instance = plugins::background_identity::Instance(app);
+    if (!plugins::background_identity::IsOwner(app, instance)) return false;
+    auto& s = *app;
+    if (!project && !plugins::background_identity::Acquire(app, plugins::background_identity::Kind::Picture)) return false;
+    wchar_t request[0x100]{};
+    if (wcsncpy_s(request, input, _TRUNCATE) != 0) return false;
+    const auto scene = s.SceneGeneration();
+    plugins::background_identity::Mutation mutation(app, true, false, false, project == nullptr);
+    const auto current = [&]() noexcept {
+        return mutation.Current() && plugins::background_identity::IsOwner(app, instance) && s.SceneGeneration() == scene;
+    };
+    // Project replacement must not expose a previous project's texture when
+    // its new picture cannot be prepared. Ordinary imports retain the old one.
+    const auto clearProject = [&]() noexcept {
+        if (!current()) return false;
+        IDirect3DTexture9* previous = nullptr;
+        if (!mutation.ClearPicture(app, s.PictureBackgroundTexture(), previous, s.PictureBackgroundPath(),
+                s.PictureWidth(), s.PictureHeight(), s.PictureOffsetX(), s.PictureOffsetY(),
+                s.PictureScale(), s.PictureBackgroundEnabled())) return false;
+        if (previous) previous->Release();
+        if (current()) CheckMenuItem(GetMenu(static_cast<HWND>(s.Hwnd())), 0xE9, MF_UNCHECKED);
+        return true;
+    };
+    struct ProjectFailure {
+        const decltype(clearProject)& clear;
+        bool active;
+        ~ProjectFailure() { if (active) clear(); }
+    } failure{clearProject, project != nullptr};
+    if (!current()) return false;
+    if (project && project->resolutionFailed) {
+        const bool cleared = clearProject();
+        failure.active = false;
+        // Releasing the previous texture may reenter. Never report an old
+        // project's missing file after a newer scene has taken ownership.
+        if (cleared && current()) {
+            MessageBoxA(static_cast<HWND>(s.Hwnd()),
+                s.EnglishUI() ? "Cannot open BMP file" : kMsgBmpFailJp,
+                s.EnglishUI() ? "open BMP file" : kMsgBmpCaptionJp, 0);
+        }
+        return false;
+    }
+    if (!request[0]) {
+        const bool cleared = clearProject(); failure.active = false; return cleared;
+    }
+    if (!s.Renderer() || !s.Renderer()->device) return false;
+    PathResolutionWorkspace paths = app->PathWorkspace();
+    ResolveUserFilePath(paths, request);
+    if (!current()) return false;
+    wchar_t path[0x100]{};
+    HWND hwnd = static_cast<HWND>(s.Hwnd());
+    if (wcscpy_s(path, paths.resolvedPath) != 0 || !path[0]) {
+        MessageBoxA(hwnd, s.EnglishUI() ? "Cannot open BMP file" : kMsgBmpFailJp,
+                    s.EnglishUI() ? "open BMP file" : kMsgBmpCaptionJp, 0);
+        return false;
+    }
+    if (!original_import::Reference(path, hwnd, s.EnglishUI())) return false;
+    if (!current()) return false;
+    const bool open = WsOpenOk(path);
+    if (!current()) return false;
+    if (!open) {
+        MessageBoxA(hwnd, s.EnglishUI() ? "Cannot open BMP file" : kMsgBmpFailJp,
+                    s.EnglishUI() ? "open BMP file" : kMsgBmpCaptionJp, 0);
+        return false;
+    }
+    std::uint64_t sourceLimit = 0;
+    if (media::ReadBackgroundPictureSourceLimit(sourceLimit) != system_settings::Result::Ok) {
+        if (!current()) return false;
+        MessageBoxW(hwnd, project ? (s.EnglishUI() == 2 ? L"无法读取背景图片资源设置，工程图片未载入。" :
+            s.EnglishUI() ? L"Cannot read picture resource settings. The project picture was not loaded." :
+            L"背景画像のリソース設定を読み込めないため、プロジェクト画像を読み込めませんでした。") :
+            (s.EnglishUI() == 2 ? L"无法读取背景图片资源设置，原图片已保留。" :
+            s.EnglishUI() ? L"Cannot read picture resource settings. The current picture was kept." :
+            L"背景画像のリソース設定を読み込めないため、元の画像を保持しました。"), L"MMS", MB_OK | MB_ICONWARNING);
+        return false;
+    }
+    if (!current()) return false;
+    // Freeze the encoded source once. Retry and future resource restoration
+    // must not decode a different file behind the same path. This owns only
+    // encoded bytes; journal and decoded GPU resource budgeting are separate.
+    std::shared_ptr<const media::BackgroundPictureSource> source;
+    auto capture = media::PictureSourceResult::NoMemory;
+    try {
+        auto& budget = media::GlobalPictureSourceBudget();
+        budget.Configure(sourceLimit);
+        capture = media::CaptureBackgroundPictureSource(path, sourceLimit, budget, source);
+    } catch (...) { /* A first-use budget allocation cannot cross the legacy UI entry. */ }
+    if (!current()) return false;
+    if (capture != media::PictureSourceResult::Ok) {
+        if (capture == media::PictureSourceResult::TooLarge) {
+            MessageBoxW(hwnd, project ? (s.EnglishUI() == 2 ? L"背景图片数据超过允许的内存预算，工程图片未载入。" :
+                s.EnglishUI() ? L"Picture source data exceeds the memory budget. The project picture was not loaded." :
+                L"背景画像データがメモリ上限を超えたため、プロジェクト画像を読み込めませんでした。") :
+                (s.EnglishUI() == 2 ? L"背景图片数据超过允许的内存预算，原图片已保留。" :
+                s.EnglishUI() ? L"Picture source data exceeds the memory budget. The current picture was kept." :
+                L"背景画像データがメモリ上限を超えたため、元の画像を保持しました。"), L"MMS", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        MessageBoxA(hwnd, s.EnglishUI() ? "Cannot retain background picture data" : kMsgBmpFailJp,
+                    s.EnglishUI() ? "open BMP file" : kMsgBmpCaptionJp, 0);
+        return false;
+    }
+    auto* const renderer = s.Renderer();
+    if (!renderer || !renderer->device) return false;
+    auto* const device = renderer->device;
+    // The app may drop its device or the decoder may pump messages. Hold our
+    // own COM reference until all candidate cleanup has completed.
+    device->AddRef();
+    struct DeviceLease { IDirect3DDevice9* value; ~DeviceLease() { value->Release(); } } lease{device};
+    if (!current()) return false;
+    IDirect3DTexture9* candidate = nullptr;
+    struct CandidateLease { IDirect3DTexture9*& value; ~CandidateLease() { if (value) value->Release(); } } candidateLease{candidate};
+    media::picture_detail::ImageInfo info{};
+    HRESULT result = E_FAIL;
+    auto decodeMode = media::PictureDecodeMode::Primary1024;
+    const auto decodeCurrent = [&]() noexcept { return current() && s.Renderer() == renderer && renderer->device == device; };
+    bool attempted = false;
+    if (!media::picture_detail::DecodeAttempt(device, source, decodeMode, info, candidate, result, decodeCurrent, &attempted))
+        return false;
+    if (attempted) {
+        if (FAILED(result)) {
+            auto* abandoned = candidate; candidate = nullptr;
+            if (abandoned) abandoned->Release();
+            if (!decodeCurrent()) return false;
+            info = {};
+            decodeMode = media::PictureDecodeMode::Fallback512;
+            if (!media::picture_detail::DecodeAttempt(device, source, decodeMode, info, candidate, result, decodeCurrent, &attempted) ||
+                !attempted) return false;
+        }
+    }
+    if (FAILED(result) || !candidate || !info.Width || !info.Height ||
+        info.Width > INT32_MAX || info.Height > INT32_MAX) {
+        MessageBoxA(hwnd, s.EnglishUI() ? "Cannot open BMP file" : kMsgBmpFailJp,
+                    s.EnglishUI() ? "open BMP file" : kMsgBmpCaptionJp, 0);
+        return false;
+    }
+    if (!current() ||
+        s.Renderer() != renderer || renderer->device != device) {
+        return false;
+    }
+    float scale = 0; std::int32_t y = 0;
+    if (project) { scale = project->scale; y = project->y; }
+    else {
+        if (!media::picture_detail::ImportPlacement(s, *renderer, static_cast<std::int32_t>(info.Width),
+            static_cast<std::int32_t>(info.Height), scale, y)) return false;
+    }
+    media::BackgroundPictureAssetPtr asset;
+    if (media::CreateBackgroundPictureAsset(source, path, static_cast<std::int32_t>(info.Width),
+            static_cast<std::int32_t>(info.Height), decodeMode, UINT64_MAX, asset) != media::PictureAssetResult::Ok)
+        return false;
+    if (!current() || s.Renderer() != renderer || renderer->device != device) return false;
+    IDirect3DTexture9* previous = nullptr;
+    if (!mutation.PublishPicture(app, s.PictureBackgroundTexture(), candidate, previous,
+            s.PictureBackgroundPath(), path, s.PictureWidth(), static_cast<std::int32_t>(info.Width),
+            s.PictureHeight(), static_cast<std::int32_t>(info.Height), s.PictureOffsetX(), s.PictureOffsetY(),
+            s.PictureScale(), y, scale, s.PictureBackgroundEnabled(), asset,
+            project ? project->x : 0, project ? static_cast<std::uint8_t>(project->visible) : 1)) {
+        return false;
+    }
+    failure.active = false;
+    // Set the project revision before releasing COM resources or dispatching
+    // any window messages, which can reenter and replace the current scene.
+    if (!project) s.SceneModified() = 1;
+    candidate = nullptr; // the app now owns the candidate reference
+    if (previous) previous->Release();
+    if (current()) {
+        const auto menu = GetMenu(hwnd);
+        if (current()) CheckMenuItem(menu, 0xE9, !project || project->visible ? MF_CHECKED : MF_UNCHECKED);
+        // A hidden project image can be shown without another layout pass.
+        // Prepare its new placement now instead of keeping the old quad.
+        if (current()) PicBgOverlayRefresh(app);
+    }
+    return true;
+}
+}
+bool TryReplaceBackgroundPicture(MMDApp* app, const wchar_t* input) {
+    return ReplacePictureCandidate(app, input, nullptr);
+}
+bool LoadProjectBackgroundPicture(MMDApp* app, const wchar_t* path,
+    std::int32_t x, std::int32_t y, float scale, bool visible,
+    const plugins::background_identity::Mutation& projectScope, std::uint64_t expectedScene,
+    bool resolutionFailed) {
+    if (!projectScope.AllowsProjectPicture(app) || app->SceneGeneration() != expectedScene) return false;
+    const ProjectPicturePlacement placement{x, y, scale, visible, resolutionFailed};
+    return ReplacePictureCandidate(app, path, &placement);
+}
+#endif
 void LoadBackgroundPicture(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    plugins::CancelPictureGesture(*app);
+    plugins::background_identity::Mutation mediaMutation(app, true, false);
+#endif
     auto& s = *app;
     HWND hwnd = static_cast<HWND>(s.Hwnd());
     wchar_t* stored = s.PictureBackgroundPath();

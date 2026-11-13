@@ -12,6 +12,7 @@
 #include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
+#include "scene_object_history.hpp"
 #include "native_pose_scope.hpp"
 #include "evaluation_store.hpp"
 #include "mikumikustudio/bone_motion_snapshot.hpp"
@@ -312,7 +313,7 @@ MmsEvaluationMeshVertexV1 PublicMeshVertex(const Vertex& input) {
 }
 
 MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
-    std::shared_ptr<const EvaluationSceneSourceData>& out, bool includeMaterials = false) {
+    std::shared_ptr<const EvaluationSceneSourceData>& out, bool includeMaterials = false, bool includeReferences = false) {
     if (!app || app->SceneMutationInProgress() || !app->WindowLayoutReady()) return MMS_E_NOT_READY;
     uint64_t hostRevision = 0;
     if (auto* history = BoundNativePoseHistory(app)) {
@@ -397,7 +398,8 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
     if (!math) return MMS_E_NOT_READY;
     std::shared_ptr<const MeshSceneSource> source;
     try {
-        source = includeMaterials ? MeshSceneSource::CaptureWithMaterials(inputs.data(), count, limit - bytes)
+        source = includeReferences ? MeshSceneSource::CaptureWithMaterialReferences(inputs.data(), count, limit - bytes)
+                 : includeMaterials ? MeshSceneSource::CaptureWithMaterials(inputs.data(), count, limit - bytes)
                                   : MeshSceneSource::Capture(inputs.data(), count, limit - bytes);
     } catch (const MeshDefinitionUnsupported&) {
         return MMS_E_UNSUPPORTED;
@@ -406,7 +408,7 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
         // or parent targets describe stale host data, not malformed arguments.
         return MMS_E_STALE;
     }
-    if (!source || source->ModelCount() != count || source->HasMaterials() != includeMaterials) return MMS_E_FAILED;
+    if (!source || source->ModelCount() != count || source->HasMaterials() != includeMaterials || source->HasMaterialReferences()!=includeReferences) return MMS_E_FAILED;
     ChargeSceneEvaluation(bytes, 1, source->RetainedBytes(), limit);
     for (uint32_t i = 0; i < count; ++i) {
         BoneSceneModelInfo info{};
@@ -420,6 +422,26 @@ MmsResult CaptureEvaluationMeshScene(MMDApp* app, uint64_t limit,
     data->hostRevision = hostRevision;
     data->retainedBytes = bytes;
     data->materialIds = std::move(materialIds);
+    if (includeReferences) {
+        static_assert(sizeof(wchar_t)==sizeof(uint16_t), "Windows UTF-16 code units");
+        data->references=[source](uint32_t model,uint32_t index,MmsEvaluationMaterialReferencesV1& out)->MmsResult {
+            MeshSceneMaterialReferences ref{};if(!source->MaterialReferencesAt(model,index,ref))return MMS_E_NOT_FOUND;
+            MmsEvaluationMaterialReferencesV1 value{};
+            std::copy(ref.texturePath.begin(),ref.texturePath.end(),value.texturePath);
+            std::copy(ref.spherePath.begin(),ref.spherePath.end(),value.spherePath);
+            std::copy(ref.toonPath.begin(),ref.toonPath.end(),value.toonPath);
+            value.flags=ref.physicsMode==2 ? MMS_EVALUATION_MATERIAL_FORMAT_PMX : MMS_EVALUATION_MATERIAL_FORMAT_PMD;
+            value.toonReference=ref.toonReference;value.sphereMode=ref.sphereMode;value.materialFlags=ref.flags;
+            out=value;return MMS_OK;
+        };
+        data->toonTable=[source](uint32_t model,MmsEvaluationToonTableV1& out)->MmsResult {
+            MeshSceneToonTableReferences ref{};if(!source->ToonTableReferencesAt(model,ref))return MMS_E_NOT_FOUND;
+            MmsEvaluationToonTableV1 value{};
+            std::copy(ref.modelDirectory.begin(),ref.modelDirectory.end(),value.modelDirectory);
+            for(size_t i=0;i<ref.fileNames.size();++i)std::memcpy(value.fileNames[i],ref.fileNames[i].data(),ref.fileNames[i].size());
+            out=value;return MMS_OK;
+        };
+    }
     // Each topology callback owns only this frozen source. No live model,
     // host pointer, math context or evaluated frame is retained here.
     data->meshInfo = [source, models = data->models](uint32_t model,
@@ -755,6 +777,9 @@ std::shared_ptr<EvaluationStore> CreateEvaluationStore(MMDApp* app) {
     }, [app](const MmsEvaluationSceneQueryV1&, uint64_t limit,
         std::shared_ptr<const EvaluationSceneSourceData>& out) {
         return CaptureEvaluationMeshScene(app, limit, out, true);
+    }, [app](const MmsEvaluationSceneQueryV1&, uint64_t limit,
+        std::shared_ptr<const EvaluationSceneSourceData>& out) {
+        return CaptureEvaluationMeshScene(app, limit, out, true, true);
     });
 #endif
 }
@@ -770,6 +795,11 @@ void ForgetSceneObject(const void* token) {
     if (visible) { ++revision; previous.clear(); }
 }
 MmsObjectRef SceneObjectIdentity(const void* token) { return identities.Get(token).object; }
+#if !MMD_ORIGINAL_PROFILE
+MmsResult MeasureSceneObjectIdentityPreparation(const void* token,std::uint64_t& bytes) noexcept {
+    return identities.MeasureGetPreparation(token,bytes);
+}
+#endif
 bool FindSceneObjectIdentity(const void* token, MmsObjectRef& out) noexcept {
     const auto* entry = identities.Retained(token);
     if (!entry || !entry->present || !entry->published) return false;

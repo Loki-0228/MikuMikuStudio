@@ -173,6 +173,68 @@ void WriteVersion(std::vector<std::uint8_t>& bytes, std::uint32_t version) {
     for (unsigned i = 0; i < 4; ++i) bytes[i] = static_cast<std::uint8_t>(version >> (8 * i));
 }
 
+void RetiredIdentityAllocationChecks() {
+    const auto replace = [](unsigned retiredCount, bool sweep) {
+        SceneIdentity identities, importedSource; int retired = 0, token = 0, imported = 0;
+        std::vector<MmsId> retiredIds; retiredIds.reserve(retiredCount);
+        for (unsigned i = 0; i < retiredCount; ++i) {
+            retiredIds.push_back(identities.Get(&retired).object.id);
+            identities.Forget(&retired);
+        }
+        const auto oldBone = identities.Element(&token, MMS_CHANNEL_BONES, 0);
+        const auto oldVertex = identities.Element(&token, MMS_CHANNEL_MESH, 2);
+        const auto original = identities.Get(&token);
+        const auto importedEntry = importedSource.Get(&imported);
+        const std::vector<SceneIdentity::Restore> restore{{&token, original, false}, {&imported, importedEntry}};
+        Check(!identities.Known(oldBone) && !identities.Known(oldVertex) && !identities.Known(importedEntry.object.id),
+            "adaptation fixture starts with unretired live elements and an incoming unknown object ID");
+        unsigned refusals = 0; long allocations = -1;
+        // Two live elements need only bounded local staging, regardless of
+        // process-lifetime retired IDs. This is deliberately not a cap grown
+        // to accommodate copying the accumulated registry.
+        for (long limit = sweep ? 0 : 64; limit <= 64; ++limit) {
+            bool memory = false; long remaining = -1; failAfter = limit;
+            try { identities.Replace(restore); remaining = failAfter; }
+            catch (const std::bad_alloc&) { memory = true; }
+            catch (...) { failAfter = -1; Check(false, "retired identity preparation has no unexpected exception"); }
+            failAfter = -1;
+            if (!memory) { allocations = limit - remaining; break; }
+            ++refusals;
+            const auto* current = identities.Retained(&token);
+            Check(current && Same(current->object, original.object) && current->present && current->published &&
+                current->elements.size() == original.elements.size() &&
+                std::equal(current->elements.begin(), current->elements.end(), original.elements.begin(),
+                    [](const auto& a, const auto& b) { return a.first == b.first && Same(a.second, b.second); }),
+                "every pending-node allocation refusal leaves live identity generation and elements unchanged");
+            Check(!identities.Known(oldBone) && !identities.Known(oldVertex) &&
+                !identities.Known(importedEntry.object.id) && !identities.Retained(&imported),
+                "failed adaptation never partially publishes retired elements or the incoming object identity");
+            for (auto id : retiredIds) Check(identities.Known(id),
+                "failed adaptation retains all previously retired object IDs");
+        }
+        Check(allocations >= 0 && allocations <= 64 && (!sweep || refusals > 0),
+            "replacement of two elements succeeds within a small budget even after thousands of retired objects");
+        const auto& current = identities.Get(&token);
+        Check(Same(current.object.id, original.object.id) && current.object.generation == original.object.generation + 1 &&
+            current.elements.empty() && identities.Known(oldBone) && identities.Known(oldVertex),
+            "successful adaptation atomically retires elements and advances generation exactly once after refusals");
+        Check(identities.Known(importedEntry.object.id) && Same(identities.Get(&imported).object.id, importedEntry.object.id) &&
+            identities.Get(&imported).object.generation == original.object.generation + 2,
+            "the same publication installs its incoming object and reserves the next runtime generation");
+        for (auto id : retiredIds) Check(identities.Known(id), "successful adaptation preserves every historical tombstone");
+        const auto newBone = identities.Element(&token, MMS_CHANNEL_BONES, 0);
+        const auto newVertex = identities.Element(&token, MMS_CHANNEL_MESH, 2);
+        Check(!Same(newBone, oldBone) && !Same(newBone, oldVertex) &&
+            !Same(newVertex, oldBone) && !Same(newVertex, oldVertex),
+            "adapted elements cannot reuse either retired positional identity");
+        const auto reusedAddress = identities.Get(&retired).object.id;
+        for (auto id : retiredIds) Check(!Same(reusedAddress, id), "recycled object addresses cannot reuse a retired ID");
+        return allocations;
+    };
+    const auto fresh = replace(0, false), aged = replace(8192, true);
+    Check(fresh == aged, "replacement allocation count depends on incoming IDs rather than historical registry size");
+}
+
 void AdaptedAllocationSweep() {
     IdentityScope identityScope; NamesFixture f; NativePoseTestBinding binding(*f.app, f.history);
     const auto saved = Saved(f); const auto original = Parse(saved); const auto expectedPayload = Payload(saved);
@@ -270,6 +332,7 @@ void MissingRecordRemainsNormal() {
 } // namespace
 
 void NativeModelAdaptationIdentityChecks() {
+    model_adaptation_identity_checks::RetiredIdentityAllocationChecks();
     model_adaptation_identity_checks::AdaptedAllocationSweep();
     model_adaptation_identity_checks::OrdinaryMemoryStillOpaque();
     model_adaptation_identity_checks::InvalidAndFutureRemainOpaque();

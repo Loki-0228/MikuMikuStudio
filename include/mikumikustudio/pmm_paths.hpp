@@ -3,6 +3,8 @@
 #include <cwchar>
 
 namespace mikumikustudio::pmm_paths {
+inline constexpr wchar_t PluginSidecarSuffix[] = L".mms-plugins.json";
+
 // Filename routing only. The loader validates the PMM header and body; a
 // retained suffix such as .pmm1 does not select a different file format.
 inline bool IsProject(const std::filesystem::path& path) {

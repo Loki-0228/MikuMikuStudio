@@ -19,7 +19,7 @@ struct Options {
     std::function<void(bool)> completed;
 };
 enum class Status { Saving, BackingUp, Busy, Saved, BackedUp, Overwritten,
-                    Failed, BackupFailed, Full, WaitingToClose };
+                    Failed, BackupFailed, Full, WaitingToClose, BackupCleanupIncomplete, EffectSaveSkipped };
 inline constexpr UINT kComplete = WM_APP + 0x537;
 inline constexpr UINT_PTR kStatusTimer = 0x4d535356;
 // Success means accepted, not yet on disk. The destination is captured here.

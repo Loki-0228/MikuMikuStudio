@@ -8,16 +8,22 @@
 #include "native_viewport_history.hpp"
 #include "native_history_commands.hpp"
 #include "native_object_commands.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "offscreen_gdi_bridge.hpp"
+#endif
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/animation_curve_editor.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/plugin_storage.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
+#include "mikumikustudio/viewport_bounds.hpp"
 #include "mikumikustudio/system_settings_ui.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/ui_message.hpp"
@@ -63,7 +69,7 @@ std::unique_ptr<SharedHistory::ResetTransaction> projectHistoryReset;
 MMDApp* owner = nullptr;
 std::uint64_t runtimeBinding = 0;
 int toolbarHeight = 0, propertyAreaHeight = 0, leftAreaWidth = 0, rightAreaWidth = 0;
-bool refreshing = false, closing = false;
+bool refreshing = false, closing = false, shutdownPreflight = false;
 bool historyUiPending = false;
 // Accumulated publication masks waiting for the next safe-point UI refresh.
 // A successful history with a None mask still updates the history controls, so
@@ -92,6 +98,78 @@ bool deviceLost = false;
 constexpr UINT kProjectEvent = WM_APP + 0x6b;
 constexpr UINT_PTR kProjectRetry = 0x4d4d536b;
 constexpr UINT_PTR kHistoryUiRetry = 0x4d4d536c;
+#if !MMD_ORIGINAL_PROFILE
+// Independent of the main HWND so a failed shutdown can retain and retry
+// cleanup after WM_NCDESTROY. These fields are accessed only by the UI thread.
+constexpr UINT kOffscreenCleanup = WM_APP + 0x6d;
+constexpr UINT_PTR kOffscreenRetry = 0x4d4d536d;
+HWND offscreenCleanupWindow = nullptr;
+OffscreenGdiRuntimeCore<16>* offscreenRuntime = nullptr;
+bool offscreenRuntimeReady = false, offscreenCleanupPending = false;
+bool offscreenShutdownPending = false, offscreenCleanupBusy = false, offscreenWakePosted = false;
+
+bool OffscreenSafePoint() noexcept {
+    return !offscreenCleanupBusy && !refreshing &&
+        (!closing || !owner) &&
+        (!manager || !manager->InCallback()) && (!ui || !ui->Busy()) &&
+        (!owner || (!owner->SceneMutationInProgress() && owner->WindowLayoutReady()));
+}
+void WakeOffscreenCleanup() noexcept {
+    offscreenCleanupPending = true;
+    if (!offscreenCleanupWindow || !IsWindow(offscreenCleanupWindow)) return;
+    // The timer is an independent fallback if posting fails or the posted
+    // wake is consumed at an unsafe nested message boundary.
+    SetTimer(offscreenCleanupWindow, kOffscreenRetry, 100, nullptr);
+    if (!offscreenWakePosted && PostMessageW(offscreenCleanupWindow, kOffscreenCleanup, 0, 0))
+        offscreenWakePosted = true;
+}
+void PumpOffscreenCleanup() noexcept {
+    if (!offscreenCleanupPending || !offscreenRuntime || !OffscreenSafePoint()) return;
+    offscreenCleanupBusy = true;
+    const bool done = offscreenShutdownPending
+        ? offscreenRuntime->ShutdownAtSafePoint() : offscreenRuntime->RetryAtSafePoint();
+    if (done) {
+        offscreenCleanupPending = false;
+        if (offscreenCleanupWindow && IsWindow(offscreenCleanupWindow))
+            KillTimer(offscreenCleanupWindow, kOffscreenRetry);
+        if (offscreenShutdownPending) {
+            offscreenShutdownPending = false;
+            // An earlier runtime may have been closing while a new main
+            // window initialized. Reopen only after every old slot is gone.
+            offscreenRuntimeReady = owner && manager && !closing && offscreenRuntime->Start();
+        }
+    }
+    offscreenCleanupBusy = false;
+}
+LRESULT CALLBACK OffscreenCleanupWndProc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == kOffscreenCleanup || (message == WM_TIMER && wp == kOffscreenRetry)) {
+        if (message == kOffscreenCleanup) offscreenWakePosted = false;
+        PumpOffscreenCleanup();
+        return 0;
+    }
+    if (message == WM_NCDESTROY && offscreenCleanupWindow == window) {
+        offscreenCleanupWindow = nullptr; offscreenWakePosted = false;
+    }
+    return DefWindowProcW(window, message, wp, lp);
+}
+bool EnsureOffscreenCleanupWindow() noexcept {
+    if (offscreenCleanupWindow && IsWindow(offscreenCleanupWindow))
+        return GetWindowThreadProcessId(offscreenCleanupWindow, nullptr) == GetCurrentThreadId();
+    const auto instance = GetModuleHandleW(nullptr);
+    constexpr wchar_t name[] = L"MMS.PluginAbi.OffscreenCleanup.V1";
+    WNDCLASSW klass{}; klass.hInstance = instance; klass.lpfnWndProc = OffscreenCleanupWndProc;
+    klass.lpszClassName = name;
+    if (!RegisterClassW(&klass)) {
+        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+        WNDCLASSW existing{};
+        if (!GetClassInfoW(instance, name, &existing) || existing.lpfnWndProc != OffscreenCleanupWndProc)
+            return false;
+    }
+    offscreenCleanupWindow = CreateWindowExW(0, name, L"", 0, 0, 0, 0, 0,
+        HWND_MESSAGE, nullptr, instance, nullptr);
+    return offscreenCleanupWindow != nullptr;
+}
+#endif
 MmsResult PrepareHistoryReset(std::unique_ptr<SharedHistory::ResetTransaction>& out) {
     if (!history) return MMS_OK;
 #if !MMD_ORIGINAL_PROFILE
@@ -152,13 +230,9 @@ void NotifyProjectClosedEvent(MMDApp* app) {
                     digit(currentProject.projectId[2 * i + 1]));
             std::memcpy(&id, bytes, sizeof(id));
         }
-        const auto path = ProjectClosedPath(app);
-        MmsProjectEventV1 payload{Header<MmsProjectEventV1>(), id, 0, Text(Utf8(path))};
-        businessEvents.push_back({MMS_EVENT_PROJECT_CLOSED, 1, {},
-            std::vector<unsigned char>(reinterpret_cast<const unsigned char*>(&payload),
-                                       reinterpret_cast<const unsigned char*>(&payload) + sizeof(payload))});
+        projectEvents.push_back({MMS_EVENT_PROJECT_CLOSED, id, Utf8(ProjectClosedPath(app))});
         if (!PostMessageW(app->MainWindow(), kProjectEvent, 0, 0)) {
-            businessEvents.pop_back();
+            projectEvents.pop_back();
             return MMS_E_FAILED;
         }
         return MMS_OK;
@@ -223,8 +297,22 @@ LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PT
         const unsigned dpi = HIWORD(wp);
         if (owner && dpi) NotifyDpiChangedEvent(owner, dpi);
     }
+#if !MMD_ORIGINAL_PROFILE
+    const bool closeRequest = message == WM_CLOSE || (message == WM_SYSCOMMAND && (wp & 0xfff0) == SC_CLOSE);
+    if (closeRequest && owner && owner->MainWindow() == hwnd) {
+        if (owner->sceneMainCloseProcessing) return 0;
+        if (manager && manager->InCallback()) {
+            owner->deferredSceneMainClose = hwnd;
+            return 0;
+        }
+    }
+#else
     if (message == WM_CLOSE && ui && ui->DeferClose(wp, lp)) return 0;
     if (message == WM_CLOSE && manager && manager->InCallback()) { PostMessageW(hwnd, WM_CLOSE, wp, lp); return 0; }
+#endif
+#if !MMD_ORIGINAL_PROFILE
+    if (message == WM_CLOSE && ui && ui->DeferClose(wp, lp)) return 0;
+#endif
     if (message == kRefresh || (message == WM_TIMER && wp == kHistoryUiRetry)) {
         KillTimer(hwnd, kHistoryUiRetry);
         if (!closing && owner) {
@@ -273,6 +361,14 @@ void PluginNotifyObjectRemoved(MMDApp* app, const void* native) { NotifyObjectRe
 void PluginNotifyDpiChanged(MMDApp* app, unsigned dpi) { NotifyDpiChangedEvent(app, dpi); }
 void PluginFrameBegin(MMDApp* app) {
     if (!manager || !app || owner != app || manager->InCallback()) return;
+    // An independent frame boundary retries pending property events even when
+    // both the posted wake and dispatcher timer could not be installed.
+    if (!closing && !refreshing && (!ui || !ui->Busy()) &&
+        app->WindowLayoutReady() && !app->SceneMutationInProgress())
+        (void)manager->FlushPropertyNotifications();
+#if !MMD_ORIGINAL_PROFILE
+    PumpOffscreenCleanup();
+#endif
     if (!FlushDeviceWork(app)) { WakeDeviceWork(app); return; }
     manager->Render().FrameBegin();
 }
@@ -319,6 +415,10 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
         history = std::make_unique<SharedHistory>(manager->Storage(), [app] {
             if (closing || owner != app) return MMS_E_NOT_READY;
             if (SceneSaveBlocksEdits()) return MMS_E_BUSY;
+            // A half-loaded recovery scene stays out of the shared journal for
+            // plugin and native edits alike. Only the host's own history reset
+            // is exempt; object publication never authorizes this isolation.
+            if (app->sceneRecoveryPending && !replacingHistory) return MMS_E_BUSY;
             bool objectPublication = false;
 #if !MMD_ORIGINAL_PROFILE
             objectPublication = NativeObjectPublicationAuthorized(app);
@@ -383,12 +483,25 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
                 LayoutViewportPanels(app);
                 const bool applied = batch.Commit();
                 RECT damage{}; GetClientRect(app->MainWindow(), &damage);
-                damage.left = app->SidebarWidth() + 9; damage.bottom = std::max(0L, damage.bottom - 157);
+                damage.left = app->SidebarWidth() + 9; damage.bottom = std::max(0, MainPanelLayout(app, damage.bottom).bottomTop + 3);
                 mikumikustudio::ui::RepaintLayout(app->MainWindow(), batch.Changes(), damage);
                 return applied ? MMS_OK : MMS_E_FAILED;
             });
         });
         if (!SetWindowSubclass(app->MainWindow(), Subclass, 0x4d4d5301, 0)) throw std::runtime_error("plugin lifetime hook failed");
+#if !MMD_ORIGINAL_PROFILE
+        // Failure only disables the future off-screen presenter. Existing UI
+        // and plugin services remain usable. The message-only window is kept
+        // after the main HWND is destroyed to retry failed GDI cleanup.
+        if (GetWindowThreadProcessId(app->MainWindow(), nullptr) == GetCurrentThreadId() &&
+            EnsureOffscreenCleanupWindow()) {
+            offscreenRuntime = ProcessOffscreenGdiRuntime();
+            if (offscreenRuntime) {
+                if (offscreenShutdownPending) WakeOffscreenCleanup();
+                else offscreenRuntimeReady = offscreenRuntime->Start();
+            }
+        }
+#endif
         // The focused host test supplies an explicit package tree; production
         // always resolves PLUGINS next to the executable.
         const auto pluginRoot = [] {
@@ -420,15 +533,28 @@ void Shutdown() {
 #if !MMD_ORIGINAL_PROFILE
     if (NativeObjectOperationActive(owner)) return;
 #endif
-    if (closing) return; closing = true;
+    if (closing || shutdownPreflight) return;
+    shutdownPreflight = true;
+    struct PreflightGuard { ~PreflightGuard() { shutdownPreflight = false; } } preflightGuard;
+    // A prepared load blocks event dispatch. Cancel it while the app and all
+    // plugin services are still alive, then deliver committed edit events
+    // before setting the integration's closing flag or disabling history.
+    CancelProjectLoad(owner);
+    if (manager && !manager->FlushPropertyNotifications())
+        runtime_log::Write("PLUGIN_ABI pending property notification could not be delivered before shutdown");
+    closing = true;
 #if !MMD_ORIGINAL_PROFILE
     if(owner)CancelViewportCameraGesture(*owner);
+    if (offscreenRuntimeReady && offscreenRuntime) {
+        offscreenRuntimeReady = false;
+        offscreenShutdownPending = true;
+        WakeOffscreenCleanup();
+    }
 #endif
     if (owner && owner->MainWindow()) {
         KillTimer(owner->MainWindow(), kHistoryUiRetry);
         KillTimer(owner->MainWindow(), kProjectRetry);
     }
-    CancelProjectLoad(owner);
     if (manager) manager->Ui().Refresh().PropertyRefresh().SetHistoryAvailable(false);
     if (manager) manager->Stop();
     ui.reset();
@@ -460,7 +586,25 @@ void Shutdown() {
     toolbarHeight = propertyAreaHeight = leftAreaWidth = rightAreaWidth = 0;
     owner = nullptr; historyUiPending = false;
     pendingEffects = HistoryEffects::None; historyUiGeneration = 0;
+#if !MMD_ORIGINAL_PROFILE
+    // No manager, presenter or app is live now. A failed close remains held
+    // by the process-lifetime runtime and the independent retry window.
+    PumpOffscreenCleanup();
+#endif
 }
+#if !MMD_ORIGINAL_PROFILE
+OffscreenGdiRuntimeCore<16>* OffscreenRuntimeForUi(MMDApp* app) noexcept {
+    if (!app || app != owner || !offscreenRuntimeReady || !offscreenRuntime || closing ||
+        !app->MainWindow() || GetWindowThreadProcessId(app->MainWindow(), nullptr) != GetCurrentThreadId() ||
+        !OffscreenSafePoint()) return nullptr;
+    return offscreenRuntime;
+}
+void RequestOffscreenCleanup(MMDApp* app) noexcept {
+    if (!app || app != owner || closing || !offscreenRuntimeReady || !offscreenRuntime || !app->MainWindow() ||
+        GetWindowThreadProcessId(app->MainWindow(), nullptr) != GetCurrentThreadId()) return;
+    WakeOffscreenCleanup();
+}
+#endif
 SharedHistory* NativeHistory(MMDApp* app) noexcept { return app == owner && !closing ? history.get() : nullptr; }
 void RequestBoundHistoryUiRefresh(MMDApp* app, HistoryEffects effects) noexcept {
     if (!app || app != owner || closing || !app->MainWindow()) return;
@@ -473,14 +617,29 @@ void RequestBoundHistoryUiRefresh(MMDApp* app, HistoryEffects effects) noexcept 
 }
 void Layout(MMDApp* app) {
     if (!ui || app != owner) return;
+    const auto window = app->MainWindow();
+    // A refused reentrant/thread call does not start a new publication and
+    // must not invalidate the last completed layout.
+    if (!window || GetWindowThreadProcessId(window, nullptr) != GetCurrentThreadId() ||
+        closing || (manager && manager->InCallback()) || ui->Busy()) return;
+    // Refresh may already have published geometry at this registry revision.
+    // This explicit host pass can change its layout context, so even failure
+    // during early measurement must retire that earlier snapshot and targets.
+    if (manager) {
+        manager->Ui().Refresh().SuspendTargets();
+        manager->Ui().SuspendGeometry();
+    }
     Boundary([&] {
         RECT rect{}; GetClientRect(app->MainWindow(), &rect);
         int left = app->SidebarWidth() + 9;
         const bool shown = !app->FullscreenMode() && !app->FloatingWindow();
-        const int maximum = std::max(0L, (rect.bottom - 217) / 3);
+        const int bottomTop = MainPanelLayout(app, rect.bottom).bottomTop;
+        const auto rows = FitViewportToolbarRows(bottomTop, ui_scale::Percent());
+        const int maximum = std::max(0, (bottomTop - rows.top - rows.bottom) / 3);
         const int availableWidth = std::max(0L, rect.right - left);
-        ui->SetSideAreas({left, 25, rect.right, std::max(25L, rect.bottom - 192)}, availableWidth / 3, shown);
-        ui->SetPropertyArea(std::max(0L, rect.bottom - 160), maximum, shown);
+        ui->SetSideAreas({left, rows.top, rect.right, std::max(rows.top, bottomTop - rows.bottom)},
+                         availableWidth / 3, shown);
+        ui->SetPropertyArea(std::max(0, bottomTop), maximum, shown);
         toolbarHeight = ui->Layout(left, availableWidth, maximum, shown);
         ui->DetectCommandStateChanges();
         propertyAreaHeight = ui->PropertyAreaHeight();
@@ -489,6 +648,42 @@ void Layout(MMDApp* app) {
         return MMS_OK;
     });
 }
+bool BeginLayoutInteraction(MMDApp* app, std::uint32_t mounts, std::uint64_t& out) noexcept {
+#if MMD_ORIGINAL_PROFILE
+    if (!app) return false;
+    out = 0; return true;
+#else
+    if (!app || !mounts || (mounts & ~HostLayoutAll)) return false;
+    const auto window = app->MainWindow();
+    if (!window || GetWindowThreadProcessId(window, nullptr) != GetCurrentThreadId()) return false;
+    if (app != owner || !manager || !ui) { out = 0; return true; }
+    if (closing || refreshing || manager->InCallback() || ui->Busy() ||
+        app->SceneMutationInProgress() || !app->WindowLayoutReady()) return false;
+    ScopedSceneCloseDeferral closeHold(*app);
+    uint64_t token = 0;
+    const auto result = Boundary([&]() -> MmsResult {
+        const auto begun = manager->Ui().BeginHostLayout(mounts, token);
+        if (begun) return begun;
+        // The registry has blocked reacquisition before notifying observers.
+        // Synchronously restore real HWNDs/reservations using the normal path.
+        Refresh(app);
+        if (closing || app != owner || !manager || !ui ||
+            !manager->Ui().IsHostLayoutCurrent(mounts, token)) return MMS_E_STALE;
+        if (!app->WindowLayoutReady() || app->SceneMutationInProgress() ||
+            !manager->Ui().GeometryReady()) return MMS_E_NOT_READY;
+        return MMS_OK;
+    });
+    if (result != MMS_OK) { EndLayoutInteraction(app, token); return false; }
+    out = token; return true;
+#endif
+}
+void EndLayoutInteraction(MMDApp* app, std::uint64_t token) noexcept {
+#if !MMD_ORIGINAL_PROFILE
+    // Tokens are process-unique. A stale completion cannot unlock another
+    // registry after shutdown/reinitialization, even at the same app address.
+    if (token && app == owner && manager) manager->Ui().EndHostLayout(token);
+#endif
+}
 int ToolbarHeight(MMDApp* app) { return app && app == owner && !app->FullscreenMode() && !app->FloatingWindow() ? toolbarHeight : 0; }
 int PropertyAreaHeight(MMDApp* app) { return app && app == owner && !app->FullscreenMode() && !app->FloatingWindow() ? propertyAreaHeight : 0; }
 int LeftAreaWidth(MMDApp* app) { return app && app == owner && !app->FullscreenMode() && !app->FloatingWindow() ? leftAreaWidth : 0; }
@@ -496,6 +691,9 @@ int RightAreaWidth(MMDApp* app) { return app && app == owner && !app->Fullscreen
 void Refresh(MMDApp* app) {
     if (!ui || app != owner || refreshing || closing) return;
     if (manager && manager->InCallback()) { SetTimer(app->MainWindow(), kHistoryUiRetry, 16, nullptr); return; }
+#if !MMD_ORIGINAL_PROFILE
+    PumpOffscreenCleanup();
+#endif
     refreshing = true;
     const auto old = toolbarHeight, oldProperties = propertyAreaHeight, oldLeft = leftAreaWidth, oldRight = rightAreaWidth;
     Boundary([&] { ui->Refresh(); Layout(app);
@@ -539,6 +737,13 @@ bool HandleShortcut(unsigned key, bool viewportFocused) {
 }
 bool HandleDialogMessage(MSG* message) { return ui && !closing && ui->DialogMessage(message); }
 bool InCallback() { return manager && manager->InCallback(); }
+bool CloseBlocked(MMDApp* app) noexcept {
+    if (owner != app) return false;
+#if !MMD_ORIGINAL_PROFILE
+    if (NativeObjectOperationActive(app)) return true;
+#endif
+    return closing || shutdownPreflight || refreshing || (manager && manager->InCallback()) || (ui && ui->Busy());
+}
 
 struct ProjectSave::Impl {
     enum class Stage { Captured, Publishing, Published, Failed, Completed };
@@ -626,7 +831,19 @@ bool ProjectSave::Publish(const wchar_t* staged, const wchar_t* destination, boo
     return true;
 }
 bool PrepareProjectLoad(MMDApp* app, const wchar_t* path) {
-    if (build_profile::original) return true;
+    const auto reportRecoveryFailure = [&](const char* reason) {
+        runtime_log::Write("PROJECT recovery pending: %s", reason);
+        if (app && app->MainWindow())
+            ShowUiMessage(app, app->MainWindow(), UiMessage::ProjectSaveRecoveryFailed,
+                MB_OK | MB_ICONERROR, path);
+        return false;
+    };
+    if (build_profile::original) {
+        if (!path || !*path) { SetLastError(ERROR_INVALID_PARAMETER); return false; }
+        try { RecoverProjectPair(fs::absolute(path)); return true; }
+        catch (const std::exception& e) { return reportRecoveryFailure(e.what()); }
+        catch (...) { return reportRecoveryFailure("unknown exception"); }
+    }
 #if !MMD_ORIGINAL_PROFILE
     if (NativeObjectOperationActive(app) || NativeObjectUiPending(app)) return false;
 #endif
@@ -649,6 +866,8 @@ bool PrepareProjectLoad(MMDApp* app, const wchar_t* path) {
             if(r)throw std::runtime_error("plugin serializer prepareLoad returned "+std::to_string(r));
         }
         pendingProject=std::move(data);loadingProject=true;historySceneReplaced=false;return true;
+    } catch (const ProjectSaveRecoveryError& e) {
+        return reportRecoveryFailure(e.what());
     } catch(const std::exception& e) {
         projectHistoryReset.reset();
         if(loadingMain!=INVALID_HANDLE_VALUE){CloseHandle(loadingMain);loadingMain=INVALID_HANDLE_VALUE;}
@@ -676,7 +895,15 @@ bool BeginProjectSceneReplacement(MMDApp* app) {
 }
 void CommitProjectLoad(MMDApp* app) {
     if (!loadingProject) return;
-    if (manager && owner == app && !manager->Storage().Commit()) { LogMessage("serializer commitLoad violated its no-fail contract");return; }
+    const bool storageFailed = manager && owner == app && !manager->Storage().Commit();
+    if (storageFailed) {
+        LogMessage("serializer commitLoad violated its no-fail contract");
+        // A refused commit (wrong thread or busy) leaves the prepared candidates
+        // live: keep loadingProject set so CancelProjectLoad cancels them. A
+        // poisoned commitLoad consumed them, and the scene and history reset are
+        // already committed, so the loaded identity is still adopted below.
+        if (manager->Storage().Prepared()) return;
+    }
     currentProject=std::move(pendingProject);loadingProject=false;historySceneReplaced=false;
     projectHistoryReset.reset();
     if(loadingMain!=INVALID_HANDLE_VALUE){CloseHandle(loadingMain);loadingMain=INVALID_HANDLE_VALUE;}
@@ -707,7 +934,14 @@ bool ResetPluginProject(MMDApp* app) {
         if(r){LogMessage("plugin project reset refused");return false;}
         if (reset && reset->Commit()!=MMS_OK) { manager->Storage().Cancel(); LogMessage("history project reset refused"); return false; }
         manager->AdvanceRefreshEpoch();
-        if(!manager->Storage().Commit()){LogMessage("plugin project reset refused");return false;}
+        if(!manager->Storage().Commit()){
+            LogMessage("serializer commitLoad violated its no-fail contract");
+            // A refused commit (wrong thread or busy) leaves the prepared
+            // candidates live, so the reset fails. A poisoned commitLoad
+            // consumed them after the history reset committed, so finish the
+            // scene reset to keep history and the native scene aligned.
+            if(manager->Storage().Prepared())return false;
+        }
     }
     if(!currentProject.projectId.empty()) NotifyProjectClosedEvent(app);
     currentProject={};QueueProjectEvent(app,MMS_EVENT_SCENE_RESET,L"");return true;

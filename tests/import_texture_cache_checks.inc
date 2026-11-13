@@ -2,10 +2,103 @@
 #include "mikumikustudio/d3d_wrapper.hpp"
 #include "mikumikustudio/model_alpha_pass.hpp"
 #include "mikumikustudio/texture_lookup.hpp"
+#include "mikumikustudio/texture_prepare_cache.hpp"
 #include <limits>
 #include <stdexcept>
 
 namespace {
+std::vector<unsigned char> ImportCachePixels(IUnknown* object) {
+    IDirect3DTexture9* texture = nullptr;
+    Check(object && SUCCEEDED(object->QueryInterface(__uuidof(IDirect3DTexture9), reinterpret_cast<void**>(&texture))) && texture,
+        "query cached texture");
+    D3DSURFACE_DESC desc{};
+    Check(SUCCEEDED(texture->GetLevelDesc(0, &desc)) && desc.Format == D3DFMT_A8R8G8B8 &&
+        desc.Width > 0 && desc.Height > 0 && desc.Width <= 4096 && desc.Height <= 4096, "cached texture dimensions");
+    D3DLOCKED_RECT locked{};
+    Check(SUCCEEDED(texture->LockRect(0, &locked, nullptr, D3DLOCK_READONLY)), "lock cached texture");
+    std::vector<unsigned char> pixels(static_cast<size_t>(desc.Width) * desc.Height * 4);
+    for (UINT y = 0; y < desc.Height; ++y)
+        std::memcpy(pixels.data() + static_cast<size_t>(y) * desc.Width * 4,
+            static_cast<const unsigned char*>(locked.pBits) + static_cast<ptrdiff_t>(y) * locked.Pitch,
+            static_cast<size_t>(desc.Width) * 4);
+    texture->UnlockRect(0);
+    texture->Release();
+    return pixels;
+}
+void ImportTextureDiskCacheChecks() {
+    wchar_t root[32768]{};
+    const DWORD length = GetEnvironmentVariableW(L"MMS_IMPORT_CACHE_TEST_DIR", root, 32768);
+    Check(length && length < 32768, "isolated import cache test directory provided");
+    const std::wstring dir(root), managerDir = dir + L"\\cache", cacheDir = managerDir + L"\\Textures";
+    const std::wstring settings = dir + L"\\settings.json", path = dir + L"\\fixture.tga";
+    Check(CreateDirectoryW(dir.c_str(), nullptr) != 0, "create fresh import cache test directory");
+    Check(SetEnvironmentVariableW(L"MMS_TEXTURE_CACHE_DIR", cacheDir.c_str()) &&
+        SetEnvironmentVariableW(L"MMS_CACHE_MANAGER_DIR", managerDir.c_str()) &&
+        SetEnvironmentVariableW(L"MMS_CACHE_MANAGER_SETTINGS", settings.c_str()) &&
+        SetEnvironmentVariableW(L"MMS_CACHE_MEMORY_ONLY", nullptr) &&
+        SetEnvironmentVariableW(L"MMS_TEXTURE_CACHE_DISABLE", nullptr), "set isolated cache configuration");
+    std::vector<unsigned char> data(18 + 37 * 25 * 4, 0);
+    data[2] = 2; data[12] = 37; data[14] = 25; data[16] = 32; data[17] = 0x28;
+    for (size_t i = 18; i < data.size(); i += 4) {
+        data[i] = static_cast<unsigned char>(i); data[i + 1] = 54; data[i + 2] = 97; data[i + 3] = 127;
+    }
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(file != INVALID_HANDLE_VALUE, "create real texture fixture");
+    DWORD written = 0; const bool wrote = WriteFile(file, data.data(), static_cast<DWORD>(data.size()), &written, nullptr) && written == data.size();
+    CloseHandle(file); Check(wrote, "write real texture fixture");
+    IDirect3D9* d3d = Direct3DCreate9(D3D_SDK_VERSION); Check(d3d != nullptr, "create D3D9");
+    HWND window = CreateWindowW(L"STATIC", L"texture import test", WS_OVERLAPPEDWINDOW, 0, 0, 128, 128, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(window != nullptr, "create hidden test window");
+    D3DPRESENT_PARAMETERS pp{}; pp.Windowed = TRUE; pp.SwapEffect = D3DSWAPEFFECT_DISCARD; pp.hDeviceWindow = window;
+    IDirect3DDevice9* device = nullptr;
+    Check(SUCCEEDED(d3d->CreateDevice(0, D3DDEVTYPE_HAL, window, D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE, &pp, &device)), "create hidden D3D device");
+    auto renderer = std::make_unique<D3DRenderer>(); renderer->device = device;
+    auto mutablePath = std::vector<wchar_t>(path.begin(), path.end()); mutablePath.push_back(0);
+    const auto before = texture_prepare_cache::GetStatistics();
+    Check(LoadTextureShared(reinterpret_cast<unsigned char*>(renderer.get()), mutablePath.data()) == 1, "ordinary load seeds disk cache");
+    const auto seeded = texture_prepare_cache::GetStatistics();
+    Check(seeded.stores > before.stores, "ordinary load persisted decoded texture");
+    auto& entry = renderer->resourcePool[0];
+    const auto expectedTag = entry.tag;
+    const auto expectedPixels = ImportCachePixels(entry.comObject);
+    std::free(entry.heapBuffer); entry.comObject->Release(); entry = {};
+    InvalidateTextureLookup();
+    {
+        import_texture_cache::Preparation preparation(*renderer);
+        import_texture_cache::ScopedCapture capture(preparation);
+        Check(LoadTextureShared(reinterpret_cast<unsigned char*>(renderer.get()), mutablePath.data()) == 1,
+            "cancelled transaction loads cached texture");
+        const auto hit = texture_prepare_cache::GetStatistics();
+        Check(hit.hits > seeded.hits && hit.nativeCalls == seeded.nativeCalls,
+            "cancelled transaction reuses ordinary disk cache");
+        Check(!entry.heapBuffer && !entry.comObject && entry.tag == 0,
+            "cancelled transaction does not publish texture or tag");
+        std::shared_ptr<import_texture_cache::Retained> retained;
+        std::unique_ptr<import_texture_cache::Publication> publication;
+        Check(preparation.Finish(retained, publication) == MMS_OK && publication && publication->IsCurrent(),
+            "freeze texture transaction before cancellation");
+        // Dropping both handles without Publish cancels the staged import.
+    }
+    Check(!entry.heapBuffer && !entry.comObject && entry.tag == 0,
+        "cancelled transaction leaves no public texture or tag");
+    const auto cancelled = texture_prepare_cache::GetStatistics();
+    {
+        import_texture_cache::Preparation preparation(*renderer);
+        import_texture_cache::ScopedCapture capture(preparation);
+        Check(LoadTextureShared(reinterpret_cast<unsigned char*>(renderer.get()), mutablePath.data()) == 1, "transaction import loads cached texture");
+        const auto hit = texture_prepare_cache::GetStatistics();
+        Check(hit.hits > cancelled.hits && hit.nativeCalls == cancelled.nativeCalls, "transaction import reuses ordinary disk cache after cancellation");
+        Check(!renderer->resourcePool[0].heapBuffer && !renderer->resourcePool[0].comObject, "transaction texture remains private before commit");
+        std::shared_ptr<import_texture_cache::Retained> retained;
+        std::unique_ptr<import_texture_cache::Publication> publication;
+        Check(preparation.Finish(retained, publication) == MMS_OK && publication->IsCurrent(), "freeze texture transaction");
+        publication->Publish();
+        Check(renderer->resourcePool[0].comObject && renderer->resourcePool[0].tag == expectedTag, "transaction publishes matching texture metadata");
+        Check(ImportCachePixels(renderer->resourcePool[0].comObject) == expectedPixels, "transaction publishes matching texture pixels");
+    }
+    std::free(entry.heapBuffer); entry.comObject->Release(); entry = {}; InvalidateTextureLookup();
+    renderer.reset(); device->Release(); DestroyWindow(window); d3d->Release();
+}
 struct ImportTextureTestState { unsigned calls = 0, live = 0, destroyed = 0; };
 thread_local ImportTextureTestState* importTextureTestState = nullptr;
 class ImportTestTexture final : public IDirect3DTexture9 {

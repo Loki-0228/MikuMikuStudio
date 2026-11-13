@@ -54,11 +54,13 @@
 #endif
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/status_title_checked_gdi.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 namespace mikumikustudio {
 namespace {
@@ -361,51 +363,51 @@ void HandlePaletteChanged(HDC hdc) {
     GetClientRect(reinterpret_cast<HWND>(app->state.hwnd),
                   &rc);                                     // 0x42CEC5 (this+0xA06B8)
     const std::int32_t bottom = rc.bottom;
-    const auto FillPanelBottom = [app, bottom](HDC dc, int l, int t, int r, int b, COLORREF c1, COLORREF c2, int edge) {
-        if (t >= bottom - 157) { l = BottomPanelX(app, l); r = BottomPanelX(app, r); }
-        mikumikustudio::FillPanelBottom(dc, l, t, r, b, c1, c2, edge);
-    };
-    const std::int32_t side = app->SidebarWidth();
-    const int timelineShift = panel::TimelinePanelShift(side);
+    const auto layout = MainPanelLayout(app, bottom);
+    const int sidebarBottom = layout.bottomTop - 1;
+    const int side = app->SidebarWidth();
+    const auto S = [&](int units) { return layout.Pixels(units); };
     const COLORREF colA = app->ThemeColor(UiThemeColor::ControlLight);
     const COLORREF colB = app->ThemeColor(UiThemeColor::ControlDark);
+    const auto sidebarColor = [&](int y) {
+        return ColorLerp(colA, colB, float(double(y - S(50)) / std::max(1, sidebarBottom - S(50))));
+    };
+    const int ruler = layout.RulerTop(), grid = layout.GridTop();
+    const int gutterBottom = std::max(ruler, layout.FooterY(228));
+    FillPanelBottom(hdc, S(3), S(50), side - S(3), ruler, colA, sidebarColor(ruler), 1);
+    FillPanelBottom(hdc, S(3), ruler, S(6), gutterBottom, sidebarColor(ruler), sidebarColor(gutterBottom), 1);
+    const int gutterEnd = std::max(grid, std::min(grid + S(16), layout.timelineBottom));
+    FillPanelBottom(hdc, side - S(19), grid - 1, side - S(3), gutterEnd,
+                    sidebarColor(grid - 1), sidebarColor(gutterEnd), 1);
+    FillPanelBottom(hdc, S(3), std::max(S(50), layout.timelineBottom), side - S(3), sidebarBottom,
+                    sidebarColor(std::max(S(50), layout.timelineBottom)), colB, 1);
+    FillPanelBottom(hdc, S(3), S(3), side - S(3), S(47),
+                    app->ThemeColorAt(4), app->ThemeColorAt(5), 1);
+    PaintBottomPanelBackground(app, hdc, rc);
+}
 
-    // Row 1 (0x42CEF0..0x42CF1F): t1 = -45.0/((50.0-bottom)-161.0), all
-    // double math with a float truncation at the call boundary (x87
-    // fstp dword; the fld/fstp pair is register shuffling only).
-    float t = static_cast<float>(-45.0 / ((50.0 - static_cast<double>(bottom)) - 161.0));
-    std::uint32_t lerp = ColorLerp(colA, colB, t);          // 0x42CEFD (0x40AD00)
-    FillPanelBottom(hdc, 3, 50, side - 3, 95, colA, lerp, 1);      // 0x42CF1F (0x40DF10)
-
-    // Row 2 (0x42CF24..0x42CF78): t2 = ((50.0-bottom)-228.0)/((50.0-bottom)-161.0).
-    t = static_cast<float>(((50.0 - static_cast<double>(bottom)) - 228.0) /
-                           ((50.0 - static_cast<double>(bottom)) - 161.0));
-    const std::uint32_t lerp2 = ColorLerp(colA, colB, t);   // 0x42CF5E
-    FillPanelBottom(hdc, 3, 95, 6, bottom - 228, lerp, lerp2, 1);  // 0x42CF78
-
-    // Row 3 (0x42CF7D..0x42CFF6): the span (50.0-bottom)-161.0 (original
-    // decompiler name v30) is kept as a
-    // double (fst var_18 keeps it on the x87 stack); both quotients are
-    // double, each truncated to float for its ColorLerp.
-    const double row3Span = (50.0 - static_cast<double>(bottom)) - 161.0;
-    const std::uint32_t lerpNeg111 = ColorLerp(colA, colB, static_cast<float>(-111.0 / row3Span));  // 0x42CFB5
-    const std::uint32_t lerpNeg94 = ColorLerp(colA, colB, static_cast<float>(-94.0 / row3Span));    // 0x42CFD5
-    FillPanelBottom(hdc, side - 19, 144, side - 3, 161, lerpNeg94, lerpNeg111, 1);  // 0x42CFF6
-
-    // Row 4 (0x42CFFB..0x42D05C): t4 = ((50.0-bottom)-248.0)/((50.0-bottom)-161.0).
-    t = static_cast<float>(((50.0 - static_cast<double>(bottom)) - 248.0 - timelineShift) /
-                           ((50.0 - static_cast<double>(bottom)) - 161.0));
-    lerp = ColorLerp(colA, colB, t);                        // 0x42D036
-    FillPanelBottom(hdc, 3, bottom - 248 - timelineShift, side - 3, bottom - 161, lerp, colB, 1);  // 0x42D05C
+void PaintBottomPanelBackground(MMDApp* app, HDC hdc, const RECT& client) {
+    const int bottom = client.bottom;
+    const auto layout = BottomTemplate(app, bottom);
+    const int bottomHeader = layout.Y(bottom - 157);
+    const int bottomEdge = layout.Y(bottom - 3);
+    RECT clip{};
+    const int clipType = GetClipBox(hdc, &clip);
+    if (clipType == ERROR || clipType == NULLREGION) return;
+    int percent = 100;
+    const auto spans = BottomPanelSpans(app, &percent);
+    const auto FillPanelBottom = [&spans, &clip, percent](HDC dc, int l, int t, int r, int b, COLORREF c1, COLORREF c2, int edge) {
+        if (b < clip.top || t >= clip.bottom) return;
+        const int left = BottomPanelX(spans, l, percent), right = BottomPanelX(spans, r, percent);
+        if (right < clip.left || left >= clip.right) return;
+        mikumikustudio::FillPanelBottom(dc, left, t, right, b, c1, c2, edge);
+    };
 
     // Fixed rows from the colour-table pairs (colour.txt).
-    FillPanelBottom(hdc, 3, bottom - 157, 215, bottom - 3,
+    FillPanelBottom(hdc, 3, bottomHeader, 215, bottomEdge,
                     app->ThemeColorAt(6), app->ThemeColorAt(7),
                     1);                                          // 0x42D089
-    FillPanelBottom(hdc, 3, 3, side - 3, 47,
-                    app->ThemeColorAt(4), app->ThemeColorAt(5),
-                    1);                                          // 0x42D0B1
-    FillPanelBottom(hdc, 218, bottom - 157, 358, bottom - 3,
+    FillPanelBottom(hdc, 218, bottomHeader, 358, bottomEdge,
                     app->ThemeColorAt(8), app->ThemeColorAt(9),
                     1);                                          // 0x42D0E1
 
@@ -417,14 +419,14 @@ void HandlePaletteChanged(HDC hdc) {
     std::int32_t xOff = panelLayout.leading;
     if (app->state.optflag[0] != 0) {   // 0x2F8
         if (app->state.optflag[1] != 0) {  // 0x2F9
-            FillPanelBottom(hdc, 0x169, bottom - 157, 0x202, bottom - 3, colC, colD, 1);  // 0x42D123
+            FillPanelBottom(hdc, 0x169, bottomHeader, 0x202, bottomEdge, colC, colD, 1);  // 0x42D123
         } else {
-            FillPanelBottom(hdc, 0x169, bottom - 157, 0x17B, bottom - 3, colC, colD, 1);  // 0x42D13B
+            FillPanelBottom(hdc, 0x169, bottomHeader, 0x17B, bottomEdge, colC, colD, 1);  // 0x42D13B
         }
     } else if (app->state.optflag[4] != 0) {  // 0x2FC
-        FillPanelBottom(hdc, 0x169, bottom - 157, 0x22E, bottom - 3, colC, colD, 1);  // 0x42D15C
+        FillPanelBottom(hdc, 0x169, bottomHeader, 0x22E, bottomEdge, colC, colD, 1);  // 0x42D15C
     } else {
-        FillPanelBottom(hdc, 0x169, bottom - 157, 0x17B, bottom - 3, colC, colD, 1);  // 0x42D174
+        FillPanelBottom(hdc, 0x169, bottomHeader, 0x17B, bottomEdge, colC, colD, 1);  // 0x42D174
     }
 
     // Block B (0x42D17E..0x42D218): colours 0xA0608/0xA060C; the offset is
@@ -433,18 +435,18 @@ void HandlePaletteChanged(HDC hdc) {
     const COLORREF colF = app->ThemeColorAt(13);
     if (app->state.optflag[0] != 0) {   // 0x2F8
         if (app->state.optflag[2] != 0) {  // 0x2FA
-            FillPanelBottom(hdc, 0x1F3 - xOff, bottom - 157, 0x2A7 - xOff,
-                            bottom - 3, colE, colF, 1);        // 0x42D1C1
+            FillPanelBottom(hdc, 0x1F3 - xOff, bottomHeader, 0x2A7 - xOff,
+                            bottomEdge, colE, colF, 1);        // 0x42D1C1
         } else {
-            FillPanelBottom(hdc, 0x1F3 - xOff, bottom - 157, 0x205 - xOff,
-                            bottom - 3, colE, colF, 1);        // 0x42D1D5
+            FillPanelBottom(hdc, 0x1F3 - xOff, bottomHeader, 0x205 - xOff,
+                            bottomEdge, colE, colF, 1);        // 0x42D1D5
         }
     } else if (app->state.optflag[5] != 0) {  // 0x2FD
-        FillPanelBottom(hdc, 0x254 - xOff, bottom - 157, 0x361 - xOff,
-                        bottom - 3, colE, colF, 1);            // 0x42D1FF
+        FillPanelBottom(hdc, 0x254 - xOff, bottomHeader, 0x361 - xOff,
+                        bottomEdge, colE, colF, 1);            // 0x42D1FF
     } else {
-        FillPanelBottom(hdc, 0x254 - xOff, bottom - 157, 0x266 - xOff,
-                        bottom - 3, colE, colF, 1);            // 0x42D213
+        FillPanelBottom(hdc, 0x254 - xOff, bottomHeader, 0x266 - xOff,
+                        bottomEdge, colE, colF, 1);            // 0x42D213
     }
     xOff = panelLayout.afterLightOrFace;
 
@@ -453,11 +455,11 @@ void HandlePaletteChanged(HDC hdc) {
     if (app->state.optflag[0] != 0) {   // 0x2F8
         const COLORREF colG = app->ThemeColorAt(20);
         if (app->state.optflag[6] != 0) {  // 0x2FE
-            FillPanelBottom(hdc, 0x2AA - xOff, bottom - 157, 0x35B - xOff,
-                            bottom - 3, colG, colD, 1);        // 0x42D265
+            FillPanelBottom(hdc, 0x2AA - xOff, bottomHeader, 0x35B - xOff,
+                            bottomEdge, colG, colD, 1);        // 0x42D265
         } else {
-            FillPanelBottom(hdc, 0x2AA - xOff, bottom - 157, 0x2BC - xOff,
-                            bottom - 3, colG, colD, 1);        // 0x42D279
+            FillPanelBottom(hdc, 0x2AA - xOff, bottomHeader, 0x2BC - xOff,
+                            bottomEdge, colG, colD, 1);        // 0x42D279
         }
     }
     xOff = panelLayout.afterSelfShadow;
@@ -467,11 +469,11 @@ void HandlePaletteChanged(HDC hdc) {
         const COLORREF colH = app->ThemeColorAt(14);
         const COLORREF colI = app->ThemeColorAt(15);
         if (app->state.optflag[3] != 0) {  // 0x2FB
-            FillPanelBottom(hdc, 0x35E - xOff, bottom - 157, 0x422 - xOff,
-                            bottom - 3, colH, colI, 1);        // 0x42D2C7
+            FillPanelBottom(hdc, 0x35E - xOff, bottomHeader, 0x422 - xOff,
+                            bottomEdge, colH, colI, 1);        // 0x42D2C7
         } else {
-            FillPanelBottom(hdc, 0x35E - xOff, bottom - 157, 0x370 - xOff,
-                            bottom - 3, colH, colI, 1);        // 0x42D2DB
+            FillPanelBottom(hdc, 0x35E - xOff, bottomHeader, 0x370 - xOff,
+                            bottomEdge, colH, colI, 1);        // 0x42D2DB
         }
     }
 
@@ -479,16 +481,16 @@ void HandlePaletteChanged(HDC hdc) {
     const std::int32_t xFinal = panelLayout.final;
 
     // Three closing rows (0x42D2FA..0x42D38E).
-    FillPanelBottom(hdc, 0x371 - xFinal, bottom - 157, 0x412 - xFinal,
-                    bottom - 0x52,
+    FillPanelBottom(hdc, 0x371 - xFinal, bottomHeader, 0x412 - xFinal,
+                    layout.ContentY(bottom - 0x52),
                     app->ThemeColorAt(16), app->ThemeColorAt(17),
                     1);                                          // 0x42D330
-    FillPanelBottom(hdc, 0x371 - xFinal, bottom - 0x4F, 0x3F3 - xFinal,
-                    bottom - 3,
+    FillPanelBottom(hdc, 0x371 - xFinal, layout.ContentY(bottom - 0x4F), 0x3F3 - xFinal,
+                    bottomEdge,
                     app->ThemeColorAt(18), app->ThemeColorAt(19),
                     1);                                          // 0x42D361
-    FillPanelBottom(hdc, 0x3F6 - xFinal, bottom - 0x4F, 0x412 - xFinal,
-                    bottom - 3,
+    FillPanelBottom(hdc, 0x3F6 - xFinal, layout.ContentY(bottom - 0x4F), 0x412 - xFinal,
+                    bottomEdge,
                     app->ThemeColorAt(18), app->ThemeColorAt(19),
                     1);                                          // 0x42D38E
 }
@@ -540,51 +542,17 @@ void HandlePaletteChanged(HDC hdc) {
 // Reference: ../translated/MikuMikuDance/fcn_0042c140.cpp (superseded by
 // the IDA disassembly for strings/coordinates)
 // =========================================================================//
-void HandlePaletteChanged2(HDC hdc) {
-    MMDApp* app = g_Block;  // original `this` (ecx)
-
-    // Target window and x base (0x42C160..0x42C1A6).
-    RECT rc;
-    std::int32_t xBase;
-    HWND hwnd = app->FloatingWindow();
-    if (hwnd != nullptr) {
-        GetClientRect(hwnd, &rc);
-        xBase = 0;
-    } else {
-        hwnd = reinterpret_cast<HWND>(app->state.hwnd);  // 0xA06B8
-        GetClientRect(hwnd, &rc);
-        xBase = app->SidebarWidth() + 9;
-    }
-    const auto panels = FramePanelLayout(app);
-    if (!MMD_ORIGINAL_PROFILE) xBase = panels.overlay.left;
-    const LONG right = MMD_ORIGINAL_PROFILE ? rc.right : panels.overlay.right;   // ebp
-    const LONG blitX = rc.right;   // v26 (BitBlt x base)
-
-    // Existing text positions remain logical single-row coordinates. The
-    // shared layout maps each group into its final row below.
-    const std::int32_t hideTop = panels.topBand.top + 25;
-    const std::int32_t hideBottom = panels.bottomBand.bottom - 32;
-
-    FillPanelBottom(hdc, xBase, panels.topBand.top, right, panels.topBand.bottom - 1,
-                    0x969696u, 0x646464u, 1);                    // 0x42C1C7
-    FillPanelBottom(hdc, xBase, panels.bottomBand.top, right, panels.bottomBand.bottom,
-                    0x787878u, 0xC8C8C8u, 1);                    // 0x42C1E8
-
-    // 49x24 playing-icon blit from the offscreen DC handle at this+0x2F4.
-    HDC compat = CreateCompatibleDC(nullptr);                    // 0x42C1EF
-    SelectObject(compat,
-                 reinterpret_cast<HGDIOBJ>(app->state.bmpRes119));  // this+0x2F4 (756)
-    StretchBlt(hdc, MMD_ORIGINAL_PROFILE ? blitX - 58 : panels.TopX(58),
-           panels.TopY(-24), ViewportPanelLayout::Pixels(49 * panels.topScale),
-           ViewportPanelLayout::Pixels(24 * panels.topScale), compat, 0, 0, 49, 24,
-           0xCC0020u);                                           // 0x42C226 (SRCCOPY)
-    DeleteDC(compat);                                            // 0x42C22D
-
+// The original text sequence includes bottom labels and early returns.
+// Keep it together until title-only measurement can be verified.
+static void PaintStatusText(MMDApp* app, HDC hdc, const ViewportPanelLayout& panels,
+                            int xBase, int hideTop, int hideBottom,
+                            StatusTitleGdiSession* checked = nullptr, bool* checkedOk = nullptr) {
     const wchar_t* saveStatus = background_save::StatusText(app);
     const bool savingText = saveStatus && *saveStatus;
+    if (checked && savingText) { *checkedOk = false; return; }
     if (savingText) {
         const int saved = SaveDC(hdc);
-        RECT band{panels.topBand.left, panels.topBand.top, panels.TitleRight(), panels.topBand.top + 25};
+        RECT band{panels.topBand.left, panels.topBand.top, panels.TitleRight(), panels.TitleBottom()};
         IntersectClipRect(hdc, band.left, band.top, band.right, band.bottom);
         const HBRUSH surface = CreateSolidBrush(RGB(255, 241, 241));
         FillRect(hdc, &band, surface); DeleteObject(surface);
@@ -599,6 +567,7 @@ void HandlePaletteChanged2(HDC hdc) {
         SelectObject(hdc, old); DeleteObject(font); RestoreDC(hdc, saved);
     }
     const auto paint = [&](int size, int x, int y, auto draw) {
+        if (checked && !*checkedOk) return 0;
         if (savingText && y < hideBottom) return 0;
         if (MMD_ORIGINAL_PROFILE) return draw(size, x, y);
         const bool bottom = y >= hideBottom;
@@ -607,24 +576,29 @@ void HandlePaletteChanged2(HDC hdc) {
         const int mappedX = bottom ? panels.BottomX(column)
             : xBase + ViewportPanelLayout::Pixels(column * scale);
         const int mappedY = bottom ? panels.BottomY(column, y - hideBottom)
-            : panels.topBand.top + 25 + ViewportPanelLayout::Pixels((y - panels.topBand.top - 25) * scale);
+            : panels.TitleBottom() + ViewportPanelLayout::Pixels((y - hideTop) * scale);
         const int saved = SaveDC(hdc);
         const RECT clip = bottom ? panels.bottomBand : RECT{
-            panels.topBand.left, panels.topBand.top, panels.TitleRight(), panels.topBand.top + 25};
-        IntersectClipRect(hdc, clip.left, clip.top, clip.right, clip.bottom);
+            panels.topBand.left, panels.topBand.top, panels.TitleRight(), panels.TitleBottom()};
+        if (checked && !saved) { *checkedOk = false; return 0; }
+        const int clipped = IntersectClipRect(hdc, clip.left, clip.top, clip.right, clip.bottom);
+        if (checked && clipped == ERROR) { RestoreDC(hdc, saved); *checkedOk = false; return 0; }
         const int width = draw(std::max(1, ViewportPanelLayout::Pixels(size * scale)), mappedX, mappedY);
-        RestoreDC(hdc, saved);
+        const BOOL restored = RestoreDC(hdc, saved);
+        if (checked && !restored) *checkedOk = false;
         return ViewportPanelLayout::Pixels(width / scale);
     };
     const auto drawUi = [&](MMDApp* owner, const char* text, HDC dc, int size, int x, int y,
             unsigned char r, unsigned char g, unsigned char b, int bold) {
         return paint(size, x, y, [&](int h, int px, int py) {
+            if (checked) { int width=0; *checkedOk=DrawStatusUiGlyphChecked(*checked,owner,text,h,px,py,r,g,b,bold,width); return width; }
             return DrawUiGlyph(owner, text, dc, h, px, py, r, g, b, bold);
         });
     };
     const auto drawLegacy = [&](MMDApp* owner, const char* text, HDC dc, int size, int x, int y,
             unsigned char r, unsigned char g, unsigned char b, int bold) {
         return paint(size, x, y, [&](int h, int px, int py) {
+            if (checked) { int width=0; *checkedOk=DrawStatusGlyphChecked(*checked,owner,text,h,px,py,r,g,b,bold,width); return width; }
             return DrawGlyph(owner, text, dc, h, px, py, r, g, b, bold);
         });
     };
@@ -632,6 +606,7 @@ void HandlePaletteChanged2(HDC hdc) {
             unsigned char r, unsigned char g, unsigned char b, int bold,
             const wchar_t* face = L"Microsoft YaHei UI") {
         return paint(size, x, y, [&](int h, int px, int py) {
+            if (checked) { int width=0; *checkedOk=DrawStatusWideGlyphChecked(*checked,text,h,px,py,r,g,b,bold,width,face); return width; }
             return DrawWideUiGlyph(text, dc, h, px, py, r, g, b, bold, face);
         });
     };
@@ -784,6 +759,170 @@ void HandlePaletteChanged2(HDC hdc) {
     // Shared tail of the JP paths: "角度" at xBase+0x171 (369).
     drawLegacy(app, kS52C728, hdc, 14, xBase + 369, hideBottom + 11,
               0, 0, 0, 1);                                       // 0x42C7E3
+}
+
+bool PaintStatusTextChecked(StatusTitleGdiOwner& owner, OffscreenSurfaceHandle handle, MMDApp* app) noexcept {
+    if (!app || app != g_Block) return false;
+    return owner.WithDraw(handle, [&](StatusTitleGdiSession& session) {
+        OffscreenSurfaceView view{};
+        if (!session.Read(view) || !view.ready || !view.dc || !view.pixels) return false;
+        HWND window = app->FloatingWindow();
+        int xBase = 0;
+        if (!window) { window = app->MainWindow(); xBase = app->SidebarWidth() + 9; }
+        RECT bounds{};
+        if (!window || !GetClientRect(window, &bounds) || bounds.left != 0 || bounds.top != 0 ||
+            bounds.right <= 0 || bounds.bottom <= 0 || view.width < bounds.right || view.height < bounds.bottom)
+            return false;
+        const auto panels = FramePanelLayout(app);
+        if (!MMD_ORIGINAL_PROFILE) xBase = panels.overlay.left;
+        bool ok = true;
+        PaintStatusText(app, reinterpret_cast<HDC>(view.dc), panels, xBase,
+            panels.topBand.top + 25, panels.bottomBand.bottom - 32, &session, &ok);
+        return ok && GdiFlush() != 0;
+    });
+}
+
+// This experimental path is not used by the visible presenter. The same DIB
+// contains both the native gradient and checked text; only RGB differences in
+// the existing title clip are reported. It must not publish a plugin slot.
+bool CaptureStatusTitleDifference(OffscreenGdiRuntimeCore<16>& runtime,
+    OffscreenRuntimeHandle handle, MMDApp* app, RECT& changed) noexcept {
+#if MMD_ORIGINAL_PROFILE
+    (void)runtime; (void)handle; (void)app; (void)changed; return false;
+#else
+    if (!app || app != g_Block) return false;
+    const wchar_t* status = background_save::StatusText(app);
+    if (status && *status) return false;
+    RECT candidate{};
+    const bool ok = runtime.WithDraw(handle, [&](StatusTitleGdiSession& session) {
+        OffscreenSurfaceView view{};
+        if (!session.Read(view) || !view.ready || !view.dc || !view.pixels) return false;
+        HWND window = app->FloatingWindow() ? app->FloatingWindow() : app->MainWindow();
+        RECT client{};
+        if (!window || !GetClientRect(window, &client) || client.left || client.top ||
+            client.right <= 0 || client.bottom <= 0 || view.width < client.right || view.height < client.bottom) return false;
+        const auto panels = FramePanelLayout(app);
+        if (!std::isfinite(panels.topScale) || panels.topScale <= 0.f) return false;
+        const int right = panels.overlay.right, left = panels.overlay.left;
+        const int bandTop = panels.topBand.top, bandBottom = panels.topBand.bottom;
+        const int titleRight = panels.TitleRight();
+        if (left < 0 || right > client.right || right <= left || bandTop < 0 ||
+            bandBottom <= bandTop || bandBottom > client.bottom || titleRight <= left || titleRight > right ||
+            panels.TitleBottom() > bandBottom) return false;
+        const RECT title{left, bandTop, titleRight, panels.TitleBottom()};
+        const int iconLeft = panels.TopX(58), iconTop = panels.TopY(-24);
+        const int iconWidth = ViewportPanelLayout::Pixels(49 * panels.topScale);
+        const int iconHeight = ViewportPanelLayout::Pixels(24 * panels.topScale);
+        if (iconWidth <= 0 || iconHeight <= 0 || iconLeft < 0 || iconTop < 0 ||
+            iconLeft > client.right - iconWidth || iconTop > client.bottom - iconHeight) return false;
+        const RECT icon{iconLeft, iconTop, iconLeft + iconWidth, iconTop + iconHeight};
+        RECT intersection{};
+        if (IntersectRect(&intersection, &title, &icon)) return false;
+        HDC dc = reinterpret_cast<HDC>(view.dc);
+        // Coordinates below index DIB pixels directly. Reject altered mapping,
+        // mirroring, or drawing modes instead of silently measuring another area.
+        POINT windowOrigin{}, viewportOrigin{};
+        if (GetMapMode(dc) != MM_TEXT || GetGraphicsMode(dc) != GM_COMPATIBLE ||
+            GetLayout(dc) != 0 || GetROP2(dc) != R2_COPYPEN ||
+            GetTextAlign(dc) != (TA_LEFT | TA_TOP | TA_NOUPDATECP) ||
+            !GetWindowOrgEx(dc, &windowOrigin) || !GetViewportOrgEx(dc, &viewportOrigin) ||
+            windowOrigin.x || windowOrigin.y || viewportOrigin.x || viewportOrigin.y) return false;
+        const int saved = SaveDC(dc);
+        if (!saved) return false;
+        struct Restore { HDC dc; int state; ~Restore() { if (state) RestoreDC(dc,state); } } restore{dc,saved};
+        // A bounding box alone is insufficient: a complex region can contain
+        // holes. Require the effective clip to be exactly the complete title.
+        // Query the effective region after setting it. The setter's successful
+        // return value can differ from GetClipBox on a memory DIB DC.
+        if (IntersectClipRect(dc, title.left, title.top, title.right, title.bottom) == ERROR) return false;
+        RECT effectiveClip{};
+        if (GetClipBox(dc, &effectiveClip) != SIMPLEREGION ||
+            effectiveClip.left != title.left || effectiveClip.top != title.top ||
+            effectiveClip.right != title.right || effectiveClip.bottom != title.bottom) return false;
+        TRIVERTEX vertices[2]{};
+        vertices[0].x=left; vertices[0].y=bandTop;
+        vertices[0].Red=vertices[0].Green=vertices[0].Blue=0x9600;
+        vertices[1].x=right; vertices[1].y=bandBottom-1;
+        vertices[1].Red=vertices[1].Green=vertices[1].Blue=0x6400;
+        GRADIENT_RECT mesh{0,1};
+        if (!GradientFill(dc,vertices,2,&mesh,1,GRADIENT_FILL_RECT_V)) return false;
+        const auto stock=GetStockObject(BLACK_PEN);
+        if (!stock) return false;
+        const auto previous=SelectObject(dc,stock);
+        if (!previous || previous == HGDI_ERROR) return false;
+        const bool border = MoveToEx(dc,left,bandTop,nullptr) && LineTo(dc,right,bandTop) &&
+            LineTo(dc,right,bandBottom-1) && LineTo(dc,left,bandBottom-1) && LineTo(dc,left,bandTop);
+        const auto restoredPen=SelectObject(dc,previous);
+        if (!border || !restoredPen || restoredPen == HGDI_ERROR || !GdiFlush()) return false;
+        const auto width = static_cast<std::size_t>(title.right-title.left);
+        const auto height = static_cast<std::size_t>(title.bottom-title.top);
+        std::vector<std::uint32_t> before(width*height);
+        const auto* pixels=static_cast<const std::uint32_t*>(view.pixels);
+        for (std::size_t y=0;y<height;++y)
+            for (std::size_t x=0;x<width;++x)
+                before[y*width+x]=pixels[(static_cast<std::size_t>(title.top)+y)*view.width+title.left+x]&0x00ffffffu;
+        bool painted=true;
+        PaintStatusText(app,dc,panels,left,bandTop+25,panels.bottomBand.bottom-32,&session,&painted);
+        if (!painted || !GdiFlush()) return false;
+        bool found=false;
+        for (std::size_t y=0;y<height;++y) for (std::size_t x=0;x<width;++x) {
+            const auto value=pixels[(static_cast<std::size_t>(title.top)+y)*view.width+title.left+x]&0x00ffffffu;
+            if (value==before[y*width+x]) continue;
+            const LONG px=static_cast<LONG>(title.left+x), py=static_cast<LONG>(title.top+y);
+            if (!found) { candidate={px,py,px+1,py+1}; found=true; }
+            else { candidate.left=(std::min)(candidate.left,px);candidate.top=(std::min)(candidate.top,py);
+                   candidate.right=(std::max)(candidate.right,px+1);candidate.bottom=(std::max)(candidate.bottom,py+1); }
+        }
+        if (!RestoreDC(dc,saved)) return false;
+        restore.state=0;
+        return true;
+    });
+    if (ok) changed=candidate;
+    return ok;
+#endif
+}
+
+void HandlePaletteChanged2(HDC hdc) {
+    MMDApp* app = g_Block;  // original `this` (ecx)
+
+    // Target window and x base (0x42C160..0x42C1A6).
+    RECT rc;
+    std::int32_t xBase;
+    HWND hwnd = app->FloatingWindow();
+    if (hwnd != nullptr) {
+        GetClientRect(hwnd, &rc);
+        xBase = 0;
+    } else {
+        hwnd = reinterpret_cast<HWND>(app->state.hwnd);  // 0xA06B8
+        GetClientRect(hwnd, &rc);
+        xBase = app->SidebarWidth() + 9;
+    }
+    const auto panels = FramePanelLayout(app);
+    if (!MMD_ORIGINAL_PROFILE) xBase = panels.overlay.left;
+    const LONG right = MMD_ORIGINAL_PROFILE ? rc.right : panels.overlay.right;   // ebp
+    const LONG blitX = rc.right;   // v26 (BitBlt x base)
+
+    // Existing text positions remain logical single-row coordinates. The
+    // shared layout maps each group into its final row below.
+    const std::int32_t hideTop = panels.topBand.top + 25;
+    const std::int32_t hideBottom = panels.bottomBand.bottom - 32;
+
+    FillPanelBottom(hdc, xBase, panels.topBand.top, right, panels.topBand.bottom - 1,
+                    0x969696u, 0x646464u, 1);                    // 0x42C1C7
+    FillPanelBottom(hdc, xBase, panels.bottomBand.top, right, panels.bottomBand.bottom,
+                    0x787878u, 0xC8C8C8u, 1);                    // 0x42C1E8
+
+    // 49x24 playing-icon blit from the offscreen DC handle at this+0x2F4.
+    HDC compat = CreateCompatibleDC(nullptr);                    // 0x42C1EF
+    SelectObject(compat,
+                 reinterpret_cast<HGDIOBJ>(app->state.bmpRes119));  // this+0x2F4 (756)
+    StretchBlt(hdc, MMD_ORIGINAL_PROFILE ? blitX - 58 : panels.TopX(58),
+           panels.TopY(-24), ViewportPanelLayout::Pixels(49 * panels.topScale),
+           ViewportPanelLayout::Pixels(24 * panels.topScale), compat, 0, 0, 49, 24,
+           0xCC0020u);                                           // 0x42C226 (SRCCOPY)
+    DeleteDC(compat);                                            // 0x42C22D
+
+    PaintStatusText(app, hdc, panels, xBase, hideTop, hideBottom);
 }
 
 }  // namespace mikumikustudio

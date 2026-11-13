@@ -239,7 +239,7 @@ void Frames() {
     CHECK(f.registry.WithReadOnlyCallback(nullptr, nullptr) == MMS_E_ARGUMENT && !f.registry.InCallback());
 }
 void ReadLease() {
-    for (int mode = 0; mode != 4; ++mode) {
+    for (int mode = 0; mode != 5; ++mode) {
         Fixture f(MMS_VALUE_TEXT); f.Register();
         f.onRead = [&](MmsValue* value, MmsHandle* lease) -> MmsResult {
             CHECK(f.registry.InCallback()); CHECK(f.ui.updateProperty(f.ui.context, f.handle, &f.desc) == MMS_E_BUSY);
@@ -255,14 +255,15 @@ void ReadLease() {
         };
         MmsValue output = Value(MMS_VALUE_INT, 812); MmsHandle lease = 0x45678;
         const auto result = f.ui.readProperty(f.ui.context, f.desc.info.id, {}, &output, &lease);
-        CHECK(result == (mode == 3 ? MMS_OK : MMS_E_FAILED));
+        CHECK(result == (mode == 4 ? MMS_OK : MMS_E_FAILED));
         CHECK(f.reads == 1 && f.releases == 1 && !f.registry.InCallback());
-        if (mode != 3) CHECK(output.type == MMS_VALUE_INT && output.value.signedValue == 812 && lease == 0x45678);
+        if (mode != 4) CHECK(output.type == MMS_VALUE_INT && output.value.signedValue == 812 && lease == 0x45678);
         else {
             CHECK(output.type == MMS_VALUE_TEXT && String(output.value.text) == "original" && lease != 0x45678);
             f.ui.releaseValue(f.ui.context, lease); CHECK(f.releases == 1);
         }
-        CHECK(!f.registry.HasLeases(f.owner));
+        CHECK(f.owner.unsafeToUnload == (mode == 3));
+        CHECK(f.registry.HasLeases(f.owner) == (mode == 3));
     }
 }
 }

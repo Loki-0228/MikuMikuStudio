@@ -6,6 +6,10 @@
 #include "native_morph_keys.hpp"
 #include "native_display_keys.hpp"
 #include "native_global_key_delete.hpp"
+#include "native_signed_key_delete.hpp"
+#include "scene_resource_budget.hpp"
+#include "scene_object_history.hpp"
+#include "../animation/negative_history.hpp"
 #include "native_global_commands.hpp"
 #include "native_history_commands.hpp"
 #include "native_pose_scope.hpp"
@@ -23,6 +27,7 @@
 #include <cstdlib>
 
 namespace mikumikustudio::plugins {
+#include "native_signed_key_delete.inc"
 namespace {
 bool ModelReady(const MMDApp& app) noexcept {
     return !app.state.optflag[0] && app.SelectedModelSlot() < kModelSlotCount &&
@@ -148,27 +153,25 @@ bool TryDeleteBoundKeys(MMDApp* app, bool selectedAtCurrentFrame) noexcept {
     auto* history = BoundNativePoseHistory(app);
     if (!history) return false;
     const bool global=app->CameraMode()!=0;
-    if (!(global?CameraInterpolationReady(*app):ModelReady(*app)) || history->Enter() != MMS_OK) return true;
-    history->Leave();
     Boundary([&]() -> MmsResult {
-        if(global){
-            std::shared_ptr<HistoryChange> change;
-            if(auto result=PlanGlobalKeyDeletion(*app,change,selectedAtCurrentFrame))return result;
-            if(!change)return MMS_OK;
-            std::unique_ptr<SharedHistory::NativeTransaction> transaction;
-            if(auto result=history->PrepareNative("Delete global keys",std::move(change),transaction,SharedHistory::NativeIntent::ExplicitCommit))return result;
-            if(auto result=history->CommitNative(std::move(transaction)))return result;
-            PublishBoundPoseEdit(*app,*history,true);
+        const bool automatic = !global && IsDlgButtonChecked(app->MainWindow(), panel::kPhysicsFrameCheckbox) == BST_CHECKED;
+        std::shared_ptr<HistoryChange> change;
+        if (auto result = PlanSignedKeyDeletion(*app, *history, automatic, selectedAtCurrentFrame, change)) return result;
+        if (!change) return MMS_OK;
+        std::unique_ptr<SharedHistory::NativeTransaction> transaction;
+        if (auto result = history->PrepareNative("Delete selected keys", std::move(change), transaction,
+            SharedHistory::NativeIntent::ExplicitCommit)) return result;
+        if (auto result = history->CommitNative(std::move(transaction))) return result;
+        PublishBoundHistoryEffects(*app, *history, history->LastPublicationEffects(), history->LastPublicationRequiresPhysicsReset());
+        if(global) {
             RefreshBoundGlobalReadout(*app);
             curve_editor::NotifyOwnedChanged(app->Hwnd());
-            if(app->MainWindow())SetFocus(app->MainWindow());
-            return MMS_OK;
+        } else {
+            curve_host::NotifyModelRegistered(app, false);
+            curve_host::NotifyModelRegistered(app, true);
         }
-        const bool automatic = IsDlgButtonChecked(app->MainWindow(), panel::kPhysicsFrameCheckbox) == BST_CHECKED;
-        std::shared_ptr<HistoryChange> change;
-        if (auto result = PlanModelKeyDeletion(*app, app->SelectedModelSlot(), automatic,
-                                              change, selectedAtCurrentFrame)) return result;
-        return CommitKeyChange(*app, *history, std::move(change), "Delete model keys", true);
+        if(app->MainWindow())SetFocus(app->MainWindow());
+        return MMS_OK;
     });
     return true;
 }

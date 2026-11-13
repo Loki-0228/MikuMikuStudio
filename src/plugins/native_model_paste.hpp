@@ -52,6 +52,10 @@ struct ModelPasteSource {
 enum ModelPasteFamilyMask : unsigned {ModelPasteBones=1,ModelPasteMorphs=2,ModelPasteDisplays=4,ModelPasteAll=7};
 // Internal snapshot helpers; family wrappers capture only their own source so
 // an unused malformed clipboard family cannot change their legacy admission.
+// Captures owned payloads without consulting the playhead or resolving targets.
+// Relative frames retain the clipboard's shared origin; frameOffset remains 0.
+// Failure clears out. The caller must separately validate its destination offset.
+MmsResult CaptureModelPastePayload(MMDApp&,ModelPasteSource&,unsigned families=ModelPasteAll) noexcept;
 MmsResult CaptureModelPasteSource(MMDApp&,ModelPasteSource&,unsigned families=ModelPasteAll) noexcept;
 MmsResult ValidateModelPasteSource(const ModelPasteSource&,unsigned families=ModelPasteAll) noexcept;
 // Family output for one model clipboard aggregate. The participant owns only

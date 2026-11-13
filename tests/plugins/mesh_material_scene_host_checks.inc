@@ -41,8 +41,82 @@ MmsEvaluationApiV1_6 PluginApi(bool required) {
     if(required || module) Check(getter&&getter(&api)==MMS_OK&&api.h.major==1&&api.h.minor==6,"real plugin negotiates material 1.6 through manager");
     return api;
 }
+struct ReferenceEvidence {
+    MmsEvaluationApiV1_7 api{};
+    MmsHandle source=0;
+    std::array<MmsEvaluationMaterialReferencesV1,2> refs{}, sdkRefs{};
+    MmsEvaluationToonTableV1 table{}, sdkTable{};
+    bool active=false;
+};
+template<std::size_t N> bool SamePath(const uint16_t (&captured)[N],const wchar_t (&native)[N]) {
+    for(std::size_t i=0;i<N;++i) {
+        if(captured[i]!=static_cast<uint16_t>(native[i]))return false;
+        if(!native[i])return true;
+    }
+    return false;
+}
+ReferenceEvidence CaptureReferences(MMDApp* app,unsigned char* raw,const std::vector<MmsId>& ids) {
+    ReferenceEvidence evidence;
+    using Getter=MmsResult(MMS_CALL*)(MmsEvaluationApiV1_7*);
+    using SdkRead=MmsResult(MMS_CALL*)(MmsEvaluationMaterialReferencesV1*,MmsEvaluationToonTableV1*);
+    const auto module=GetModuleHandleW(L"mms_evaluation_host_probe.dll");
+    const auto getter=module?reinterpret_cast<Getter>(GetProcAddress(module,"MmsEvaluationHostGetApi17")):nullptr;
+    const auto sdkRead=module?reinterpret_cast<SdkRead>(GetProcAddress(module,"MmsEvaluationHostSdkReferences")):nullptr;
+    if(!module)return evidence;
+    Check(getter&&getter(&evidence.api)==MMS_OK&&evidence.api.h.major==1&&evidence.api.h.minor==7,
+          "real plugin negotiates references 1.7 through manager");
+    auto& api=evidence.api;const auto& model=*mdl::Mdl(raw);
+    const auto* materials=static_cast<const mdl::ModelMaterialRecord*>(model.materials);
+    MmsEvaluationReferenceCapsV1 caps{};
+    Check(api.getReferenceCapabilities(api.context,&caps)==MMS_OK&&
+        (caps.flags&MMS_EVALUATION_REFERENCE_CAP_RUNTIME_FIELDS),"production reference capability available");
+    MmsEvaluationSceneQueryV1 query{};query.h=Header<MmsEvaluationSceneQueryV1>();
+    MmsHandle old=0;Check(api.createMaterialSceneSource(api.context,&query,&old)==MMS_OK,"capture prior 1.6 source");
+    MmsEvaluationMaterialReferencesV1 untouched{};untouched.index=73;
+    Check(api.readMaterialReferences(api.context,old,0,0,&untouched)==MMS_E_UNSUPPORTED&&untouched.index==73,
+          "1.6 source rejects 1.7 references without modifying output");
+    Check(api.release(api.context,old)==MMS_OK,"release prior material source");
+    const mesh_definition_probe::Proof proof(app,raw);
+    Check(api.createReferenceSceneSource(api.context,&query,&evidence.source)==MMS_OK&&evidence.source,
+          "capture public reference scene");
+    for(unsigned i=0;i<2;++i) {
+        auto& ref=evidence.refs[i];const auto& material=materials[i];
+        Check(api.readMaterialReferences(api.context,evidence.source,0,i,&ref)==MMS_OK&&
+            SameId(ref.material,ids[i])&&ref.index==i&&
+            ref.flags==(model.physicsMode==2?MMS_EVALUATION_MATERIAL_FORMAT_PMX:MMS_EVALUATION_MATERIAL_FORMAT_PMD)&&
+            ref.toonReference==material.toonReference&&ref.sphereMode==material.sphereMode&&ref.materialFlags==material.flags&&
+            SamePath(ref.texturePath,material.texturePath)&&SamePath(ref.spherePath,material.spherePath)&&
+            SamePath(ref.toonPath,material.toonPath),"reference identity and paths match live loaded material");
+    }
+    Check(evidence.refs[0].texturePath[0]!=0,"fixture loaded a non-empty material texture path");
+    Check(api.readToonTable(api.context,evidence.source,0,&evidence.table)==MMS_OK&&
+          SamePath(evidence.table.modelDirectory,model.modelDirectory)&&
+          std::memcmp(evidence.table.fileNames,model.pmdToonFileNames,sizeof(evidence.table.fileNames))==0,
+          "reference toon table matches live loaded model");
+    Check(sdkRead&&sdkRead(evidence.sdkRefs.data(),&evidence.sdkTable)==MMS_OK,
+          "real plugin C++ SDK copies references before source release");
+    Check(std::memcmp(evidence.refs.data(),evidence.sdkRefs.data(),sizeof(evidence.refs))==0&&
+          std::memcmp(&evidence.table,&evidence.sdkTable,sizeof(evidence.table))==0,
+          "real C++ SDK reference copies match C interface");
+    proof.Verify();evidence.active=true;return evidence;
+}
+void FinishReferences(ReferenceEvidence& evidence) {
+    if(!evidence.active)return;
+    std::array<MmsEvaluationMaterialReferencesV1,2> after{};MmsEvaluationToonTableV1 table{};
+    for(unsigned i=0;i<2;++i)
+        Check(evidence.api.readMaterialReferences(evidence.api.context,evidence.source,0,i,&after[i])==MMS_OK&&
+              std::memcmp(&after[i],&evidence.refs[i],sizeof(after[i]))==0,
+              "reference source survives model deletion");
+    Check(evidence.api.readToonTable(evidence.api.context,evidence.source,0,&table)==MMS_OK&&
+          std::memcmp(&table,&evidence.table,sizeof(table))==0,"toon table survives model deletion");
+    Check(evidence.api.release(evidence.api.context,evidence.source)==MMS_OK,"release reference source");
+    Check(std::memcmp(evidence.refs.data(),evidence.sdkRefs.data(),sizeof(evidence.refs))==0&&
+          std::memcmp(&evidence.table,&evidence.sdkTable,sizeof(evidence.table))==0,
+          "copied reference results survive source and model release");
+    std::puts("Frozen material references: real plugin, IDs, paths, toon and independent copies passed");
+}
 std::vector<MmsId> BindMaterialIds(MMDApp* app,unsigned expected) {
-    auto store=CreateSceneStore(app);SceneClient client;auto api=store->Api(client);
+    auto store=CreateSceneStore(app);SceneClient client;auto api=([&]{ MmsSceneApiV1 value{}; if (store->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     MmsSceneQueryV1 query{};query.h=Header<MmsSceneQueryV1>();query.stage=MMS_STAGE_BIND;
     query.flags=MMS_SCENE_CURRENT_TIME;query.channels=MMS_CHANNEL_MATERIALS;
     MmsSnapshotV1 snapshot{};MmsSpan objects{},materials{};
@@ -86,7 +160,7 @@ void CheckSdk(const std::vector<MmsId>& ids,const std::array<MeshSceneMaterial,2
     for(unsigned i=0;i<2;++i)Check(actualIds[i].index==i&&SameId(actualIds[i].material,ids[i])&&
         PublicMatches(values[i],expected[i],ids[i],i),"real C++ material SDK preserves BIND identity and native values");
 }
-void Pmd(MMDApp* app,unsigned char* raw,const MmsEvaluationApiV1_6& api) {
+void Pmd(MMDApp* app,unsigned char* raw,const MmsEvaluationApiV1_6& api,ReferenceEvidence& references) {
     auto& model=*mdl::Mdl(raw);Check(model.physicsMode!=2&&model.materialCount==2,"actual PMD fixture has two static materials");
     const auto ids=BindMaterialIds(app,2);auto context=BoneTransformContext::Create();Check(bool(context),"PMD CPU context available");
     BoneSceneModelInput input{0,{345,678,1},raw};EvaluationTime time;Check(EvaluationTime::FromFrame(0,time),"PMD sample time valid");
@@ -105,7 +179,7 @@ void Pmd(MMDApp* app,unsigned char* raw,const MmsEvaluationApiV1_6& api) {
             expected[i].sphereAdd[c]==0&&expected[i].sphereMultiply[c]==1&&expected[i].toonAdd[c]==0&&expected[i].toonMultiply[c]==1,"PMD tint has native neutral defaults");}
     auto source=CaptureMaterial(api,ids);auto publicFrame=EvaluateMaterial(api,source);CheckPublic(api,publicFrame,ids,expected);CheckSdk(ids,expected);proof.Verify();
     Check(api.release(api.context,source)==MMS_OK,"release PMD material source");ResetAppState(app);internal.reset();context.reset();
-    CheckPublic(api,publicFrame,ids,expected);Check(api.release(api.context,publicFrame)==MMS_OK,"PMD frame survives deletion and releases cleanly");
+    CheckPublic(api,publicFrame,ids,expected);Check(api.release(api.context,publicFrame)==MMS_OK,"PMD frame survives deletion and releases cleanly");FinishReferences(references);
     std::puts("Frozen mesh material scene: public PMD static materials and lifetime passed");
 }
 }
@@ -115,7 +189,9 @@ void Run(MMDApp* app) {
     auto* raw=app->ModelSlot(0);Check(raw&&!app->ModelSlot(1),"load actual material scene model");
     auto& model=*mdl::Mdl(raw);
     const auto api=PluginApi(false);
-    if(model.physicsMode!=2){Check(api.context,"PMD public probe requires a loaded 1.6 plugin");Pmd(app,raw,api);return;}
+    const auto referenceIds=api.context?BindMaterialIds(app,2):std::vector<MmsId>{};
+    auto references=CaptureReferences(app,raw,referenceIds);
+    if(model.physicsMode!=2){Check(api.context,"PMD public probe requires a loaded 1.6 plugin");Pmd(app,raw,api,references);return;}
     Check(model.physicsMode==2&&model.materialCount==2&&model.morphCount==3,"fixture has two PMX materials and group/add/multiply morphs");
     Check(model.morphs[0].type==0&&model.morphs[1].type==8&&model.morphs[2].type==8,"real file loads group and two material morphs");
     Check(mdl::MorphKeyPoolEnsure(model,model.morphCount),"reserve registered material weights");
@@ -173,6 +249,7 @@ void Run(MMDApp* app) {
               actual.textureAdd==expected[i].textureAdd&&actual.toonMultiply==expected[i].toonMultiply,"detached material retains original values");}
     if(api.context){CheckPublic(api,publicFrame,ids,expected);CheckPublic(api,noGroupFrame,ids,withoutGroup);
         Check(api.release(api.context,publicFrame)==MMS_OK&&api.release(api.context,noGroupFrame)==MMS_OK,"public material frames survive deletion and release cleanly");}
+    FinishReferences(references);
     std::puts("Frozen mesh material scene: native material morph parity and independent lifetime passed");
 }
 }

@@ -64,7 +64,27 @@ struct Layout {
     unsigned ownSlot=0;
     std::array<unsigned char*,kModelSlotCount> models{};
     std::vector<Peer> peers;
+    static std::size_t RangeCount(const mdl::ModelRecord& model) {
+        std::size_t count=0;
+        if(!VisitStorage(model,[&](const Range&){if(count==SIZE_MAX)return false;++count;return true;}))
+            throw std::invalid_argument("model key storage overflow");
+        return count;
+    }
+    static void Charge(const MMDApp& app,unsigned slot,model_delete_budget::Bytes& bytes) {
+        const auto count=RangeCount(*mdl::Mdl(app.ModelSlot(slot)));
+        bytes.Array<Range>(count); // Retained own ranges.
+        bytes.Array<Range>(count); // Sorting scratch, reused by peer validation.
+        for(unsigned other=0;other<kModelSlotCount;++other)if(other!=slot&&app.ModelSlot(other)) {
+            const auto& peer=*mdl::Mdl(app.ModelSlot(other));
+            if((peer.boneKeys&&!mdl::BoneKeyPoolIdentity(peer.boneKeys))||
+                (peer.morphKeys&&!mdl::MorphKeyPoolIdentity(peer.morphKeys))||
+                (peer.displayKeys&&!mdl::KeyPoolIdentity(peer.displayKeys)))
+                throw std::invalid_argument("unmanaged peer model keys");
+            bytes.Array<Peer>(1);bytes.Array<Range>(RangeCount(peer));
+        }
+    }
     explicit Layout(const mdl::ModelRecord& model) {
+        ranges.reserve(RangeCount(model));
         if (!VisitStorage(model, [&](const Range& range) { ranges.push_back(range); return true; }))
             throw std::invalid_argument("model key storage overflow");
         auto sorted = ranges;
@@ -76,6 +96,9 @@ struct Layout {
     }
     void ValidatePeers(const MMDApp& app,unsigned slotOfOwner) {
         peerApp=&app;ownSlot=slotOfOwner;peers.clear();models.fill(nullptr);
+        std::size_t peerCount=0;
+        for(unsigned slot=0;slot<kModelSlotCount;++slot)if(slot!=ownSlot&&app.ModelSlot(slot))++peerCount;
+        peers.reserve(peerCount);
         auto sorted=ranges;
         sorted.erase(std::remove_if(sorted.begin(),sorted.end(),[](const Range& r){return r.begin==r.end;}),sorted.end());
         std::sort(sorted.begin(),sorted.end(),[](const Range& a,const Range& b){return a.begin<b.begin;});
@@ -95,6 +118,7 @@ struct Layout {
                 (peer.morphKeys&&!mdl::MorphKeyPoolIdentity(peer.morphKeys))||
                 (peer.displayKeys&&!mdl::KeyPoolIdentity(peer.displayKeys)))throw std::invalid_argument("unmanaged peer model keys");
             Peer snapshot{app.ModelSlot(slot),{}};
+            snapshot.ranges.reserve(RangeCount(peer));
             if(!VisitStorage(peer,[&](const Range& range){snapshot.ranges.push_back(range);return separate(range);}))
                 throw std::invalid_argument("aliased peer model key storage");
             peers.push_back(std::move(snapshot));
@@ -117,22 +141,64 @@ struct Layout {
         }) && index == ranges.size() && PeersCurrent();
     }
 };
-struct ModelKeyChange final : HistoryChange {
+MmsResult PrepareMetadataBudgeted(const std::shared_ptr<HistoryChange>&,bool,std::uint64_t&,
+    std::unique_ptr<PreparedHistoryChange>&);
+void VisitMetadataModels(const std::shared_ptr<HistoryChange>&,void*,ModelDeletionOwnerVisitor);
+struct ModelKeyChange final : ModelKeyDeletion {
     MMDApp& app;
     unsigned slot;
     unsigned char* model;
     // Bone publication must precede display: its prepared pose uses target
     // windows but its final guard still checks the live source selectors.
     std::array<std::shared_ptr<HistoryChange>, 4> parts;
+    bool signedDeletion = false;
+    void VisitRetainedModels(void* context,ModelDeletionOwnerVisitor visit) const override {
+        // Deletion and range scaling both install these typed families; model
+        // paste, with its separate morph implementation, uses ModelPasteChange.
+        if(parts[0])static_cast<const BoneKeyDeletion*>(parts[0].get())->VisitRetainedModels(context,visit);
+        if(parts[1])static_cast<const MorphKeyDeletion*>(parts[1].get())->VisitRetainedModels(context,visit);
+        if(parts[2])static_cast<const DisplayKeyDeletion*>(parts[2].get())->VisitRetainedModels(context,visit);
+        if(parts[3])VisitMetadataModels(parts[3],context,visit);
+    }
     ModelKeyChange(MMDApp& a, unsigned s) : app(a), slot(s), model(a.ModelSlot(s)) {}
-    struct Candidate final : PreparedHistoryChange {
+    struct Candidate final : PreparedModelKeyDeletion {
         MMDApp& app; unsigned slot; unsigned char* model;
         Layout layout;
         std::array<std::unique_ptr<PreparedHistoryChange>, 4> parts;
+        PreparedBoneKeyDeletion* boneTarget = nullptr;
+        PreparedMorphKeyDeletion* morphTarget = nullptr;
+        PreparedDisplayKeyDeletion* displayTarget = nullptr;
+        std::unique_ptr<PreparedDisplayKeyDeletion> unchangedDisplay;
+        bool guardFrame = false;
+        int frame = 0;
         bool published = false;
+        void VisitRetainedModels(void* context,ModelDeletionOwnerVisitor visit) const override {
+            // Ordinary Prepare also owns typed children, but does not populate
+            // the signed-only zero-target aliases.
+            if(parts[0])static_cast<const PreparedBoneKeyDeletion*>(parts[0].get())->VisitRetainedModels(context,visit);
+            if(parts[1])static_cast<const PreparedMorphKeyDeletion*>(parts[1].get())->VisitRetainedModels(context,visit);
+            if(parts[2])static_cast<const PreparedDisplayKeyDeletion*>(parts[2].get())->VisitRetainedModels(context,visit);
+            if(unchangedDisplay)unchangedDisplay->VisitRetainedModels(context,visit);
+            if(parts[3])VisitMetadataModels(metadataSource,context,visit);
+        }
+        std::shared_ptr<HistoryChange> metadataSource;
+        MMDApp* OwnerApp() const noexcept override { return &app; }
+        unsigned char* ModelObject() const noexcept override { return model; }
+        const std::vector<BoneDeletionTarget>& BoneZeroTargets() const noexcept override {
+            static const std::vector<BoneDeletionTarget> empty;
+            return boneTarget ? boneTarget->ZeroTargets() : empty;
+        }
+        const std::vector<MorphDeletionTarget>& MorphZeroTargets() const noexcept override {
+            static const std::vector<MorphDeletionTarget> empty;
+            return morphTarget ? morphTarget->ZeroTargets() : empty;
+        }
+        const DisplayDeletionTarget* DisplayZeroTarget() const noexcept override {
+            return displayTarget ? &displayTarget->ZeroTarget() : nullptr;
+        }
         Candidate(MMDApp& a, unsigned s) : app(a), slot(s), model(a.ModelSlot(s)), layout(*mdl::Mdl(model)) {layout.ValidatePeers(app,slot);}
         bool IsCurrent() const noexcept override {
-            if (published || app.ModelSlot(slot) != model) return false;
+            if (published || app.ModelSlot(slot) != model || (guardFrame && app.CurrentFrame() != frame)) return false;
+            if(unchangedDisplay&&!unchangedDisplay->IsCurrent())return false;
             for (const auto& part : parts) if (part && !part->IsCurrent()) return false;
             return layout.IsCurrent(*mdl::Mdl(model));
         }
@@ -155,10 +221,76 @@ struct ModelKeyChange final : HistoryChange {
             (live.displayKeys && !mdl::KeyPoolIdentity(live.displayKeys))) return MMS_E_STALE;
         return Boundary([&]() -> MmsResult {
             auto candidate = std::make_unique<Candidate>(app, slot);
+            candidate->metadataSource=parts[3];
             for (std::size_t index = 0; index < parts.size(); ++index) if (parts[index])
                 if (auto result = parts[index]->Prepare(forward, candidate->parts[index])) return result;
             if (!candidate->IsCurrent()) return MMS_E_STALE;
             out = std::move(candidate); return MMS_OK;
+        });
+    }
+    MmsResult PrepareSigned(bool forward,std::unique_ptr<PreparedModelKeyDeletion>& out) noexcept override {
+        return PrepareSignedImpl(forward,nullptr,out);
+    }
+    MmsResult PrepareSignedBudgeted(bool forward,std::uint64_t& remainingBytes,
+        std::unique_ptr<PreparedModelKeyDeletion>& out) noexcept override {
+        return PrepareSignedImpl(forward,&remainingBytes,out);
+    }
+    MmsResult PrepareSignedImpl(bool forward,std::uint64_t* remainingBytes,
+        std::unique_ptr<PreparedModelKeyDeletion>& out) noexcept {
+        out.reset();if(!signedDeletion)return MMS_E_NOT_READY;
+        if(app.ModelSlot(slot)!=model)return MMS_E_STALE;
+        if(app.CurrentFrame()<frame_limits::minimum||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+        const auto& live=*mdl::Mdl(model);
+        if((live.boneKeys&&!mdl::BoneKeyPoolIdentity(live.boneKeys))||
+            (live.morphKeys&&!mdl::MorphKeyPoolIdentity(live.morphKeys))||
+            (live.displayKeys&&!mdl::KeyPoolIdentity(live.displayKeys)))return MMS_E_STALE;
+        return Boundary([&]()->MmsResult {
+            auto remaining=remainingBytes?*remainingBytes:UINT64_MAX;
+            if(remainingBytes) {
+                model_delete_budget::Bytes bytes;bytes.Add(sizeof(Candidate));
+                Layout::Charge(app,slot,bytes);bytes.Take(remaining);
+            }
+            auto candidate=std::make_unique<Candidate>(app,slot);
+            candidate->metadataSource=parts[3];
+            candidate->guardFrame=true;candidate->frame=app.CurrentFrame();
+            // Preparation follows data dependencies; publication retains the
+            // original bone/morph/display/metadata order and one final guard.
+            if(parts[2]) {
+                std::unique_ptr<PreparedDisplayKeyDeletion> prepared;
+                const auto display=std::static_pointer_cast<DisplayKeyDeletion>(parts[2]);
+                if(auto result=remainingBytes?display->PrepareSignedBudgeted(forward,remaining,prepared):
+                    display->PrepareSigned(forward,prepared))return result;
+                if(!prepared)return MMS_E_NOT_READY;
+                candidate->displayTarget=prepared.get();candidate->parts[2]=std::move(prepared);
+            }
+            if(parts[0]) {
+                std::unique_ptr<PreparedBoneKeyDeletion> prepared;
+                const auto bone=std::static_pointer_cast<BoneKeyDeletion>(parts[0]);
+                if(!candidate->displayTarget&&live.boneOrderCount) {
+                    if(auto result=remainingBytes?PrepareDisplayKeyZeroReadBudgeted(app,slot,remaining,candidate->unchangedDisplay):
+                        PrepareDisplayKeyZeroRead(app,slot,candidate->unchangedDisplay))return result;
+                    if(!candidate->unchangedDisplay)return MMS_E_NOT_READY;
+                }
+                const auto* displayZero=candidate->displayTarget?candidate->displayTarget:candidate->unchangedDisplay.get();
+                const auto* selectors=displayZero?&displayZero->ZeroTarget().selectors:nullptr;
+                if(auto result=remainingBytes?bone->PrepareSignedBudgeted(forward,selectors,remaining,prepared):
+                    bone->PrepareSigned(forward,selectors,prepared))return result;
+                if(!prepared)return MMS_E_NOT_READY;
+                candidate->boneTarget=prepared.get();candidate->parts[0]=std::move(prepared);
+            }
+            if(parts[1]) {
+                std::unique_ptr<PreparedMorphKeyDeletion> prepared;
+                const auto morph=std::static_pointer_cast<MorphKeyDeletion>(parts[1]);
+                if(auto result=remainingBytes?morph->PrepareSignedBudgeted(forward,remaining,prepared):
+                    morph->PrepareSigned(forward,prepared))return result;
+                if(!prepared)return MMS_E_NOT_READY;
+                candidate->morphTarget=prepared.get();candidate->parts[1]=std::move(prepared);
+            }
+            if(parts[3])if(auto result=remainingBytes?PrepareMetadataBudgeted(parts[3],forward,remaining,candidate->parts[3]):
+                parts[3]->Prepare(forward,candidate->parts[3]))return result;
+            if(!candidate->IsCurrent())return MMS_E_STALE;
+            if(remainingBytes)*remainingBytes=remaining;
+            out=std::move(candidate);return MMS_OK;
         });
     }
     std::uint64_t RetainedBytes() const noexcept override {
@@ -271,6 +403,21 @@ struct RangeMetadata final : HistoryChange, std::enable_shared_from_this<RangeMe
     }
 };
 
+MmsResult PrepareMetadataBudgeted(const std::shared_ptr<HistoryChange>& part,bool forward,std::uint64_t& remaining,
+    std::unique_ptr<PreparedHistoryChange>& out) {
+    const auto source=std::static_pointer_cast<RangeMetadata>(part);
+    if(!source->Structure())return MMS_E_STALE;
+    const auto& model=*mdl::Mdl(source->model);
+    model_delete_budget::Bytes bytes;bytes.Add(sizeof(RangeMetadata::Candidate));
+    bytes.Add(mdl::BoneKeyCapacity(model.boneKeys));bytes.Add(mdl::MorphKeyCapacity(model.morphKeys));
+    bytes.Add(mdl::KeyPoolCapacity(model.displayKeys));
+    auto balance=remaining;bytes.Take(balance);
+    if(auto result=part->Prepare(forward,out))return result;
+    remaining=balance;return MMS_OK;
+}
+void VisitMetadataModels(const std::shared_ptr<HistoryChange>& part,void* context,ModelDeletionOwnerVisitor visit) {
+    visit(context,static_cast<const RangeMetadata*>(part.get())->owner);
+}
 struct ModelPasteChange final : HistoryChange, std::enable_shared_from_this<ModelPasteChange> {
     MMDApp& app; unsigned slot; unsigned char* model; int playhead;
     std::uint64_t generation=1;bool published=false;
@@ -354,11 +501,15 @@ bool ConstantCurveRange(const animation_curve::Track& track, unsigned first, uns
     return true;
 }
 }
-MmsResult PlanModelKeyDeletion(MMDApp& app, unsigned slot, bool automatic,
-    std::shared_ptr<HistoryChange>& out, bool fallback, const ModelKeySelection* privateSelection) noexcept {
+static MmsResult PlanModelKeyDeletionImpl(MMDApp& app, unsigned slot, bool automatic,
+    std::shared_ptr<ModelKeyDeletion>& out, bool fallback, const ModelKeySelection* privateSelection,bool signedPlan) noexcept {
     out.reset();
     if (slot >= kModelSlotCount || !app.ModelSlot(slot) || app.PlaybackActive() || app.FrameStepPlayback() ||
         app.state.recordPlaybackStartPending || app.SceneMutationInProgress()) return MMS_E_NOT_READY;
+    if(signedPlan) {
+        if(app.CurrentFrame()<frame_limits::minimum||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+        if(app.CurrentFrame()<0)fallback=false;
+    }
     return Boundary([&]() -> MmsResult {
         const auto& model = *mdl::Mdl(app.ModelSlot(slot));
         if ((model.boneKeys && !mdl::BoneKeyPoolIdentity(model.boneKeys)) ||
@@ -373,18 +524,37 @@ MmsResult PlanModelKeyDeletion(MMDApp& app, unsigned slot, bool automatic,
         const bool displays = privateSelection ? !privateSelection->displays.empty() : Marked(model.displayKeys, mdl::KeyPoolCapacity(model.displayKeys));
         if (privateSelection) fallback = false;
         auto change = std::make_shared<ModelKeyChange>(app, slot);
+        change->signedDeletion=signedPlan;
         std::shared_ptr<DisplayKeyDeletion> display;
         if (displays) {
-            if (auto result = PlanDisplayKeyDeletion(app, slot, change->parts[2], true, false,
-                privateSelection ? &privateSelection->displays : nullptr)) return result;
-            display = std::static_pointer_cast<DisplayKeyDeletion>(change->parts[2]);
+            if(signedPlan) {
+                if (auto result = PlanSignedDisplayKeyDeletion(app, slot, display, true, false,
+                    privateSelection ? &privateSelection->displays : nullptr)) return result;
+                change->parts[2]=display;
+            }else {
+                if(auto result=PlanDisplayKeyDeletion(app,slot,change->parts[2],true,false,
+                    privateSelection?&privateSelection->displays:nullptr))return result;
+                display=std::static_pointer_cast<DisplayKeyDeletion>(change->parts[2]);
+            }
         }
         if (bones || (model.boneCount && display) || (fallback && !morphs && !displays && model.boneCount)) {
-            if (auto result = PlanBoneKeyDeletion(app, slot, automatic, change->parts[0], fallback, true, display,
-                privateSelection ? &privateSelection->bones : nullptr)) return result;
+            if(signedPlan) {
+                std::shared_ptr<BoneKeyDeletion> bone;
+                if (auto result = PlanSignedBoneKeyDeletion(app, slot, automatic, bone, fallback, true, display,
+                    privateSelection ? &privateSelection->bones : nullptr)) return result;
+                change->parts[0]=std::move(bone);
+            }else if(auto result=PlanBoneKeyDeletion(app,slot,automatic,change->parts[0],fallback,true,display,
+                privateSelection?&privateSelection->bones:nullptr))return result;
         }
-        if (morphs) if (auto result = PlanMorphKeyDeletion(app, slot, change->parts[1], true,
-            privateSelection ? &privateSelection->morphs : nullptr)) return result;
+        if (morphs) {
+            if(signedPlan) {
+                std::shared_ptr<MorphKeyDeletion> morph;
+                if (auto result = PlanSignedMorphKeyDeletion(app, slot, morph, true,
+                    privateSelection ? &privateSelection->morphs : nullptr)) return result;
+                change->parts[1]=std::move(morph);
+            }else if(auto result=PlanMorphKeyDeletion(app,slot,change->parts[1],true,
+                privateSelection?&privateSelection->morphs:nullptr))return result;
+        }
         if (privateSelection && (bones || morphs || displays)) {
             auto metadata = std::make_shared<RangeMetadata>(app, slot);
             metadata->requireInitialMarks = true;
@@ -393,6 +563,16 @@ MmsResult PlanModelKeyDeletion(MMDApp& app, unsigned slot, bool automatic,
         for (const auto& part : change->parts) if (part) { out = std::move(change); break; }
         return MMS_OK;
     });
+}
+MmsResult PlanModelKeyDeletion(MMDApp& app,unsigned slot,bool automatic,
+    std::shared_ptr<HistoryChange>& out,bool fallback,const ModelKeySelection* selection)noexcept {
+    out.reset();std::shared_ptr<ModelKeyDeletion> change;
+    const auto result=PlanModelKeyDeletionImpl(app,slot,automatic,change,fallback,selection,false);
+    if(!result)out=std::move(change);return result;
+}
+MmsResult PlanSignedModelKeyDeletion(MMDApp& app,unsigned slot,bool automatic,
+    std::shared_ptr<ModelKeyDeletion>& out,bool fallback,const ModelKeySelection* selection)noexcept {
+    return PlanModelKeyDeletionImpl(app,slot,automatic,out,fallback,selection,true);
 }
 MmsResult PlanUnusedModelKeyDeletion(MMDApp& app, unsigned slot, bool automatic,
     std::shared_ptr<HistoryChange>& out, std::uint32_t& deleted) noexcept {
@@ -483,11 +663,11 @@ MmsResult ValidateModelPasteSource(const ModelPasteSource& source,unsigned famil
     }
     return MMS_OK;
 }
-MmsResult CaptureModelPasteSource(MMDApp& app,ModelPasteSource& out,unsigned families) noexcept {
+MmsResult CaptureModelPastePayload(MMDApp& app,ModelPasteSource& out,unsigned families) noexcept {
     out={};
-    if((families&~ModelPasteAll)||app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+    if(families&~ModelPasteAll)return MMS_E_ARGUMENT;
     return Boundary([&]()->MmsResult {
-        ModelPasteSource source;source.frameOffset=unsigned(app.CurrentFrame());const auto counts=app.ClipboardCounts();
+        ModelPasteSource source;const auto counts=app.ClipboardCounts();
         if(families&ModelPasteBones) {
             if(counts.bones>mdl::kBoneKeyCapacityLimit||(counts.bones&&!app.BoneClipboard()))return MMS_E_ARGUMENT;
             source.bones.reserve(counts.bones);
@@ -516,6 +696,16 @@ MmsResult CaptureModelPasteSource(MMDApp& app,ModelPasteSource& out,unsigned fam
         if(auto result=ValidateModelPasteSource(source,families))return result;
         out=std::move(source);return MMS_OK;
     });
+}
+MmsResult CaptureModelPasteSource(MMDApp& app,ModelPasteSource& out,unsigned families) noexcept {
+    out={};
+    const int frame=app.CurrentFrame();
+    if((families&~ModelPasteAll)||frame<0||frame>frame_limits::maximum)return MMS_E_ARGUMENT;
+    ModelPasteSource source;
+    if(auto result=CaptureModelPastePayload(app,source,families))return result;
+    source.frameOffset=unsigned(frame);
+    if(auto result=ValidateModelPasteSource(source,families))return result;
+    out=std::move(source);return MMS_OK;
 }
 MmsResult PlanModelKeyPaste(MMDApp& app,unsigned slot,std::shared_ptr<HistoryChange>& out) noexcept {
     out.reset();
@@ -638,3 +828,5 @@ MmsResult PlanModelRangeScale(MMDApp& app, unsigned slot, const ModelRangeScaleO
 }
 }
 #endif
+
+#include "native_model_copy.inc"

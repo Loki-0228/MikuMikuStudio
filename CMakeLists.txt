@@ -184,9 +184,9 @@ foreach(_case IN ITEMS legacy override fresh)
         -DCASE=${_case} ${_legacy_options} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/legacy_cmake_options_tests.cmake)
 endforeach()
 
-add_executable(native_shadow_tests EXCLUDE_FROM_ALL tests/native_shadow_tests.cpp)
+add_executable(native_shadow_tests EXCLUDE_FROM_ALL tests/native_shadow_tests.cpp src/render/shadow_depth_filter.cpp)
 target_include_directories(native_shadow_tests PRIVATE include)
-target_link_libraries(native_shadow_tests PRIVATE d3d9 user32)
+target_link_libraries(native_shadow_tests PRIVATE mikumikustudio_graphics_runtime mikumikustudio_runtime_log d3d9 user32)
 set_target_properties(native_shadow_tests PROPERTIES
     CXX_STANDARD 17 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 
@@ -241,6 +241,12 @@ if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
     target_link_libraries(bone_curve_copy_tests PRIVATE mikumikustudio_core winmm dsound)
     set_target_properties(bone_curve_copy_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
     add_test(NAME bone_curve_copy_tests COMMAND bone_curve_copy_tests)
+    add_executable(mesh_scene_references_cpu_tests EXCLUDE_FROM_ALL tests/mesh_scene_references_cpu_tests.cpp)
+    target_include_directories(mesh_scene_references_cpu_tests PRIVATE include)
+    target_link_options(mesh_scene_references_cpu_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+    set_target_properties(mesh_scene_references_cpu_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME mesh_scene_references_cpu COMMAND mesh_scene_references_cpu_tests)
+    set_tests_properties(mesh_scene_references_cpu PROPERTIES TIMEOUT 30)
     foreach(snapshot_test bone_motion_snapshot_tests bone_kinematic_sampling_tests bone_scale_private_tests bone_evaluation_tests bone_scene_evaluation_tests bone_definition_snapshot_tests mesh_definition_snapshot_tests mesh_evaluation_tests morph_definition_snapshot_tests morph_evaluation_tests bone_curve_sampling_tests morph_sampling_tests display_motion_snapshot_tests)
         add_executable(${snapshot_test} EXCLUDE_FROM_ALL tests/${snapshot_test}.cpp)
         target_link_libraries(${snapshot_test} PRIVATE mikumikustudio_core winmm dsound)
@@ -391,6 +397,10 @@ add_library(mikumikustudio_core STATIC
     src/media/wic_mov_recorder.cpp
     src/render/transparent_capture.cpp
     src/media/media_load.cpp
+    src/media/background_picture_source.cpp
+    src/media/background_picture_asset.cpp
+    src/media/background_picture_activation.cpp
+    src/media/background_picture_policy.cpp
     src/window/command_impl.cpp
     src/app/frame_driver.cpp
     src/app/playback_catchup.cpp
@@ -434,6 +444,7 @@ add_library(mikumikustudio_core STATIC
     src/render/texture_cpu_decode.cpp
     src/render/adaptive_shadow.cpp
     src/render/shadow_filter.cpp
+    src/render/shadow_depth_filter.cpp
     src/exports/effect_display.cpp
     src/render/transparent_geometry.cpp
     src/render/transparent_peeling.cpp
@@ -478,6 +489,7 @@ add_library(mikumikustudio_core STATIC
     src/window/antialias_menu.cpp
     src/app/viewport_corner_settings.cpp
     src/window/viewport_corner_menu.cpp
+    src/window/ui_scale.cpp
     src/window/system_settings_ui.cpp
     src/window/ui_language_settings.cpp
     src/window/physics_bake_dialog.cpp
@@ -555,6 +567,8 @@ add_library(mikumikustudio_core STATIC
     src/render/toon_textures.cpp
     src/render/scene_font.cpp
     src/exports/effect_api.cpp
+    src/plugins/legacy_playback_map.cpp
+    src/plugins/legacy_mmd_plugin.cpp
     src/exports/effect_names.cpp
     src/exports/effect_paths.cpp
     src/exports/effect_compile_cache.cpp
@@ -562,6 +576,9 @@ add_library(mikumikustudio_core STATIC
     src/exports/effect_file_watch.cpp
     src/unported/stubs.cpp
 )
+if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
+    target_sources(mikumikustudio_core PRIVATE src/window/offscreen_gdi_surface.cpp src/window/offscreen_gdi_runtime.cpp)
+endif()
 if(MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932")
     get_target_property(MMD_ORIGINAL_CORE_SOURCES mikumikustudio_core SOURCES)
     list(REMOVE_ITEM MMD_ORIGINAL_CORE_SOURCES
@@ -707,7 +724,9 @@ target_compile_definitions(effect_path_compat_tests PRIVATE MMD_ORIGINAL_PROFILE
 target_link_libraries(effect_path_compat_tests PRIVATE user32)
 set_target_properties(effect_path_compat_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 
-add_executable(pmm_input_host_tests EXCLUDE_FROM_ALL tests/pmm_input_host_tests.cpp)
+add_executable(pmm_input_host_tests EXCLUDE_FROM_ALL
+    tests/pmm_input_host_tests.cpp
+    src/main/winmain.cpp)
 target_link_libraries(pmm_input_host_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
 set_target_properties(pmm_input_host_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 
@@ -731,9 +750,60 @@ target_compile_definitions(small_viewport_bounds_tests PRIVATE _WIN32_WINNT=0x06
 target_link_libraries(small_viewport_bounds_tests PRIVATE user32)
 set_target_properties(small_viewport_bounds_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME small_viewport_bounds COMMAND small_viewport_bounds_tests)
+add_executable(status_extension_geometry_tests EXCLUDE_FROM_ALL tests/status_extension_geometry_tests.cpp)
+target_include_directories(status_extension_geometry_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_definitions(status_extension_geometry_tests PRIVATE NOMINMAX _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(status_extension_geometry_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(status_extension_geometry_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME status_extension_geometry COMMAND status_extension_geometry_tests)
+add_executable(status_extension_invalidation_tests EXCLUDE_FROM_ALL tests/status_extension_invalidation_tests.cpp)
+target_include_directories(status_extension_invalidation_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_options(status_extension_invalidation_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(status_extension_invalidation_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME status_extension_invalidation COMMAND status_extension_invalidation_tests)
+add_executable(status_title_capture_tests EXCLUDE_FROM_ALL tests/status_title_capture_tests.cpp)
+target_compile_definitions(status_title_capture_tests PRIVATE NOMINMAX _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_libraries(status_title_capture_tests PRIVATE user32 gdi32)
+target_link_options(status_title_capture_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(status_title_capture_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME status_title_capture COMMAND status_title_capture_tests)
 set_tests_properties(small_viewport_bounds PROPERTIES TIMEOUT 20)
 
 if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
+    add_executable(offscreen_cleanup_integration_tests EXCLUDE_FROM_ALL tests/plugins/offscreen_cleanup_integration_tests.cpp)
+    target_include_directories(offscreen_cleanup_integration_tests PRIVATE include sdk/mms/include src/plugins)
+    target_compile_definitions(offscreen_cleanup_integration_tests PRIVATE NOMINMAX _WIN32_WINNT=0x0601 WINVER=0x0601)
+    target_link_libraries(offscreen_cleanup_integration_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
+    target_link_options(offscreen_cleanup_integration_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+    set_target_properties(offscreen_cleanup_integration_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME offscreen_cleanup_integration COMMAND offscreen_cleanup_integration_tests)
+    add_executable(checked_glyph_tests EXCLUDE_FROM_ALL tests/checked_glyph_tests.cpp)
+    target_include_directories(checked_glyph_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_options(checked_glyph_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+    set_target_properties(checked_glyph_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME checked_glyph COMMAND checked_glyph_tests)
+    add_executable(offscreen_gdi_surface_tests EXCLUDE_FROM_ALL tests/offscreen_gdi_surface_tests.cpp)
+    add_library(offscreen_gdi_adapter_compile OBJECT EXCLUDE_FROM_ALL src/window/offscreen_gdi_surface.cpp)
+    target_include_directories(offscreen_gdi_adapter_compile PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_include_directories(offscreen_gdi_surface_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_options(offscreen_gdi_surface_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+    set_target_properties(offscreen_gdi_surface_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME offscreen_gdi_surface COMMAND offscreen_gdi_surface_tests)
+    add_executable(offscreen_gdi_owner_tests EXCLUDE_FROM_ALL tests/offscreen_gdi_owner_tests.cpp)
+    target_include_directories(offscreen_gdi_owner_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_options(offscreen_gdi_owner_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+    set_target_properties(offscreen_gdi_owner_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME offscreen_gdi_owner COMMAND offscreen_gdi_owner_tests)
+    add_executable(offscreen_gdi_runtime_tests EXCLUDE_FROM_ALL tests/offscreen_gdi_runtime_tests.cpp)
+    target_include_directories(offscreen_gdi_runtime_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_options(offscreen_gdi_runtime_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+    set_target_properties(offscreen_gdi_runtime_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME offscreen_gdi_runtime COMMAND offscreen_gdi_runtime_tests)
+    target_sources(offscreen_gdi_adapter_compile PRIVATE src/window/offscreen_gdi_runtime.cpp)
+    add_executable(status_title_host_baseline EXCLUDE_FROM_ALL tests/status_title_host_baseline.cpp exports/MikuMikuDance.def)
+    target_link_options(status_title_host_baseline PRIVATE "/MANIFEST:NO")
+    target_link_libraries(status_title_host_baseline PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
+    set_target_properties(status_title_host_baseline PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/status-title/$<CONFIG>")
     add_executable(small_viewport_host_tests EXCLUDE_FROM_ALL tests/small_viewport_host_tests.cpp
         exports/MikuMikuDance.def)
     target_link_options(small_viewport_host_tests PRIVATE "/MANIFEST:NO")
@@ -948,14 +1018,15 @@ if (MIKUMIKUSTUDIO_BUILD_INPUT_TESTS)
     add_test(NAME keyboard_input_regressions COMMAND keyboard_input_tests)
 endif()
 
-# Production-entry regression tests for the first repair batch.
+# Share the standard large-motion fixture between the two profiles.
+add_executable(vmd_load_safety_tests EXCLUDE_FROM_ALL tests/vmd_load_safety_tests.cpp)
+target_link_libraries(vmd_load_safety_tests PRIVATE mikumikustudio_core winmm dsound)
+set_target_properties(vmd_load_safety_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
-    # This suite also requires MMS scale/curve tails. The original-compatible
-    # profile deliberately omits them and is covered by original_profile_io.
-    add_executable(vmd_load_safety_tests EXCLUDE_FROM_ALL tests/vmd_load_safety_tests.cpp)
-    target_link_libraries(vmd_load_safety_tests PRIVATE mikumikustudio_core winmm dsound)
-    set_target_properties(vmd_load_safety_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    # The complete suite also checks MMS scale/curve extensions.
     add_test(NAME vmd_load_safety COMMAND vmd_load_safety_tests)
+else()
+    add_test(NAME vmd_large_standard_import COMMAND vmd_load_safety_tests --case parallel)
 endif()
 add_executable(mmv4mms_physics_input_tests EXCLUDE_FROM_ALL
     tests/mmv4mms_physics_input_tests.cpp src/app/app_ctor.cpp)
@@ -1283,6 +1354,10 @@ target_link_options(pmm_input_host_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDI
 if(TARGET small_viewport_host_tests)
     target_sources(small_viewport_host_tests PRIVATE res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
     target_link_options(small_viewport_host_tests PRIVATE "${MIKUMIKUSTUDIO_GEN_RES}")
+endif()
+if(TARGET status_title_host_baseline)
+    target_sources(status_title_host_baseline PRIVATE res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+    target_link_options(status_title_host_baseline PRIVATE "${MIKUMIKUSTUDIO_GEN_RES}")
 endif()
 if(TARGET side_mount_host_tests)
     target_sources(side_mount_host_tests PRIVATE res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
@@ -1677,6 +1752,12 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     target_compile_features(pmm_extension_tests PRIVATE cxx_std_17)
     set_target_properties(pmm_extension_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_test(NAME pmm_extension_tests COMMAND pmm_extension_tests)
+    add_executable(effect_save_state_tests EXCLUDE_FROM_ALL tests/effect_save_state_tests.cpp)
+    target_include_directories(effect_save_state_tests PRIVATE src)
+    target_compile_features(effect_save_state_tests PRIVATE cxx_std_17)
+    set_target_properties(effect_save_state_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_test(NAME effect_save_state_tests COMMAND effect_save_state_tests)
+    set_tests_properties(effect_save_state_tests PROPERTIES TIMEOUT 15)
     add_executable(pmm_container_tests EXCLUDE_FROM_ALL tests/pmm_container_tests.cpp src/io/pmm_container.cpp)
     target_include_directories(pmm_container_tests PRIVATE include)
     target_compile_features(pmm_container_tests PRIVATE cxx_std_17)
@@ -1967,6 +2048,8 @@ if(MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     target_link_options(sidebar_resize_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
     target_link_libraries(sidebar_resize_tests PRIVATE mikumikustudio_core minhook::minhook winmm dsound)
     set_target_properties(sidebar_resize_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/sidebar/$<CONFIG>")
+    add_test(NAME viewport_cursor_runtime COMMAND sidebar_resize_tests --viewport-cursor-only)
+    set_tests_properties(viewport_cursor_runtime PROPERTIES TIMEOUT 90)
     endif()
     add_executable(display_compatibility_tests EXCLUDE_FROM_ALL tests/display_compatibility_tests.cpp)
     if(NOT MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932")

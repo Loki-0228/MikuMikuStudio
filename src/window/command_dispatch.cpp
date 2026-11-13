@@ -17,6 +17,7 @@
 #include "mikumikustudio/system_settings_ui.hpp"
 #include "mikumikustudio/native_media.hpp"
 #include "mikumikustudio/audio_menu.hpp"
+#include "mikumikustudio/picture_menu.hpp"
 #include "../plugins/native_camera_parent_history.hpp"
 #include "../plugins/native_accessory_parent_history.hpp"
 // ===========================================================================
@@ -72,6 +73,7 @@
 #include "mikumikustudio/physics_bake.hpp"
 #include "mikumikustudio/ui_language.hpp"
 #include "viewport_corner_menu.hpp"
+#include "mikumikustudio/ui_scale.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_global_commands.hpp"
 #endif
@@ -502,6 +504,7 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
     const std::uint16_t notification = HIWORD(wParam);
 #if !MMD_ORIGINAL_PROFILE
     if (ctrl == nullptr && notification <= 1 && audio_menu::HandleCommand(app, id)) return;
+    if (ctrl == nullptr && notification <= 1 && picture_menu::HandleCommand(app, id)) return;
 #endif
     if (ctrl == nullptr && notification == 0 && system_settings_ui::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification <= 1 && image_sequence::HandleCommand(app, id)) return;
@@ -520,6 +523,7 @@ void CommandDispatch(HWND ctrl, WPARAM wParam) {
     // MMS addition: the Help menu's dock-corner item (command 32810) cycles
     // one corner on each ordinary menu click.
     if (ctrl == nullptr && notification == 0 && viewport_corner_menu::HandleCommand(app, id)) return;
+    if (ctrl == nullptr && notification == 0 && ui_scale::HandleCommand(app, id)) return;
     if (ctrl == nullptr && notification == 0 && autosave::HandleCommand(app, id)) return;
 #if !MMD_ORIGINAL_PROFILE
     if (ctrl == nullptr && notification == 0 && cache_manager_ui::HandleCommand(app, id)) return;

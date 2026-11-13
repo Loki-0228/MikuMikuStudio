@@ -18,11 +18,13 @@
 #include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ui_translation.hpp"
+#include "mikumikustudio/ui_scale.hpp"
 #include "../src/window/autosave_dialog.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/plugins/project_storage.hpp"
 #endif
 #include <MinHook.h>
+#include <aclapi.h>
 #include <commctrl.h>
 #include <filesystem>
 #include <fstream>
@@ -33,6 +35,9 @@
 #include <fcntl.h>
 #include <io.h>
 #include <share.h>
+#include <algorithm>
+#include <map>
+#include <vector>
 
 // Affect only this test thread, and only while an explicit failure probe runs.
 // The production path still performs its real std::filesystem/string work.
@@ -58,6 +63,8 @@ namespace as = mikumikustudio::autosave;
 namespace {
 unsigned checks = 0, warnings = 0;
 bool expectedWarning = false, crashChild = false;
+bool expectPermissionSaveError = false;
+unsigned permissionSaveErrors = 0;
 bool expectedFullWarning = false;
 bool failFullWarningCreation = false;
 unsigned failedFullWarnings = 0;
@@ -131,6 +138,13 @@ void CheckManualPluginData() {}
 void CheckRestoredPluginData(MMDApp*) {}
 #endif
 int WINAPI MessageW(HWND owner, LPCWSTR text, LPCWSTR title, UINT flags) {
+    if (expectPermissionSaveError) {
+        Check(owner == g_Block->MainWindow() && title && !wcscmp(title, L"PMM") &&
+            text && wcsstr(text, L"写入权限") && flags == (MB_OK | MB_ICONERROR),
+            "manual save reports the actual destination failure");
+        ++permissionSaveErrors;
+        return IDOK;
+    }
     if (crashChild && title && wcsstr(title, L"Fatal error")) {
         const auto backups = as::Backups(crashDirectory);
         Check(backups.size() == 1 && backups[0].filename().wstring().find(L"_crash.pmm") != std::wstring::npos,
@@ -394,9 +408,96 @@ unsigned RedMenuPixels(MMDApp* app) {
 #include "installation_settings_checks.inc"
 #include "autosave_warning_checks.hpp"
 #include "autosave_empty_checks.hpp"
+#include "autosave_permission_checks.hpp"
+
+void CheckPartialBackupRotation(MMDApp* app) {
+    const auto manual = root / L"working.pmm";
+    for (bool queued : {false, true}) {
+        as::Settings value;
+        value.enabled = true;
+        value.maxBackups = 3;
+        value.overwriteOldest = true;
+        value.backupPattern = L"rotation_[/N]";
+        value.directory = (root / (queued ? L"queued" : L"immediate")).wstring();
+        Configure(app, value);
+        CopyPathW(app->EnvFileName(), manual.c_str());
+        for (int frame : {11, 22, 33}) {
+            app->CurrentFrame() = frame;
+            app->SceneModified() = 1;
+            Check(as::BackupNow(app) == as::Result::Saved, "create the existing backup generations");
+        }
+        const auto old = as::Backups(value.directory);
+        Check(old.size() == 3, "three generations before lowering the limit");
+        const auto now = fs::file_time_type::clock::now();
+        fs::last_write_time(old[0], now - std::chrono::seconds(30));
+        fs::last_write_time(old[1], now - std::chrono::seconds(20));
+        fs::last_write_time(old[2], now - std::chrono::seconds(10));
+        const auto lockedBytes = Bytes(old[1]), newestBytes = Bytes(old[2]);
+        value.maxBackups = 1;
+        Configure(app, value);
+        HANDLE locked = CreateFileW(old[1].c_str(), GENERIC_READ, FILE_SHARE_READ,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Check(locked != INVALID_HANDLE_VALUE, "hold the second oldest generation open");
+        app->CurrentFrame() = 44;
+        app->CameraDistance() = -84;
+        app->SceneModified() = 1;
+        auto result = as::Result::Saved;
+        if (queued) {
+            Check(as::QueueBackup(app), "queue rotation with a later sharing conflict");
+            background_save::Wait(app);
+        } else {
+            result = as::BackupNow(app);
+        }
+        CloseHandle(locked);
+        const auto retained = as::Backups(value.directory);
+        Check(!fs::exists(old[0]) && retained.size() == 3 &&
+              Bytes(old[1]) == lockedBytes && Bytes(old[2]) == newestBytes,
+              "partial rotation keeps both remaining generations and the new backup");
+        Check(result == as::Result::Saved && (!queued ||
+            std::wstring_view(background_save::StatusText(app)) == L"备份已保存，但未能清理全部旧备份。"),
+            "report the saved backup and incomplete cleanup");
+        const auto fresh = retained.back();
+        Check(fresh != old[2] && app->SceneModified() && fs::path(app->EnvFileName()) == manual,
+              "published backup keeps the working project and its unsaved edits");
+        Check(LoadSceneFile(fresh.c_str()) && app->CurrentFrame() == 44 && app->CameraDistance() == -84,
+              "open the backup kept after partial rotation");
+        CopyPathW(app->EnvFileName(), manual.c_str());
+        app->CurrentFrame() = 55;
+        app->SceneModified() = 1;
+        Check(as::QueueBackup(app), "queue another backup after closing the held file");
+        background_save::Wait(app);
+        const auto final = as::Backups(value.directory);
+        Check(final.size() == 1 && LoadSceneFile(final[0].c_str()) && app->CurrentFrame() == 55,
+              "retry reaches the new limit and its backup opens");
+        CopyPathW(app->EnvFileName(), manual.c_str());
+        const auto finalBytes = Bytes(final.front());
+        locked = CreateFileW(final.front().c_str(), GENERIC_READ, FILE_SHARE_READ,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Check(locked != INVALID_HANDLE_VALUE, "hold the only retained generation open");
+        if (queued) {
+            Check(as::QueueBackup(app), "queue a backup blocked before any old removal");
+            background_save::Wait(app);
+            Check(std::wstring_view(background_save::StatusText(app)) == L"备份数量已满，未覆盖旧备份。",
+                  "a conflict before the first removal still reports no replacement");
+        } else {
+            Check(as::BackupNow(app) == as::Result::Full, "unchanged immediate full-folder result");
+        }
+        CloseHandle(locked);
+        Check(as::Backups(value.directory) == final && Bytes(final.front()) == finalBytes,
+              "a conflict before the first removal keeps the previous generation and withdraws the candidate");
+    }
+    std::puts("PASS partial backup rotation and reopen");
+}
 }
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    // This branch must precede every production initializer, window and hook.
+    if (argc >= 3 && std::wstring(argv[2]) == L"--dialog-layout-only") {
+        try { return backup_layout::Run(argc, argv); }
+        catch (const std::exception& error) {
+            std::fprintf(stderr, "FAIL dialog-layout: %s\n", error.what()); return 1;
+        }
+    }
     Check(argc >= 2, "disposable artifact folder required"); root = fs::absolute(argv[1]);
     wchar_t executable[32768]{};
     Check(GetModuleFileNameW(nullptr, executable, 32768) != 0, "find actual test EXE");
@@ -409,6 +510,11 @@ int wmain(int argc, wchar_t** argv) {
     const auto config = root / L"autosave.ini";
     SetEnvironmentVariableW(L"MIKUMIKUSTUDIO_AUTOSAVE_CONFIG", config.c_str());
     SetEnvironmentVariableW(L"LOCALAPPDATA", (root / L"profile").c_str());
+    if (mode == L"--backup-directory-retry") {
+        const auto recent = root / L"recent.txt";
+        Check(!fs::exists(recent) && SetEnvironmentVariableW(L"MMS_RECENT_PROJECTS_FILE", recent.c_str()),
+              "use only fresh isolated recent projects");
+    }
     as::Result allocationResult = as::Result::Busy;
     FailNextAllocation([&] { allocationResult = as::BackupNow(nullptr, true); },
         "crash backup catches allocation failure during first settings load");
@@ -430,6 +536,21 @@ int wmain(int argc, wchar_t** argv) {
     app->EnglishUI() = 2; RefreshMenuLanguage(app);
     SetWindowPos(app->MainWindow(), nullptr, 0, 0, 1600, 800, SWP_NOACTIVATE | SWP_NOZORDER);
     as::Initialize(app);
+    if (mode == L"--partial-rotation") {
+        CheckPartialBackupRotation(app);
+        as::Shutdown(); ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hook);
+        return 0;
+    }
+    if (mode == L"--directory-permissions") {
+        CheckDirectoryPermissions(app);
+        as::Shutdown(); ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hook);
+        return 0;
+    }
+    if (mode == L"--backup-directory-retry") {
+        CheckBackupDirectoryRetry(app);
+        as::Shutdown(); ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hook);
+        return 0;
+    }
     if (mode == L"--empty-project") {
         CheckEmptyProjectBackup(app);
         as::Shutdown(); ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hook);

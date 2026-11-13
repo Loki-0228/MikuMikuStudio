@@ -7,6 +7,7 @@
 #include <string_view>
 #include <memory>
 #include <new>
+#include <limits>
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/ui_translation.hpp"
@@ -205,6 +206,7 @@
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/global_key_layout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/animation_curve_host.hpp"
 #include "mikumikustudio/ui_message.hpp"
 #include "mikumikustudio/text_encoding.hpp"
@@ -222,6 +224,8 @@
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_key_commands.hpp"
 #include "../plugins/native_key_paste.hpp"
+#include "../plugins/native_global_copy.hpp"
+#include "../plugins/frame_copy_batch.hpp"
 
 namespace mikumikustudio {
 
@@ -308,6 +312,9 @@ int MorphTarget(const MMDApp* app, const unsigned char* model, std::size_t index
 void Reset(const MMDApp* app) { frameClipboardSources.erase(app); }
 
 void ForgetModel(const unsigned char* model) {
+#if !MMD_ORIGINAL_PROFILE
+    plugins::ForgetFrameCopyModel(model);
+#endif
     for (auto it = frameClipboardSources.begin(); it != frameClipboardSources.end();) {
         if (it->second.model == model) it = frameClipboardSources.erase(it);
         else ++it;
@@ -347,16 +354,19 @@ using mdl::SelectorClipboardState;
 using mdl::ShadowClipboardRecord;
 
 template <typename Record>
-static void ReplaceClipboardBuffer(Record*& buffer, std::uint32_t count) {
+static bool ReplaceClipboardBuffer(Record*& buffer, std::uint32_t count) {
     if (buffer != nullptr) {
         free(buffer);
         buffer = nullptr;
     }
     if (count == 0) {
-        return;
+        return true;
     }
+    if (count > (std::numeric_limits<std::size_t>::max)() / sizeof(Record)) return false;
     buffer = static_cast<Record*>(malloc(count * sizeof(Record)));
+    if (!buffer) return false;
     memset(buffer, 0, count * sizeof(Record));
+    return true;
 }
 
 // Porting-era trace under MIKUMIKUSTUDIO_STATE_DUMP_DIR (CMake option
@@ -1741,8 +1751,42 @@ static void Cmd400_SelectionMarkSync(MMDApp* app) {
 // record index for the name lookups walks the +4 rank pointers while
 // idx >= count.  Tail: nothing (jmp loc_48F2E0).
 // ------------------------------------------------------------------
-static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
-    std::uint32_t minFrame = 0xFFFFFFFFu;  // ebx
+static void DisableFramePaste(HWND window) noexcept {
+    EnableWindow(GetDlgItem(window, panel::kPasteButton), FALSE);
+    EnableWindow(GetDlgItem(window, panel::kReversePasteButton), FALSE);
+    EnableMenuItem(GetMenu(window), 0xFA, TRUE);
+}
+
+static void DiscardModelFrameCopy(MMDApp* app, std::uint32_t displayCapacity) noexcept {
+    // During preparation the public count may already describe the next batch.
+    // The caller must supply the actual allocated capacity for nested records.
+    if (auto* records = app->DisplayClipboard())
+        for (std::uint32_t i = 0; i < displayCapacity; ++i) {
+            free(records[i].ikStates); free(records[i].selectorStates);
+        }
+    free(app->BoneClipboard()); app->BoneClipboard() = nullptr;
+    free(app->MorphClipboard()); app->MorphClipboard() = nullptr;
+    free(app->DisplayClipboard()); app->DisplayClipboard() = nullptr;
+    auto& counts = app->ClipboardCounts();
+    counts.bones = counts.morphs = counts.displays = 0;
+    frame_clipboard::Reset(app);
+}
+
+static void DiscardGlobalFrameCopy(MMDApp* app) noexcept {
+    free(app->CameraClipboard()); app->CameraClipboard() = nullptr;
+    free(app->LightClipboard()); app->LightClipboard() = nullptr;
+    free(app->ShadowClipboard()); app->ShadowClipboard() = nullptr;
+    free(app->GravityClipboard()); app->GravityClipboard() = nullptr;
+    free(app->AccessoryClipboard()); app->AccessoryClipboard() = nullptr;
+    auto& counts = app->ClipboardCounts();
+    counts.cameras = counts.lights = counts.shadows = counts.gravity = counts.accessories = 0;
+}
+
+static bool Cmd400_FrameCopy(MMDApp* app, HWND hwnd, std::uint32_t& minFrame, std::int32_t& copyError) {
+    minFrame = 0xFFFFFFFFu;  // ebx, preserved for the complete production receipt.
+#if !MMD_ORIGINAL_PROFILE
+    copyError = MMS_E_FAILED;
+#endif
     if (app->state.optflag[0] == 0) {
         // ---- model mode (loc_483E7C..) ----
         struct CopyGuard {
@@ -1752,25 +1796,15 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
             bool complete = false;
             ~CopyGuard() {
                 if (complete) return;
-                // Counts may already describe the new selection while the
-                // buffers still belong to the previous copy. Track the actual
-                // display allocation separately so nested arrays are safe.
-                if (auto* records = app->DisplayClipboard())
-                    for (std::uint32_t i = 0; i < displayCapacity; ++i) {
-                        free(records[i].ikStates); free(records[i].selectorStates);
-                    }
-                free(app->BoneClipboard()); app->BoneClipboard() = nullptr;
-                free(app->MorphClipboard()); app->MorphClipboard() = nullptr;
-                free(app->DisplayClipboard()); app->DisplayClipboard() = nullptr;
-                auto& counts = app->ClipboardCounts();
-                counts.bones = counts.morphs = counts.displays = 0;
-                frame_clipboard::Reset(app);
-                EnableWindow(GetDlgItem(window, panel::kPasteButton), FALSE);
-                EnableWindow(GetDlgItem(window, panel::kReversePasteButton), FALSE);
-                EnableMenuItem(GetMenu(window), 0xFA, TRUE);
+                DiscardModelFrameCopy(app, displayCapacity);
             }
         } guard{app, hwnd, app->ClipboardCounts().displays};
         try {
+#if !MMD_ORIGINAL_PROFILE
+        if (app->SelectedModelSlot() >= kModelSlotCount || !app->SelectedModel()) {
+            copyError = MMS_E_NOT_READY; return false;
+        }
+#endif
         frame_clipboard::Reset(app);
         // free the previous camera records' sub-buffers (loc_483E7C)
         if (app->DisplayClipboard() != nullptr &&
@@ -1809,7 +1843,7 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
         const std::uint32_t camSel = clipboardCounts.displays;
         if (boneSel == 0 && morphSel == 0 && camSel == 0) {
             // loc_48402C..48406D: nothing selected
-            return;  // was: break (switch exit)
+            return true; // Negative-only selections may still be copied.
         }
         FrameClipboardSource copied;
         copied.model = ActiveModel(app);
@@ -2030,15 +2064,29 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
         copied.morphClipboard = app->MorphClipboard();
         frameClipboardSources[app] = std::move(copied);
         guard.complete = true;
-        EnableWindow(GetDlgItem(hwnd, panel::kPasteButton), TRUE);
-        EnableMenuItem(GetMenu(hwnd), 0xFA, FALSE);
-        EnableWindow(GetDlgItem(hwnd, panel::kReversePasteButton), boneSel != 0 ? TRUE : FALSE);
+        } catch (const std::bad_alloc&) {
+#if !MMD_ORIGINAL_PROFILE
+            copyError = MMS_E_MEMORY;
+#endif
+            return false;
         } catch (const std::exception&) {
             // The guard leaves no partial or stale model clipboard to paste.
-            return;
+            return false;
         }
     } else {
         // ---- camera mode (loc_4834E2..) ----
+        struct CopyGuard {
+            MMDApp* app;
+            HWND window;
+            bool complete = false;
+            ~CopyGuard() {
+                if (complete) return;
+                DiscardGlobalFrameCopy(app);
+            }
+        } guard{app, hwnd};
+#if !MMD_ORIGINAL_PROFILE
+        if (!plugins::BeginGlobalCopy(*app)) { copyError = app->GlobalClipboardCopy().error; return false; }
+#endif
         auto& clipboardCounts = app->ClipboardCounts();
         clipboardCounts.cameras = 0;
         clipboardCounts.lights = 0;
@@ -2078,20 +2126,25 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
         if (cameraCount == 0 && lightCount == 0 && shadowCount == 0 &&
             gravityCount == 0 && accessoryCount == 0) {
             // loc_483657..48369C
-            EnableWindow(GetDlgItem(hwnd, panel::kPasteButton), FALSE);
-            EnableWindow(GetDlgItem(hwnd, panel::kReversePasteButton), FALSE);
-            EnableMenuItem(GetMenu(hwnd), 0xFA, TRUE);
-            return;  // was: break (switch exit)
+#if !MMD_ORIGINAL_PROFILE
+            plugins::CompleteEmptyGlobalCopy(*app);
+#endif
+            return true; // Clear the old buffers, then allow negative-only copy.
         }
-        EnableWindow(GetDlgItem(hwnd, panel::kPasteButton), TRUE);
-        EnableWindow(GetDlgItem(hwnd, panel::kReversePasteButton), FALSE);
-        EnableMenuItem(GetMenu(hwnd), 0xFA, FALSE);
         // buffers 0x360..0x370 (0x48/0x1C/0x0C/0x1C/0x34 strides)
-        ReplaceClipboardBuffer(app->CameraClipboard(), cameraCount);
-        ReplaceClipboardBuffer(app->LightClipboard(), lightCount);
-        ReplaceClipboardBuffer(app->ShadowClipboard(), shadowCount);
-        ReplaceClipboardBuffer(app->GravityClipboard(), gravityCount);
-        ReplaceClipboardBuffer(app->AccessoryClipboard(), accessoryCount);
+        // No part of a failed allocation batch may become a paste source.
+        if (!ReplaceClipboardBuffer(app->CameraClipboard(), cameraCount) ||
+            !ReplaceClipboardBuffer(app->LightClipboard(), lightCount) ||
+            !ReplaceClipboardBuffer(app->ShadowClipboard(), shadowCount) ||
+            !ReplaceClipboardBuffer(app->GravityClipboard(), gravityCount) ||
+            !ReplaceClipboardBuffer(app->AccessoryClipboard(), accessoryCount)) {
+#if !MMD_ORIGINAL_PROFILE
+            app->GlobalClipboardCopy().error = MMS_E_MEMORY;
+            app->GlobalClipboardCopy().preparing = false;
+            copyError = MMS_E_MEMORY;
+#endif
+            return false;
+        }
         // copy loop 1: 0x374 marked -> 0x360 records (0x48 stride)
         {
             auto* keys = app->CameraKeys();
@@ -2201,7 +2254,14 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
                 }
             }
         }
+        // Preserve the exact origin now; a later selection cannot reconstruct it.
+#if !MMD_ORIGINAL_PROFILE
+        copyError = plugins::CaptureGlobalCopySnapshot(*app, minFrame);
+        if (copyError != MMS_OK) return false;
+#endif
+        guard.complete = true;
     }
+    return true;
 }
 // ------------------------------------------------------------------
 // 421 (0x00484973): frame paste.  0x2F8 == 0: when any model-mode
@@ -2219,7 +2279,7 @@ static void Cmd400_FrameCopy(MMDApp* app, HWND hwnd) {
 // RefreshLightPanel, RefreshSelfShadowPanel, ApplyGravityTrack, ApplyAccessoryTrack per slot, SyncAccessoryEditPanel).
 // ------------------------------------------------------------------
 // Reserve the whole paste before marks, undo records or keys are changed.
-bool PrepareFramePaste(MMDApp* app) {
+static bool PrepareFramePaste(MMDApp* app, bool& missingTrack) {
     const auto& n=app->ClipboardCounts();
     const auto frames=[&](const auto* records,std::uint32_t count) {
         if(count&&!records)return false;
@@ -2247,7 +2307,10 @@ bool PrepareFramePaste(MMDApp* app) {
                 std::set<std::string> wanted,matched;
                 for(std::uint32_t i=0;i<count;++i) {
                     const auto target=resolve(app,raw,i);
-                    if(target==frame_clipboard::kMissingTarget)return false;
+                    if (target == frame_clipboard::kMissingTarget) {
+                        missingTrack = true;
+                        return false;
+                    }
                     if(target<0)wanted.emplace(records[i].name,strnlen_s(records[i].name,sizeof records[i].name));
                 }
                 for(std::uint32_t j=0;j<targetCount;++j) {
@@ -2278,11 +2341,26 @@ bool PrepareFramePaste(MMDApp* app) {
         return true;
     } catch(const std::exception&) {return false;}
 }
+bool PrepareFramePaste(MMDApp* app) {
+    bool missingTrack = false;
+    return PrepareFramePaste(app, missingTrack);
+}
 static void Cmd400_FramePaste(MMDApp* app, HWND hwnd) {
+    bool missingTrack = false;
+    const auto reportMissingTrack = [&] {
+        if (hwnd) ShowUiMessage(app, hwnd, UiMessage::MissingFramePasteTrack, MB_OK | MB_ICONWARNING);
+    };
 #if !MMD_ORIGINAL_PROFILE
-    if (plugins::TryPasteBoundKeys(app, hwnd, false)) return;
+    if (plugins::TryPasteBoundKeys(app, hwnd, false, &missingTrack)) {
+        if (missingTrack) reportMissingTrack();
+        return;
+    }
 #endif
-    if(!PrepareFramePaste(app)){
+    if(!PrepareFramePaste(app, missingTrack)){
+        if (missingTrack) {
+            reportMissingTrack();
+            return;
+        }
         const wchar_t* messages[]={L"メモリ、フレーム範囲または名前の重複により貼り付けできません。元のキーは保持されています。",L"Paste cannot proceed because of storage, frame range or ambiguous names. Existing keys were preserved.",L"存储空间、帧号范围或名称冲突导致无法粘贴，原关键帧已保留。"};
         MessageBoxW(hwnd,messages[app->EnglishUI()<=2?app->EnglishUI():1],L"MMS",MB_OK|MB_ICONWARNING);return;
     }
@@ -3270,11 +3348,7 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
         if (app->state.waveEnabled != 0) {
             TimelineDrawTicks(app->state.timelineStartFrame,
                               sidebar);
-            RECT rc;
-            rc.left = 6;
-            rc.top = 0x5F;
-            rc.right = sidebar - 3;
-            rc.bottom = 0x92;
+            RECT rc = TimelineRulerDamage(app);
             InvalidateRect(hwnd, &rc, FALSE);
         }
         break;
@@ -3480,10 +3554,100 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
         Cmd400_SelectionMarkSync(app);
         break;
 
-    case 420:  // frame copy (0x004834D2) -> Cmd400_FrameCopy
-        Cmd400_FrameCopy(app, hwnd);
-        negative_frames::Command(app,420);
+    case 420: { // frame copy (0x004834D2) -> Cmd400_FrameCopy
+        const bool global = app->CameraMode() != 0;
+        std::uint32_t nativeFirst = 0;
+        std::int32_t copyError = 0;
+#if !MMD_ORIGINAL_PROFILE
+        const auto mode = global ? frame_clipboard::CopyMode::Global : frame_clipboard::CopyMode::Model;
+        plugins::FrameCopyTicket ticket;
+        const bool begun = plugins::BeginFrameCopy(*app, mode, ticket);
+        const auto uiAttempt = app->FrameClipboardCopy(mode).attempt;
+        const auto uiGeneration = app->SceneGeneration();
+        const auto updateUi = [&](bool paste, bool reverse, bool nativeMenu) {
+            const auto expectedStatus = app->FrameClipboardCopy(mode).status;
+            const auto expectedSnapshot = app->FrameClipboardCopy(mode).snapshot;
+            const auto current = [&] {
+                const auto& state = app->FrameClipboardCopy(mode);
+                return state.attempt == uiAttempt && state.sceneGeneration == uiGeneration &&
+                    !state.preparing && state.status == expectedStatus && state.snapshot == expectedSnapshot &&
+                    app->SceneGeneration() == uiGeneration && (app->CameraMode() != 0) == global;
+            };
+            if (!current()) return;
+            EnableWindow(GetDlgItem(hwnd, panel::kPasteButton), paste);
+            if (!current()) return;
+            EnableWindow(GetDlgItem(hwnd, panel::kReversePasteButton), reverse);
+            if (!current()) return;
+            EnableMenuItem(GetMenu(hwnd), 0xFA, nativeMenu ? FALSE : TRUE);
+        };
+        const auto retire = [&](MmsResult error) {
+            negative_frames::ClearClipboard(app);
+            if (global) {
+                DiscardGlobalFrameCopy(app);
+                auto& state = app->GlobalClipboardCopy();
+                state.snapshot.reset(); state.status = frame_clipboard::GlobalCopyStatus::Failed;
+                state.error = error; state.preparing = false;
+            } else DiscardModelFrameCopy(app, app->ClipboardCounts().displays);
+            updateUi(false, false, false);
+        };
+        if (!begun) { retire(MMS_E_NOT_READY); break; }
+#endif
+        if (!Cmd400_FrameCopy(app, hwnd, nativeFirst, copyError)) {
+#if !MMD_ORIGINAL_PROFILE
+            if (plugins::FailFrameCopy(*app, ticket, copyError)) retire(copyError);
+#else
+            negative_frames::ClearClipboard(app);
+            DisableFramePaste(hwnd);
+#endif
+            break;
+        }
+#if !MMD_ORIGINAL_PROFILE
+        if (!plugins::FrameCopyPreparing(*app, ticket)) break;
+#endif
+        const auto result = negative_frames::CopySelected(app, false);
+        if (result == negative_frames::CopyResult::Memory || result == negative_frames::CopyResult::Failed) {
+#if !MMD_ORIGINAL_PROFILE
+            const auto error = result == negative_frames::CopyResult::Memory ? MMS_E_MEMORY : MMS_E_FAILED;
+            if (plugins::FailFrameCopy(*app, ticket, error)) retire(error);
+#else
+            // Native preparation succeeded, but the other half did not. Retire
+            // the active mode's entire batch without touching its peer mode.
+            if (global) {
+                DiscardGlobalFrameCopy(app);
+            } else {
+                DiscardModelFrameCopy(app, app->ClipboardCounts().displays);
+            }
+            DisableFramePaste(hwnd);
+#endif
+            break;
+        }
+#if !MMD_ORIGINAL_PROFILE
+        const auto captured = plugins::CaptureFrameCopyBatch(*app, ticket, nativeFirst);
+        if (captured != MMS_OK) {
+            // Capture retires only its own attempt. Do not clear a replacement
+            // copy that was published while synchronous UI callbacks ran.
+            const auto& state = app->FrameClipboardCopy(mode);
+            if (state.attempt == ticket.attempt && state.sceneGeneration == ticket.sceneGeneration &&
+                app->SceneGeneration() == ticket.sceneGeneration) retire(captured);
+            break;
+        }
+#endif
+        // No source is borrowed across these synchronous UI callbacks.
+        const auto counts = app->ClipboardCounts();
+        const bool nativeMenu = global ?
+            counts.cameras || counts.lights || counts.shadows || counts.gravity || counts.accessories :
+            counts.bones || counts.morphs || counts.displays;
+        const bool paste = result == negative_frames::CopyResult::Copied || nativeMenu;
+        const bool reverse = !global && counts.bones != 0;
+#if !MMD_ORIGINAL_PROFILE
+        updateUi(paste, reverse, nativeMenu);
+#else
+        EnableWindow(GetDlgItem(hwnd, panel::kPasteButton), paste);
+        EnableWindow(GetDlgItem(hwnd, panel::kReversePasteButton), reverse);
+        EnableMenuItem(GetMenu(hwnd), 0xFA, nativeMenu ? FALSE : TRUE);
+#endif
         break;
+    }
 
     case 421:  // frame paste (0x00484973) -> Cmd400_FramePaste
         Cmd400_FramePaste(app, hwnd);
@@ -3524,3 +3688,5 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
 }
 
 }  // namespace mikumikustudio
+
+#include "../plugins/frame_copy_batch.inc"

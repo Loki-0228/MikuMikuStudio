@@ -242,11 +242,14 @@ inline void DiscardPmmDisplayKey(int fd, std::int32_t ikCount,
 }
 
 // AVIFIL32 imports used by both loader teardowns.
+// Consumers using the SDK's typed interfaces already have these imports.
+#ifndef _INC_VFW
 extern "C" {
 __declspec(dllimport) std::int32_t __stdcall AVIStreamGetFrameClose(void* pg);
 __declspec(dllimport) std::int32_t __stdcall AVIStreamRelease(void* pavi);
 __declspec(dllimport) std::int32_t __stdcall AVIFileRelease(void* pfile);
 }
+#endif
 
 // ---- UI strings (wide .rdata mirrors; VA recorded) -----------------------
 inline const wchar_t kWNashi[]    = L"\x306A\x3057";                    // 0x52D360

@@ -117,7 +117,7 @@ def public_cases(binary, plugin, output):
         manifest = dict(schemaVersion=1, id="org.example.evaluation-material-host", name="Material frame probe",
             version="1.0.0", kind="native", abi=dict(major=1, minMinor=0), entry=copied_plugin.name,
             architecture="x64", minWindows="6.1.7601", capabilities=["scene.evaluate"],
-            requiresServices=[dict(id="mms.scene.evaluate", major=1, minMinor=6)],
+            requiresServices=[dict(id="mms.scene.evaluate", major=1, minMinor=7)],
             dependencies=[], nativeDependencies=[], reloadPolicy="restart")
         (package / "plugin.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         exe = root / "probe.exe"
@@ -145,10 +145,13 @@ def public_cases(binary, plugin, output):
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
         case["completionMarker"] = "Frozen mesh material scene:" in log_text
         case["publicNegotiation"] = "real plugin negotiates material 1.6 through manager" in log_text
+        case["referenceNegotiation"] = "real plugin negotiates references 1.7 through manager" in log_text
+        case["referenceLifetime"] = "Frozen material references: real plugin, IDs, paths, toon and independent copies passed" in log_text
         case["logSha256"] = sha256(log_path)
         report["cases"].append(case)
         print(kind, log_text[-8000:], flush=True)
-        failed = bool(case["exitCode"]) or not case["completionMarker"] or not case["publicNegotiation"] or failed
+        failed = (bool(case["exitCode"]) or not case["completionMarker"] or not case["publicNegotiation"]
+                  or not case["referenceNegotiation"] or not case["referenceLifetime"] or failed)
     (output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     raise SystemExit(1 if failed else 0)
 

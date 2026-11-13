@@ -64,7 +64,15 @@ void EvaluationSeekParity() {
         Check(plugins::PrepareBoneEvaluation(*f.app,0,affected,source.View(),candidate)==MMS_OK&&
             f.first.Digest()==before&&bone_scale::PoseValuesEqual(f.first.raw(),beforeScale),
             "current-frame evaluation preparation never changes live native or scale pose");
+        plugins::BoneEvaluationSample sampled;
+        Check(plugins::SampleBoneEvaluation(f.first.bones[0],0,f.first.m->boneCount,f.app->PlaybackPhysicsMode(),
+            frame,source.View(),sampled)==MMS_OK&&sampled.writePose,
+            "explicit sampling covers exact interpolated and terminal frames");
         SeekModelFrame(f.second.raw(),frame,0);EvaluationPublish(candidate);
+        Check(!std::memcmp(sampled.position.data(),f.first.bones[0].trans,sizeof(f.first.bones[0].trans))&&
+            !std::memcmp(sampled.rotation.data(),f.first.bones[0].rotQuat,sizeof(f.first.bones[0].rotQuat))&&
+            sampled.scale==bone_scale::Pose(f.first.raw(),0),
+            "explicit sample and prepared publication agree with the independent native seek oracle");
         Check(!std::memcmp(f.first.bones[0].trans,f.second.bones[0].trans,sizeof(f.first.bones[0].trans))&&
             !std::memcmp(f.first.bones[0].rotQuat,f.second.bones[0].rotQuat,sizeof(f.first.bones[0].rotQuat))&&
             bone_scale::Pose(f.first.raw(),0)==bone_scale::Pose(f.second.raw(),0),
@@ -207,8 +215,180 @@ void EvaluationHistoryAtCurrentFrame() {
     Check(f.history.History(true)==MMS_OK&&f.first.bones[0].trans[0]==765&&bone_scale::Pose(f.first.raw(),0)==Scale(11)&&
         f.first.dirty[0]==1&&PoseRingDigest(f.first)==ring,"redo preserves an intervening unregistered pose and never uses the old ring");
 }
+bool SameEvaluationSample(const plugins::BoneEvaluationSample& a,const plugins::BoneEvaluationSample& b) {
+    return a.position==b.position&&a.rotation==b.rotation&&a.scale==b.scale&&a.writePose==b.writePose;
+}
+void EvaluationExplicitTargetDirections() {
+    PoseNumericFixture f;EvaluationSeed(f.first);
+    EvaluationSource reverse(f.first),forward(f.first);
+    forward.keys[0].position[0]=42;forward.keys[0].rotation[1]=.6f;forward.keys[0].rotation[3]=.8f;
+    forward.scale.SetKey(0,Scale(4));
+    const auto seekTargetZeroScale=[&](const EvaluationSource& target) {
+        // Both direction fixtures have empty free authoring. Seed clears the
+        // oracle's curves, then install the target native keys and scale curves.
+        // Expected values come from production seek, not the detached sampler.
+        EvaluationSeed(f.second);
+        Check(target.keys.size()==mdl::BoneKeyCapacity(f.second.m->boneKeys),"direction oracle key capacity matches target");
+        std::memcpy(f.second.m->boneKeys,target.keys.data(),target.keys.size()*sizeof(mdl::BoneKey));
+        auto restore=bone_scale::AuthoringRestore::Prepare(f.second.raw(),target.scale,target.keys.size());
+        Check(restore->Publish(),"install direction target scale authoring in independent oracle");
+        SeekModelFrame(f.second.raw(),0,0);
+        return bone_scale::Pose(f.second.raw(),0);
+    };
+    const auto forwardScale=seekTargetZeroScale(forward),reverseScale=seekTargetZeroScale(reverse);
+    f.app->CurrentFrame()=-17;f.first.dirty[0]=1;
+    f.first.bones[0].trans[0]=765;bone_scale::SetPose(f.first.raw(),0,Scale(12));
+    f.first.m->boneKeys[0].position[0]=-100;bone_scale::SetKey(f.first.raw(),0,Scale(8));
+    std::array<std::uint32_t,2> cursors{3,1};std::array<unsigned char,2> active{1,0};
+    f.first.m->boneKeyCursors=cursors.data();f.first.m->boneTrackActive=active.data();
+    const auto before=f.first.Digest(),ring=PoseRingDigest(f.first);
+    const auto poses=bone_scale::PoseValues(f.first.raw());
+    const auto authored=bone_scale::AuthoringState::Capture(f.first.raw());
+    for(const auto* source:{&forward,&reverse,&forward}) {
+        const auto& expectedScale=source==&forward?forwardScale:reverseScale;
+        plugins::BoneEvaluationSample sampled;
+        failAfter=0;
+        const auto status=plugins::SampleBoneEvaluation(f.first.bones[0],0,f.first.m->boneCount,
+            f.app->PlaybackPhysicsMode(),0,source->View(),sampled);
+        failAfter=-1;
+        const bool matchesTarget=status==MMS_OK&&sampled.writePose&&sampled.position[0]==(source==&forward?42.f:0.f)&&
+            sampled.rotation[1]==(source==&forward?.6f:0.f)&&sampled.rotation[3]==(source==&forward?.8f:1.f)&&
+            sampled.scale==expectedScale;
+        if(!matchesTarget) {
+            // Keep exact comparisons, including every scale matrix component.
+            std::fprintf(stderr,
+                "TARGET_ZERO direction=%s status=%lld writePose=%d playhead=%d sampleFrame=0 "
+                "pos=[%.9g,%.9g,%.9g] quat=[%.9g,%.9g,%.9g,%.9g] "
+                "scale=[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g]\n",
+                source==&forward?"forward":"reverse",static_cast<long long>(status),int(sampled.writePose),int(f.app->CurrentFrame()),
+                double(sampled.position[0]),double(sampled.position[1]),double(sampled.position[2]),
+                double(sampled.rotation[0]),double(sampled.rotation[1]),double(sampled.rotation[2]),double(sampled.rotation[3]),
+                double(sampled.scale.v[0]),double(sampled.scale.v[1]),double(sampled.scale.v[2]),
+                double(sampled.scale.v[3]),double(sampled.scale.v[4]),double(sampled.scale.v[5]),
+                double(sampled.scale.v[6]),double(sampled.scale.v[7]),double(sampled.scale.v[8]));
+            std::fprintf(stderr,
+                "TARGET_ZERO expectedPosX=%.9g expectedQuatY=%.9g expectedQuatW=%.9g "
+                "expectedSeekScale=[%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g]\n",
+                source==&forward?42.:0.,source==&forward?double(.6f):0.,source==&forward?double(.8f):1.,
+                double(expectedScale.v[0]),double(expectedScale.v[1]),double(expectedScale.v[2]),
+                double(expectedScale.v[3]),double(expectedScale.v[4]),double(expectedScale.v[5]),
+                double(expectedScale.v[6]),double(expectedScale.v[7]),double(expectedScale.v[8]));
+            std::fflush(stderr);
+        }
+        Check(matchesTarget,
+            "negative playhead explicit zero sample uses the forward or reverse target keys and scales");
+        Check(f.app->CurrentFrame()==-17&&f.first.Digest()==before&&PoseRingDigest(f.first)==ring&&
+            bone_scale::PoseValuesEqual(f.first.raw(),poses)&&
+            bone_scale::AuthoringState::Capture(f.first.raw()).Equals(authored)&&
+            cursors==std::array<std::uint32_t,2>{3,1}&&active==std::array<unsigned char,2>{1,0},
+            "read-only target sampling preserves dirty drafts native keys cursors flags authoring and real playhead");
+    }
+    std::unique_ptr<plugins::PreparedHistoryChange> candidate;
+    Check(plugins::PrepareBoneEvaluation(*f.app,0,{0},forward.View(),candidate)==MMS_E_ARGUMENT&&!candidate,
+        "explicit sampler does not open the existing negative-playhead publication gate");
+    f.app->CurrentFrame()=0;
+    Check(plugins::PrepareBoneEvaluation(*f.app,0,{0},forward.View(),candidate)==MMS_OK,
+        "existing preparation still accepts a dirty bone while keeping its draft");
+    EvaluationPublish(candidate);
+    Check(f.first.Digest()==before&&bone_scale::PoseValuesEqual(f.first.raw(),poses),
+        "dirty draft policy remains in prepared evaluation rather than target sampling");
+    // Reading target scales must not require or create live pose storage.
+    bone_scale::Forget(f.first.raw());plugins::BoneEvaluationSample sampled;
+    Check(plugins::SampleBoneEvaluation(f.first.bones[0],0,f.first.m->boneCount,0,0,forward.View(),sampled)==MMS_OK&&
+        sampled.scale==forwardScale&&!bone_scale::HasPoseStorage(f.first.raw()),
+        "target zero scale is returned without installing a live storage lease");
+}
+void EvaluationExplicitCurvesAndSelectors() {
+    PoseNumericFixture f;EvaluationSeed(f.first);EvaluationSeed(f.second);
+    auto tracks=OwnedCurveTracks(60);tracks[0].keys.front().value=33;tracks[6].keys.front().value=2;
+    std::string error;
+    Check(bone_curve::Write(f.first.raw(),0,tracks,error)&&bone_curve::Write(f.second.raw(),0,tracks,error),
+        "prepare identical target free curves and independent seek oracle");
+    EvaluationSource target(f.first);
+    WriteOwnedCurve(f.first,0,120);f.app->CurrentFrame()=-9;f.first.dirty[0]=1;
+    const auto before=f.first.Digest();const auto poses=bone_scale::PoseValues(f.first.raw());
+    const auto curves=bone_curve::AuthoringState::Capture(f.first.raw());
+    for(int frame:{0,7}) {
+        plugins::BoneEvaluationSample sampled;
+        Check(plugins::SampleBoneEvaluation(f.first.bones[0],0,f.first.m->boneCount,0,frame,target.View(),sampled)==MMS_OK&&sampled.writePose,
+            "explicit target sampling reads owned free curves while live authoring differs");
+        SeekModelFrame(f.second.raw(),frame,0);
+        Check(!std::memcmp(sampled.position.data(),f.second.bones[0].trans,sizeof(f.second.bones[0].trans))&&
+            !std::memcmp(sampled.rotation.data(),f.second.bones[0].rotQuat,sizeof(f.second.bones[0].rotQuat))&&
+            sampled.scale==bone_scale::Pose(f.second.raw(),0),
+            "owned free curve and scale result matches independent target seek");
+        if(frame==0)Check(sampled.position[0]==33&&sampled.scale==Scale(2),
+            "explicit zero result includes target free-curve position and scale");
+        Check(f.app->CurrentFrame()==-9&&f.first.Digest()==before&&bone_scale::PoseValuesEqual(f.first.raw(),poses)&&
+            bone_curve::AuthoringState::Capture(f.first.raw())->Equals(*curves),
+            "sampling neither reconciles live curves nor writes dirty live pose");
+    }
+    EvaluationSeed(f.first);EvaluationSource native(f.first);
+    mdl::BoneOrderEntry live{},direction{};live.windowStart=3;live.windowEnd=100;
+    direction.windowStart=7;direction.windowEnd=100;
+    f.first.m->boneOrderTable=&live;f.first.m->boneOrderCount=1;f.first.bones[0].slotIndex=0;
+    auto view=native.View();view.selectors=&direction;view.selectorCount=1;
+    plugins::BoneEvaluationSample sampled;
+    Check(plugins::SampleBoneEvaluation(f.first.bones[0],0,f.first.m->boneCount,0,5,view,sampled)==MMS_OK&&
+        sampled.position[0]==native.keys[0].position[0],
+        "explicit selector window comes from direction view rather than the live window");
+    direction.windowStart=3;
+    Check(plugins::SampleBoneEvaluation(f.first.bones[0],0,f.first.m->boneCount,0,5,view,sampled)==MMS_OK&&
+        sampled.position[0]==native.keys[2].position[0],"opposite selector view changes snap direction");
+    const auto saved=sampled;
+    Check(plugins::SampleBoneEvaluation(f.first.bones[0],0,f.first.m->boneCount,0,5,native.View(),sampled)==MMS_E_ARGUMENT&&
+        SameEvaluationSample(saved,sampled),"explicit selector sampling has no implicit live fallback on missing view");
+    direction.windowStart=7;f.app->CurrentFrame()=5;
+    std::unique_ptr<plugins::PreparedHistoryChange> candidate;
+    Check(plugins::PrepareBoneEvaluation(*f.app,0,{0},view,candidate)==MMS_OK,"target selector prepares with live source guard");
+    ++live.windowStart;Check(!candidate->IsCurrent(),"live selector change still invalidates a target-selector candidate");--live.windowStart;
+    EvaluationPublish(candidate);
+    Check(f.first.bones[0].trans[0]==native.keys[0].position[0]&&live.windowStart==3,
+        "prepared evaluation samples target selector without publishing that selector");
+    bone_curve::Forget(f.second.raw());
+}
+void EvaluationExplicitRejections() {
+    PoseNumericFixture f;EvaluationSeed(f.first);EvaluationSource source(f.first);f.app->CurrentFrame()=-5;
+    plugins::BoneEvaluationSample sampled;sampled.position={17,18,19};sampled.scale=Scale(6);sampled.writePose=true;
+    const auto saved=sampled;const auto before=f.first.Digest();const auto poses=bone_scale::PoseValues(f.first.raw());
+    const auto reject=[&](int frame,MmsResult expected,const char* label) {
+        Check(plugins::SampleBoneEvaluation(f.first.bones[0],0,f.first.m->boneCount,
+            f.app->PlaybackPhysicsMode(),frame,source.View(),sampled)==expected&&SameEvaluationSample(saved,sampled),label);
+    };
+    reject(-1,MMS_E_ARGUMENT,"explicit negative sample frame is rejected without overwriting output");
+    source.keys[2].next=2;reject(0,MMS_E_ARGUMENT,"zero sampling validates the complete target chain including later cycles");
+    source.keys[2].next=3;const auto frame=source.keys[3].frame;
+    source.keys[3].frame=std::uint32_t(frame_limits::maximum)+1;
+    reject(0,MMS_E_ARGUMENT,"out-of-range target key is rejected even when sampling zero");source.keys[3].frame=frame;
+    source.keys[0].position[0]=std::numeric_limits<float>::quiet_NaN();
+    reject(0,MMS_E_ARGUMENT,"nonfinite target pose is rejected with output intact");source.keys[0].position[0]=0;
+    Check(f.app->CurrentFrame()==-5&&f.first.Digest()==before&&bone_scale::PoseValuesEqual(f.first.raw(),poses),
+        "invalid explicit sampling leaves real model and playhead untouched");
+    f.first.bones[0].hasRigidBody=1;f.app->PlaybackPhysicsMode()=2;source.keys[0].physicsDisabled=1;
+    const auto physicsBefore=f.first.Digest();reject(0,MMS_E_NOT_READY,"explicit zero sampling retains solver transition refusal");
+    source.keys[0].physicsDisabled=0;source.keys[2].physicsDisabled=1;f.app->PlaybackPhysicsMode()=3;
+    reject(0,MMS_E_NOT_READY,"explicit target sampling retains mode-three IK arming refusal");
+    Check(f.first.Digest()==physicsBefore&&f.app->CurrentFrame()==-5,
+        "physics rejection has no setter or live pose side effect");
+    // A non-native type without a matching free curve supplies scale only.
+    auto metadata=f.first.bones[0];metadata.type=static_cast<mdl::BoneType>(127);
+    // Build an independent native seek oracle with the same target key/scale
+    // track and empty free curves. Solver mode zero leaves the scale comparison
+    // independent of the physics refusals exercised above.
+    EvaluationSeed(f.second);
+    Check(source.keys.size()==mdl::BoneKeyCapacity(f.second.m->boneKeys),"scale-only oracle key capacity matches target");
+    std::memcpy(f.second.m->boneKeys,source.keys.data(),source.keys.size()*sizeof(mdl::BoneKey));
+    auto restore=bone_scale::AuthoringRestore::Prepare(f.second.raw(),source.scale,source.keys.size());
+    Check(restore->Publish(),"install scale-only target authoring in independent oracle");
+    SeekModelFrame(f.second.raw(),0,0);
+    const auto expectedScale=bone_scale::Pose(f.second.raw(),0);
+    Check(plugins::SampleBoneEvaluation(metadata,0,f.first.m->boneCount,0,0,source.View(),sampled)==MMS_OK&&
+        !sampled.writePose&&sampled.scale==expectedScale&&sampled.position[0]==metadata.trans[0],
+        "scale-only sampling preserves the non-native fallback pose and writePose contract");
+}
 }
 void NativeBoneEvaluationChecks() {
     EvaluationSeekParity();EvaluationFreeCurves();EvaluationSelectorAndPhysics();
     EvaluationFreshnessAndFailures();EvaluationPublicationOrdering();EvaluationHistoryAtCurrentFrame();
+    EvaluationExplicitTargetDirections();EvaluationExplicitCurvesAndSelectors();EvaluationExplicitRejections();
 }

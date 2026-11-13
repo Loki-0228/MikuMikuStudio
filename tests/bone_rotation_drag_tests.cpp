@@ -5,6 +5,7 @@
 #define NOMINMAX
 #include <Windows.h>
 #include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/bone_edit_axes.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/mmd_app.hpp"
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -94,6 +96,7 @@ struct Fixture {
         for (auto& b : bones) {
             b.parent = b.slotIndex = -1; b.tailBone = 0;
             b.type = mdl::BoneType::RotateMove; b.flags = mdl::kBoneFlagVisible;
+            if (pmx) b.flags |= mdl::kBoneFlagRotatable;
             b.rotQuat[3] = 1;
             Identity(b.matInit); Identity(b.matWorld); Identity(b.matLocal); Identity(b.matExtra);
         }
@@ -232,6 +235,7 @@ void SelectedRoots(bool pmx) {
     const float rest[4][3] = {{2,-1,3}, {5,3,3}, {5,3,5}, {-7,2,9}};
     for (unsigned i = 0; i != 4; ++i) std::memcpy(f.bones[i].position, rest[i], sizeof(rest[i]));
     f.bones[1].type = mdl::BoneType::Move; f.bones[2].parent = 1;
+    if (pmx) f.bones[1].flags |= mdl::kBoneFlagMovable;
     f.Evaluate();
     const auto untouched = f.bones[3];
     // The selected secondary root may already contain drift from an old drag.
@@ -255,6 +259,150 @@ void SelectedRoots(bool pmx) {
     Check(Length(f.bones[1].trans, 3) < .005, "paired root orbits return to the starting location");
     Check(f.dirty[0] == 1 && f.dirty[1] == 1 && f.dirty[2] == 0 && f.dirty[3] == 0 &&
           std::memcmp(&untouched, &f.bones[3], sizeof(untouched)) == 0, "only selected roots are edited; unrelated root remains byte-identical");
+}
+
+void FingerPose(Fixture& f, int mode, int coordinates, bool chain, bool fixed) {
+    f.model->boneCount = 4;
+    f.app->InteractionDragMode() = static_cast<ViewportDragMode>(mode);
+    f.app->state.coordinateSystem = coordinates;
+    f.app->CameraPitch() = .41f; f.app->CameraRoll() = -.23f;
+    const float positions[4][3] = {{1,2,3}, {3,5,4}, {4,8,6}, {-5,4,2}};
+    const float axes[3][6] = {{1,0,0, 0,0,1}, {0,1,0, 0,0,1}, {1,1,0, 0,0,1}};
+    for (unsigned i = 0; i != 4; ++i) {
+        auto& bone = f.bones[i];
+        f.selected[i] = i < 3;
+        bone.parent = chain && i > 0 && i < 3 ? static_cast<int>(i - 1) : -1;
+        bone.tailBone = (i + 1) % 4;
+        std::memcpy(bone.position, positions[i], sizeof(bone.position));
+        bone.trans[0] = .1f * i; bone.trans[1] = -.2f * i; bone.trans[2] = .3f * i;
+        bone.rotQuat[i % 3] = std::sin(.13f * (i + 1));
+        bone.rotQuat[3] = std::cos(.13f * (i + 1));
+        d3dx::D3DXMATRIXF parent{}, pose{}, world{};
+        d3dx::Get().rotY(&parent, .31f * i);
+        d3dx::Get().matrixRotationQuaternion(&pose, bone.rotQuat);
+        d3dx::Get().multiply(&world, &pose, &parent);
+        std::memcpy(bone.matWorld, &parent, sizeof(parent));
+        std::memcpy(bone.matInit, &world, sizeof(world));
+        if (i < 3) {
+            if (f.model->physicsMode == 2)
+                std::memcpy(bone.localAxes, axes[i], sizeof(bone.localAxes));
+            else
+                std::memcpy(bone.name, "\x8e\x77", 3); // PMD finger local-axis convention.
+        }
+    }
+    if (fixed) {
+        f.bones[1].type = mdl::BoneType::FixedAxis;
+        f.bones[2].type = mdl::BoneType::UnderIk;
+        for (unsigned i : {1u, 2u}) {
+            f.bones[i].flags |= mdl::kBoneFlagFixedAxis;
+            f.bones[i].axis[i - 1] = 2.f;
+        }
+    }
+}
+
+void MultiSelectionRotations(bool pmx) {
+    for (int mode = 1; mode <= 6; ++mode)
+    for (int coordinates = 0; coordinates != 3; ++coordinates) {
+        bool matches = true, moved = true, preserved = true, noOp = true;
+        double maxError = 0;
+        for (bool chain : {false, true})
+        for (bool fixed : {false, true})
+        for (int active : {0, 2}) {
+            Fixture group(pmx);
+            FingerPose(group, mode, coordinates, chain, fixed);
+            group.model->selectedBone = active;
+            mdl::BoneRecord before[4];
+            std::memcpy(before, group.bones, sizeof(before));
+            group.Drag(43);
+            for (unsigned i = 0; i != 3; ++i) {
+                // Apply the same event with this bone selected alone. This
+                // checks each bone's own coordinate frame and fixed-axis rule
+                // without reproducing the production quaternion calculation.
+                Fixture single(pmx);
+                FingerPose(single, mode, coordinates, chain, fixed);
+                std::fill_n(single.selected, 4, 0);
+                single.selected[i] = 1; single.model->selectedBone = i;
+                single.Drag(43);
+                matches &= Near(group.bones[i].rotQuat, single.bones[i].rotQuat, 4, .000002);
+                for (unsigned k = 0; k != 4; ++k)
+                    maxError = std::max(maxError, std::abs(double(group.bones[i].rotQuat[k]) - single.bones[i].rotQuat[k]));
+                moved &= !Near(group.bones[i].rotQuat, before[i].rotQuat, 4, .000002) && group.dirty[i] == 1;
+                preserved &= std::memcmp(group.bones[i].trans, before[i].trans, sizeof(before[i].trans)) == 0;
+            }
+            preserved &= std::memcmp(&group.bones[3], &before[3], sizeof(before[3])) == 0 && group.dirty[3] == 0;
+            preserved &= group.model->selectedBone == active && group.selected[0] == 1 && group.selected[1] == 1 && group.selected[2] == 1 && group.selected[3] == 0;
+            Fixture still(pmx);
+            FingerPose(still, mode, coordinates, chain, fixed);
+            still.model->selectedBone = active;
+            std::memcpy(before, still.bones, sizeof(before));
+            still.Drag(0);
+            noOp &= std::memcmp(still.bones, before, sizeof(before)) == 0 &&
+                    std::all_of(still.dirty, still.dirty + 4, [](unsigned char dirty) { return dirty == 0; });
+        }
+        std::printf("MULTI_ROTATE format=%s mode=%d coordinates=%d max_single_bone_error=%.9g\n",
+                    pmx ? "PMX" : "PMD", mode, coordinates, maxError);
+        Check(matches && moved, "every selected rotation-only joint matches its own single-bone edit, including selected descendants");
+        Check(preserved, "rotation-only edits preserve translations, unselected bones and the selection");
+        Check(noOp, "zero drag leaves the complete multi-selection pose and dirty flags untouched");
+    }
+}
+
+void MixedSelectionRotations(bool pmx) {
+    for (auto movable : {mdl::BoneType::Move, mdl::BoneType::Ik}) {
+        Fixture group(pmx), legacy(pmx), single(pmx);
+        for (auto* f : {&group, &legacy, &single}) {
+            FingerPose(*f, 5, 1, false, false);
+            f->bone.type = mdl::BoneType::Move;
+            f->bones[1].type = movable;
+            if (pmx) f->bones[1].flags |= mdl::kBoneFlagMovable;
+            f->bones[2].parent = 0; // selected rotation joint under a selected movable parent
+        }
+        legacy.selected[2] = 0;
+        single.selected[0] = single.selected[1] = 0;
+        single.model->selectedBone = 2;
+        const auto root = group.bones[1], finger = group.bones[2], untouched = group.bones[3];
+        group.Drag(43); legacy.Drag(43); single.Drag(43);
+        bool sameLegacy = true;
+        for (unsigned i : {0u, 1u})
+            sameLegacy &= Near(group.bones[i].rotQuat, legacy.bones[i].rotQuat, 4) &&
+                          Near(group.bones[i].trans, legacy.bones[i].trans, 3) && group.dirty[i] == legacy.dirty[i];
+        Check(sameLegacy && group.dirty[1] == 1 && !Near(group.bones[1].trans, root.trans, 3),
+              "mixed selection preserves Move/IK selected-root orbit behavior");
+        Check(Near(group.bones[2].rotQuat, single.bones[2].rotQuat, 4) && group.dirty[2] == 1 &&
+              std::memcmp(group.bones[2].trans, finger.trans, sizeof(finger.trans)) == 0 &&
+              std::memcmp(&group.bones[3], &untouched, sizeof(untouched)) == 0,
+              "mixed selection also rotates the selected finger in place and preserves unrelated bones");
+    }
+}
+
+void MultiSelectionUndo(bool pmx) {
+    Fixture f(pmx);
+    FingerPose(f, 4, 0, true, false);
+    mdl::BoneRecord before[4], edited[4];
+    std::memcpy(before, f.bones, sizeof(before));
+    PushBoneEditUndo(f.app.get());
+    const int slot = static_cast<int>(f.model->undoState[0]);
+    Check(f.model->undoRings[0].slots[slot].dirty == 3, "one undo snapshot captures all selected finger joints");
+    f.Drag(43);
+    std::memcpy(edited, f.bones, sizeof(edited));
+    std::int32_t frame = 0;
+    UndoModelEdit(f.Raw(), &frame, pmx ? 2 : 0);
+    bool restored = true;
+    for (unsigned i = 0; i != 4; ++i)
+        restored &= Near(f.bones[i].rotQuat, before[i].rotQuat, 4) &&
+                    Near(f.bones[i].trans, before[i].trans, 3) && f.dirty[i] == 0;
+    Check(restored, "one undo restores the entire multi-joint pose and dirty flags");
+    RedoModelEdit(f.Raw(), &frame, pmx ? 2 : 0);
+    restored = true;
+    for (unsigned i = 0; i != 4; ++i)
+        restored &= Near(f.bones[i].rotQuat, edited[i].rotQuat, 4) &&
+                    Near(f.bones[i].trans, edited[i].trans, 3) && f.dirty[i] == (i < 3 ? 1 : 0);
+    Check(restored, "one redo reapplies the entire multi-joint pose and dirty flags");
+    for (auto& ring : f.model->undoRings)
+        for (auto& record : ring.slots) {
+            std::free(record.bonePose);
+            record.bonePose = nullptr;
+        }
 }
 
 void RecoveryAndGuards(bool pmx) {
@@ -295,6 +443,79 @@ void RecoveryAndGuards(bool pmx) {
     }
 }
 
+void HudAxisQueries(bool pmx) {
+    Fixture f(pmx);
+    std::memcpy(f.bone.name, "\x8e\x77", 3);
+    for (int tail : {-1, 0, 1}) {
+        f.bone.tailBone = tail;
+        const auto before = f.bone;
+        float world[3]{};
+        Check(BoneRotationAxisWorld(f.app.get(), f.Raw(), 0, 0, world) &&
+              world[0] == 1.0f && world[1] == 0.0f && world[2] == 0.0f &&
+              std::memcmp(&before, &f.bone, sizeof(before)) == 0 && f.dirty[0] == 0,
+              "HUD hover safely falls back for a missing or degenerate finger tail without editing its pose");
+    }
+    f.bone.type = mdl::BoneType::FixedAxis;
+    f.bone.flags |= mdl::kBoneFlagFixedAxis;
+    f.bone.axis[0] = 1;
+    f.bone.tailBone = -1;
+    const auto before = f.bone;
+    float world[3]{};
+    Check(BoneRotationAxisWorld(f.app.get(), f.Raw(), 0, 2, world) == pmx &&
+          std::memcmp(&before, &f.bone, sizeof(before)) == 0 && f.dirty[0] == 0,
+          "HUD uses a PMX fixed axis without a tail and rejects a missing PMD fixed-axis tail");
+    Check(!BoneRotationAxisWorld(f.app.get(), f.Raw(), 1, 0, world) &&
+          !BoneRotationAxisWorld(f.app.get(), f.Raw(), 0, 3, world) &&
+          world[0] == 0 && world[1] == 0 && world[2] == 0,
+          "HUD rejects stale bone indices and invalid axes with an empty direction");
+}
+
+void HudParentAxisQueries(bool pmx) {
+    for (bool shear : {false, true}) for (bool fixed : {false, true})
+    for (int coordinate = 0; coordinate < 3; ++coordinate) for (int axis = 0; axis < 3; ++axis) {
+        Fixture f(pmx);
+        f.model->boneCount = 2;
+        f.bone.parent = f.bone.tailBone = 1;
+        f.bones[1].position[0] = .3f; f.bones[1].position[1] = .7f; f.bones[1].position[2] = .4f;
+        f.bone.matWorld[0] = 2; f.bone.matWorld[5] = .5f; f.bone.matWorld[10] = 3;
+        if (shear) { f.bone.matWorld[1] = .7f; f.bone.matWorld[6] = -.3f; }
+        f.bone.localAxes[0] = .8f; f.bone.localAxes[1] = .6f; f.bone.localAxes[5] = 1;
+        if (fixed) {
+            f.bone.type = mdl::BoneType::FixedAxis; f.bone.flags |= mdl::kBoneFlagFixedAxis;
+            std::memcpy(f.bone.axis, f.bones[1].position, 3 * sizeof(float));
+        }
+        f.app->state.coordinateSystem = coordinate;
+        f.app->InteractionDragMode() = static_cast<ViewportDragMode>(axis + 4);
+        const auto before = f.bone;
+        float world[3]{}, parent[3]{};
+        Check(BoneRotationAxisWorld(f.app.get(), f.Raw(), 0, axis, world, parent) &&
+              std::abs(Length(world, 3) - 1) < .00001 && std::abs(Length(parent, 3) - 1) < .00001 &&
+              std::memcmp(&before, &f.bone, sizeof(before)) == 0 && f.dirty[0] == 0,
+              "HUD queries normalized world and actual edit axes without mutating scaled/sheared parent data");
+        f.Drag(37);
+        const double vectorLength = Length(f.bone.rotQuat, 3);
+        float actual[3]{};
+        if (vectorLength > .00001)
+            for (int i = 0; i < 3; ++i) actual[i] = static_cast<float>(f.bone.rotQuat[i] / vectorLength);
+        Check(vectorLength > .00001 && Near(parent, actual, 3, .00001) &&
+              std::memcmp(f.bone.matWorld, before.matWorld, sizeof(before.matWorld)) == 0,
+              "HUD parent axis exactly matches the applied native delta quaternion under parent stretch and shear");
+        if (fixed && axis == 0) {
+            float transposed[3]{};
+            for (int row = 0; row < 3; ++row)
+                for (int c = 0; c < 3; ++c) transposed[row] += before.matWorld[row * 4 + c] * world[c];
+            const double length = Length(transposed, 3);
+            for (float& component : transposed) component = static_cast<float>(component / length);
+            Check(!Near(parent, transposed, 3, .01),
+                  "nonorthogonal-parent regression distinguishes the true edit axis from the erroneous transposed world-axis reconstruction");
+        }
+        std::fill_n(parent, 3, 17.f);
+        Check(!BoneRotationAxisWorld(f.app.get(), f.Raw(), 2, axis, world, parent) &&
+              Length(world, 3) == 0 && Length(parent, 3) == 0,
+              "invalid axis query clears both world and parent outputs");
+    }
+}
+
 void PreserveStretch() {
 #if !MMD_ORIGINAL_PROFILE
     Fixture f(true);
@@ -322,11 +543,33 @@ void PreserveStretch() {
 }
 }
 
+void PmxHudPermissions() {
+    for (auto flags : {0, int(mdl::kBoneFlagRotatable), int(mdl::kBoneFlagMovable),
+                       int(mdl::kBoneFlagRotatable | mdl::kBoneFlagMovable)}) {
+        Fixture f(true);
+        f.bone.flags = mdl::kBoneFlagVisible | flags;
+        f.bone.type = (flags & mdl::kBoneFlagMovable) ? mdl::BoneType::Move : mdl::BoneType::RotateMove;
+        f.app->state.coordinateSystem = 1;
+        f.app->InteractionDragMode() = static_cast<ViewportDragMode>(4);
+        f.Drag(31);
+        Check((std::abs(f.bone.rotQuat[0]) > .01f) == bool(flags & mdl::kBoneFlagRotatable) &&
+            bool(f.dirty[0]) == bool(flags & mdl::kBoneFlagRotatable),
+            "real PMX HUD rotation mutates the pose only with the rotation flag");
+        f.dirty[0] = 0;
+        f.app->InteractionDragMode() = static_cast<ViewportDragMode>(10);
+        f.Drag(31);
+        Check((std::abs(f.bone.trans[0]) > .01f) == bool(flags & mdl::kBoneFlagMovable) &&
+            bool(f.dirty[0]) == bool(flags & mdl::kBoneFlagMovable),
+            "real PMX HUD translation mutates the pose only with the move flag");
+    }
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     auto& api = d3dx::Get();
     Check(api.Load() && api.matrixRotationQuaternion && api.vec3Transform, "load CPU transform dependencies");
     if (failures) return 1;
+    PmxHudPermissions();
     for (bool pmx : {false, true}) {
         VerticalHandleParity(pmx);
         for (int mode = 1; mode <= 3; ++mode) Stress(pmx, mode);
@@ -335,6 +578,8 @@ int main() {
             Stress(pmx, mode, 0, true);
         }
         SelectedRoots(pmx); RecoveryAndGuards(pmx);
+        MultiSelectionRotations(pmx); MixedSelectionRotations(pmx); MultiSelectionUndo(pmx);
+        HudAxisQueries(pmx); HudParentAxisQueries(pmx);
     }
     PreserveStretch();
     std::printf("RESULT profile=%s checks=%u failures=%u windows_created=0 devices_created=0\n",

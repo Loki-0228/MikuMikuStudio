@@ -1,5 +1,5 @@
 // Real menu/window/device paths with failures limited to the capture operation.
-enum class StillFailure { None, CreateSurface, CopySurface, TransparentTarget, CreateWindow };
+enum class StillFailure { None, CreateSurface, CopySurface, TransparentTarget, CreateWindow, BeginScene };
 StillFailure stillFailure = StillFailure::None;
 bool observeStillExit = false;
 unsigned stillFailureCalls = 0, stillStopPlaybackCalls = 0;
@@ -9,6 +9,7 @@ using StillCopySurface = HRESULT(WINAPI*)(IDirect3DDevice9*, IDirect3DSurface9*,
     IDirect3DSurface9*, const RECT*, D3DTEXTUREFILTERTYPE);
 StillCreateTarget originalStillTarget = nullptr;
 StillCopySurface originalStillCopy = nullptr;
+HRESULT (WINAPI* originalStillBeginScene)(IDirect3DDevice9*) = nullptr;
 decltype(&CreateWindowExW) originalStillWindow = nullptr;
 decltype(&StopPlayback) originalStillStop = nullptr;
 HRESULT WINAPI FailStillTarget(IDirect3DDevice9* device, UINT width, UINT height, D3DFORMAT format,
@@ -43,25 +44,39 @@ void ObserveStillStop(MMDApp* app) {
     if (observeStillExit) ++stillStopPlaybackCalls;
     originalStillStop(app);
 }
+HRESULT WINAPI FailStillBeginScene(IDirect3DDevice9* device) {
+    if (stillFailure == StillFailure::BeginScene && seq::StillActive(g_Block) &&
+        g_Block->state.timelineAdvanceDue) {
+        ++stillFailureCalls;
+        return D3DERR_INVALIDCALL;
+    }
+    return originalStillBeginScene(device);
+}
 
 void TransparentStillFailures(MMDApp* app) {
+    StillSaveDialogProbe pickerProbe;
     auto** table = *reinterpret_cast<void***>(app->Renderer()->device);
     void* hooks[] = {table[28], table[34], reinterpret_cast<void*>(&CreateWindowExW),
-        reinterpret_cast<void*>(&StopPlayback), reinterpret_cast<void*>(&GetSaveFileNameW)};
+        reinterpret_cast<void*>(&StopPlayback), table[41]};
     Check(MH_CreateHook(hooks[0], &FailStillTarget, reinterpret_cast<void**>(&originalStillTarget)) == MH_OK &&
         MH_CreateHook(hooks[1], &FailStillCopy, reinterpret_cast<void**>(&originalStillCopy)) == MH_OK &&
         MH_CreateHook(hooks[2], &FailStillWindow, reinterpret_cast<void**>(&originalStillWindow)) == MH_OK &&
         MH_CreateHook(hooks[3], &ObserveStillStop, reinterpret_cast<void**>(&originalStillStop)) == MH_OK &&
-        MH_CreateHook(hooks[4], &StillSaveDialog, nullptr) == MH_OK, "install bounded still-export failure observation");
+        MH_CreateHook(hooks[4], &FailStillBeginScene, reinterpret_cast<void**>(&originalStillBeginScene)) == MH_OK,
+        "install bounded still-export failure observation");
     for (auto* hook : hooks) Check(MH_EnableHook(hook) == MH_OK, "enable still-export failure observation");
+#if !MMD_ORIGINAL_PROFILE
     plugins::StorageStore storage;
     plugins::SharedHistory history(storage);
     plugins::NativePoseTestBinding binding(*app, history);
+#endif
     const int requestedWidth = app->RenderWidth(), requestedHeight = app->RenderHeight();
+#if !MMD_ORIGINAL_PROFILE
     const auto previousSettings = app->antialiasing;
     std::wstring error;
     Check(antialias::Select(app, antialias::Algorithm::MmdOriginal, error), "use native AA for deterministic still failures");
-    for (unsigned scenario = 0; scenario < 6; ++scenario) {
+#endif
+    for (unsigned scenario = 0; scenario < 7; ++scenario) {
         auto* renderer = app->Renderer();
         const int screenWidth = renderer->screenWidth, screenHeight = renderer->screenHeight;
         Check(screenWidth > 0 && screenHeight > 0 && screenWidth < 16382 && screenHeight < 16382,
@@ -77,8 +92,10 @@ void TransparentStillFailures(MMDApp* app) {
         const auto dirty = app->SceneModified();
         const auto playback = app->PlaybackActive(), frameStep = app->FrameStepPlayback();
         const auto pending = app->state.recordPlaybackStartPending;
+#if !MMD_ORIGINAL_PROFILE
         std::uint64_t revision = 0;
         Check(history.Revision(revision) == MMS_OK, "read history before failed still output");
+#endif
         stillPath = output / (L"failed-still-" + std::to_wstring(scenario) + L".png");
         stillPickers = 0; stillFailureCalls = 0; stillStopPlaybackCalls = 0;
         const auto oldWarnings = warnings;
@@ -91,6 +108,7 @@ void TransparentStillFailures(MMDApp* app) {
                 renderer->screenWidth == screenWidth + 2 && renderer->screenHeight == screenHeight + 2,
                 "still failure begins with a real window and enlarged backbuffer");
             if (scenario == 0) {
+                app->state.messageSeen = 1; RenderFrameScene(app);
                 stillFailure = StillFailure::CreateSurface;
                 TimelineAdvance(app);
             } else if (scenario == 1) {
@@ -104,15 +122,23 @@ void TransparentStillFailures(MMDApp* app) {
                 app->state.messageSeen = 1; RenderFrameScene(app);
             } else if (scenario == 4) {
                 Check(seq::CancelStillCapture(app), "explicit still cancel owns its capture");
-            } else {
+            } else if (scenario == 5) {
                 // The RecWindow Esc/close path still calls this legacy entry.
                 FinishAviRecord(app);
+            } else {
+                stillFailure = StillFailure::BeginScene;
+                for (unsigned pass = 0; app->RecordingWindow() && pass < 12; ++pass) {
+                    app->state.messageSeen = 1;
+                    coordinator_fixture::Drive(app);
+                }
+                Check(!fs::exists(stillPath), "a failed due frame cannot publish the previous render target");
             }
         }
         stillFailure = StillFailure::None; observeStillExit = false; expectWarning = false;
-        Check(stillFailureCalls == (scenario == 1 ? 2u : scenario < 4 ? 1u : 0u),
+        const bool failed = scenario < 4 || scenario == 6;
+        Check(stillFailureCalls == (scenario == 1 ? 2u : failed ? 1u : 0u),
             "failure injection reaches only the requested capture boundary");
-        Check(warnings == oldWarnings + (scenario < 4 ? 1u : 0u), "failed output reports once and cancel reports no error");
+        Check(warnings == oldWarnings + (failed ? 1u : 0u), "failed output reports once and cancel reports no error");
         Check(!app->RecordingWindow() && !seq::StillActive(app) && !seq::Transparent(app) &&
             !TransparentCaptureSurface(app) && !app->state.timelineAdvanceRequested && !app->state.timelineAdvanceDue,
             "every still exit releases the window, alpha target, session and capture requests");
@@ -128,15 +154,20 @@ void TransparentStillFailures(MMDApp* app) {
             app->LightDirection()[0] == .25f && app->LightDirection()[1] == -.75f && app->LightDirection()[2] == .375f &&
             app->LightColor()[0] == .17f && app->LightColor()[1] == .37f && app->LightColor()[2] == .57f &&
             app->SceneModified() == dirty, "still failures preserve the playhead and unregistered camera and light edits");
+#if !MMD_ORIGINAL_PROFILE
         std::uint64_t after = 0;
         Check(history.Revision(after) == MMS_OK && after == revision && !history.UndoCount() && !history.RedoCount(),
             "still failures leave the common history revision and records unchanged");
+#endif
         std::printf("PASS still-failure scenario=%u errors=%u injection_calls=%u\n", scenario,
             warnings - oldWarnings, stillFailureCalls);
     }
     app->RenderWidth() = requestedWidth; app->RenderHeight() = requestedHeight;
+    RunStillRecovery(app, app->EnglishUI(), L"begin-scene");
+#if !MMD_ORIGINAL_PROFILE
     Check(antialias::Select(app, previousSettings.algorithm, error), "restore AA after still failure checks");
     if (app->antialiasing.enabled != previousSettings.enabled)
         Check(antialias::Toggle(app, error), "restore AA enable state after still failure checks");
+#endif
     for (auto* hook : hooks) { MH_DisableHook(hook); MH_RemoveHook(hook); }
 }

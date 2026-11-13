@@ -28,17 +28,35 @@
 #include <array>
 #include <thread>
 
-namespace { thread_local long failAfter=-1; }
+namespace {
+thread_local long failAfter=-1;
+// Optional fixed-storage audit for narrowly scoped allocation cancellation
+// checks. It does not allocate or change the normal failure-injection order.
+struct AllocationAudit {
+    std::array<void*,64> blocks{};
+    std::size_t outstanding=0;
+    bool overflow=false;
+    void Acquire(void* pointer)noexcept{
+        for(auto& block:blocks)if(!block){block=pointer;++outstanding;return;}
+        overflow=true;
+    }
+    void Release(void* pointer)noexcept{
+        if(!pointer)return;
+        for(auto& block:blocks)if(block==pointer){block=nullptr;--outstanding;return;}
+    }
+};
+thread_local AllocationAudit* allocationAudit=nullptr;
+}
 void* operator new(std::size_t size) {
     if(failAfter==0)throw std::bad_alloc();
     if(failAfter>0)--failAfter;
-    if(auto p=std::malloc(size?size:1))return p;throw std::bad_alloc();
+    if(auto p=std::malloc(size?size:1)){if(allocationAudit)allocationAudit->Acquire(p);return p;}throw std::bad_alloc();
 }
 void* operator new[](std::size_t size){return ::operator new(size);}
-void operator delete(void* p) noexcept {std::free(p);}
-void operator delete[](void* p) noexcept {std::free(p);}
-void operator delete(void* p,std::size_t) noexcept {std::free(p);}
-void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
+void operator delete(void* p) noexcept {if(allocationAudit)allocationAudit->Release(p);std::free(p);}
+void operator delete[](void* p) noexcept {::operator delete(p);}
+void operator delete(void* p,std::size_t) noexcept {::operator delete(p);}
+void operator delete[](void* p,std::size_t) noexcept {::operator delete(p);}
 
 using namespace mikumikustudio;
 namespace mikumikustudio { void CmdControl400(MMDApp*, HWND, std::uint16_t, std::uint16_t); }
@@ -352,12 +370,16 @@ void CrossModelJournal(){
 #include "native_bone_interpolation_checks.inc"
 #include "native_bone_evaluation_checks.inc"
 #include "native_display_key_checks.inc"
+#include "native_bone_delete_target_checks.inc"
+#include "native_display_delete_target_checks.inc"
 #include "native_morph_key_checks.inc"
+#include "native_morph_delete_target_checks.inc"
 #include "native_morph_registration_checks.inc"
 #include "native_morph_text_checks.inc"
 #include "native_display_registration_checks.inc"
 #include "native_global_registration_checks.inc"
 #include "native_global_key_delete_checks.hpp"
+#include "native_global_delete_target_checks.inc"
 #include "native_camera_reset_checks.inc"
 #include "native_camera_numeric_checks.inc"
 #include "native_camera_axis_checks.inc"
@@ -375,6 +397,7 @@ void CrossModelJournal(){
 #include "native_black_background_checks.inc"
 #include "native_projected_shadow_checks.inc"
 #include "native_model_key_checks.inc"
+#include "native_model_delete_target_checks.inc"
 #include "native_unused_key_checks.inc"
 #include "native_unused_display_checks.inc"
 #include "native_unused_curve_checks.inc"
@@ -392,6 +415,18 @@ void CrossModelJournal(){
 #include "native_morph_reset_checks.inc"
 #include "native_slider_readout_checks.inc"
 #include "native_history_mode_checks.inc"
+#include "negative_global_delete_target_checks.inc"
+#include "negative_model_delete_target_checks.inc"
+#include "native_signed_delete_admission_checks.inc"
+#include "native_signed_delete_model_checks.inc"
+#include "native_signed_delete_command_checks.inc"
+#include "native_signed_delete_keyboard_checks.inc"
+#include "native_signed_delete_model_command_checks.inc"
+#include "native_signed_delete_selector_checks.inc"
+#include "native_signed_delete_context_checks.inc"
+#include "native_global_delete_budget_checks.inc"
+#include "native_model_delete_budget_checks.inc"
+#include "native_signed_delete_budget_checks.inc"
 #include "native_frame_line_checks.inc"
 #include "native_key_paste_checks.inc"
 #include "native_morph_paste_checks.inc"
@@ -399,10 +434,20 @@ void CrossModelJournal(){
 #include "native_global_paste_tracks_checks.inc"
 #include "native_accessory_paste_checks.inc"
 #include "native_global_paste_checks.inc"
+#include "native_global_copy_failure_checks.inc"
+#include "native_global_copy_snapshot_checks.inc"
+#include "native_negative_copy_result_checks.inc"
+#include "native_negative_copy_source_checks.inc"
+#include "native_model_copy_snapshot_checks.inc"
+#include "native_frame_copy_batch_checks.inc"
+#include "native_global_paste_payload_checks.inc"
+#include "native_signed_paste_frame_checks.inc"
 #include "native_gravity_paste_checks.inc"
 #include "native_morph_paste_part_checks.inc"
 #include "native_model_paste_family_checks.inc"
+#include "native_model_delete_record_owner_checks.inc"
 #include "native_model_paste_checks.inc"
+#include "native_model_paste_payload_checks.inc"
 #include "native_global_source_checks.inc"
 #include "native_vmd_decode_checks.inc"
 #include "native_vmd_global_checks.inc"
@@ -460,9 +505,46 @@ void CrossModelJournal(){
 #include "native_camera_parent_history_checks.inc"
 #include "native_camera_parent_model_history_checks.inc"
 #include "retained_bookkeeping_checks.inc"
+#include "native_scene_identity_allocation_checks.inc"
 #include "plugins/history_publication_signal_checks.inc"
+#include "native_bone_copy_authoring_checks.inc"
+#include "native_morph_copy_authoring_checks.inc"
+#include "native_model_copy_authoring_checks.inc"
+#include "native_global_copy_authoring_checks.inc"
+#include "native_global_copy_authoring_command_checks.inc"
+#include "animation_curve_signed_checks.inc"
+#include "native_negative_authoring_checks.inc"
+#include "native_negative_key_data_checks.inc"
+#include "native_camera_sampling_checks.inc"
+#include "native_negative_seek_parity_checks.inc"
+#include "native_negative_sampling_checks.inc"
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);
+    if(argc==2&&!std::strcmp(argv[1],"--negative-sampling-only")) {
+        NativeNegativeSamplingChecks();std::printf("PASS negative sampling: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--native-camera-sampling-only")) {
+        NativeCameraSamplingChecks();std::printf("PASS native camera sampling: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--negative-seek-parity-only")) {
+        NativeNegativeSeekParityChecks();std::printf("PASS negative seek parity: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--animation-curve-signed-only")) {
+        AnimationCurveSignedChecks();std::printf("PASS signed curve core: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--negative-authoring-only")) {
+        NativeNegativeAuthoringChecks();std::printf("PASS negative authoring representation: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--negative-key-data-only")) {
+        NativeNegativeKeyDataChecks();std::printf("PASS negative key storage: %u checks\n",checks);return 0;
+    }
+    if(argc>=2&&!std::strcmp(argv[1],"--signed-delete-keyboard-child")) {
+        if(argc!=3) {
+            std::fprintf(stderr,"FAIL signed keyboard child requires its private desktop name\n");
+            return 2;
+        }
+        return NativeSignedDeleteKeyboardChild(argv[2])?0:2;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--property-history-signal-only")) {
         HistoryPublicationSignalChecks();std::printf("PASS property history signal: %u checks\n",checks);return 0;
     }
@@ -471,6 +553,9 @@ int main(int argc,char** argv){
     }
     if(argc==2&&!std::strcmp(argv[1],"--import-textures-only")) {
         ImportTextureCacheChecks();std::printf("PASS import textures: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--import-texture-disk-cache-only")) {
+        ImportTextureDiskCacheChecks();std::printf("PASS import texture disk cache: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--toon-resolution-only")) {
         NativeToonResolutionChecks();std::printf("PASS native toon resolution: %u checks\n",checks);return 0;
@@ -554,6 +639,11 @@ int main(int argc,char** argv){
         NativeMorphToolsChecks();std::printf("PASS morph tools: %u checks\n",checks);return 0;
     }
     const auto run=[](const char* name,void(*test)()){std::printf("RUN %s\n",name);test();};
+    if (argc == 2 && !std::strcmp(argv[1], "--pose-draft-selection")) {
+        run("PoseDraftSelectionChecks", PoseDraftSelectionChecks);
+        std::puts("PASS bone number draft selection and retry");
+        return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--unbound-rotation-only")) {
         wchar_t desktop[128]{}; DWORD bytes=0;
         Check(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()),UOI_NAME,
@@ -748,6 +838,50 @@ int main(int argc,char** argv){
         run("NativeGravityPasteChecks",NativeGravityPasteChecks);
         std::printf("PASS native global paste: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--global-copy-failure-only")) {
+        run("NativeGlobalCopyFailureChecks",NativeGlobalCopyFailureChecks);
+        std::printf("PASS native global copy allocation recovery: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--global-copy-snapshot-only")) {
+        run("NativeGlobalCopySnapshotChecks",NativeGlobalCopySnapshotChecks);
+        std::printf("PASS native global copy immutable source: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--negative-copy-result-only")) {
+        run("NativeNegativeCopyResultChecks",NativeNegativeCopyResultChecks);
+        std::printf("PASS native negative copy result and batch failure: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--bone-copy-authoring-only")) {
+        NativeBoneCopyAuthoringChecks();
+        std::printf("PASS native bone copy authoring: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--morph-copy-authoring-only")) {
+        NativeMorphCopyAuthoringChecks();
+        std::printf("PASS native morph copy authoring: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-copy-authoring-only")) {
+        NativeModelCopyAuthoringChecks();
+        std::printf("PASS native model copy authoring: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--global-copy-authoring-only")) {
+        NativeGlobalCopyAuthoringChecks();
+        std::printf("PASS native global copy authoring: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--global-copy-authoring-command-only")) {
+        NativeGlobalCopyAuthoringCommandChecks();
+        std::printf("PASS native global copy authoring command: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--frame-copy-batch-only")) {
+        NativeFrameCopyBatchChecks();
+        std::printf("PASS native frame copy batch: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-copy-snapshot-only")) {
+        NativeModelCopySnapshotChecks();
+        std::printf("PASS native model copy snapshot: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--negative-copy-source-only")) {
+        run("NativeNegativeCopySourceChecks",NativeNegativeCopySourceChecks);
+        std::printf("PASS native immutable negative source: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--model-paste-only")) {
         run("NativeMorphPasteChecks",NativeMorphPasteChecks);
         run("NativeDisplayPasteChecks",NativeDisplayPasteChecks);
@@ -923,6 +1057,81 @@ int main(int argc,char** argv){
         run("NativeGlobalKeyDeleteChecks",NativeGlobalKeyDeleteChecks);
         std::printf("PASS native global key deletion: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--delete-target-only")) {
+        run("NativeMorphDeleteTargetChecks",NativeMorphDeleteTargetChecks);
+        run("NativeGlobalDeleteTargetChecks",NativeGlobalDeleteTargetChecks);
+        std::printf("PASS native directional deletion targets: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-delete-target-only")) {
+        run("NativeBoneDeleteTargetChecks",NativeBoneDeleteTargetChecks);
+        run("NativeDisplayDeleteTargetChecks",NativeDisplayDeleteTargetChecks);
+        run("NativeModelDeleteTargetChecks",NativeModelDeleteTargetChecks);
+        std::printf("PASS native model directional deletion targets: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--signed-delete-aggregate-only")) {
+        run("NativeSignedDeleteAdmissionChecks",NativeSignedDeleteAdmissionChecks);
+        run("NativeModelDeleteRecordOwnerChecks",NativeModelDeleteRecordOwnerChecks);
+        run("NativeSignedDeleteModelChecks",NativeSignedDeleteModelChecks);
+        run("NativeSignedDeleteCommandChecks",NativeSignedDeleteCommandChecks);
+        run("NativeSignedDeleteModelCommandChecks",NativeSignedDeleteModelCommandChecks);
+        std::printf("PASS native signed delete aggregate: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--signed-delete-selector-only")) {
+        run("NativeSignedDeleteSelectorChecks",NativeSignedDeleteSelectorChecks);
+        std::printf("PASS native signed delete selectors: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--signed-delete-context-only")) {
+        run("NativeSignedDeleteContextChecks",NativeSignedDeleteContextChecks);
+        std::printf("PASS native signed delete context replay: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--signed-delete-keyboard-only")) {
+        if(!NativeSignedDeleteKeyboardChecks())return 2;
+        std::printf("PASS native signed delete keyboard supervisor: %u checks (child checks reported separately)\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-paste-payload-only")) {
+        run("NativeModelPastePayloadChecks",NativeModelPastePayloadChecks);
+        std::printf("PASS native model paste payload capture: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--global-paste-payload-only")) {
+        run("NativeGlobalPastePayloadChecks",NativeGlobalPastePayloadChecks);
+        std::printf("PASS native global paste payload capture: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--signed-paste-frame-only")) {
+        run("NativeSignedPasteFrameChecks",NativeSignedPasteFrameChecks);
+        std::printf("PASS native signed paste frame conversion: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--scene-identity-allocation-only")) {
+        run("NativeSceneIdentityAllocationChecks",NativeSceneIdentityAllocationChecks);
+        std::printf("PASS scene identity allocation cancellation: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--delete-budget-only")) {
+        run("NativeSceneIdentityAllocationChecks",NativeSceneIdentityAllocationChecks);
+        run("NativeGlobalDeleteBudgetChecks",NativeGlobalDeleteBudgetChecks);
+        run("NativeModelDeleteBudgetChecks",NativeModelDeleteBudgetChecks);
+        run("NativeSignedDeleteBudgetChecks",NativeSignedDeleteBudgetChecks);
+        std::printf("PASS native signed deletion preparation budget: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--negative-delete-target-only")) {
+        run("NegativeGlobalDeleteTargetChecks",NegativeGlobalDeleteTargetChecks);
+        run("NegativeModelDeleteTargetChecks",NegativeModelDeleteTargetChecks);
+        std::printf("PASS negative directional deletion targets: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--negative-global-delete-target-only")) {
+        run("NegativeGlobalDeleteTargetChecks",NegativeGlobalDeleteTargetChecks);
+        std::printf("PASS negative global deletion targets: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--negative-model-delete-target-only")) {
+        run("NegativeModelDeleteTargetChecks",NegativeModelDeleteTargetChecks);
+        std::printf("PASS negative model deletion targets: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--morph-key-delete-only")) {
+        run("NativeMorphKeyChecks",NativeMorphKeyChecks);
+        std::printf("PASS native morph key deletion: %u checks\n",checks);return 0;
+    }
+    if(argc==2&&!std::strcmp(argv[1],"--model-key-delete-only")) {
+        run("NativeModelKeyChecks",NativeModelKeyChecks);
+        std::printf("PASS native model key deletion: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--global-registration-only")) {
         run("NativeGlobalRegistrationChecks",NativeGlobalRegistrationChecks);
         run("NativeAccessoryRegistrationChecks",NativeAccessoryRegistrationChecks);
@@ -952,6 +1161,8 @@ int main(int argc,char** argv){
     run("NativeMorphResetChecks",NativeMorphResetChecks);
     run("NativeSliderReadoutChecks",NativeSliderReadoutChecks);
     run("NativeHistoryModeChecks",NativeHistoryModeChecks);
+    run("NegativeGlobalDeleteTargetChecks",NegativeGlobalDeleteTargetChecks);
+    run("NegativeModelDeleteTargetChecks",NegativeModelDeleteTargetChecks);
     run("NativeVmdImportChecks",NativeVmdImportChecks);
     run("NativeFrameLineChecks",NativeFrameLineChecks);
     run("NativeFrameLineCurveChecks",NativeFrameLineCurveChecks);
@@ -963,6 +1174,25 @@ int main(int argc,char** argv){
     run("NativeGlobalPasteTracksChecks",NativeGlobalPasteTracksChecks);
     run("NativeAccessoryPasteChecks",NativeAccessoryPasteChecks);
     run("NativeGlobalPasteChecks",NativeGlobalPasteChecks);
+    run("NativeGlobalCopyFailureChecks",NativeGlobalCopyFailureChecks);
+    run("NativeGlobalCopySnapshotChecks",NativeGlobalCopySnapshotChecks);
+    run("NativeNegativeCopyResultChecks",NativeNegativeCopyResultChecks);
+    run("NativeNegativeCopySourceChecks",NativeNegativeCopySourceChecks);
+    run("NativeModelCopySnapshotChecks",NativeModelCopySnapshotChecks);
+    run("NativeFrameCopyBatchChecks",NativeFrameCopyBatchChecks);
+    run("NativeBoneCopyAuthoringChecks",NativeBoneCopyAuthoringChecks);
+    run("NativeMorphCopyAuthoringChecks",NativeMorphCopyAuthoringChecks);
+    run("NativeModelCopyAuthoringChecks",NativeModelCopyAuthoringChecks);
+    run("NativeGlobalCopyAuthoringChecks",NativeGlobalCopyAuthoringChecks);
+    run("NativeGlobalCopyAuthoringCommandChecks",NativeGlobalCopyAuthoringCommandChecks);
+    run("AnimationCurveSignedChecks",AnimationCurveSignedChecks);
+    run("NativeNegativeAuthoringChecks",NativeNegativeAuthoringChecks);
+    run("NativeNegativeKeyDataChecks",NativeNegativeKeyDataChecks);
+    run("NativeCameraSamplingChecks",NativeCameraSamplingChecks);
+    run("NativeNegativeSeekParityChecks",NativeNegativeSeekParityChecks);
+    run("NativeNegativeSamplingChecks",NativeNegativeSamplingChecks);
+    run("NativeGlobalPastePayloadChecks",NativeGlobalPastePayloadChecks);
+    run("NativeSignedPasteFrameChecks",NativeSignedPasteFrameChecks);
     run("NativeGravityPasteChecks",NativeGravityPasteChecks);
     run("NativeMorphPastePartChecks",NativeMorphPastePartChecks);
     run("NativeModelPasteFamilyChecks",NativeModelPasteFamilyChecks);
@@ -1009,12 +1239,16 @@ int main(int argc,char** argv){
     run("NativeBoneInterpolationChecks",NativeBoneInterpolationChecks);
     run("NativeBoneEvaluationChecks",NativeBoneEvaluationChecks);
     run("NativeDisplayKeyChecks",NativeDisplayKeyChecks);
+    run("NativeBoneDeleteTargetChecks",NativeBoneDeleteTargetChecks);
+    run("NativeDisplayDeleteTargetChecks",NativeDisplayDeleteTargetChecks);
     run("NativeMorphKeyChecks",NativeMorphKeyChecks);
+    run("NativeMorphDeleteTargetChecks",NativeMorphDeleteTargetChecks);
     run("NativeMorphRegistrationChecks",NativeMorphRegistrationChecks);
     run("NativeMorphTextChecks",NativeMorphTextChecks);
     run("NativeDisplayRegistrationChecks",NativeDisplayRegistrationChecks);
     run("NativeGlobalRegistrationChecks",NativeGlobalRegistrationChecks);
     run("NativeGlobalKeyDeleteChecks",NativeGlobalKeyDeleteChecks);
+    run("NativeGlobalDeleteTargetChecks",NativeGlobalDeleteTargetChecks);
     run("NativeCameraResetChecks",NativeCameraResetChecks);
     run("NativeCameraNumericChecks",NativeCameraNumericChecks);
     run("NativeCameraAxisChecks",NativeCameraAxisChecks);
@@ -1032,6 +1266,20 @@ int main(int argc,char** argv){
     run("NativeCameraMultiplyChecks",NativeCameraMultiplyChecks);
     run("NativeAccessoryRegistrationChecks",NativeAccessoryRegistrationChecks);
     run("NativeModelKeyChecks",NativeModelKeyChecks);
+    run("NativeModelDeleteTargetChecks",NativeModelDeleteTargetChecks);
+    run("NativeSceneIdentityAllocationChecks",NativeSceneIdentityAllocationChecks);
+    run("NativeGlobalDeleteBudgetChecks",NativeGlobalDeleteBudgetChecks);
+    run("NativeModelDeleteBudgetChecks",NativeModelDeleteBudgetChecks);
+    run("NativeSignedDeleteBudgetChecks",NativeSignedDeleteBudgetChecks);
+    run("NativeSignedDeleteAdmissionChecks",NativeSignedDeleteAdmissionChecks);
+    run("NativeModelDeleteRecordOwnerChecks",NativeModelDeleteRecordOwnerChecks);
+    run("NativeSignedDeleteModelChecks",NativeSignedDeleteModelChecks);
+    run("NativeSignedDeleteCommandChecks",NativeSignedDeleteCommandChecks);
+    run("NativeSignedDeleteModelCommandChecks",NativeSignedDeleteModelCommandChecks);
+    run("NativeSignedDeleteSelectorChecks",NativeSignedDeleteSelectorChecks);
+    run("NativeSignedDeleteContextChecks",NativeSignedDeleteContextChecks);
+    if(!NativeSignedDeleteKeyboardChecks())return 2;
+    run("NativeModelPastePayloadChecks",NativeModelPastePayloadChecks);
     run("NativeUnusedKeyChecks",NativeUnusedKeyChecks);
     run("NativeUnusedDisplayChecks",NativeUnusedDisplayChecks);
     run("NativeUnusedCurveChecks",NativeUnusedCurveChecks);
@@ -1081,5 +1329,5 @@ int main(int argc,char** argv){
     run("Deletion",Deletion);run("EmptyAndCycle",EmptyAndCycle);run("FreeCurves",FreeCurves);
     run("Scatter",Scatter);run("FailedNativeCommands",FailedNativeCommands);run("RemovalBindings",RemovalBindings);
     run("CrossModelJournal",CrossModelJournal);run("PhysicsRetention",PhysicsRetention);run("ObjectRetention",ObjectRetention);
-    std::printf("PASS native history: %u checks\n",checks);
+    std::printf("PASS native history parent: %u checks (keyboard child checks reported separately)\n",checks);
 }

@@ -65,7 +65,7 @@ void Run(MMDApp* app, int sw, int sh, int tw, int th, bool invalid = false) {
         std::copy_n(pixels.data() + y * sw, sw, reinterpret_cast<DWORD*>(static_cast<char*>(lock.pBits) + y * lock.Pitch));
     r->captureSurface->UnlockRect();
     Check(SUCCEEDED(device->ColorFill(r->backbufferSurface, nullptr, 0xFF123456u)), "fill destination");
-    DownsampleCaptureSurface(app);
+    Check(DownsampleCaptureSurface(app) == !invalid, "capture filter reports whether it wrote the destination");
     Check(SUCCEEDED(r->backbufferSurface->LockRect(&lock, nullptr, D3DLOCK_READONLY)), "read destination");
     const auto expected = invalid ? std::vector<DWORD>(sw * sh, 0xFF123456u) : Resize(pixels, sw, sh, tw, th);
     const int width = invalid ? sw : tw, height = invalid ? sh : th;

@@ -355,6 +355,21 @@ bool MemoryGet(const std::array<unsigned char, 32>& digest,
     }
 }
 
+void MemoryForget(const std::array<unsigned char, 32>& digest,
+                  const std::vector<unsigned char>& rejected) noexcept {
+    try {
+        const std::string key = KeyText(digest);
+        std::lock_guard<std::mutex> lock(memoryMutex);
+        const auto found = memoryEntries.find(key);
+        if (found == memoryEntries.end() || found->second.payload != rejected) return;
+        memoryBytes -= found->second.bytes;
+        memoryEntries.erase(found);
+        memoryOrder.remove(key);
+    } catch (...) {
+        // Recompilation is still available if the in-memory entry stays put.
+    }
+}
+
 void MemoryPut(const std::array<unsigned char, 32>& digest,
                const std::vector<unsigned char>& payload) noexcept {
     try {
@@ -591,16 +606,77 @@ bool ReadCacheEntry(const std::wstring& path,
     return true;
 }
 
+// Own only the CREATE_NEW file. A failed rename must never delete a replacement
+// that another writer installed at the temporary name after our handle closed.
+class CacheTemporaryFile {
+public:
+    CacheTemporaryFile(HANDLE file, const wchar_t* path) noexcept
+        : file_(file), path_(path) {
+        identified_ = GetFileInformationByHandle(file_, &identity_) != FALSE &&
+            identity_.nNumberOfLinks == 1 &&
+            !(identity_.dwFileAttributes &
+              (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+    }
+    CacheTemporaryFile(const CacheTemporaryFile&) = delete;
+    CacheTemporaryFile& operator=(const CacheTemporaryFile&) = delete;
+    ~CacheTemporaryFile() {
+        if (published_) return;
+        if (file_ != INVALID_HANDLE_VALUE) {
+            Discard(file_);
+            CloseHandle(file_);
+            return;
+        }
+        if (!identified_) return;
+        const HANDLE reopened = CreateFileW(path_, DELETE | FILE_READ_ATTRIBUTES,
+            0, nullptr, OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (reopened == INVALID_HANDLE_VALUE) return;
+        BY_HANDLE_FILE_INFORMATION current{};
+        if (GetFileInformationByHandle(reopened, &current) &&
+            current.nNumberOfLinks == 1 &&
+            !(current.dwFileAttributes &
+              (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+            current.dwVolumeSerialNumber == identity_.dwVolumeSerialNumber &&
+            current.nFileIndexHigh == identity_.nFileIndexHigh &&
+            current.nFileIndexLow == identity_.nFileIndexLow &&
+            current.ftCreationTime.dwHighDateTime == identity_.ftCreationTime.dwHighDateTime &&
+            current.ftCreationTime.dwLowDateTime == identity_.ftCreationTime.dwLowDateTime)
+            Discard(reopened);
+        CloseHandle(reopened);
+    }
+    bool Identified() const noexcept { return identified_; }
+    bool CloseForPublish() noexcept {
+        if (!identified_ || !CloseHandle(file_)) return false;
+        file_ = INVALID_HANDLE_VALUE;
+        return true;
+    }
+    void Published() noexcept { published_ = true; }
+private:
+    static void Discard(HANDLE file) noexcept {
+        FILE_DISPOSITION_INFO disposition{TRUE};
+        // If deletion fails, retain the residue; never guess ownership by name.
+        SetFileInformationByHandle(file, FileDispositionInfo,
+                                   &disposition, sizeof disposition);
+    }
+    HANDLE file_ = INVALID_HANDLE_VALUE;
+    const wchar_t* path_ = nullptr;
+    BY_HANDLE_FILE_INFORMATION identity_{};
+    bool identified_ = false;
+    bool published_ = false;
+};
+
 enum class StoreOutcome {
     kStored,
     kPayloadTooLarge,
     kBudgetFull,
     kUnwritable,
+    kRegistrationFailed,
 };
 
 volatile LONG temporarySerial = 0;
 std::atomic<bool> budgetReported{false};
 std::atomic<bool> unwritableReported{false};
+std::atomic<bool> registrationReported{false};
 
 StoreOutcome StorePayload(const std::wstring& root, const std::wstring& directory,
                           const std::vector<unsigned char>& key,
@@ -616,8 +692,8 @@ StoreOutcome StorePayload(const std::wstring& root, const std::wstring& director
     if (error) return StoreOutcome::kUnwritable;
     const std::wstring entryPath = EntryPath(directory, keyDigest);
     // The full size of this write, including the header, counts against the
-    // byte budget; a same-name rewrite replaces the old file instead of
-    // adding to it.
+    // byte budget. The manager also charges the existing target while the
+    // replacement is staged, so a rewrite cannot bypass its peak budget.
     const std::uint64_t incomingBytes =
         static_cast<std::uint64_t>(kHeaderBytes) + key.size() + payload.size();
     cache_manager::WriteReservation reservation(entryPath,incomingBytes);
@@ -647,7 +723,7 @@ StoreOutcome StorePayload(const std::wstring& root, const std::wstring& director
         temporary = entryPath + L".tmp-" +
                     std::to_wstring(GetCurrentProcessId()) + L"-" +
                     std::to_wstring(static_cast<long long>(serial));
-        file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+        file = CreateFileW(temporary.c_str(), GENERIC_WRITE | DELETE, 0, nullptr,
                            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file != INVALID_HANDLE_VALUE) break;
         const DWORD createError = GetLastError();
@@ -656,16 +732,21 @@ StoreOutcome StorePayload(const std::wstring& root, const std::wstring& director
             return StoreOutcome::kUnwritable;
     }
     if (file == INVALID_HANDLE_VALUE) return StoreOutcome::kUnwritable;
+    CacheTemporaryFile cleanup(file, temporary.c_str());
+    if (!cleanup.Identified() || !reservation.TrackTemporary(temporary))
+        return StoreOutcome::kUnwritable;
     bool ok = WriteAll(file, bytes.data(), bytes.size());
     if (ok && !FlushFileBuffers(file)) ok = false;
-    CloseHandle(file);
+    if (ok) ok = cleanup.CloseForPublish();
     if (ok)
         ok = MoveFileExW(temporary.c_str(), entryPath.c_str(),
                          MOVEFILE_REPLACE_EXISTING |
                              MOVEFILE_WRITE_THROUGH) != FALSE;
-    if (!ok) DeleteFileW(temporary.c_str());
-    if(ok)reservation.Commit();
-    return ok ? StoreOutcome::kStored : StoreOutcome::kUnwritable;
+    if (!ok) return StoreOutcome::kUnwritable;
+    cleanup.Published();
+    // The file is usable even if persistent accounting fails. Keep it intact
+    // and let the reservation retain its conservative charge.
+    return reservation.Commit() ? StoreOutcome::kStored : StoreOutcome::kRegistrationFailed;
 }
 
 void StoreOnDiskAndLog(const std::wstring& root, const std::wstring& directory,
@@ -693,6 +774,11 @@ void StoreOnDiskAndLog(const std::wstring& root, const std::wstring& directory,
             if (!unwritableReported.exchange(true, std::memory_order_relaxed))
                 runtime_log::Write(
                     "MME_EFFECT_CACHE store skipped reason=cache-unwritable");
+            break;
+        case StoreOutcome::kRegistrationFailed:
+            if (!registrationReported.exchange(true, std::memory_order_relaxed))
+                runtime_log::Write(
+                    "MME_EFFECT_CACHE published reason=registration-pending");
             break;
     }
 }
@@ -1182,45 +1268,38 @@ bool TryCreateEffectImpl(const D3DX& hooks, IDirect3DDevice9* device,
     // 2. Memory first, then the disk entry.  Both stores only immutable
     //    bytecode; the effect object itself is always created per call below.
     std::vector<unsigned char> payload;
+    const auto loadCached = [&](const char* source) {
+        void* created = nullptr;
+        void* diagnostics = nullptr;
+        HRESULT createResult = E_FAIL;
+        if (!CreateEffectObject(hooks, device, payload, flags, pool, created, diagnostics,
+                                createResult)) return false;
+        ScopedObject guard(hooks, created);
+        ScopedObject diagnosticGuard(hooks, diagnostics);
+        if (!entryPath.empty()) cache_manager::Touch(entryPath);
+        runtime_log::Write("MME_EFFECT_CACHE hit key=%s source=%s", shortKey.c_str(), source);
+        PublishCreatedEffect(created, diagnostics, createResult, effect, errors, result);
+        guard.Detach();
+        if (errors) diagnosticGuard.Detach();
+        return true;
+    };
+    std::vector<unsigned char> rejectedMemory;
     if (MemoryGet(keyDigest, payload)) {
-        if(!entryPath.empty())cache_manager::Touch(entryPath);
-        void* created = nullptr;
-        void* diagnostics = nullptr;
-        HRESULT createResult = E_FAIL;
-        if (!CreateEffectObject(hooks, device, payload, flags, pool, created, diagnostics,
-                                createResult)) {
-            LogFallback("cached-binary-rejected", shortKey.c_str());
-            return false;
-        }
-        ScopedObject guard(hooks, created);
-        ScopedObject diagnosticGuard(hooks, diagnostics);
-        runtime_log::Write("MME_EFFECT_CACHE hit key=%s source=memory",
+        if (loadCached("memory")) return true;
+        MemoryForget(keyDigest, payload);
+        rejectedMemory.swap(payload);
+        runtime_log::Write("MME_EFFECT_CACHE retry reason=cached-binary-rejected source=memory key=%s",
                            shortKey.c_str());
-        PublishCreatedEffect(created, diagnostics, createResult, effect, errors, result);
-        guard.Detach();
-        if (errors) diagnosticGuard.Detach();
-        return true;
     }
-    if (!entryPath.empty() && ReadCacheEntry(entryPath, key, payload)) {
-        cache_manager::Touch(entryPath);
-        void* created = nullptr;
-        void* diagnostics = nullptr;
-        HRESULT createResult = E_FAIL;
-        if (!CreateEffectObject(hooks, device, payload, flags, pool, created, diagnostics,
-                                createResult)) {
-            cache_manager::Invalidate(entryPath);
-            LogFallback("cached-binary-rejected", shortKey.c_str());
-            return false;
+    if (!entryPath.empty() && ReadCacheEntry(entryPath, key, payload) && payload != rejectedMemory) {
+        if (loadCached("disk")) {
+            MemoryPut(keyDigest, payload);
+            return true;
         }
-        ScopedObject guard(hooks, created);
-        ScopedObject diagnosticGuard(hooks, diagnostics);
-        MemoryPut(keyDigest, payload);
-        runtime_log::Write("MME_EFFECT_CACHE hit key=%s source=disk",
+        // Device or pool state can also cause rejection. Keep the previous
+        // disk entry available to other callers until a fresh compile works.
+        runtime_log::Write("MME_EFFECT_CACHE retry reason=cached-binary-rejected source=disk key=%s",
                            shortKey.c_str());
-        PublishCreatedEffect(created, diagnostics, createResult, effect, errors, result);
-        guard.Detach();
-        if (errors) diagnosticGuard.Detach();
-        return true;
     }
     runtime_log::Write("MME_EFFECT_CACHE miss key=%s", shortKey.c_str());
 

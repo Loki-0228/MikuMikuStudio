@@ -3,7 +3,7 @@
 //
 //   VA 0x0045E820 - StartAviRecordWindow: windowed AVI dump (menu 0xDF,
 //                   app+0xA0D61 == 0 path).  Probes the output file with
-//                   _wsopen_s/_close, grows the render target and resets the
+//                   a non-truncating write check, grows the render target and resets the
 //                   device when the output size exceeds the current RT,
 //                   creates the "RecWindow" recording window at app+0xA0D24,
 //                   lazily creates the recording render-target surface
@@ -29,18 +29,20 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/default_effect.hpp"
 #include "mikumikustudio/wic_mov_recorder.hpp"
 #include <Windows.h>
 #include <d3d9.h>
 #include <mmsystem.h>
 
 #include <algorithm>
-#include <fcntl.h>
-#include <io.h>
 
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
+#include <limits>
+#include <utility>
 #include <vector>
 
 #include "mikumikustudio/globals.hpp"
@@ -51,6 +53,8 @@
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
 #include "mikumikustudio/recording_preview.hpp"
+#include "mikumikustudio/recording_output_path.hpp"
+#include "mikumikustudio/mf_h264_recorder.hpp"
 #include "mikumikustudio/recording_state.hpp"
 #include "recording_ack_wait.hpp"
 
@@ -227,9 +231,10 @@ bool BuildRecordingGraph(DShowRecorder* recorder, HWND hwnd,
                          void* recStruct, void* config, float fps,
                          std::uint32_t one,
                          std::uint32_t averageBitrate,
-                         const wchar_t* wavPath, float seconds,
+                         std::uint64_t audioStartSample, std::uint64_t audioSampleCount,
                          const WaveAudioContext* audio,
-                         unsigned char uiLanguage);  // was Sub409A80
+                         unsigned char uiLanguage,
+                         const recording_output_path::Selection* approved);  // was Sub409A80
 
 namespace {
 
@@ -239,18 +244,6 @@ const char kRecTitleEn[] = "Recording...";
 // 0x52DFF8: "録画ウィンドウ作成" (caption), text 0x52E00C "CreateWindow failed"
 const char kCaptionRecWndJp[] =
     "\x98\x5E\x89\xE6\x83\x45\x83\x42\x83\x93\x83\x68\x83\x45\x8D\xEC\x90\xAC";
-// 0x52E060/0x52E0B8: "出力ファイルを作成できません。..." / "AVI出力"
-const char kMsgSaveFailJp[] =
-    "\x8F\x6F\x97\xCD\x83\x74\x83\x40\x83\x43\x83\x8B\x82\xF0\x8D\xEC\x90\xAC"
-    "\x82\xC5\x82\xAB\x82\xDC\x82\xB9\x82\xF1\x81\x42\x0A\x91\xBC\x82\xCC\x83"
-    "\x41\x83\x76\x83\x8A\x83\x50\x81\x5B\x83\x56\x83\x87\x83\x93\x93\x99\x82"
-    "\xC5\x8A\x4A\x82\xA2\x82\xC4\x82\xA2\x82\xC8\x82\xA2\x82\xA9\x8A\x6D\x94"
-    "\x46\x82\xB5\x82\xC4\x89\xBA\x82\xB3\x82\xA2\x81\x42";
-const char kCaptionAviOutJp[] = "\x41\x56\x49\x8F\x6F\x97\xCD";
-// 0x52E0C0/0x52E108: EN pair for the same failure
-const char kMsgSaveFailEn[] =
-    "Cannot make save file.\nPlease check whether other application open it.";
-const char kCaptionAviOutEn[] = "AVI save failed";
 // 0x52E690: "3D Vision出力時は、画面解像度以上のサイズのAVIは出力できません"
 const char kMsg3dVisionJp[] =
     "\x33\x44\x20\x56\x69\x73\x69\x6F\x6E\x8F\x6F\x97\xCD\x8E\x9E\x82\xCD\x81"
@@ -272,16 +265,29 @@ struct RecConfig {
 };
 static_assert(sizeof(RecConfig) == 0x28);
 
-bool ProbeWritable(const wchar_t* path) {  // _wsopen_s/_close pair, 0x45E849
-    int fd = -1;
-    const errno_t r =
-        _wsopen_s(&fd, path, 0x8301 /*_O_BINARY|_O_CREAT|_O_TRUNC|_O_WRONLY*/,
-                  0x40 /*_SH_DENYNO*/, 0x80 /*_S_IWRITE*/);
-    if (r != 0)
-        return false;
-    if (fd >= 0)
-        _close(fd);
-    return true;
+bool CheckRecordingOutputPath(MMDApp* app, const recording_output_path::Selection* approved) {
+    if (image_sequence::Active(app)) return true;
+    if (!recording_output_path::ProtectBackgroundVideo(app->MainWindow(), app->AviOutputPath(),
+            app->AviBackgroundPath(), app->EnglishUI())) return false;
+    const auto* recorder = app->Recorder();
+    const bool stagedH264 = recorder && (recorder->selectedCodec == kBuiltInH264Codec ||
+                                        recorder->selectedCodec == kSystemH264Codec);
+    DWORD error = ERROR_SUCCESS;
+    if (stagedH264 && approved) {
+        recording_output_path::Selection current;
+        error = recording_output_path::ReadSelection(app->AviOutputPath(), current);
+        if (error == ERROR_SUCCESS && !recording_output_path::SameSelection(*approved, current)) {
+            recording_output_path::ReportChangedSelection(app->MainWindow(), approved->path.c_str(), app->EnglishUI());
+            return false;
+        }
+    }
+    if (error == ERROR_SUCCESS) error = recording_output_path::ProbeWritable(app->AviOutputPath(), !stagedH264);
+    if (error == ERROR_SUCCESS) return true;
+    const auto message = recording_output_path::FailureMessage(
+        app->AviOutputPath(), error, app->EnglishUI());
+    MessageBoxW(app->MainWindow(), message.c_str(),
+        recording_output_path::FailureCaption(app->EnglishUI()), MB_OK | MB_ICONERROR);
+    return false;
 }
 
 // Resizes the render target to the requested export dimensions when they do
@@ -314,36 +320,16 @@ bool GrowRenderTarget(MMDApp* app, std::int32_t w, std::int32_t h) {
     return true;
 }
 
-// Lazy creation of the recording render target (0x45EA68..0x45EACC):
-// CreateRenderTarget into captureSurface gated by multisampleAvailable,
-// falling back to SetRenderTarget when creation is unavailable.
-void EnsureRecordRenderTarget(MMDApp* app) {
-    auto& s = *app;
-    D3DRenderer* r = s.Renderer();
-    if (r == nullptr)
-        return;
-    if (r->multisampleAvailable == 0) {
-        if (r->captureSurface == nullptr) {
-            auto* device = r->device;
-            if (device == nullptr)
-                return;
-            IDirect3DSurface9* surf = nullptr;
-            const HRESULT hr = device->CreateRenderTarget(
-                static_cast<std::uint32_t>(r->screenWidth),
-                static_cast<std::uint32_t>(r->screenHeight),
-                r->backbufferFormat,
-                D3DMULTISAMPLE_NONE, 0, TRUE /*Lockable*/, &surf, nullptr);
-            r->captureSurface = surf;
-            if (SUCCEEDED(hr) && surf != nullptr)
-                r->multisampleAvailable = 1;
-        }
-        if (r->multisampleAvailable == 0) {
-            auto* device = r->device;
-            if (device == nullptr)
-                return;
-            device->SetRenderTarget(0, r->captureSurface);
-        }
-    }
+bool EnsureRecordRenderTarget(MMDApp* app) {
+    const auto* renderer = app->Renderer();
+    if (!renderer || !renderer->device) return false;
+    if (renderer->multisampleAvailable != 0) return true;
+    const auto* recorder = app->Recorder();
+    const bool transparent = image_sequence::Active(app)
+        ? image_sequence::Transparent(app)
+        : recorder && recorder->selectedCodec == kNativePngMovCodec;
+    // TransparentFrameScope prepares the alpha surface before the first frame.
+    return transparent || EnsureCaptureRenderTarget(app, true);
 }
 
 // 0x409A80 - DirectShow recording graph builder (thiscall on the app+0xA06C0
@@ -403,7 +389,8 @@ bool RecordStartTail(MMDApp* app, std::uint64_t expectedToken,
 
 // Shared config/seconds computation and 0x409A80 invocation
 // (0x45EB7E..0x45EBCA and 0x46493D..0x464976).
-bool StartRecordGraphImpl(MMDApp* app, std::int32_t outW, std::int32_t outH) {
+bool StartRecordGraphImpl(MMDApp* app, std::int32_t outW, std::int32_t outH,
+                          const recording_output_path::Selection* approved) {
     auto& s = *app;
     if (image_sequence::Active(app)) {
         TeardownDShowGraph(s.Recorder());
@@ -421,35 +408,69 @@ bool StartRecordGraphImpl(MMDApp* app, std::int32_t outW, std::int32_t outH) {
 
     const std::int32_t frameStart = s.AviRecordStartFrame();
     const std::int32_t frameEnd = s.AviRecordEndFrame();
-    const double frames = std::int64_t(frameEnd) - frameStart + 1;
-    const float seconds = static_cast<float>(frames / s.PlaybackTiming().playbackFps);
+    const int playbackFps = s.PlaybackTiming().playbackFps;
 
     float fpsF;
     std::memcpy(&fpsF, &s.AviRecordFps(), sizeof fpsF);
-    const wchar_t* wavPath =
-        (s.AviIncludeWave() != 0 && frameStart == 0 && s.Audio() != nullptr && s.WaveEnabled() != 0)
-            ? s.Audio()->path
-            : nullptr;
     DShowRecorder* recorder = s.Recorder();
     if (recorder == nullptr)
         return false;  // port-side guard: 0x466D20 allocation
+
+    const WaveAudioContext* wave = s.AviIncludeWave() && s.WaveEnabled() ? s.Audio() : nullptr;
+    const WaveAudioContext* audio = nullptr;
+    std::uint64_t firstSample = 0;
+    std::uint64_t audioSampleCount = 0;
+    WaveAudioContext slice{};
+    if (wave && frameStart >= 0 && recorder->selectedCodec != kNativePngMovCodec) {
+        const auto sampleRate = wave->format.nSamplesPerSec;
+        const auto blockAlign = wave->format.nBlockAlign;
+        if (sampleRate == 0 || blockAlign == 0 || playbackFps <= 0 ||
+            wave->dataOffset < 0 || wave->dataSize <= 0)
+            return false;
+
+        // Match editor playback at the first authored frame. The output FPS
+        // determines the duration of the encoded frames, including the last one.
+        firstSample = static_cast<std::uint64_t>(frameStart) * sampleRate / playbackFps;
+        const auto samples = static_cast<std::uint64_t>(wave->dataSize) / blockAlign;
+        if (firstSample < samples) {
+            audio = wave;
+            const auto frames = recording_state::OutputFrameCount(frameStart, frameEnd, fpsF, playbackFps);
+            if (frames != 0)
+                audioSampleCount = static_cast<std::uint64_t>(std::min(
+                    static_cast<double>(samples - firstSample),
+                    static_cast<double>(frames) * sampleRate / fpsF));
+            if (frameStart > 0 && (recorder->selectedCodec == kBuiltInH264Codec ||
+                                  recorder->selectedCodec == kSystemH264Codec)) {
+                const auto skippedBytes = firstSample * blockAlign;
+                const auto dataOffset = static_cast<std::uint64_t>(wave->dataOffset) + skippedBytes;
+                if (dataOffset > std::numeric_limits<std::int32_t>::max())
+                    return false;
+
+                slice.format = wave->format;
+                std::copy_n(wave->path, std::size(wave->path), slice.path);
+                slice.dataOffset = static_cast<std::int32_t>(dataOffset);
+                slice.dataSize = static_cast<std::int32_t>((samples - firstSample) * blockAlign);
+                audio = &slice;
+            }
+        }
+    }
     return BuildRecordingGraph(recorder,
                      static_cast<HWND>(s.state.hwnd),
                      static_cast<unsigned char>(s.EnglishUI() != 0),
                      s.AviOutputPath(), &config, fpsF, 1,
-                     s.H264AverageBitrate(), wavPath,
-                     seconds,
-                     (wavPath != nullptr ? s.Audio() : nullptr),
-                     s.EnglishUI());
+                     s.H264AverageBitrate(), firstSample, audioSampleCount,
+                     audio,
+                     s.EnglishUI(), approved);
 }
 
-bool StartRecordGraph(MMDApp* app, std::int32_t outW, std::int32_t outH) {
+bool StartRecordGraph(MMDApp* app, std::int32_t outW, std::int32_t outH,
+                      const recording_output_path::Selection* approved) {
     bool graphStarted = false;
     bool finishRequested = false;
     {
         recording_state::Guard building(app, recording_state::Operation::GraphBuild);
         if (!building) return false;
-        graphStarted = StartRecordGraphImpl(app, outW, outH);
+        graphStarted = StartRecordGraphImpl(app, outW, outH, approved);
         finishRequested = building.DeferredFinish();
     }
     if (finishRequested) {
@@ -462,7 +483,17 @@ bool StartRecordGraph(MMDApp* app, std::int32_t outW, std::int32_t outH) {
 }  // namespace
 
 // VA 0x0045E820 - windowed AVI record start.
-void StartAviRecordWindow(MMDApp* app) {
+bool recording_state::CheckEffectReady(MMDApp* app) {
+    if (DefaultEffectReadyForCapture(app)) return true;
+    MessageBoxW(app->MainWindow(), image_sequence::Text(app,
+        L"自阴影着色器正在编译，导出尚未开始。请稍后重试。",
+        L"The self-shadow shader is compiling. Please try exporting again shortly.",
+        L"セルフシャドウのシェーダーをコンパイル中です。しばらくしてから出力をやり直してください。"),
+        L"MMS", MB_OK | MB_ICONINFORMATION);
+    return false;
+}
+
+void StartAviRecordWindow(MMDApp* app, const recording_output_path::Selection* approved) {
     if (app == nullptr) return;
     auto& s = *app;
     if (s.RecordingWindow() != nullptr || recording_state::Stopping(app) ||
@@ -493,20 +524,13 @@ void StartAviRecordWindow(MMDApp* app) {
             FinishAviRecord(app);
     };
 
-    if (!image_sequence::Active(app)) {
-        if (!ProbeWritable(s.AviOutputPath())) {                // 0x45E849
-            const HWND main = static_cast<HWND>(s.state.hwnd);
-            MessageBoxA(main, s.EnglishUI() != 0 ? kMsgSaveFailEn
-                                                 : kMsgSaveFailJp,
-                        s.EnglishUI() != 0 ? kCaptionAviOutEn : kCaptionAviOutJp,
-                        0);                                     // 0x45E871
-            abandon();
-            return;
-        }
-        if (!stillCurrent()) {
-            abortStartAttempt();
-            return;
-        }
+    if (!recording_state::CheckEffectReady(app) || !CheckRecordingOutputPath(app, approved)) {
+        abandon();
+        return;
+    }
+    if (!stillCurrent()) {
+        abortStartAttempt();
+        return;
     }
 
     const std::int32_t outW = s.AviOutputWidth() > 0 ? s.AviOutputWidth() : s.RenderWidth();
@@ -580,7 +604,10 @@ void StartAviRecordWindow(MMDApp* app) {
     s.AviRenderResolutionOverridden() = true;
     s.RenderWidth() = outW;
     s.RenderHeight() = outH;
-    EnsureRecordRenderTarget(app);
+    if (!EnsureRecordRenderTarget(app)) {
+        CancelExportAfterCaptureTargetFailure(app);
+        return;
+    }
     RefreshMainWindowViewport(app);                                            // 0x45EACC
     InvalidateRect(s.MainWindow(), &s.ViewportRect(), FALSE);   // 0x45EAE9
     if (!stillCurrent() || s.RecordingWindow() != recWnd) {
@@ -588,7 +615,7 @@ void StartAviRecordWindow(MMDApp* app) {
         return;
     }
 
-    const bool graphStarted = StartRecordGraph(app, outW, outH);
+    const bool graphStarted = StartRecordGraph(app, outW, outH, approved);
     if (!graphStarted) {
         abortStartAttempt();
         return;  // 0x45EC69: original leaves the window parked
@@ -633,8 +660,31 @@ void StartAviRecordWindow(MMDApp* app) {
         abortStartAttempt();
 }
 
+namespace {
+
+struct RecordingDisplay {
+    D3DDISPLAYMODE mode{};
+    HMONITOR monitor = nullptr;
+};
+
+bool ReadRecordingDisplay(MMDApp& app, RecordingDisplay& display) {
+    const D3DRenderer* renderer = app.Renderer();
+    if (!renderer || !renderer->device || !renderer->d3d9) return false;
+    D3DDEVICE_CREATION_PARAMETERS creation{};
+    if (FAILED(renderer->device->GetCreationParameters(&creation)) ||
+        FAILED(renderer->d3d9->GetAdapterDisplayMode(creation.AdapterOrdinal, &display.mode)) ||
+        display.mode.Width == 0 || display.mode.Height == 0) return false;
+    display.monitor = renderer->d3d9->GetAdapterMonitor(creation.AdapterOrdinal);
+    return true;
+}
+
+void ApplyFullscreenWindowStateForMode(MMDApp* app, const RecordingDisplay* display,
+                                       bool resetOnRestore = false);
+
+}  // namespace
+
 // VA 0x00464760 - fullscreen (3D Vision) AVI record start.
-void StartAviRecordFullscreen(MMDApp* app) {
+void StartAviRecordFullscreen(MMDApp* app, const recording_output_path::Selection* approved) {
     if (app == nullptr) return;
     auto& s = *app;
     if (s.RecordingWindow() != nullptr || recording_state::Stopping(app) ||
@@ -653,12 +703,6 @@ void StartAviRecordFullscreen(MMDApp* app) {
         if (s.RecordingStartGeneration() == startGeneration)
             s.InvalidateRecordingStartAttempt();
     };
-    const auto leaveFullscreen = [&]() {
-        if (s.FullscreenMode() == 0) return;
-        s.FullscreenMode() = 0;
-        ApplyFullscreenWindowState(app);
-        PostDeviceReset(app);
-    };
     const auto abortStartAttempt = [&]() {
         // A finish already consumed the attempt when the token is gone; do not
         // repeat it. Otherwise the scene-guarded finish releases the graph, the
@@ -667,14 +711,23 @@ void StartAviRecordFullscreen(MMDApp* app) {
             FinishAviRecord(app);
     };
 
-    const std::int32_t screenW = GetSystemMetrics(SM_CXSCREEN);
-    const std::int32_t screenH = GetSystemMetrics(SM_CYSCREEN);
     const std::int32_t w = s.AviOutputWidth() > 0
         ? s.AviOutputWidth() : s.RenderWidth();
     const std::int32_t h = s.AviOutputHeight() > 0
         ? s.AviOutputHeight() : s.RenderHeight();
     const HWND main = static_cast<HWND>(s.state.hwnd);
-    if ((h != screenH && screenH <= h) || (w != screenW && screenW <= w)) {
+    RecordingDisplay display;
+    if (!ReadRecordingDisplay(s, display)) {
+        MessageBoxW(main, image_sequence::Text(app,
+            L"无法读取当前显示模式，视频导出未开始。",
+            L"Could not read the current display mode; video export was not started.",
+            L"現在の画面モードを取得できないため、動画出力を開始できませんでした。"),
+            L"AVI export", MB_OK | MB_ICONERROR);
+        abandon();
+        return;
+    }
+    if (w <= 0 || h <= 0 || static_cast<UINT>(w) > display.mode.Width ||
+        static_cast<UINT>(h) > display.mode.Height) {
         MessageBoxA(main, s.EnglishUI() != 0
                               ? "output size must less than screen "
                                 "resolution in 3D Vision."
@@ -689,10 +742,19 @@ void StartAviRecordFullscreen(MMDApp* app) {
         return;
     }
 
+    if (!recording_state::CheckEffectReady(app) || !CheckRecordingOutputPath(app, approved)) {
+        abandon();
+        return;
+    }
+    if (!stillCurrent()) {
+        abortStartAttempt();
+        return;
+    }
+
     s.FullscreenMode() = 1;
-    ApplyFullscreenWindowState(app, true);                                            // 0x4629D0
+    ApplyFullscreenWindowStateForMode(app, &display);                                  // 0x4629D0
     if (!PostDeviceReset(app)) {
-        leaveFullscreen();
+        recording_state::RestoreFullscreenEditor(app);
         MessageBoxW(main, L"无法重置渲染设备，视频导出未开始。\n"
             L"Could not reset the render device; video export was not started.",
             L"AVI export", MB_OK | MB_ICONERROR);
@@ -715,7 +777,10 @@ void StartAviRecordFullscreen(MMDApp* app) {
     }
     s.CaptureRecordingEditorView();
 
-    EnsureRecordRenderTarget(app);
+    if (!EnsureRecordRenderTarget(app)) {
+        CancelExportAfterCaptureTargetFailure(app);
+        return;
+    }
     RefreshMainWindowViewport(app);                                            // 0x464889
     if (!stillCurrent() || s.RecordingWindow() != main) {
         abortStartAttempt();
@@ -724,7 +789,7 @@ void StartAviRecordFullscreen(MMDApp* app) {
 
     const std::int32_t scale = s.AviStereoWidthMultiplier();
     const std::int32_t scaledW = w * scale;
-    const bool graphStarted = StartRecordGraph(app, scaledW, h);
+    const bool graphStarted = StartRecordGraph(app, scaledW, h, approved);
     if (!graphStarted) {
         abortStartAttempt();
         return;
@@ -733,10 +798,6 @@ void StartAviRecordFullscreen(MMDApp* app) {
         abortStartAttempt();
         return;
     }
-    // 0x46497A: probe open/close without checking the result, then the
-    // picture overlay and the shared tail.
-    ProbeWritable(
-        s.AviOutputPath());
     if (!stillCurrent() || s.RecordingWindow() != main) {
         abortStartAttempt();
         return;
@@ -752,17 +813,22 @@ void StartAviRecordFullscreen(MMDApp* app) {
         abortStartAttempt();
 }
 
+namespace {
+
 // VA 0x004629D0 - fullscreen enter/restore window manager (app method).
 // Enter (app+0xA0274 != 0): remembers the window placement/menu, strips the
 // frame, sizes to the screen, hides the control band and mirrors the client
 // size into the present parameters.  Restore: reapplies the saved style,
 // placement and menu, shows the control band and restores the RT dimensions.
-void ApplyFullscreenWindowState(MMDApp* app, bool exclusive) {
+void ApplyFullscreenWindowStateForMode(MMDApp* app, const RecordingDisplay* display,
+                                       bool resetOnRestore) {
     struct Snapshot {
         HWND window = nullptr;
         LONG_PTR style = 0;
         LONG_PTR exStyle = 0;
         int sidebar = 0;
+        RECT bounds{};
+        bool hasBounds = false;
         D3DPRESENT_PARAMETERS presentation{};
         std::vector<HWND> visibleChildren;
     };
@@ -780,6 +846,7 @@ void ApplyFullscreenWindowState(MMDApp* app, bool exclusive) {
         saved.window = main;
         saved.style = GetWindowLongPtrW(main, GWL_STYLE);
         saved.exStyle = GetWindowLongPtrW(main, GWL_EXSTYLE);
+        saved.hasBounds = GetWindowRect(main, &saved.bounds) != FALSE;
         saved.sidebar = s.FloatingWindow() ? s.SeparateWindowSidebarWidth() : s.SidebarWidth();
         if (D3DRenderer* r = s.Renderer())
             saved.presentation = r->presentParameters;
@@ -800,7 +867,8 @@ void ApplyFullscreenWindowState(MMDApp* app, bool exclusive) {
         }
         MONITORINFO monitor{};
         monitor.cbSize = sizeof(monitor);
-        const HMONITOR targetMonitor = MonitorFromWindow(main, MONITOR_DEFAULTTONEAREST);
+        const HMONITOR targetMonitor = display && display->monitor
+            ? display->monitor : MonitorFromWindow(main, MONITOR_DEFAULTTONEAREST);
         const bool hasMonitor = targetMonitor != nullptr &&
             GetMonitorInfoW(targetMonitor, &monitor) != FALSE;
         const RECT bounds = hasMonitor
@@ -820,36 +888,51 @@ void ApplyFullscreenWindowState(MMDApp* app, bool exclusive) {
         RECT rc;
         GetClientRect(main, &rc);                                // 0x462AD0
         if (D3DRenderer* r = s.Renderer()) {
-            r->presentParameters.BackBufferWidth = rc.right;
-            r->presentParameters.BackBufferHeight = rc.bottom;
-            // Interactive fullscreen must retain Windows DPI virtualization.
-            // Logical client sizes are not valid exclusive display modes.
-            // Only the existing stereo recording path requests exclusivity.
-            r->presentParameters.Windowed = exclusive ? FALSE : TRUE;
+            // Window placement uses Win32 coordinates. Exclusive Reset uses
+            // physical pixels from the adapter that owns the D3D device.
+            r->presentParameters.BackBufferWidth = display ? display->mode.Width : rc.right;
+            r->presentParameters.BackBufferHeight = display ? display->mode.Height : rc.bottom;
+            r->presentParameters.Windowed = display ? FALSE : TRUE;
             r->presentParameters.FullScreen_RefreshRateInHz = 0;
         }
-        s.state.recordFullscreenActive = exclusive ? 1 : 0;
+        s.state.recordFullscreenActive = display ? 1 : 0;
         return;
     }
 
-    if (saved.window != main)
+    if (saved.window != main) {
+        if (resetOnRestore) PostDeviceReset(app);
         return;
-    s.SidebarWidth() = saved.sidebar;
-    if (D3DRenderer* r = s.Renderer())
-        r->presentParameters = saved.presentation;
-    SetWindowLongPtrW(main, GWL_STYLE, saved.style);
-    SetWindowLongPtrW(main, GWL_EXSTYLE, saved.exStyle);
-    SetMenu(main, s.state.savedMenu);
+    }
+    const Snapshot restoring = std::move(saved);
+    saved = Snapshot{};
+    const HMENU menu = s.state.savedMenu;
     WINDOWPLACEMENT placement = s.SavedPlacement();
-    if ((saved.style & WS_VISIBLE) == 0) placement.showCmd = SW_HIDE;
+    if ((restoring.style & WS_VISIBLE) == 0) placement.showCmd = SW_HIDE;
+    s.SidebarWidth() = restoring.sidebar;
+    if (D3DRenderer* r = s.Renderer())
+        r->presentParameters = restoring.presentation;
+    // D3D9 can update the focus window's style and bounds when leaving
+    // exclusive mode. Restore the editor chrome after that transition.
+    s.state.stereoActivated = 0;
+    s.state.recordFullscreenActive = 0;
+    if (resetOnRestore) PostDeviceReset(app);
+    const WindowDpiScope placementDpi(main);
+    SetWindowLongPtrW(main, GWL_STYLE, restoring.style);
+    SetWindowLongPtrW(main, GWL_EXSTYLE, restoring.exStyle);
+    SetMenu(main, menu);
     SetWindowPlacement(main, &placement);
-    SetWindowPos(main, nullptr,
-                 0, 0, 0, 0,
-                 SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-    for (HWND child : saved.visibleChildren) {
+    const UINT frameFlags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED;
+    if (resetOnRestore && restoring.hasBounds &&
+        (restoring.style & (WS_MAXIMIZE | WS_MINIMIZE)) == 0) {
+        const RECT& bounds = restoring.bounds;
+        SetWindowPos(main, nullptr, bounds.left, bounds.top,
+                     bounds.right - bounds.left, bounds.bottom - bounds.top, frameFlags);
+    } else {
+        SetWindowPos(main, nullptr, 0, 0, 0, 0, frameFlags | SWP_NOSIZE | SWP_NOMOVE);
+    }
+    for (HWND child : restoring.visibleChildren) {
         if (IsWindow(child)) ShowWindow(child, SW_SHOWNA);
     }
-    saved = Snapshot{};
     if (s.state.fullscreenFlagsSaved != 0) {
         s.state.fullscreenFlagsSaved = 0;
         InitFlagSubsystem(app);
@@ -861,8 +944,23 @@ void ApplyFullscreenWindowState(MMDApp* app, bool exclusive) {
         DisablePlaybackMenus(main);                              // 0x429790
     }
     InvalidateRect(main, nullptr, FALSE);
-    s.state.stereoActivated = 0;
-    s.state.recordFullscreenActive = 0;
+}
+
+}  // namespace
+
+void recording_state::RestoreFullscreenEditor(MMDApp* app) {
+    app->FullscreenMode() = 0;
+    ApplyFullscreenWindowStateForMode(app, nullptr, true);
+}
+
+void ApplyFullscreenWindowState(MMDApp* app, bool exclusive) {
+    if (!exclusive || app->FullscreenMode() == 0) {
+        ApplyFullscreenWindowStateForMode(app, nullptr);
+        return;
+    }
+    RecordingDisplay display;
+    if (ReadRecordingDisplay(*app, display))
+        ApplyFullscreenWindowStateForMode(app, &display);
 }
 
 }  // namespace mikumikustudio

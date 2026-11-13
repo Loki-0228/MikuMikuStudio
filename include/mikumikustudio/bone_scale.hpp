@@ -189,10 +189,19 @@ bool ExchangePoseValues(unsigned char* model, Values&) noexcept;
 // baseline. Keys, curves and legacy undo state are neither read nor changed.
 void CopyPoseRuntime(const unsigned char* source, unsigned char* destination);
 bool HasPoseValue(const unsigned char* model, int bone) noexcept;
+class AuthoringState;
+// Allocation-free, checked signed-deletion preparation bound. restore counts
+// live authoring capture and source/target restore maps; lease counts the pose
+// lease and newly needed empty runtime storage; evaluate counts pose-map copies
+// and possible added bone pose nodes. Null target means live authoring. Existing
+// rings and caches are excluded. Overflow returns UINT64_MAX.
+std::uint64_t DeletionPreparationBytes(const unsigned char* model,
+    const AuthoringState* target, bool restore, bool lease, bool evaluate) noexcept;
 class PoseStorageLease {
     struct Impl;
     std::unique_ptr<Impl> impl_;
     PoseStorageLease();
+    friend std::uint64_t DeletionPreparationBytes(const unsigned char*, const AuthoringState*, bool, bool, bool) noexcept;
 public:
     ~PoseStorageLease();
     static std::unique_ptr<PoseStorageLease> Prepare(unsigned char* model);
@@ -213,6 +222,7 @@ class AuthoringState {
     struct Impl;
     std::unique_ptr<Impl> impl_;
     friend class AuthoringRestore;
+    friend std::uint64_t DeletionPreparationBytes(const unsigned char*, const AuthoringState*, bool, bool, bool) noexcept;
 public:
     AuthoringState();
     ~AuthoringState();
@@ -240,6 +250,7 @@ class AuthoringRestore {
     struct Impl;
     std::unique_ptr<Impl> impl_;
     AuthoringRestore();
+    friend std::uint64_t DeletionPreparationBytes(const unsigned char*, const AuthoringState*, bool, bool, bool) noexcept;
 public:
     ~AuthoringRestore();
     AuthoringRestore(AuthoringRestore&&) noexcept;

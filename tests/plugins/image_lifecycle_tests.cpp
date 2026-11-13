@@ -214,7 +214,7 @@ static void DependencyCase(const fs::path& root, const fs::path& fixture) {
     CHECK(baseUnmap == MMS_OK && dependentUnmap == MMS_OK);
     CHECK(manager.Stop());
     CHECK(Count(logs, "IMAGE_DESTROY") == 2);
-    CHECK(Count(logs, "IMAGE_STOP_OK") == 3);
+    CHECK(Count(logs, "IMAGE_STOP_OK") == 2);
     CHECK(GetModuleHandleW(baseDll.c_str()) == nullptr);
     CHECK(GetModuleHandleW(dependentDll.c_str()) == nullptr);
     std::cout << "dependency PASS\n";

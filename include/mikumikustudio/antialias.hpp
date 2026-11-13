@@ -51,6 +51,13 @@ unsigned AccumulatedSamples(MMDApp* app);
 unsigned RequiredSamples(MMDApp* app);
 void ResetHistory(MMDApp* app);
 void Release(MMDApp* app);
+// Adaptive shadow planning re-reads the camera projection after a temporal
+// pass has added its subpixel sampling offset. Pass the matrix just read: when
+// it matches, byte for byte, the jittered projection this frame wrote, the
+// exact unjittered matrix is copied in and true is returned. Every other
+// matrix, every frame without an active temporal pass, and stale frames leave
+// the input unchanged.
+bool UnjitteredProjection(MMDApp* app, float projection[16]);
 // Native inverted-hull coverage on the active post-process scene. The caller
 // retains the original draw when this returns false (MSAA, disabled, or failure).
 bool DrawOutline(MMDApp* app, unsigned char* model, unsigned firstIndex,

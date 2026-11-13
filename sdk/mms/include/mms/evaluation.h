@@ -457,6 +457,92 @@ typedef struct MmsEvaluationApiV1_6 {
      * Caller owns an adequately sized writable array. No host pointer escapes. */
     MmsResult (MMS_CALL *readFrameMaterials)(void*, MmsHandle frame, uint32_t model, uint32_t first, uint32_t count, MmsEvaluationMaterialV1* out);
 } MmsEvaluationApiV1_6;
+/* 1.7 source-only runtime references. Paths are UTF-16 code units, terminated
+ * within each fixed array. Toon table bytes are verbatim, possibly non-NUL
+ * terminated and not necessarily valid CP932. These are not frozen pixels,
+ * resource identities, or guaranteed original file fields. */
+#define MMS_EVALUATION_REFERENCE_CAP_RUNTIME_FIELDS 1u
+typedef struct MmsEvaluationReferenceCapsV1 { MmsHeader h; uint32_t flags; uint32_t reserved; } MmsEvaluationReferenceCapsV1;
+typedef struct MmsEvaluationMaterialReferencesV1 {
+    MmsHeader h; MmsId material; uint32_t index; uint32_t flags;
+    uint16_t texturePath[280], spherePath[280], toonPath[512];
+    uint8_t toonReference, sphereMode, materialFlags, reserved;
+} MmsEvaluationMaterialReferencesV1;
+typedef struct MmsEvaluationToonTableV1 {
+    MmsHeader h; uint16_t modelDirectory[256]; uint8_t fileNames[10][100];
+} MmsEvaluationToonTableV1;
+
+typedef struct MmsEvaluationApiV1_7 {
+    MmsHeader h;
+    void* context;
+    MmsResult (MMS_CALL *getCapabilities)(void*, MmsEvaluationCapsV1*);
+    MmsResult (MMS_CALL *createSource)(void*, const MmsEvaluationSourceQueryV1*, MmsHandle*);
+    MmsResult (MMS_CALL *describeSource)(void*, MmsHandle, MmsEvaluationSourceInfoV1*);
+    MmsResult (MMS_CALL *boneAt)(void*, MmsHandle, uint32_t, MmsEvaluationBoneV1*);
+    MmsResult (MMS_CALL *sampleBone)(void*, MmsHandle, MmsId, MmsTime, MmsBoneChannelsV1*);
+    MmsResult (MMS_CALL *retain)(void*, MmsHandle, MmsHandle*);
+    MmsResult (MMS_CALL *release)(void*, MmsHandle);
+    MmsResult (MMS_CALL *createSourceChannels)(void*, const MmsEvaluationSourceQueryV1*, uint32_t, MmsHandle*);
+    MmsResult (MMS_CALL *describeSourceChannels)(void*, MmsHandle, MmsEvaluationSourceInfoV1_1*);
+    MmsResult (MMS_CALL *morphAt)(void*, MmsHandle, uint32_t, MmsEvaluationMorphV1*);
+    MmsResult (MMS_CALL *sampleMorph)(void*, MmsHandle, MmsId, MmsTime, MmsMorphWeightV1*);
+    MmsResult (MMS_CALL *describeSourceDisplay)(void*, MmsHandle, MmsEvaluationSourceInfoV1_2*);
+    MmsResult (MMS_CALL *ikAt)(void*, MmsHandle, uint32_t, MmsEvaluationIkV1*);
+    MmsResult (MMS_CALL *selectorAt)(void*, MmsHandle, uint32_t, MmsEvaluationSelectorV1*);
+    MmsResult (MMS_CALL *sampleVisibility)(void*, MmsHandle, MmsTime, MmsDisplayStateV1*);
+    MmsResult (MMS_CALL *sampleIk)(void*, MmsHandle, uint32_t, MmsTime, MmsIkStateV1*);
+    MmsResult (MMS_CALL *sampleParent)(void*, MmsHandle, uint32_t, MmsTime, MmsParentSelectionV1*);
+    MmsResult (MMS_CALL *sampleParentState)(void*, MmsHandle, uint32_t, MmsTime, MmsParentStateV1*);
+    MmsResult (MMS_CALL *getSceneCapabilities)(void*, MmsEvaluationSceneCapsV1*);
+    MmsResult (MMS_CALL *createSceneSource)(void*, const MmsEvaluationSceneQueryV1*, MmsHandle*);
+    MmsResult (MMS_CALL *describeSceneSource)(void*, MmsHandle, MmsEvaluationSceneInfoV1*);
+    MmsResult (MMS_CALL *sceneModelAt)(void*, MmsHandle, uint32_t, MmsEvaluationSceneModelV1*);
+    MmsResult (MMS_CALL *sceneBoneAt)(void*, MmsHandle, uint32_t, uint32_t, MmsEvaluationSceneBoneV1*);
+    MmsResult (MMS_CALL *evaluateFrame)(void*, const MmsEvaluationFrameQueryV1*, MmsHandle*);
+    MmsResult (MMS_CALL *describeFrame)(void*, MmsHandle, MmsEvaluationFrameInfoV1*);
+    MmsResult (MMS_CALL *frameModelAt)(void*, MmsHandle, uint32_t, MmsEvaluationSceneModelV1*);
+    MmsResult (MMS_CALL *readBonePose)(void*, MmsHandle, uint32_t, uint32_t, MmsEvaluationScenePoseV1*);
+
+    MmsResult (MMS_CALL *getMeshCapabilities)(void*, MmsEvaluationMeshCapsV1*);
+    /* UI thread only, outside pending edits. Query flags and reserved are zero.
+     * The source has the same ownership and release rules as scene sources. */
+    MmsResult (MMS_CALL *createMeshSceneSource)(void*, const MmsEvaluationSceneQueryV1*, MmsHandle*);
+    MmsResult (MMS_CALL *describeMesh)(void*, MmsHandle source, uint32_t model, MmsEvaluationMeshInfoV1*);
+    /* Every read copies exactly count records from [first, first + count).
+     * count must not exceed maxItemsPerRead or the remaining extent. For zero
+     * count, first may equal the extent and out may be NULL. Outputs are left
+     * unchanged on any failure; records are host-initialized including h and
+     * reserved, so callers need not initialize the output array. An invalid
+     * handle, model or range is never silently truncated. The caller owns an
+     * adequately sized, writable output array for the duration of the call.
+     * Model indices match sceneModelAt/frameModelAt; indices are local to that
+     * model and captureId. Additional UV groups above additionalUvCount are
+     * zero. Calls borrow the handle and do not return internal pointers. */
+    MmsResult (MMS_CALL *readMeshIndices)(void*, MmsHandle source, uint32_t model, uint32_t first, uint32_t count, uint32_t* out);
+    MmsResult (MMS_CALL *readMeshMaterials)(void*, MmsHandle source, uint32_t model, uint32_t first, uint32_t count, MmsEvaluationMeshMaterialV1* out);
+    MmsResult (MMS_CALL *readMeshBindVertices)(void*, MmsHandle source, uint32_t model, uint32_t first, uint32_t count, MmsEvaluationMeshVertexV1* out);
+    MmsResult (MMS_CALL *readMeshVertices)(void*, MmsHandle frame, uint32_t model, uint32_t first, uint32_t count, MmsEvaluationMeshVertexV1* out);
+    /* A separate opt-in source includes the 1.5 mesh data and frozen material
+     * values from the same registered scene. UI thread only; flags/reserved in
+     * the scene query must be zero. Existing 1.5 creation remains unchanged. */
+    MmsResult (MMS_CALL *getMaterialCapabilities)(void*, MmsEvaluationMaterialCapsV1*);
+    MmsResult (MMS_CALL *createMaterialSceneSource)(void*, const MmsEvaluationSceneQueryV1*, MmsHandle*);
+    /* Stable ID of one source material, matching BIND's MATERIALS identity.
+     * Model and material indices are scoped to this source capture. */
+    MmsResult (MMS_CALL *materialAt)(void*, MmsHandle source, uint32_t model, uint32_t index, MmsEvaluationMaterialIdV1*);
+    /* Copies count frame records atomically. count must not exceed the
+     * capability limit or the remaining model material extent. With count=0,
+     * first may equal the extent and out may be NULL. Handle, model and range
+     * are validated even for an empty read. On failure no output is changed.
+     * Each returned material ID is the identity frozen with this frame. Frame
+     * data remains valid after the source handle and live model are released.
+     * Caller owns an adequately sized writable array. No host pointer escapes. */
+    MmsResult (MMS_CALL *readFrameMaterials)(void*, MmsHandle frame, uint32_t model, uint32_t first, uint32_t count, MmsEvaluationMaterialV1* out);
+    MmsResult (MMS_CALL *getReferenceCapabilities)(void*, MmsEvaluationReferenceCapsV1*);
+    MmsResult (MMS_CALL *createReferenceSceneSource)(void*, const MmsEvaluationSceneQueryV1*, MmsHandle*);
+    MmsResult (MMS_CALL *readMaterialReferences)(void*, MmsHandle, uint32_t model, uint32_t index, MmsEvaluationMaterialReferencesV1*);
+    MmsResult (MMS_CALL *readToonTable)(void*, MmsHandle, uint32_t model, MmsEvaluationToonTableV1*);
+} MmsEvaluationApiV1_7;
 
 #pragma pack(pop)
 #endif

@@ -2,6 +2,7 @@
 #include "mikumikustudio/bone_curve.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
+#include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/animation_curve_host.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
@@ -291,7 +292,14 @@ void PrivateTargetTests(const bone_curve::Tracks& initial){
     }
 }
 #endif
-int main(){
+#if !MMD_ORIGINAL_PROFILE
+#include "bone_curve_main_preview_checks.inc"
+#endif
+int main(int argc,char** argv){
+#if !MMD_ORIGINAL_PROFILE
+    if(argc==2 && !std::strcmp(argv[1],"--main-preview-reopen"))return main_preview::Launch();
+    if(argc==3 && !std::strcmp(argv[1],"--main-preview-child"))return main_preview::Run(argv[2]);
+#endif
     Model model;bone_curve::Tracks tracks;
     for(int c=0;c<9;++c){ac::Key a,b;a.frame=0;b.frame=20;a.tangent=b.tangent=ac::Tangent::Free;
         a.value=b.value=c>=6?1:0;a.interpolation=b.interpolation=ac::Interpolation::Bezier;
@@ -363,6 +371,43 @@ int main(){
     Check(firstInterval==sameInterval,"same interval keeps interpolation preview");
     Check(firstInterval!=secondInterval,"seeking across inserted key switches main preview interval");
     Check(preview(5)==firstInterval,"seeking back restores the interval preview");
+#if !MMD_ORIGINAL_PROFILE
+    // Keep the position X and rotation Y curves above. Give scale Z a third,
+    // distinct bend. All remaining axes are flat and overlap at the midline.
+    auto multi=tracks;
+    multi[8].keys.back().value=2;
+    multi[8].keys.back().inSlope=.14;
+    Check(bone_curve::Write(model.data(),0,multi,error),"prepare three distinct main-panel curve groups");
+    EnsureInterpChannelCombo(app.get(),true);
+    auto panelMask=[&](int channel){
+        Check(SendMessageW(combo,CB_SETCURSEL,channel,0)==channel,"select main-panel channel");
+        SelectionReeval(app.get());
+        GdiFlush();
+        const auto* dib=static_cast<const unsigned char*>(pixels);
+        std::vector<unsigned char> mask(128*128);
+        for(std::size_t i=0;i<mask.size();++i)
+            mask[i]=dib[4*i]!=255 || dib[4*i+1]!=255 || dib[4*i+2]!=255;
+        return mask;
+    };
+    const auto position=panelMask(0);
+    const auto rotation=panelMask(3);
+    const auto scale=panelMask(bone_scale::kInterpScaleChannel);
+    unsigned positionOnly=0,rotationOnly=0,scaleOnly=0;
+    auto expected=position;
+    for(int y=0;y<128;++y)for(int x=0;x<128;++x){
+        const auto i=128*y+x;
+        expected[i]=position[i] || rotation[i] || scale[i];
+        if(x<4 || x>123 || std::abs(y-64)<=2 || std::abs(y-(127-x))<=2)continue;
+        positionOnly+=position[i] && !rotation[i] && !scale[i];
+        rotationOnly+=rotation[i] && !position[i] && !scale[i];
+        scaleOnly+=scale[i] && !position[i] && !rotation[i];
+    }
+    Check(positionOnly && rotationOnly && scaleOnly,"each group contributes distinct off-chord curve pixels");
+    Check(panelMask(bone_scale::kInterpBoneAll)==expected,"All includes position, rotation and scale curve pixels");
+    Check(panelMask(3)==rotation,"switching back to rotation clears the other groups");
+    Check(panelMask(bone_scale::kInterpScaleChannel)==scale,"switching back to scale restores its preview");
+    Check(panelMask(0)==position,"switching back to position restores its preview");
+#endif
     app->CurveDC()=nullptr;SelectObject(previewDc,oldBitmap);DeleteObject(bitmap);DeleteDC(previewDc);
     app->CurrentFrame()=0;Check(bone_curve::Write(model.data(),0,tracks,error),"restore display-edit fixture");
     curve_host::OpenInterpolation(app.get(),false);

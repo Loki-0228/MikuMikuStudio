@@ -6,6 +6,11 @@
 
 namespace mikumikustudio {
 
+namespace ui {
+// Schedule a complete paint once the panel has settled after a resize.
+void InvalidateBottomTrackbars(MMDApp&);
+}
+
 // Horizontal-collapse state shared by the bottom-panel background and its
 // GDI labels. The original advances the offset only for collapsed panels.
 struct BottomPanelLayout {

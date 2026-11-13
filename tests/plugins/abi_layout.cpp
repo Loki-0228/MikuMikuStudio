@@ -32,6 +32,30 @@ static_assert(offsetof(MmsUiDataDisplayV1, bytes) == 56, "DATA bytes offset");
 static_assert(std::is_standard_layout<MmsUiRefreshBindingApiV1>::value, "DATA standard layout");
 #include <mms/edit.h>
 #include <mms/layout.h>
+#include <mms/layout_session.h>
+static_assert(offsetof(MmsUiLayoutSessionApiV1, queryCapabilities) == 16, "session capabilities offset");
+static_assert(offsetof(MmsUiLayoutSessionApiV1, release) == 80, "session release offset");
+static_assert(offsetof(MmsUiLayoutSessionValueV1, width) == 24, "session dimensions offset");
+static_assert(offsetof(MmsUiLayoutSessionInfoV1, revision) == 8, "session revision offset");
+static_assert(std::is_standard_layout<MmsUiLayoutSessionApiV1>::value, "session standard layout");
+static_assert(std::is_standard_layout<MmsUiLayoutSessionApiV1_2>::value, "parent session standard layout");
+static_assert(offsetof(MmsUiLayoutSessionApiV1_2, queryCapabilitiesEx) == sizeof(MmsUiLayoutSessionApiV1), "parent session appended functions");
+static_assert(offsetof(MmsUiLayoutSessionApiV1_2, queryClaimEx) == 120, "parent session final function");
+static_assert(offsetof(MmsUiLayoutSessionTargetV1_2, parent) == sizeof(MmsUiLayoutSessionTargetV1), "parent claim append");
+static_assert(offsetof(MmsUiLayoutSessionValueV1_2, parent) == sizeof(MmsUiLayoutSessionValueV1), "parent value append");
+#define MMS_CHECK_SESSION_PREFIX(member) static_assert(offsetof(MmsUiLayoutSessionApiV1_2, member) == offsetof(MmsUiLayoutSessionApiV1, member), "session prefix " #member)
+MMS_CHECK_SESSION_PREFIX(h);
+MMS_CHECK_SESSION_PREFIX(context);
+MMS_CHECK_SESSION_PREFIX(queryCapabilities);
+MMS_CHECK_SESSION_PREFIX(queryTarget);
+MMS_CHECK_SESSION_PREFIX(begin);
+MMS_CHECK_SESSION_PREFIX(apply);
+MMS_CHECK_SESSION_PREFIX(query);
+MMS_CHECK_SESSION_PREFIX(queryClaim);
+MMS_CHECK_SESSION_PREFIX(rollback);
+MMS_CHECK_SESSION_PREFIX(commit);
+MMS_CHECK_SESSION_PREFIX(release);
+#undef MMS_CHECK_SESSION_PREFIX
 #include <mms/scene.h>
 #include <mms/storage.h>
 static_assert(sizeof(MmsSceneQueryV1) == 80 && sizeof(MmsSnapshotV1) == 40 && sizeof(MmsSceneApiV1) == 48, "scene layout");
@@ -463,3 +487,9 @@ static_assert(std::is_standard_layout<MmsEvaluationMaterialCapsV1>::value && std
 static_assert(std::is_standard_layout<MmsEvaluationMaterialIdV1>::value && std::is_trivially_copyable<MmsEvaluationMaterialIdV1>::value, "material identity POD");
 static_assert(std::is_standard_layout<MmsEvaluationMaterialV1>::value && std::is_trivially_copyable<MmsEvaluationMaterialV1>::value, "evaluated material POD");
 static_assert(std::is_standard_layout<MmsEvaluationApiV1_6>::value && std::is_trivially_copyable<MmsEvaluationApiV1_6>::value, "evaluation 1.6 POD");
+static_assert(sizeof(MmsEvaluationReferenceCapsV1)==16, "reference capabilities layout");
+static_assert(sizeof(MmsEvaluationMaterialReferencesV1)==2184, "material references layout");
+static_assert(sizeof(MmsEvaluationToonTableV1)==1520, "toon table layout");
+static_assert(offsetof(MmsEvaluationApiV1_7,getReferenceCapabilities)==sizeof(MmsEvaluationApiV1_6), "evaluation 1.6 prefix");
+static_assert(sizeof(MmsEvaluationApiV1_7)==sizeof(MmsEvaluationApiV1_6)+4*sizeof(void*), "evaluation 1.7 append");
+static_assert(std::is_standard_layout<MmsEvaluationApiV1_7>::value && std::is_trivially_copyable<MmsEvaluationApiV1_7>::value, "evaluation 1.7 POD");

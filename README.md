@@ -6,6 +6,8 @@
 
 [Documentation / 文档导航 / ドキュメント](docs/README.md)
 
+[Linux CPU build / Linux 原生 CPU 构建 / Linux ネイティブ CPU ビルド](docs/development/linux-build.md)
+
 [v2026.10.15.1 正式版 / Release / 正式版](docs/records/releases.md#release-v2026-10-15-1)
 
 ## Downloads and package differences

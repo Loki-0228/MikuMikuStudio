@@ -5,6 +5,7 @@
 #include <set>
 #include <cwctype>
 #include "pmm_extension.hpp"
+#include "pmm_paths.hpp"
 
 namespace mikumikustudio::save_naming {
 inline constexpr wchar_t BackupDefault[] = L"[/NAME]_autosave_[/YYYY][/MM][/DD]_[/hh][/mm][/ss]";
@@ -72,7 +73,7 @@ inline void Increment(std::wstring& number) {
     for(auto i=number.size();i>0;--i){if(number[i-1]!=L'9'){++number[i-1];return;}number[i-1]=L'0';}
     number.insert(number.begin(),L'1');
 }
-// PMM and EMM both reserve a name. Existing files are never moved or replaced.
+// A PMM, EMM or plugin sidecar reserves the project name on its own.
 inline std::filesystem::path Next(const std::filesystem::path& directory,const std::wstring& pattern,
                                   const std::wstring& name,bool crash=false) {
     SYSTEMTIME time{};GetLocalTime(&time);
@@ -93,7 +94,9 @@ inline std::filesystem::path Next(const std::filesystem::path& directory,const s
         const auto path=directory/(stem+L".pmm");
         if(path.wstring().size()>=250)return {};
         auto key=stem;for(auto& ch:key)ch=towlower(ch);
-        if(!occupied.count(key+L".pmm") && !occupied.count(key+L".emm"))return path;
+        const auto projectName = key + L".pmm";
+        if (!occupied.count(projectName) && !occupied.count(key + L".emm") &&
+            !occupied.count(projectName + pmm_paths::PluginSidecarSuffix)) return path;
     }
 }
 }

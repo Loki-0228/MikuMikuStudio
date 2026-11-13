@@ -5,6 +5,7 @@
 #include <vector>
 #include <array>
 #include <cstdio>
+#include <optional>
 namespace mikumikustudio { class MMDApp; namespace mdl { struct ModelRecord; }
 namespace extended_names {
 // Replaces an owned Unicode string only after its replacement is allocated.
@@ -31,7 +32,16 @@ struct MotionNames {
     std::wstring model;
     std::vector<std::wstring> bones, morphs;
     std::vector<std::uint32_t> boneOwners, morphOwners, ikOwners;
+    std::optional<std::array<std::uint8_t, 32>> boneRig;
+    std::optional<std::array<std::uint8_t, 32>> morphTable;
 };
+struct MotionTargets {
+    std::vector<int> bones, morphs;
+};
+// Standard records retain their names. The extension binds owner indices to
+// matching ordered bone and morph definitions when names are ambiguous.
+bool PrepareMotionNames(const mdl::ModelRecord&, bool hasMorphKeys, MotionNames&);
+MotionTargets ResolveMotionTargets(const MotionNames&, const mdl::ModelRecord&);
 inline thread_local const std::vector<int>* importedIkTargets = nullptr;
 inline thread_local bool exportingUnicodeMotion = false;
 inline thread_local const std::vector<int>* importedBoneTargets = nullptr;
@@ -59,5 +69,4 @@ std::vector<std::uint8_t> EncodeMotion(const MotionNames&, std::uint64_t prefixS
 // Returns the consumed block size. Unknown blocks return zero; malformed known
 // blocks throw before any keys are imported.
 std::size_t DecodeMotion(const std::uint8_t* file, std::size_t size, std::size_t offset, MotionNames&);
-std::vector<int> MatchNames(const std::vector<std::wstring>& source, const std::vector<std::wstring>& target);
 }}

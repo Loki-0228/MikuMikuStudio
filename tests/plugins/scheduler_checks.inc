@@ -35,6 +35,10 @@ void Run(MMDApp* app) {
     const auto scene=Count(ui_metrics::Scene), effect=Count(ui_metrics::EffectBegin), present=Count(ui_metrics::Present), reset=Count(ui_metrics::Reset);
     const RECT ui{0,50,app->SidebarWidth()-10,90};
     for(unsigned i=0;i<8;++i) Paint(app,ui);
+    for(unsigned i=0;i<8;++i)
+        SendMessageW(app->MainWindow(),WM_MOUSEMOVE,0,MAKELPARAM(10+i,80));
+    const auto scroll=GetDlgItem(app->MainWindow(),panel::kTimelineVScroll);
+    SendMessageW(app->MainWindow(),WM_VSCROLL,SB_LINEDOWN,reinterpret_cast<LPARAM>(scroll));
     NMCUSTOMDRAW draw{};draw.hdr.hwndFrom=GetDlgItem(app->MainWindow(),panel::kPlayButton);
     draw.hdr.idFrom=panel::kPlayButton;draw.hdr.code=NM_CUSTOMDRAW;draw.dwDrawStage=CDDS_PREPAINT;
     draw.hdc=GetDC(draw.hdr.hwndFrom);GetClientRect(draw.hdr.hwndFrom,&draw.rc);
@@ -42,7 +46,10 @@ void Run(MMDApp* app) {
     Check(Count(ui_metrics::Scene)==scene,"WM_PAINT never renders synchronously");
     for(unsigned i=0;i<4;++i) Tick(app);
     Check(Count(ui_metrics::Scene)==scene && Count(ui_metrics::EffectBegin)==effect && Count(ui_metrics::Present)==present && Count(ui_metrics::Reset)==reset,
-        "pure UI paint adds zero scene, effect entry, present and reset calls");
+        "pure UI paint, passive pointer motion and timeline row scroll add no scene work");
+    updates::ObserveMessage(app,WM_MOUSEMOVE,MK_RBUTTON,0);
+    Check(app->MessageSeen()==1,"pressed pointer motion still requests scene work");
+    app->MessageSeen()=0;
     const RECT viewport=FramePresentationRect(app);
     const auto physics=Count(ui_metrics::Physics);
     const auto frame=app->CurrentFrame();

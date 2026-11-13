@@ -73,7 +73,13 @@ void Refresh(MMDApp&app){
 // The frame-apply chain needs the renderer and the model's display and bone
 // tables, so a caller without a live main window (the background regression)
 // must not run it.
-void RefreshMain(MMDApp&app){if(IsWindow(app.MainWindow()))Refresh(app);}
+void RefreshMain(MMDApp& app) {
+    if (!IsWindow(app.MainWindow())) return;
+    Refresh(app);
+#if !MMD_ORIGINAL_PROFILE
+    if (app.CurveDC()) SelectionReeval(&app);
+#endif
+}
 bool CommonCurveHistory(MMDApp& app) {
 #if !MMD_ORIGINAL_PROFILE
     return plugins::BoundNativePoseHistory(&app)!=nullptr;
@@ -310,9 +316,8 @@ constexpr int kMorphComboNarrowWidth = 92 - kMorphLauncherWidth;
 // leaves the drop-down exactly as it was.
 constexpr int kMorphComboHeight = 500;
 
-// The collapsed selector shares space with arrows and the curve launcher;
-// its popup can use the full width needed by the model's expression names.
-void FitMorphDropDown(HWND combo){
+// Measure the popup when it opens, after any project, font or list change.
+void FitNameDropDown(HWND combo){
     if(!combo)return;
     HDC dc=GetDC(combo);
     if(!dc)return;
@@ -332,8 +337,8 @@ void FitMorphDropDown(HWND combo){
     if(previous&&previous!=HGDI_ERROR)SelectObject(dc,previous);
     ReleaseDC(combo,dc);
     RECT rect{};GetWindowRect(combo,&rect);
-    int width=std::max({240,static_cast<int>(rect.right-rect.left),
-                        textWidth+GetSystemMetrics(SM_CXVSCROLL)+24});
+    int width=std::max(static_cast<int>(rect.right-rect.left),
+                       textWidth+GetSystemMetrics(SM_CXVSCROLL)+24);
     MONITORINFO monitor{sizeof(MONITORINFO)};
     if(GetMonitorInfoW(MonitorFromWindow(combo,MONITOR_DEFAULTTONEAREST),&monitor))
         width=std::min(width,static_cast<int>(monitor.rcWork.right-monitor.rcWork.left)-16);
@@ -477,8 +482,10 @@ LRESULT CALLBACK Parent(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR,DWORD_PT
         }
     }
     if(msg==WM_COMMAND&&HIWORD(wp)==CBN_DROPDOWN){
-        for(int lane=0;lane<kMorphLaneCount;++lane)
-            if(LOWORD(wp)==kMorphComboIds[lane])FitMorphDropDown(reinterpret_cast<HWND>(lp));
+        const int id=LOWORD(wp);
+        if(id==436||id==443||id==449||id==450||id==471||id==474||id==475||
+           std::find(std::begin(kMorphComboIds),std::end(kMorphComboIds),id)!=std::end(kMorphComboIds))
+            FitNameDropDown(reinterpret_cast<HWND>(lp));
     }
     if(msg==WM_COMMAND&&LOWORD(wp)==curve_editor::kAccessoryCurve){Open(app);return 0;}
     if(msg==WM_COMMAND&&LOWORD(wp)==curve_editor::kInterpolationCurve){OpenInterpolation(app);return 0;}
@@ -894,6 +901,60 @@ double GraphValue(const BoneGraph&keys,const curve_editor::Channel&channel,int a
     const double angle=GraphAngles(q)[axis-3];
     return NearAngle(angle,a.values[axis]+(b.values[axis]-a.values[axis])*raw);
 }
+bool PrepareNativeBoneRows(unsigned char* model,int bone,const BoneGraph& before,
+                           const std::vector<curve_editor::Channel>& channels,
+                           const char*const* ids,BoneGraph& rows,std::wstring& error){
+    const auto* keys=mdl::BoneKeys(model);
+    const auto capacity=mdl::BoneKeyCapacity(*mdl::Mdl(model));
+    if(!keys||before.empty()){error=L"骨骼关键帧不可用。";return false;}
+    rows=before;
+    std::uint32_t slot=bone;
+    for(std::size_t row=0;row<rows.size();++row){
+        const auto& original=before[row];
+        auto& target=rows[row];
+        if(slot>=capacity||slot!=original.index||keys[slot].frame!=original.frame){
+            error=L"骨骼关键帧已改变，请等待同步。";return false;
+        }
+        for(int c=0;c<9;++c){
+            const auto& lane=channels[c];
+            if(lane.id!=ids[c]||lane.track.keys.size()!=rows.size()||
+                lane.track.keys[row].value!=original.values[c]){
+                error=L"原生插值支持移动整条骨骼关键帧。修改独立通道数值请切换自由曲线。";return false;
+            }
+            const int frame=lane.track.keys[row].frame;
+            if(!c){
+                if((!row&&frame!=0)||(row&&(frame<=0||frame>frame_limits::maximum||
+                    std::uint32_t(frame)<=rows[row-1].frame))){
+                    error=L"骨骼关键帧不能移过相邻关键帧或移走零帧。";return false;
+                }
+                target.frame=std::uint32_t(frame);
+            }else if(frame!=int(target.frame)){
+                error=L"同一骨骼的全部原生通道必须共用帧号。";return false;
+            }
+            if(!row)continue;
+            std::array<double,4> controls{};
+            if(!curve_editor::ReadChannelControls(lane,row,controls)){
+                error=L"插值控制点无法读取。";return false;
+            }
+            bone_scale::Curve native{};
+            for(int k=0;k<4;++k){
+                if(!std::isfinite(controls[k])||controls[k]<0||controls[k]>127){
+                    error=L"插值控制点超出范围。";return false;
+                }
+                native[k]=std::uint8_t(std::lround(controls[k]));
+            }
+            const int group=GraphLane(c);
+            if(c==4||c==5||c==7||c==8){
+                if(target.controls[group]!=native){error=L"旋转或缩放各轴必须使用同一插值控制点。";return false;}
+            }else target.controls[group]=native;
+        }
+        slot=keys[slot].next;
+        if((row+1==rows.size())!=(slot==0)){
+            error=L"骨骼关键帧已改变，请等待同步。";return false;
+        }
+    }
+    return true;
+}
 }
 #if !MMD_ORIGINAL_PROFILE
 using BoneCurveCollector=std::function<bool(const std::vector<curve_editor::Channel>&,
@@ -953,6 +1014,7 @@ static curve_editor::Source BoneSource(MMDApp*app,const MorphModelIdentity&ident
             channel.minimum=-1e12;channel.maximum=1e12;channel.base=fresh.front().values[c];
             if(c>=3&&c<6)channel.unit=L"°";
             channel.interpolationGroup="bone/"+std::to_string(GraphLane(c));
+            channel.keyFrameGroup="bone/"+std::to_string(bone);
             for(const auto&native:fresh){animation_curve::Key key;key.frame=native.frame;key.value=native.values[c];
                 key.interpolation=animation_curve::Interpolation::Bezier;key.tangent=animation_curve::Tangent::Free;channel.track.keys.push_back(key);}
             channel.nativeControls.resize(fresh.size());channel.controlGeometry.resize(fresh.size());
@@ -997,6 +1059,7 @@ static curve_editor::Source BoneSource(MMDApp*app,const MorphModelIdentity&ident
             auto& channel=channels[c];
             if(hasAuthored)channel.track=authored[c];
             channel.sample={};channel.nativeControls.clear();channel.controlGeometry.clear();channel.interpolationGroup.clear();
+            channel.keyFrameGroup.clear();
             if(c>=6){channel.minimum=0.001;channel.maximum=1000;}
         }
         // Visibility and IK are the model's separate discrete master track.
@@ -1045,24 +1108,11 @@ static curve_editor::Source BoneSource(MMDApp*app,const MorphModelIdentity&ident
         if(boneChanged){
             if(edit.freeCurves){for(int c=0;c<9;++c)edit.tracks[c]=channels[c].track;}
             else{
-                const auto* keys=mdl::BoneKeys(identity.model);const auto capacity=mdl::BoneKeyCapacity(*mdl::Mdl(identity.model));
-                if(!keys){error=L"骨骼关键帧不可用。";return false;}
-                std::uint32_t slot=unsigned(bone);edit.nativeControls.resize(graph->size());
-                for(std::size_t end=0;end<graph->size();++end){
-                    const auto& expected=(*graph)[end];auto& target=edit.nativeControls[end];target.frame=int(expected.frame);target.controls=expected.controls;
-                    if(slot>=capacity||slot!=expected.index||keys[slot].frame!=expected.frame){error=L"骨骼关键帧已改变，请等待同步。";return false;}
-                    for(int c=0;c<9;++c){
-                        if(channels[c].track.keys.size()!=graph->size()||channels[c].track.keys[end].frame!=int(expected.frame)||channels[c].track.keys[end].value!=expected.values[c]){
-                            error=L"此入口只编辑插值控制柄，关键帧位置和骨骼数值应在 MMS 中修改。";return false;}
-                        if(end){std::array<double,4> controls{};if(!curve_editor::ReadChannelControls(channels[c],end,controls)){error=L"插值控制点无法读取。";return false;}
-                            bone_scale::Curve native{};for(int k=0;k<4;++k){if(!std::isfinite(controls[k])||controls[k]<0||controls[k]>127){error=L"插值控制点超出范围。";return false;}native[k]=std::uint8_t(std::lround(controls[k]));}
-                            const int lane=GraphLane(c);
-                            if(c==4||c==5||c==7||c==8){if(target.controls[lane]!=native){error=L"旋转或缩放各轴必须使用同一插值控制点。";return false;}}
-                            else target.controls[lane]=native;
-                        }
-                    }
-                    if(end+1<graph->size()){if(!keys[slot].next){error=L"骨骼关键帧已改变。";return false;}slot=keys[slot].next;}
-                    else if(keys[slot].next){error=L"骨骼关键帧已改变。";return false;}
+                BoneGraph rows;
+                if(!PrepareNativeBoneRows(identity.model,bone,*graph,channels,ids,rows,error))return false;
+                edit.nativeControls.reserve(rows.size());
+                for(std::size_t row=0;row<rows.size();++row){
+                    edit.nativeControls.push_back({int((*graph)[row].frame),rows[row].controls,int(rows[row].frame)});
                 }
             }
         }
@@ -1130,30 +1180,26 @@ static curve_editor::Source BoneSource(MMDApp*app,const MorphModelIdentity&ident
             app->LastRegisteredFrame()=std::max(app->LastRegisteredFrame(),static_cast<std::uint32_t>(mdl::Mdl(identity.model)->maxFrame));
             app->SceneModified()=1;Refresh(*app);SelectionReeval(app);return true;
         }
-        auto*keys=mdl::BoneKeys(identity.model);const auto capacity=mdl::BoneKeyCapacity(*mdl::Mdl(identity.model));
-        if(!keys){error=L"骨骼关键帧不可用。";return false;}
-        std::vector<std::array<bone_scale::Curve,5>> changed(graph->size());
-        std::uint32_t slot=bone;
-        for(std::size_t end=0;end<graph->size();++end){
-            const auto&expected=(*graph)[end];
-            if(slot>=capacity||slot!=expected.index||keys[slot].frame!=expected.frame){error=L"骨骼关键帧已改变，请等待同步。";return false;}
-            for(int c=0;c<9;++c){
-                if(channels[c].id!=ids[c]||channels[c].track.keys.size()!=graph->size()||channels[c].track.keys[end].frame!=expected.frame||channels[c].track.keys[end].value!=expected.values[c]){
-                    error=L"此入口只编辑插值控制柄，关键帧位置和骨骼数值应在 MMS 中修改。";return false;}
-                if(end){std::array<double,4> controls{};if(!curve_editor::ReadChannelControls(channels[c],end,controls)){error=L"插值控制点无法读取。";return false;}
-                    bone_scale::Curve native{};for(int k=0;k<4;++k){if(!std::isfinite(controls[k])||controls[k]<0||controls[k]>127){error=L"插值控制点超出范围。";return false;}native[k]=static_cast<std::uint8_t>(std::lround(controls[k]));}
-                    const int lane=GraphLane(c);if(c==4||c==5||c==7||c==8){if(changed[end][lane]!=native){error=L"旋转或缩放各轴必须使用同一插值控制点。";return false;}}
-                    else changed[end][lane]=native;
-                }
-            }
-            if(end+1<graph->size()){if(keys[slot].next==0){error=L"骨骼关键帧已改变。";return false;}slot=keys[slot].next;}
-            else if(keys[slot].next!=0){error=L"骨骼关键帧已改变。";return false;}
+        BoneGraph rows;
+        if(!PrepareNativeBoneRows(identity.model,bone,*graph,channels,ids,rows,error))return false;
+        auto& model=*mdl::Mdl(identity.model);
+        auto* keys=model.boneKeys;
+        bool retimed=false;
+        for(std::size_t end=1;end<rows.size();++end){
+            const auto& row=rows[end];
+            auto& key=keys[row.index];
+            retimed|=key.frame!=row.frame;
+            key.frame=row.frame;
+            for(int lane=0;lane<4;++lane)for(int k=0;k<4;++k)key.interpolation[lane+k*4]=row.controls[lane][k];
+            if(row.controls[4]!=(*graph)[end].controls[4])
+                bone_scale::SetKeyCurve(identity.model,row.index,row.controls[4]);
         }
-        for(std::size_t end=1;end<graph->size();++end){auto&key=keys[(*graph)[end].index];
-            for(int lane=0;lane<4;++lane)for(int k=0;k<4;++k)key.interpolation[lane+k*4]=changed[end][lane][k];
-            bone_scale::SetKeyCurve(identity.model,(*graph)[end].index,changed[end][4]);
-            (*graph)[end].controls=changed[end];
+        if(retimed){
+            model.maxFrame=std::max(model.maxFrame,rows.back().frame);
+            app->LastRegisteredFrame()=std::max(app->LastRegisteredFrame(),model.maxFrame);
+            if(model.boneKeyCursors)model.boneKeyCursors[bone]=unsigned(bone);
         }
+        graph->swap(rows);
         for(std::size_t c=0;c<discrete->size();++c){std::uint32_t index=0;
             for(const auto&key:channels[9+c].track.keys){if(c==0)display[index].visible=static_cast<std::uint8_t>(key.value);else display[index].ikStates[c-1]=static_cast<std::uint8_t>(key.value);index=display[index].next;}
             (*discrete)[c]=channels[9+c];}
@@ -1447,7 +1493,6 @@ void LayoutControls(MMDApp*app){
     RECT anchor=Rect(hwnd,474),combo=Rect(hwnd,471);
     const int x=anchor.left;
     Move(hwnd,471,x,combo.top,99,150);
-    SendMessageW(GetDlgItem(hwnd,471),CB_SETDROPPEDWIDTH,240,0);
     Move(hwnd,curve_editor::kAccessoryCurve,x+103,combo.top-1,22,22);
     RECT autoBox=Rect(hwnd,530);
     const RECT interpolationCombo=Rect(hwnd,panel::kInterpCurveCombo);
@@ -1525,8 +1570,21 @@ void Localize(MMDApp*app){
     HMENU menu=GetMenu(hwnd),file=menu?GetSubMenu(menu,0):nullptr;
     if(file){const wchar_t*caption=Text(lang,L"選択中のアクセサリのモーション読込（VMD）…",L"Load selected accessory motion (VMD)…",L"载入当前附件动作（VMD）…");
         const UINT flags=MF_STRING|((app->CameraMode()!=0&&app->AccessorySlot(app->SelectedAccessorySlot()))?MF_ENABLED:MF_GRAYED);
-        if(GetMenuState(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND)==UINT(-1))AppendMenuW(file,flags,curve_editor::kAccessoryMotionMenu,caption);
-        else ModifyMenuW(file,curve_editor::kAccessoryMotionMenu,MF_BYCOMMAND|flags,curve_editor::kAccessoryMotionMenu,caption);
+        if (GetMenuState(file, curve_editor::kAccessoryMotionMenu, MF_BYCOMMAND) == UINT(-1)) {
+            constexpr UINT kSaveMotionCommand = 210;
+            const int count = GetMenuItemCount(file);
+            UINT insertion = UINT(count);
+            for (int position = 0; position < count; ++position) {
+                if (GetMenuItemID(file, position) != kSaveMotionCommand) continue;
+                insertion = UINT(position + 1);
+                break;
+            }
+            InsertMenuW(file, insertion, MF_BYPOSITION | flags,
+                        curve_editor::kAccessoryMotionMenu, caption);
+        } else {
+            ModifyMenuW(file, curve_editor::kAccessoryMotionMenu, MF_BYCOMMAND | flags,
+                        curve_editor::kAccessoryMotionMenu, caption);
+        }
     }
     curve_editor::SetLanguage(hwnd,lang);
 }

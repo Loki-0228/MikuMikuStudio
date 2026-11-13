@@ -157,6 +157,38 @@ bool Owned(const fs::path& path) {
     const auto filename = path.filename().u8string();
     return marker && std::string(marker->value.begin(), marker->value.end()) == filename;
 }
+
+enum class Rotation { WithinLimit, Replaced, CleanupIncomplete, Full };
+
+Rotation FinishRotation(const std::vector<fs::path>& old, unsigned limit,
+                        const fs::path& active, const fs::path& destination) {
+    auto remaining = old.size();
+    if (remaining < limit) return Rotation::WithinLimit;
+
+    for (const auto& candidate : old) {
+        std::error_code sameError;
+        if (_wcsicmp(candidate.c_str(), active.c_str()) == 0 ||
+            (!active.empty() && fs::equivalent(candidate, active, sameError))) continue;
+        try {
+            if (!Owned(candidate) || !plugins::DeletePluginBackup(candidate.c_str())) break;
+        } catch (...) {
+            runtime_log::WritePath("AUTOSAVE could not verify or remove old backup", candidate.c_str());
+            break;
+        }
+        RemoveBackupEffects(candidate);
+        if (--remaining < limit) return Rotation::Replaced;
+    }
+
+    // Once a previous generation is gone, keep the new snapshot even if
+    // another generation is held open. If nothing was removed, keep the
+    // existing full-folder behavior and withdraw the new candidate.
+    if (remaining < old.size()) return Rotation::CleanupIncomplete;
+    if (!plugins::DeletePluginBackup(destination.c_str())) return Rotation::CleanupIncomplete;
+    // MME is notified only after retention. Any EMM at this candidate's
+    // path was created independently and does not belong to this rollback.
+    return Rotation::Full;
+}
+
 void SetFull(MMDApp* app, bool value) {
     if (full == value) return;
     full = value;
@@ -395,13 +427,16 @@ bool QueueBackup(MMDApp* app) noexcept {
             fs::path destination, active;
             std::vector<fs::path> old;
             HANDLE lock = INVALID_HANDLE_VALUE;
-            bool full = false, overwritten = false;
+            Rotation rotation = Rotation::WithinLimit;
             ~BackupWork() { if (lock != INVALID_HANDLE_VALUE) CloseHandle(lock); }
         };
         auto work = std::make_shared<BackupWork>();
         work->settings = settings;
         work->destination = NewName(app, false, settings.directory);
-        if (work->destination.empty()) return false;
+        if (work->destination.empty()) {
+            background_save::SetStatus(app, background_save::Status::BackupFailed);
+            return false;
+        }
         if (*app->EnvFileName()) work->active = fs::absolute(app->EnvFileName());
         background_save::Options options;
         options.backup = true;
@@ -412,35 +447,28 @@ bool QueueBackup(MMDApp* app) noexcept {
                 OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
             if (work->lock == INVALID_HANDLE_VALUE) return false;
             work->old = Backups(work->settings.directory);
-            work->full = work->old.size() >= work->settings.maxBackups && !work->settings.overwriteOldest;
-            if (!work->full && work->old.size() >= work->settings.maxBackups)
+            if (work->old.size() < work->settings.maxBackups) return true;
+            if (work->settings.overwriteOldest) {
                 background_save::ReportBackupOverwrite();
-            return !work->full;
+                return true;
+            }
+            work->rotation = Rotation::Full;
+            return false;
         };
         options.afterWrite = [work] {
-            // Publish the new snapshot before removing anything. Protect the
-            // active recovery project, and delete only owned PMM/EMM pairs.
-            while (work->old.size() >= work->settings.maxBackups) {
-                auto victim = std::find_if(work->old.begin(), work->old.end(), [&](const auto& path) {
-                    std::error_code error;
-                    return _wcsicmp(path.c_str(), work->active.c_str()) != 0 &&
-                        (work->active.empty() || !fs::equivalent(path, work->active, error));
-                });
-                if (victim == work->old.end() || !Owned(*victim) || !plugins::DeletePluginBackup(victim->c_str())) {
-                    if (plugins::DeletePluginBackup(work->destination.c_str())) RemoveBackupEffects(work->destination);
-                    work->full = true;
-                    return false;
-                }
-                RemoveBackupEffects(*victim);
-                work->old.erase(victim);
-                work->overwritten = true;
-            }
-            return true;
+            work->rotation = FinishRotation(work->old, work->settings.maxBackups,
+                work->active, work->destination);
+            return work->rotation != Rotation::Full;
         };
-        options.completed = [app, work](bool success) {
-            if (work->full) background_save::SetStatus(app, background_save::Status::Full);
-            else if (success && work->overwritten)
-                background_save::SetStatus(app, background_save::Status::Overwritten);
+        options.completed = [app, work, generation = app->SceneGeneration()](bool success) {
+            if (app->SceneGeneration() == generation) {
+                if (work->rotation == Rotation::Full)
+                    background_save::SetStatus(app, background_save::Status::Full);
+                else if (success && work->rotation == Rotation::Replaced)
+                    background_save::SetStatus(app, background_save::Status::Overwritten);
+                else if (success && work->rotation == Rotation::CleanupIncomplete)
+                    background_save::SetStatus(app, background_save::Status::BackupCleanupIncomplete);
+            }
             nextScan = 0;
             if (success) runtime_log::WritePath("autosave", work->destination.c_str());
         };
@@ -478,20 +506,13 @@ Result BackupNow(MMDApp* app, bool crash) noexcept {
         // Also protect the currently opened project even if it is a recovery file.
         std::error_code ec;
         const fs::path active = *app->EnvFileName() ? fs::absolute(app->EnvFileName(), ec) : fs::path();
-        while (old.size() >= settings.maxBackups) {
-            auto victim = std::find_if(old.begin(), old.end(), [&](const auto& p) {
-                std::error_code sameError;
-                return _wcsicmp(p.c_str(), active.c_str()) != 0 &&
-                    (active.empty() || !fs::equivalent(p, active, sameError));
-            });
-            if (victim == old.end() || !Owned(*victim) || !plugins::DeletePluginBackup(victim->c_str())) {
-                if (plugins::DeletePluginBackup(destination.c_str())) RemoveBackupEffects(destination);
-                if (!crash) RefreshCapacity(app);
-                return Result::Full;
-            }
-            RemoveBackupEffects(*victim);
-            old.erase(victim);
+        const auto rotation = FinishRotation(old, settings.maxBackups, active, destination);
+        if (rotation == Rotation::Full) {
+            if (!crash) RefreshCapacity(app);
+            return Result::Full;
         }
+        if (rotation == Rotation::CleanupIncomplete)
+            runtime_log::WritePath("AUTOSAVE saved; old backups could not all be removed", destination.c_str());
         // This is the legacy native MME file notification, not completion of
         // its EMM write. MME consumes it on a later normal render callback
         // and still decides whether its live EMMAutoSave setting allows it.

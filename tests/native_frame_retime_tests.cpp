@@ -459,14 +459,12 @@ void CheckMergedCameraTiming() {
         Check(false, "read the converted authored camera");
         return;
     }
-    const auto sample = [](const curve_editor::Channel& channel, double frame) {
-        return channel.sample ? channel.sample(channel, frame) : ac::Evaluate(channel.track, frame);
-    };
     for (const double frame : {1.25, 1.5, 2.5})
-        Check(std::abs(sample(converted[0], frame).value -
+        Check(std::abs(curve_editor::EvaluateChannel(converted[0], frame).value -
                        ac::Evaluate(expected, frame).value) < 1e-6,
               "merged camera endpoints retain the clipped scalar curve");
-    Check(std::abs(sample(converted[0], 4).value - sample(source[0], 40).value) < 1e-6,
+    Check(std::abs(curve_editor::EvaluateChannel(converted[0], 4).value -
+                   curve_editor::EvaluateChannel(source[0], 40).value) < 1e-6,
           "unmerged camera endpoints retain their exact native timing");
 }
 

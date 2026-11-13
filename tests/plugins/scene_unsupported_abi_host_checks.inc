@@ -46,7 +46,7 @@ void Run(MMDApp* app) {
     // plugins, before any intentionally invalid live header is installed.
     auto sceneStore = CreateSceneStore(app);
     SceneClient sceneClient;
-    auto scene = sceneStore->Api(sceneClient);
+    auto scene = ([&]{ MmsSceneApiV1 value{}; if (sceneStore->Api(sceneClient, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     MmsSceneQueryV1 bindQuery{};
     bindQuery.h = Header<MmsSceneQueryV1>();
     bindQuery.stage = MMS_STAGE_BIND;

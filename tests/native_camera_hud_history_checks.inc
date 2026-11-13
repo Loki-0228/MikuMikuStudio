@@ -29,12 +29,18 @@ struct CameraHudFixture:NumpadFixture {
     }
 };
 void HudFixtureCursor(MMDApp& app,HWND owner,POINT requested,const char* placement,const char* roundtrip) {
+    const WindowDpiScope dpi(owner);
     POINT screen=requested;
-    const bool positioned=ClientToScreen(owner,&screen)&&SetCursorPos(screen.x,screen.y);
+    SetLastError(ERROR_SUCCESS);
+    const bool toScreen=ClientToScreen(owner,&screen)!=FALSE;
+    const DWORD toScreenError=GetLastError();
+    bool positioned=false; DWORD positionError=ERROR_SUCCESS;
+    if(toScreen){SetLastError(ERROR_SUCCESS);positioned=SetCursorPos(screen.x,screen.y)!=FALSE;
+        positionError=GetLastError();}
     POINT actualScreen{},actualClient{};
     const bool sampled=GetCursorPos(&actualScreen)!=FALSE;
     actualClient=actualScreen;const bool converted=sampled&&ScreenToClient(owner,&actualClient);
-    const bool exact=positioned&&converted&&actualClient.x==requested.x&&actualClient.y==requested.y;
+    bool exact=positioned&&converted&&actualClient.x==requested.x&&actualClient.y==requested.y;
     if(!exact){RECT bounds{},client{},clip{};GetWindowRect(owner,&bounds);GetClientRect(owner,&client);GetClipCursor(&clip);
         const auto view=app.ViewportRect(),overlay=FrameOverlayRect(&app);
         std::fprintf(stderr,"HUD cursor mismatch: expected_client=(%ld,%ld) expected_screen=(%ld,%ld) actual_screen=(%ld,%ld) actual_client=(%ld,%ld) positioned=%u sampled=%u converted=%u window=(%ld,%ld,%ld,%ld) client=(%ld,%ld,%ld,%ld) clip=(%ld,%ld,%ld,%ld) viewport=(%ld,%ld,%ld,%ld) overlay=(%ld,%ld,%ld,%ld) output=(%d,%d)\n",
@@ -42,8 +48,99 @@ void HudFixtureCursor(MMDApp& app,HWND owner,POINT requested,const char* placeme
             positioned?1u:0u,sampled?1u:0u,converted?1u:0u,bounds.left,bounds.top,bounds.right,bounds.bottom,
             client.left,client.top,client.right,client.bottom,clip.left,clip.top,clip.right,clip.bottom,
             view.left,view.top,view.right,view.bottom,overlay.left,overlay.top,overlay.right,overlay.bottom,
-            app.RenderWidth(),app.RenderHeight());}
-    Check(positioned,placement);Check(exact,roundtrip);
+            app.RenderWidth(),app.RenderHeight());
+        std::fprintf(stderr,"HUD cursor calls: ClientToScreen=%u error=%lu SetCursorPos_called=%u result=%u error=%lu pid=%lu tid=%lu import=%p resolved=%p\n",
+            toScreen?1u:0u,toScreenError,toScreen?1u:0u,positioned?1u:0u,positionError,
+            GetCurrentProcessId(),GetCurrentThreadId(),reinterpret_cast<void*>(&SetCursorPos),
+            reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"user32.dll"),"SetCursorPos")));
+        const auto describe=[](const char* label,HANDLE object){
+            wchar_t name[256]{};DWORD bytes=0;SetLastError(ERROR_SUCCESS);
+            const bool named=object&&GetUserObjectInformationW(object,UOI_NAME,name,sizeof name,&bytes)!=FALSE;
+            const DWORD error=GetLastError();
+            std::fprintf(stderr,"HUD cursor desktop: %s handle=%p named=%u error=%lu name=%ls\n",
+                label,object,named?1u:0u,error,named?name:L"<unavailable>");
+        };
+        describe("thread",GetThreadDesktop(GetCurrentThreadId()));
+        describe("station",GetProcessWindowStation());
+        SetLastError(ERROR_SUCCESS);
+        const auto input=OpenInputDesktop(0,FALSE,DESKTOP_READOBJECTS);
+        const DWORD inputError=GetLastError();
+        std::fprintf(stderr,"HUD cursor input desktop: opened=%u error=%lu\n",input?1u:0u,inputError);
+        if(input){describe("input",input);CloseDesktop(input);}
+    }
+    bool hiddenWindowCoordinates=false;
+    if(toScreen&&!positioned){
+        // This fixture verifies real cursor sampling on mouse-up, not Windows
+        // cursor-warp availability. Only an untouched hidden system STATIC may
+        // move beneath the cursor; production/subclassed owners can run layout
+        // callbacks on WM_MOVE and must not use this coordinate fixture.
+        DWORD process=0;char klass[32]{};
+        const auto thread=GetWindowThreadProcessId(owner,&process);
+        SetLastError(ERROR_SUCCESS);
+        const auto procedure=GetWindowLongPtrA(owner,GWLP_WNDPROC);
+        const DWORD procedureError=GetLastError();
+        SetLastError(ERROR_SUCCESS);
+        const auto classProcedure=GetClassLongPtrA(owner,GCLP_WNDPROC);
+        const DWORD classProcedureError=GetLastError();
+        SetLastError(ERROR_SUCCESS);
+        const auto wideProcedure=GetWindowLongPtrW(owner,GWLP_WNDPROC);
+        const DWORD wideProcedureError=GetLastError();
+        SetLastError(ERROR_SUCCESS);
+        const auto wideClassProcedure=GetClassLongPtrW(owner,GCLP_WNDPROC);
+        const DWORD wideClassProcedureError=GetLastError();
+        const auto style=GetWindowLongPtrW(owner,GWL_STYLE);
+        const bool valid=IsWindow(owner)!=FALSE,visible=IsWindowVisible(owner)!=FALSE;
+        const bool unicode=IsWindowUnicode(owner)!=FALSE;
+        // Built-in STATIC can be Unicode even when created through the ANSI
+        // entry point. ANSI procedure adapters are opaque, distinct tokens;
+        // compare both procedures in the window's actual character mode.
+        const auto actualProcedure=unicode?wideProcedure:procedure;
+        const auto actualClassProcedure=unicode?wideClassProcedure:classProcedure;
+        SetLastError(ERROR_SUCCESS);
+        const int classLength=GetClassNameA(owner,klass,sizeof klass);
+        const DWORD classNameError=GetLastError();
+        const bool safe=owner&&valid&&!visible&&
+            process==GetCurrentProcessId()&&thread==GetCurrentThreadId()&&
+            !(style&WS_CHILD)&&classLength&&!_stricmp(klass,"STATIC")&&
+            actualProcedure&&actualProcedure==actualClassProcedure;
+        if(!safe)std::fprintf(stderr,"HUD hidden-window safety: owner=%p valid=%u visible=%u pid=%lu expected_pid=%lu tid=%lu expected_tid=%lu style=0x%llx class=%s class_length=%d class_error=%lu unicode=%u wndprocA=%p error=%lu classprocA=%p error=%lu wndprocW=%p error=%lu classprocW=%p error=%lu\n",
+            owner,valid?1u:0u,visible?1u:0u,process,GetCurrentProcessId(),thread,GetCurrentThreadId(),
+            static_cast<unsigned long long>(style),klass,classLength,classNameError,unicode?1u:0u,
+            reinterpret_cast<void*>(procedure),procedureError,reinterpret_cast<void*>(classProcedure),classProcedureError,
+            reinterpret_cast<void*>(wideProcedure),wideProcedureError,reinterpret_cast<void*>(wideClassProcedure),wideClassProcedureError);
+        Check(safe,"hidden-window coordinate fixture requires an unmodified hidden same-thread system STATIC owner");
+        RECT before{},clientBefore{};POINT unchanged{},relative{};
+        Check(GetWindowRect(owner,&before)&&GetClientRect(owner,&clientBefore)&&GetCursorPos(&unchanged),
+            "read hidden-window coordinate fixture geometry and real cursor");
+        relative=unchanged;
+        Check(ScreenToClient(owner,&relative)!=FALSE,"map unmoved real cursor into hidden fixture client");
+        const auto x=std::int64_t(before.left)+std::int64_t(relative.x)-requested.x;
+        const auto y=std::int64_t(before.top)+std::int64_t(relative.y)-requested.y;
+        const auto fits=[](std::int64_t value){return value>=(std::numeric_limits<int>::min)()&&value<=(std::numeric_limits<int>::max)();};
+        Check(fits(x)&&fits(y)&&fits(x+std::int64_t(before.right)-before.left)&&fits(y+std::int64_t(before.bottom)-before.top),
+            "hidden-window coordinate fixture position is representable without integer overflow");
+        const auto focus=GetFocus(),capture=GetCapture();
+        SetLastError(ERROR_SUCCESS);
+        const bool moved=SetWindowPos(owner,nullptr,int(x),int(y),0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE)!=FALSE;
+        const DWORD moveError=GetLastError();
+        RECT after{},clientAfter{};POINT real{},mapped{};
+        const bool sampledAgain=GetCursorPos(&real)!=FALSE;mapped=real;
+        const bool mappedAgain=sampledAgain&&ScreenToClient(owner,&mapped)!=FALSE;
+        const bool geometry=moved&&GetWindowRect(owner,&after)&&GetClientRect(owner,&clientAfter)&&
+            std::int64_t(after.right)-after.left==std::int64_t(before.right)-before.left&&
+            std::int64_t(after.bottom)-after.top==std::int64_t(before.bottom)-before.top&&
+            !std::memcmp(&clientBefore,&clientAfter,sizeof clientBefore);
+        hiddenWindowCoordinates=geometry&&!IsWindowVisible(owner)&&GetFocus()==focus&&GetCapture()==capture&&
+            (IsWindowUnicode(owner)!=FALSE)==unicode&&
+            (unicode?GetWindowLongPtrW(owner,GWLP_WNDPROC):GetWindowLongPtrA(owner,GWLP_WNDPROC))==actualProcedure&&sampledAgain&&
+            real.x==unchanged.x&&real.y==unchanged.y;
+        exact=hiddenWindowCoordinates&&mappedAgain&&mapped.x==requested.x&&mapped.y==requested.y;
+        std::fprintf(stderr,"HUD hidden-window coordinate fixture: SetCursorPos remains FAILED (not a warp acceptance); moved=%u error=%lu geometry=%u cursor_unchanged=%u actual_client=(%ld,%ld) requested=(%ld,%ld) exact=%u\n",
+            moved?1u:0u,moveError,geometry?1u:0u,hiddenWindowCoordinates?1u:0u,mapped.x,mapped.y,requested.x,requested.y,exact?1u:0u);
+    }
+    Check(positioned||hiddenWindowCoordinates,positioned?placement:
+        "hidden-window coordinate fixture establishes the real cursor target without moving the cursor");
+    Check(exact,roundtrip);
 }
 void CameraHudSample(MMDApp& app, int operation, int dy, unsigned modifier = 0) {
     app.PreviousMouseX() = 100; app.PreviousMouseY() = 100;
@@ -285,6 +382,12 @@ struct CameraHudReleaseReentryWindow {
         edit(GetDlgItem(owner,operation==15?panel::kReadoutPosXEdit:panel::kReadoutRotXEdit)),floating(f.app->FloatingWindow()),
         ownerProc(nullptr),editProc(nullptr),originalView(f.app->ViewportRect()),cursorValid(GetCursorPos(&cursor)!=FALSE),replacementOperation(operation==15?18:15){
         Check(!active&&edit,"camera release reentry uses the actual native readout EDIT");active=this;
+        // Establish the real cursor coordinates while the owner is still the
+        // untouched hidden STATIC. MicWndProc handles WM_MOVE with production
+        // layout callbacks, so the hidden-window fixture must never move it
+        // after the real procedure has been installed.
+        HudFixtureCursor(*f.app,owner,{100,107},"place actual camera release cursor seven native pixels from its previous sample",
+            "camera release replacement cursor round-trips through actual screen and client coordinates");
         ownerProc=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(MicWndProc)));
         editProc=reinterpret_cast<WNDPROC>(SetWindowLongPtrW(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(EditProc)));
         Check(ownerProc&&editProc,"camera release fixture installs real MicWndProc and forwards the native EDIT procedure");f.app->FloatingWindow()=owner;HudFixtureGeometry(*f.app);
@@ -321,8 +424,11 @@ void CameraHudReleaseReentrantReplacement(){
         const auto bytes=f.history.RetainedBytes();std::uint64_t revision=0;f.history.Revision(revision);PostViewRefresh(f.app.get());
         Check(plugins::BeginCameraHudGesture(*f.app,f.history,window.owner,operation)==MMS_OK,"reserve old camera HUD before a real mouse-up readout callback");SetCapture(window.owner);
         f.app->PreviousMouseX()=f.app->MouseX()=100;f.app->PreviousMouseY()=f.app->MouseY()=100;
-        HudFixtureCursor(*f.app,window.owner,{100,107},"place actual camera release cursor seven native pixels from its previous sample",
-            "camera release replacement cursor round-trips through actual screen and client coordinates");
+        {
+            const WindowDpiScope dpi(window.owner);POINT actual{};
+            Check(GetCursorPos(&actual)&&ScreenToClient(window.owner,&actual)&&actual.x==100&&actual.y==107,
+                "prepared real cursor still round-trips immediately before the actual MicWndProc release; no post-subclass window move or synthetic sample");
+        }
         window.native=window.original;const auto field=operation==15?0u:3u;const double scale=operation==15?0.05000000074505806:0.019999999552965164;
         window.native.values[field]=float(double(window.native.values[field])+7.0*scale);window.armed=true;
         // Before the source guard, this exact WM_SETTEXT callback replaced the

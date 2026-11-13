@@ -134,5 +134,20 @@ void BufferedProjectCases(const fs::path& ordinary, const fs::path& v1,
         Check(tailCalls == tails && messages == errors + 1 && Bytes(truncated) == shortBytes,
             "real native short-read failure has no success tail, partial objects or source rewrite");
     }
+    std::puts("STAGE genuine V1 mandatory-section short read cleanup in buffered and direct modes");
+    const auto v1Full = Bytes(v1);
+    Check(v1Full.size() == 1073, "the V1 fixture has the exact mandatory no-object layout and a legal optional-tail EOF");
+    for (const unsigned length : {34u, 1072u}) {
+        const auto v1Short = directory / (length == 34 ? L"v1-short-mid-header.pmm" : L"v1-short-last-field.pmm");
+        auto v1Bytes = v1Full; v1Bytes.resize(length); WriteBufferedBytes(v1Short, v1Bytes);
+        for (bool buffered : {false, true}) {
+            pmm_io::bufferedReads = buffered; const auto tails = tailCalls, errors = messages;
+            Arm(v1Short, Fault::ReadFailure, false);
+            const bool loaded = LoadSceneFile(v1Short.c_str()); Finish(false, false);
+            Check(!loaded && tailCalls == tails && messages == errors + 1 && Bytes(v1Short) == v1Bytes,
+                "real V1 mandatory-section short read fails with exactly one incomplete error and no success tail, partial objects or source rewrite");
+            Normal(v1, camera, light);
+        }
+    }
     pmm_io::bufferedReads = true; Normal(ordinary, camera, light); Normal(v1, camera, light);
 }

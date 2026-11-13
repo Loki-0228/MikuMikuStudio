@@ -18,6 +18,19 @@ std::int64_t TestSeek(int descriptor,std::int64_t position,int origin) {
 #include <fcntl.h>
 using namespace mikumikustudio::fileio;
 void Check(bool ok,const char* what){if(!ok){std::fprintf(stderr,"FAIL %s\n",what);std::exit(1);}}
+struct ObservedBytes {
+    const unsigned char* next;
+    std::size_t remaining;
+    unsigned calls = 0;
+    static bool Add(void* context, const unsigned char* bytes, unsigned count) noexcept {
+        auto& state = *static_cast<ObservedBytes*>(context);
+        ++state.calls;
+        if (count > state.remaining || std::memcmp(state.next, bytes, count)) return false;
+        state.next += count;
+        state.remaining -= count;
+        return true;
+    }
+};
 int main(){
     FILE* file=nullptr;Check(tmpfile_s(&file)==0,"temporary file");
     std::vector<unsigned char> data(3*65536+37);
@@ -68,6 +81,35 @@ int main(){
         Check(reader.SeekAbsolute(static_cast<std::int64_t>(data.size()))&&reader.Read(&byte,1)==0,"seek to EOF");
         Check(reader.SeekAbsolute(7)&&reader.Read(&byte,1)==1&&byte==data[7],"seek after EOF");
         Check(reader.Close()==0&&!reader.SeekAbsolute(0)&&errno==EBADF,"seek after close");
+    }
+    for (bool buffered : {false, true}) {
+        bufferedReads = buffered;
+        const int fd = _dup(_fileno(file));
+        Check(fd >= 0 && _setmode(fd, _O_BINARY) >= 0 && _lseeki64(fd, 0, SEEK_SET) == 0,
+            "open observation descriptor");
+        SequentialFileReader reader(fd);
+        unsigned char byte = 0;
+        Check(reader.Read(&byte, 1) == 1, "read prefix before observing");
+        std::vector<unsigned char> slice(65536 + 3);
+        ObservedBytes exact{data.data() + 1, slice.size()};
+        Check(reader.BeginReadObservation(ObservedBytes::Add, &exact), "start observing a buffered suffix");
+        Check(!reader.BeginReadObservation(ObservedBytes::Add, &exact), "reject nested observation");
+        Check(reader.Read(slice.data(), static_cast<unsigned>(slice.size())) == static_cast<int>(slice.size()),
+            "consume across a refill");
+        Check(reader.FinishReadObservation() && exact.remaining == 0 &&
+            exact.calls == (buffered ? 2u : 1u), "report just the consumed slice");
+        ObservedBytes rejected{data.data(), 0};
+        Check(reader.BeginReadObservation(ObservedBytes::Add, &rejected) &&
+            reader.Read(&byte, 1) == 1 && !reader.FinishReadObservation(), "observer failure preserves reading");
+        Check(reader.BeginReadObservation(ObservedBytes::Add, &rejected) &&
+            reader.SeekAbsolute(static_cast<std::int64_t>(data.size()) - 1) &&
+            !reader.FinishReadObservation(), "seek invalidates the observed run");
+        unsigned char pair[2]{};
+        Check(reader.BeginReadObservation(ObservedBytes::Add, &rejected) &&
+            reader.Read(pair, 2) == 1 && pair[0] == data.back() &&
+            !reader.FinishReadObservation(), "short read invalidates the observed run");
+        Check(reader.BeginReadObservation(ObservedBytes::Add, &rejected) &&
+            reader.Close() == 0 && !reader.FinishReadObservation(), "close detaches without a callback");
     }
     bufferedReads=true;
     fclose(file);std::puts("PASS buffered binary reads, seek success/failure, ownership, boundaries and EOF");

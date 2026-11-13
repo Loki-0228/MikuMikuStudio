@@ -8,6 +8,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 namespace fs=std::filesystem;
 namespace cache=mikumikustudio::cache_manager;
@@ -30,7 +31,24 @@ void Bytes(const fs::path& file,std::uint64_t length,bool recognized=true) {
 }
 bool Store(unsigned id,std::uint64_t length) {
     const auto path=Entry(id);cache::WriteReservation write(path,length);
-    if(!write)return false;Bytes(path,length);write.Commit();return true;
+    if(!write)return false;
+    fs::create_directories(path.parent_path());
+    const fs::path temp=path.wstring()+L".tmp-fixture";
+    HANDLE file=CreateFileW(temp.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+    Check(file!=INVALID_HANDLE_VALUE,"create exclusive publication fixture");
+    const bool tracked=write.TrackTemporary(temp);CloseHandle(file);
+    Check(tracked,"track real empty temporary before writing");
+    Bytes(temp,length);
+    Check(MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=FALSE,"publish tracked fixture");
+    return write.Commit();
+}
+std::uint64_t IndexCharge(){
+    HANDLE file=CreateFileW((cache::Root()/L"Management"/L"index.bin").c_str(),FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+    Check(file!=INVALID_HANDLE_VALUE,"open index metadata for independent accounting");
+    FILE_STANDARD_INFO info{};const bool ok=GetFileInformationByHandleEx(file,FileStandardInfo,&info,sizeof info)!=FALSE;CloseHandle(file);
+    Check(ok,"read actual index allocation");
+    return (std::max)(static_cast<std::uint64_t>(info.EndOfFile.QuadPart),static_cast<std::uint64_t>(info.AllocationSize.QuadPart));
 }
 fs::path Case(const fs::path& output,const wchar_t* name) {
     const auto root=output/name/L"Cache";SetRoot(root);cache::Settings settings;settings.limitBytes=64*MiB;settings.recentProjects=1;
@@ -53,6 +71,48 @@ void Join(PROCESS_INFORMATION& child) {
     std::printf("worker wait=%lu exit=%08lx\n",wait,code);
     Check(wait==WAIT_OBJECT_0&&code==0,"background cache worker completed");
 }
+cache::TextureUseReceipt ReadTextureUse(const fs::path& path) {
+    const HANDLE file=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,
+        nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+    Check(file!=INVALID_HANDLE_VALUE,"open the exact validated texture file");
+    auto receipt=cache::TouchTextureRead(path,reinterpret_cast<std::intptr_t>(file));
+    Check(CloseHandle(file)!=FALSE,"close the texture reader before restoration");
+    return receipt;
+}
+void TextureUseAcrossScenes(const fs::path& output) {
+    const auto root=Case(output,L"texture-use-receipt");
+    Check(Store(1,MiB),"publish managed texture for read-side use");
+    const auto path=Entry(1);
+    const auto firstProject=output/L"texture-first.pmm",nextProject=output/L"texture-next.pmm";
+    auto token=cache::AcceptScene(cache::SceneOperation::Load);
+    auto receipt=ReadTextureUse(path);
+    cache::FinishTextureUse(path,std::move(receipt));
+    auto cleaner=Child(L"--clean-count "+Quote(root.wstring())+L" 0");
+    Join(cleaner);
+    Check(fs::exists(path)&&cache::FinishScene(token,cache::SceneOutcome::Loaded,firstProject.c_str()),
+        "read-side lease protects the payload across processes and can bind the loaded project");
+
+    const auto superseded=cache::AcceptScene(cache::SceneOperation::Load);
+    auto stale=ReadTextureUse(path);
+    token=cache::AcceptScene(cache::SceneOperation::Load);
+    Check(bool(superseded)&&bool(token),"supersede the read-side scene before restoration");
+    cache::FinishTextureUse(path,std::move(stale));
+    Check(cache::FinishScene(token,cache::SceneOutcome::Loaded,nextProject.c_str()),
+        "restoration after scene change records an ordinary use in the current scene");
+    const auto view=cache::Inspect();
+    Check(view.error.empty()&&std::any_of(view.projects.begin(),view.projects.end(),[&](const auto& row){
+        return row.path==nextProject&&row.current&&row.totalBytes==MiB&&row.sharedBytes==MiB;
+    }),"both projects own the same texture once after fallback");
+
+    token=cache::AcceptScene(cache::SceneOperation::Load);
+    auto retained=ReadTextureUse(path);
+    token=cache::AcceptScene(cache::SceneOperation::Reset);
+    Check(cache::FinishScene(token,cache::SceneOutcome::ResetComplete),"reset retires the scene lease");
+    cleaner=Child(L"--clean-count "+Quote(root.wstring())+L" 1");
+    Join(cleaner);
+    Check(!fs::exists(path),"unconsumed receipt does not keep the texture leased after reset");
+    cache::FinishTextureUse(path,std::move(retained));
+}
 int wmain(int argc,wchar_t** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
     try {
@@ -61,6 +121,13 @@ int wmain(int argc,wchar_t** argv) {
             std::printf("cache bytes=%llu effects=%llu textures=%llu projects=%zu error=%ls\n",view.totalBytes,view.effectBytes,view.textureBytes,view.projects.size(),view.error.c_str());
             for(const auto& p:view.projects)std::printf("project bytes=%llu shared=%llu path=%ls\n",p.totalBytes,p.sharedBytes,p.path.c_str());
             return view.error.empty()?0:1;
+        }
+        if(argc==4 && std::wstring(argv[1])==L"--clean-count") {
+            SetRoot(argv[2]);
+            const auto removed=cache::Clean(cache::Cleanup::All);
+            Check(removed.error.empty()&&removed.files==std::wcstoul(argv[3],nullptr,10),
+                "independent cleanup respects scene texture lease");
+            return 0;
         }
         if(argc==6 && std::wstring(argv[1])==L"--lease") {
             SetRoot(argv[2]);cache::Touch(argv[3]);
@@ -96,7 +163,7 @@ int wmain(int argc,wchar_t** argv) {
         Check(Store(1,8*MiB)&&Store(2,8*MiB)&&Store(3,8*MiB),"create shared and exclusive entries");cache::ResetScene();
         const auto a=output/L"A.pmm",b=output/L"B.pmm";
         Project(a,{1,2});Project(b,{1,3});auto view=cache::Inspect();
-        Check(view.totalBytes==24*MiB && view.projects.size()==2,"shared data counts once globally");
+        Check(view.textureBytes==24*MiB && view.totalBytes==24*MiB+IndexCharge() && view.projects.size()==2,"shared data counts once globally alongside index allocation");
         const auto row=std::find_if(view.projects.begin(),view.projects.end(),[&](const auto& p){return p.path==a;});
         Check(row!=view.projects.end()&&row->totalBytes==16*MiB&&row->sharedBytes==8*MiB&&row->reclaimableBytes==8*MiB,"project view separates shared, exclusive and releasable bytes");
         const auto clean=cache::Clean(cache::Cleanup::Project,a.wstring());
@@ -110,14 +177,14 @@ int wmain(int argc,wchar_t** argv) {
         Check(!fs::exists(Entry(1))&&fs::exists(Entry(2))&&fs::exists(Entry(3)),"older non-recent project evicted first");
         Check(cache::Inspect().totalBytes<=64*MiB,"unified quota is enforced");cache::ResetScene();
 
-        root=Case(output,L"pin");Check(Store(1,32*MiB)&&Store(2,32*MiB),"fill protected fixture");cache::ResetScene();Project(a,{1});Check(cache::Pin(a.wstring(),true),"pin project");
+        root=Case(output,L"pin");Check(Store(1,31*MiB)&&Store(2,31*MiB),"fill protected fixture");cache::ResetScene();Project(a,{1});Check(cache::Pin(a.wstring(),true),"pin project");
         cache::BeginProject(b.c_str());cache::Touch(Entry(2));cache::ProjectOpened(b.c_str());
         Check(!Store(3,8*MiB)&&fs::exists(Entry(1))&&fs::exists(Entry(2)),"pinned and current cache stop new writes when quota cannot be freed");cache::ResetScene();
         Check(cache::Pin(a.wstring(),false),"unpin project");Check(Store(3,8*MiB),"unpin makes room reclaimable");cache::ResetScene();
 
         root=Case(output,L"manual");settings=cache::Current();settings.automaticCleanup=false;Check(cache::Configure(settings,error),"turn automatic cleanup off");
-        Check(Store(1,32*MiB)&&Store(2,32*MiB),"fill manual-only cache");cache::ResetScene();
-        Check(!Store(3,MiB)&&fs::exists(Entry(1))&&fs::exists(Entry(2)),"manual-only mode never evicts automatically");
+        Check(Store(1,31*MiB)&&Store(2,31*MiB),"fill manual-only cache");cache::ResetScene();
+        Check(!Store(3,2*MiB)&&fs::exists(Entry(1))&&fs::exists(Entry(2)),"manual-only mode never evicts automatically");
         Check(cache::Clean(cache::Cleanup::Reclaimable).files==2,"manual cleanup works with automatic cleanup disabled");
         const auto unknown=root/L"Diagnostics"/L"keep.txt",source=output/L"source.pmm",foreign=root/L"Textures"/L"notes.txt";
         Bytes(unknown,128,false);Bytes(source,128,false);Bytes(foreign,128,false);Check(Store(4,MiB),"managed cache alongside non-cache files");cache::ResetScene();cache::Clean(cache::Cleanup::All);
@@ -157,6 +224,98 @@ int wmain(int argc,wchar_t** argv) {
         Check(!cache::Inspect().error.empty(),"damaged index reports failure rather than trusting missing ownership");
         Check(!Store(2,MiB)&&cache::Clean(cache::Cleanup::Reclaimable).files==0&&fs::exists(Entry(1)),"damaged index stops automatic and ordinary cleanup");
         Check(cache::Clean(cache::Cleanup::All).files==1&&cache::Inspect().error.empty(),"explicit clear-all safely recovers a damaged index");
+        {
+            // Backend SaveAs analogue: a bound current scene touches an entry whose
+            // read lease fails, then the same scene is rebound to B and C. Use
+            // completeness must follow the scene across both rebinds.
+            struct HeldHandle {
+                HANDLE value=INVALID_HANDLE_VALUE;
+                HeldHandle()=default;
+                HeldHandle(const HeldHandle&)=delete;
+                HeldHandle& operator=(const HeldHandle&)=delete;
+                ~HeldHandle(){Close();}
+                void Close(){if(value!=INVALID_HANDLE_VALUE){CloseHandle(value);value=INVALID_HANDLE_VALUE;}}
+            };
+            Case(output,L"seen-rebind");
+            {cache::Settings rebindSettings=cache::Current();rebindSettings.automaticCleanup=false;std::wstring rebindError;
+             Check(cache::Configure(rebindSettings,rebindError),"turn automatic cleanup off for the seen rebind case");}
+            const auto x=Entry(1);
+            Check(Store(1,MiB),"create one managed entry for the seen rebind case");
+            cache::ResetScene();
+            const auto chargeOf=[&](const fs::path& file) {
+                HeldHandle handle;
+                handle.value=CreateFileW(file.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+                Check(handle.value!=INVALID_HANDLE_VALUE,"open managed entry metadata for independent charge");
+                FILE_STANDARD_INFO standard{};
+                Check(GetFileInformationByHandleEx(handle.value,FileStandardInfo,&standard,sizeof standard)!=FALSE,"read actual managed entry allocation");
+                return (std::max)(static_cast<std::uint64_t>(standard.EndOfFile.QuadPart),static_cast<std::uint64_t>(standard.AllocationSize.QuadPart));
+            };
+            const auto charge=chargeOf(x);
+            const auto findProject=[&](const cache::Snapshot& snapshot,const fs::path& path) {
+                return std::find_if(snapshot.projects.begin(),snapshot.projects.end(),[&](const cache::Project& p){return p.path==path;});
+            };
+            const auto describeProject=[&](const cache::Snapshot& snapshot,const fs::path& path) {
+                const auto projectRow=std::find_if(snapshot.projects.begin(),snapshot.projects.end(),[&](const cache::Project& p){return p.path==path;});
+                std::string text="error="+std::string(snapshot.error.begin(),snapshot.error.end())+" rows="+std::to_string(snapshot.projects.size());
+                if(projectRow==snapshot.projects.end())return text+" project=absent";
+                return text+" current="+std::to_string(projectRow->current?1:0)+" total="+std::to_string(projectRow->totalBytes)+" shared="+std::to_string(projectRow->sharedBytes);
+            };
+            const auto projectA=output/L"seen-rebind-A.pmm",projectB=output/L"seen-rebind-B.pmm",projectC=output/L"seen-rebind-C.pmm";
+
+            cache::BeginProject(projectA.c_str());cache::ProjectOpened(projectA.c_str());
+            const auto viewStart=cache::Inspect();
+            const auto rowStart=findProject(viewStart,projectA);
+            Check(viewStart.error.empty(),("bound project A inspect healthy: "+describeProject(viewStart,projectA)).c_str());
+            Check(rowStart!=viewStart.projects.end()&&rowStart->current&&rowStart->totalBytes==0&&rowStart->sharedBytes==0,
+                ("bound project A starts empty: "+describeProject(viewStart,projectA)).c_str());
+
+            HeldHandle blocker;
+            blocker.value=CreateFileW(x.c_str(),DELETE,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+            Check(blocker.value!=INVALID_HANDLE_VALUE,"hold DELETE access on the entry to block the production read lease");
+
+            HeldHandle probe;
+            probe.value=CreateFileW(x.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+            const DWORD leaseError=GetLastError();
+            const bool leaseOpened=probe.value!=INVALID_HANDLE_VALUE;
+            if(leaseOpened)probe.Close();
+            Check(!leaseOpened&&leaseError==ERROR_SHARING_VIOLATION,
+                ("production read lease must fail while the entry lacks FILE_SHARE_DELETE; error="+std::to_string(leaseError)).c_str());
+
+            cache::Touch(x);
+            const auto viewBound=cache::Inspect();
+            const auto rowBound=findProject(viewBound,projectA);
+            Check(viewBound.error.empty(),("bound Touch inspect healthy: "+describeProject(viewBound,projectA)).c_str());
+            Check(rowBound!=viewBound.projects.end()&&rowBound->current&&rowBound->totalBytes==charge&&rowBound->sharedBytes==0,
+                ("bound current Touch must associate its failed-lease use; probe error="+std::to_string(leaseError)+" charge="+std::to_string(charge)+" "+describeProject(viewBound,projectA)).c_str());
+
+            blocker.Close();
+            HeldHandle noLease;
+            noLease.value=CreateFileW(x.c_str(),DELETE,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+            Check(noLease.value!=INVALID_HANDLE_VALUE,"failed read lease leaves no lease that omits FILE_SHARE_DELETE");
+            noLease.Close();
+
+            cache::ProjectOpened(projectB.c_str());
+            const auto viewB=cache::Inspect();
+            const auto rowAInB=findProject(viewB,projectA),rowB=findProject(viewB,projectB);
+            Check(viewB.error.empty(),("rebound B inspect healthy: "+describeProject(viewB,projectB)).c_str());
+            Check(rowB!=viewB.projects.end()&&rowB->current&&rowB->totalBytes==charge&&rowB->sharedBytes==charge,
+                ("rebinding B must retain the seen entry charge; charge="+std::to_string(charge)+" "+describeProject(viewB,projectB)).c_str());
+            Check(rowAInB!=viewB.projects.end()&&!rowAInB->current&&rowAInB->totalBytes==charge&&rowAInB->sharedBytes==charge,
+                ("rebinding B must keep A sharing the same charge once; charge="+std::to_string(charge)+" "+describeProject(viewB,projectA)).c_str());
+
+            cache::ProjectOpened(projectC.c_str());
+            const auto viewC=cache::Inspect();
+            const auto rowAInC=findProject(viewC,projectA),rowBInC=findProject(viewC,projectB),rowC=findProject(viewC,projectC);
+            Check(viewC.error.empty(),("rebound C inspect healthy: "+describeProject(viewC,projectC)).c_str());
+            Check(rowC!=viewC.projects.end()&&rowC->current&&rowC->totalBytes==charge&&rowC->sharedBytes==charge,
+                ("rebinding C must retain the seen entry charge; charge="+std::to_string(charge)+" "+describeProject(viewC,projectC)).c_str());
+            Check(rowAInC!=viewC.projects.end()&&!rowAInC->current&&rowAInC->totalBytes==charge&&rowAInC->sharedBytes==charge,
+                ("rebinding C must keep A sharing the same charge once; charge="+std::to_string(charge)+" "+describeProject(viewC,projectA)).c_str());
+            Check(rowBInC!=viewC.projects.end()&&!rowBInC->current&&rowBInC->totalBytes==charge&&rowBInC->sharedBytes==charge,
+                ("rebinding C must keep B sharing the same charge once; charge="+std::to_string(charge)+" "+describeProject(viewC,projectB)).c_str());
+            cache::ResetScene();
+        }
+        TextureUseAcrossScenes(output);
         std::printf("PASS cache manager: %u checks\n",checks);return 0;
     } catch(const std::exception& error){std::fprintf(stderr,"FAIL %s\n",error.what());return 1;}
 }

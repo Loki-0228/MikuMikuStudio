@@ -71,6 +71,58 @@ void VersionTests(MMDApp* app) {
     Check(autosave::Configure(app, previousSettings, error), "restore autosave configuration");
 }
 
+void OccupiedCompanionNameTests(MMDApp* app, autosave::Settings settings) {
+    const auto directory = root / L"occupied-names";
+    Check(fs::create_directory(directory), "create an isolated directory for occupied names");
+    const auto project = directory / L"scene.pmm";
+    const auto blocked = directory / L"scene_001.pmm";
+    const auto sidecar = directory / L"SCENE_001.PMM.MMS-PLUGINS.JSON";
+    const auto saved = directory / L"scene_002.pmm";
+    const std::string sentinel = "existing plugin state";
+    const std::vector<char> sentinelBytes(sentinel.begin(), sentinel.end());
+    std::ofstream(sidecar, std::ios::binary) << sentinel;
+    Check(SaveSceneCopy(app, project.c_str()), "write the original scene before trying numbered save");
+    const auto original = Bytes(project);
+    wcscpy_s(app->EnvFileName(), kPathFieldCapacity, project.c_str());
+    app->CameraFov() = 61;
+    app->SceneModified() = 1;
+    const auto priorErrors = errors;
+    expectError = true;
+    SaveCommand(app, 207);
+    expectError = false;
+    Check(Bytes(sidecar) == sentinelBytes && Bytes(project) == original && !fs::exists(blocked),
+          "numbered save preserves the original and never claims an existing sidecar");
+    Check(errors == priorErrors && fs::path(app->EnvFileName()) == saved && !app->SceneModified() &&
+          fs::is_regular_file(saved), "numbered save skips the occupied sidecar and publishes the next name");
+
+    auto periodic = settings;
+    periodic.enabled = true;
+    periodic.directory = directory.wstring();
+    periodic.backupPattern = L"timer_[/N]";
+    periodic.maxBackups = 4;
+    std::wstring error;
+    Check(autosave::Configure(app, periodic, error), "configure a predictable periodic backup name");
+    const auto blockedBackup = directory / L"timer_001.pmm";
+    const auto backupSidecar = directory / L"TIMER_001.PMM.MMS-PLUGINS.JSON";
+    const auto backup = directory / L"timer_002.pmm";
+    std::ofstream(backupSidecar, std::ios::binary) << sentinel;
+    const auto recent = Recent();
+    const auto savedBytes = Bytes(saved);
+    app->CameraFov() = 72;
+    app->SceneModified() = 1;
+    Check(autosave::QueueBackup(app), "queue the production automatic backup");
+    FinishWrites(app);
+    Check(Bytes(backupSidecar) == sentinelBytes && !fs::exists(blockedBackup) && fs::is_regular_file(backup),
+          "automatic backup skips the occupied sidecar and preserves it byte-for-byte");
+    Check(fs::path(app->EnvFileName()) == saved && app->SceneModified() && Recent() == recent && Bytes(saved) == savedBytes,
+          "automatic backup preserves the current project, unsaved edits and history");
+    Check(LoadSceneFile(backup.c_str()) && app->CameraFov() == 72,
+          "the newly named backup reopens with the unsaved scene edit");
+    Check(LoadSceneFile(saved.c_str()) && app->CameraFov() == 61,
+          "the increment reopens with its separately saved edit");
+    Check(autosave::Configure(app, settings, error), "restore settings before the rest of the numbered save tests");
+}
+
 void NumberedVersionTests(MMDApp* app) {
     const auto config = root / L"autosave.ini";
     const auto original=autosave::Current();auto settings=original;
@@ -82,6 +134,7 @@ void NumberedVersionTests(MMDApp* app) {
     const auto persisted=autosave::LoadSettings((config));
     Check(persisted.numberedManualVersions && persisted.incrementPattern==settings.incrementPattern &&
         persisted.backupPattern==settings.backupPattern,"patterns and independent toggle survive reload");
+    OccupiedCompanionNameTests(app, settings);
     const auto target=root/L"手动历史.pmm";
     std::ofstream(target)<<"original untouched";
     wcscpy_s(app->EnvFileName(),kPathFieldCapacity,target.c_str());

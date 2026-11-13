@@ -97,11 +97,14 @@ struct PreviewRequests {
     Fixture& fixture;
     Request original = nullptr;
     HWND wake = nullptr;
-    unsigned calls = 0, geometryChanges = 0;
+    unsigned calls = 0, geometryChanges = 0, publishedCalls = 0;
     bool initialized = false;
     static void Forward(MMDApp* app,bool geometry) {
         auto& self=*current;
-        if(app==self.fixture.app.get()) {++self.calls;if(geometry)++self.geometryChanges;}
+        if(app==self.fixture.app.get()) {
+            ++self.calls;if(geometry)++self.geometryChanges;
+            if(self.fixture.history.UndoCount())++self.publishedCalls;
+        }
         self.original(app,geometry);
     }
     explicit PreviewRequests(Fixture& f) : fixture(f) {
@@ -116,7 +119,7 @@ struct PreviewRequests {
         wake=FindWindowExW(HWND_MESSAGE,nullptr,L"MMS.UpdateCoordinator.V1",nullptr);
         Check(wake!=nullptr,"real coordinator creates its message-only wake window");
         Check(Drain()==1,"consume the initial real coordinator wake while its owner is hidden");
-        calls=geometryChanges=0;
+        calls=geometryChanges=publishedCalls=0;
     }
     ~PreviewRequests() {
         if(auto h=fixture.app->state.frameCopyDialog)SendMessageW(h,WM_CLOSE,0,0);
@@ -298,6 +301,13 @@ void PreviewTeardownQueue() {
         const auto h=f.Open();Check(preview.Drain()==1,"consume the opening preview wake before a teardown case");
         if(action==5) {Enter(h,718,L"2.75");Check(preview.Drain()==1,"consume accepted input wake before real confirmation");}
         const auto prior=preview.calls;
+        // These teardown fixtures start with an empty journal. Retirement is
+        // before publication; only a changed OK creates the first record and
+        // requests the separate committed-scene redraw. Do not use this
+        // attribution rule for fixtures with pre-existing history entries.
+        Check(!f.history.UndoCount()&&!f.history.RedoCount()&&!preview.publishedCalls,
+            "teardown request attribution starts without any published history");
+        const auto priorPublished=preview.publishedCalls;
         if(action==0)DestroyWindow(h);
         else if(action==1)Enter(h,718,L"NaN");
         else if(action==2) {f.app->AdvanceSceneGeneration();SendMessageW(h,WM_GETTEXTLENGTH,0,0);}
@@ -308,8 +318,10 @@ void PreviewTeardownQueue() {
             Select(h,704,1);Check(close.fired,"real selection fill reentrantly destroys the preview dialog");
         } else Command(h,IDOK);
         f.Closed(h);
-        Check(preview.calls==prior+1&&!preview.geometryChanges&&preview.Pending(),
-            "destroy, rejected input, stale source, nested close and OK each clear preview exactly once");
+        const unsigned expectedPublished=action==5?1u:0u;
+        Check(preview.publishedCalls==priorPublished+expectedPublished&&
+            preview.calls==prior+1+expectedPublished&&!preview.geometryChanges&&preview.Pending(),
+            "each teardown retires preview exactly once and only changed OK separately requests its published-scene redraw");
         Check(preview.Drain()==1&&!preview.Pending(),"teardown leaves one coalesced real wake and no repeated closing requests");
         if(action<5) {before.Unchanged();Check(!f.history.UndoCount(),"nonpublishing preview cleanup does not create history");}
         else {

@@ -44,10 +44,42 @@
 // 4x multisampled back buffer which is resolved into a same-size single-sample
 // surface before the readback. When 4x is unavailable the run exits non-zero
 // instead of reporting a single-sampled pass.
+//
+// --sphere-only --capture-dir <absolute directory> is the native PMX
+// sphereMode=1 pixel regression: one two-material model whose empty base
+// texture path makes the sphere texel's colour and alpha the whole surface.
+// It renders both authoring orders at Off -> Low -> Standard -> High ->
+// Maximum -> Off on the fixed, SM2 and SM3 resources, checks two 5x5 interior
+// regions per frame against a double-precision source-over reference, and
+// saves every frame as BGRA and BMP with a JSONL record. The capture directory
+// must be new or empty; a write failure fails the run.
+//
+// --sphere-mode 1|2|3 selects the native PMX sphereMode the --sphere-only
+// fixture drives; it is valid only together with --sphere-only and defaults to
+// 1, which keeps the original matrix and its 60 frames. Mode 2 uses the
+// additive sphere cascade, so the fixture zeroes the base colour of the
+// materials that really sample a sphere while keeping their alpha at the
+// sphere texel's. Mode 3 samples the sphere texture through TEXCOORD1, so the
+// fixture builds real 48-byte PMX vertices (FVF 524818, pmxAdditionalUvCount 1)
+// and adds a 2x1 UV-source probe of three frames per resource. Modes 1 and 2
+// keep the original 60-frame matrix; mode 3 renders 69 frames.
+//
+// --cross-object-only --capture-dir <absolute directory> is the independent
+// cross-object transparent-sort capture. It builds two genuinely separate
+// models, one inset quad each: the near model holds the half-transparent front
+// texel (ARGB 0x8080A040) at z 0.25 and the far model the half-transparent rear
+// texel (ARGB 0x804060C0) at z 0.75. On the fixed, SM2 and SM3 resources it
+// renders both author orders through TransparentSortCrossObjects false and true
+// at every precision tier Off -> Low -> Standard -> High -> Maximum -> Off, then
+// a Standard false -> true -> false scope toggle. Every frame is checked against
+// an independent source-over reference computed from the known texels, and the
+// full BGRA and BMP plus a JSONL record are written to the capture directory.
+// The mode requires that directory and rejects every other scene switch.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <d3d9.h>
+#include <shellapi.h>  // CommandLineToArgvW (excluded by WIN32_LEAN_AND_MEAN)
 
 #include <algorithm>
 #include <array>
@@ -57,6 +89,7 @@
 #include <cstring>
 #include <iterator>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "mikumikustudio/mmd_app.hpp"
@@ -79,6 +112,11 @@ constexpr int kWidth = 96;
 constexpr int kHeight = 96;
 constexpr DWORD kModelFvf = 274;  // XYZ | NORMAL | TEX1, the body vertex format
 constexpr UINT kModelStride = 32;
+// --sphere-mode 3 samples the sphere texture through TEXCOORD1, which needs the
+// real PMX additional-UV vertex ModelVertexFormat selects for
+// pmxAdditionalUvCount 1: XYZ | NORMAL | TEX2 with a float4 TEXCOORD1.
+constexpr DWORD kModelFvfUv1 = 524818;
+constexpr UINT kModelStrideUv1 = 48;
 constexpr float kNearDepth = 0.25f;
 constexpr float kFarDepth = 0.75f;
 // The clear colour the half-transparent texel must not blend with; a grey or
@@ -279,6 +317,18 @@ struct ModelVertex {
     float u, v;
 };
 static_assert(sizeof(ModelVertex) == kModelStride, "model vertex ABI");
+
+// PMX vertex with one additional float4 UV set, the layout ModelVertexFormat
+// reports for pmxAdditionalUvCount 1. The first 32 bytes stay identical to
+// ModelVertex, so positions, normals and UV0 keep their production offsets.
+struct ModelVertexUv1 {
+    float x, y, z;
+    float nx, ny, nz;
+    float u, v;
+    float u1, v1, z1, w1;
+};
+static_assert(sizeof(ModelVertexUv1) == kModelStrideUv1,
+              "PMX vertex with one additional UV set ABI");
 
 int g_failures = 0;
 
@@ -541,12 +591,20 @@ struct MaterialSpec {
 // pmx selects the PMX ABI: physicsMode 2 (which makes ModelVertexFormat return
 // the plain 274/32 format for pmxAdditionalUvCount 0), a 32-bit index buffer
 // with a plain int32 CPU index array, and the additive/multiplicative material
-// morph pools the effect pass indexes per material.
-std::unique_ptr<Model> BuildModel(IDirect3DDevice9* device,
-                                  const std::vector<ModelVertex>& vertices,
-                                  const std::vector<WORD>& indices,
-                                  const std::vector<MaterialSpec>& specs,
-                                  bool pmx = false) {
+// morph pools the effect pass indexes per material. additionalUv1 is null for
+// every other fixture, which keeps the 274/32 vertex; the sphere-only mode-3
+// builder passes one float4 per vertex and gets the real 48-byte PMX vertex
+// (524818, pmxAdditionalUvCount 1) with the same positions, normals and UV0.
+std::unique_ptr<Model> BuildModel(
+    IDirect3DDevice9* device, const std::vector<ModelVertex>& vertices,
+    const std::vector<WORD>& indices,
+    const std::vector<MaterialSpec>& specs, bool pmx = false,
+    const std::vector<std::array<float, 4>>* additionalUv1 = nullptr) {
+    const bool withUv1 = additionalUv1 != nullptr;
+    Check(!withUv1 || pmx,
+          "the additional UV set belongs to the PMX model ABI");
+    Check(!withUv1 || additionalUv1->size() == vertices.size(),
+          "the additional UV set covers every vertex");
     std::size_t expected = 0;
     for (const MaterialSpec& spec : specs) {
         Check(spec.firstIndex == expected,
@@ -608,7 +666,10 @@ std::unique_ptr<Model> BuildModel(IDirect3DDevice9* device,
     // No outline: the regression covers the material pass alone.
     record.edgeScale = 0.0f;
     record.physicsMode = pmx ? 2 : 0;
-    record.pmxAdditionalUvCount = 0;  // keeps the 274/32 vertex format
+    // One extra float4 selects the 524818/48 PMX vertex format; zero keeps the
+    // plain 274/32 body vertex every other fixture uses.
+    record.pmxAdditionalUvCount =
+        static_cast<std::uint8_t>(withUv1 ? 1 : 0);
     if (pmx) {
         mdl::MaterialMorphAdd(reinterpret_cast<unsigned char*>(&record)) =
             model->morphAdd.data();
@@ -616,16 +677,31 @@ std::unique_ptr<Model> BuildModel(IDirect3DDevice9* device,
             model->morphMul.data();
     }
 
-    const UINT vertexBytes =
-        static_cast<UINT>(vertices.size() * sizeof(ModelVertex));
-    Check(SUCCEEDED(device->CreateVertexBuffer(vertexBytes, 0, kModelFvf,
+    const DWORD vertexFvf = withUv1 ? kModelFvfUv1 : kModelFvf;
+    const UINT vertexBytes = static_cast<UINT>(
+        vertices.size() * (withUv1 ? sizeof(ModelVertexUv1) : sizeof(ModelVertex)));
+    std::vector<ModelVertexUv1> combinedVertices;
+    if (withUv1) {
+        combinedVertices.resize(vertices.size());
+        for (std::size_t i = 0; i < vertices.size(); ++i) {
+            std::memcpy(&combinedVertices[i], &vertices[i], sizeof(ModelVertex));
+            combinedVertices[i].u1 = (*additionalUv1)[i][0];
+            combinedVertices[i].v1 = (*additionalUv1)[i][1];
+            combinedVertices[i].z1 = (*additionalUv1)[i][2];
+            combinedVertices[i].w1 = (*additionalUv1)[i][3];
+        }
+    }
+    Check(SUCCEEDED(device->CreateVertexBuffer(vertexBytes, 0, vertexFvf,
                                                D3DPOOL_MANAGED,
                                                &model->vertexBuffer, nullptr)),
           "create model vertices");
     void* vertexData = nullptr;
     Check(SUCCEEDED(model->vertexBuffer->Lock(0, 0, &vertexData, 0)),
           "lock model vertices");
-    std::memcpy(vertexData, vertices.data(), vertexBytes);
+    if (withUv1)
+        std::memcpy(vertexData, combinedVertices.data(), vertexBytes);
+    else
+        std::memcpy(vertexData, vertices.data(), vertexBytes);
     model->vertexBuffer->Unlock();
 
     const UINT indexBytes = static_cast<UINT>(
@@ -648,6 +724,20 @@ std::unique_ptr<Model> BuildModel(IDirect3DDevice9* device,
 
     record.vertexBuffer = model->vertexBuffer;
     record.indexBuffer = model->indexBuffer;
+    Check(record.pmxAdditionalUvCount ==
+              static_cast<std::uint8_t>(withUv1 ? 1 : 0),
+          "the record states the same additional-UV count the vertices carry");
+    Check(record.vertexBuffer == model->vertexBuffer &&
+              record.indexBuffer == model->indexBuffer,
+          "the model record names the buffers the Model owns");
+    if (withUv1) {
+        D3DVERTEXBUFFER_DESC vertexDescription{};
+        Check(SUCCEEDED(model->vertexBuffer->GetDesc(&vertexDescription)) &&
+                  vertexDescription.FVF == kModelFvfUv1 &&
+                  vertexDescription.Size == vertexBytes,
+              "the additional-UV model holds the real 48-byte PMX vertex "
+              "format");
+    }
     return model;
 }
 
@@ -796,30 +886,69 @@ void RenderOneModelScene(MMDApp* app, IDirect3DDevice9* device,
           "lock the one-model pixels");
 }
 
-void CheckOpaqueTextureExcluded(MMDApp* app,IDirect3DDevice9* device,
-    IDirect3DSurface9* backbuffer,IDirect3DSurface9* readback,int resource,const D3DMATRIX& identity) {
-    const auto precision=app->TransparentMaterialSortPrecision();const auto scope=app->TransparentSortCrossObjects();
-    constexpr auto path=L"opaque-rgb-sort-regression.bmp";
-    IDirect3DTexture9* texture=nullptr;
-    Check(SUCCEEDED(device->CreateTexture(4,4,1,0,D3DFMT_X8R8G8B8,D3DPOOL_MANAGED,&texture,nullptr)),"opaque RGB regression texture");
-    unsigned char metadata[4]{};CacheTextureColorAndAlpha(texture,metadata);
-    PublishFixtureTexture(app->Renderer(),5,path,texture,metadata);
-    std::vector<ModelVertex> vertices;std::vector<WORD> indices;
-    AppendQuad(vertices,indices,-1.f,1.f,1.f,-1.f,.3f,.5f,.5f);
-    for(bool pmx:{false,true})for(bool cross:{false,true}) {
-        auto model=BuildModel(device,vertices,indices,std::vector<MaterialSpec>{{path,1.f,0,indices.size()}},pmx);
-        app->TransparentMaterialSortPrecision()=TransparentSortPrecision::Maximum;app->TransparentSortCrossObjects()=cross;
-        const auto before=transparent_sort_cache::GetStatistics();D3DLOCKED_RECT pixels{};
-        RenderOneModelScene(app,device,backbuffer,readback,resource,identity,model.get(),&pixels);readback->UnlockRect();
-        const auto after=transparent_sort_cache::GetStatistics();
-        Check(after.sourceMisses==before.sourceMisses && after.planMisses==before.planMisses && after.allocations==before.allocations,
-            "Maximum never projects sorts or allocates sorting buffers for an opaque texture");
-        app->ModelSlot(0)=app->ModelSlot(1)=nullptr;
+#if !MMD_ORIGINAL_PROFILE
+void CheckTextureSortCandidates(MMDApp* app, IDirect3DDevice9* device,
+    IDirect3DSurface9* backbuffer, IDirect3DSurface9* readback, int resource,
+    const D3DMATRIX& identity, bool mmeMarkerLoaded) {
+    const auto precision = app->TransparentMaterialSortPrecision();
+    const auto scope = app->TransparentSortCrossObjects();
+    app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Maximum;
+    constexpr auto path = L"opaque-rgb-sort-regression.bmp";
+    std::vector<ModelVertex> vertices;
+    std::vector<WORD> indices;
+    AppendQuad(vertices, indices, -1.f, 1.f, 1.f, -1.f, .3f, .5f, .5f);
+
+    struct Case { const char* name; unsigned char flags; bool sorted; };
+    const Case cases[] = {
+        {"known opaque", kTextureAlphaKnown, false},
+        {"known alpha", kTextureAlphaKnown | kTextureUsesAlpha, true},
+        {"unknown", 0, mmeMarkerLoaded},
+        {"uses without known", kTextureUsesAlpha, mmeMarkerLoaded},
+    };
+    for (const auto& test : cases) {
+        IDirect3DTexture9* texture = nullptr;
+        const bool softAlpha = test.flags == (kTextureAlphaKnown | kTextureUsesAlpha);
+        if (softAlpha) {
+            constexpr DWORD texel = 0x80808080u;
+            texture = CreateTexture(device, &texel, 1, 1, "soft-alpha regression texture");
+        } else {
+            Check(SUCCEEDED(device->CreateTexture(4, 4, 1, 0, D3DFMT_X8R8G8B8,
+                  D3DPOOL_MANAGED, &texture, nullptr)), "opaque RGB regression texture");
+        }
+        unsigned char metadata[4]{};
+        CacheTextureColorAndAlpha(texture, metadata);
+        Check(metadata[3] == (softAlpha ? (kTextureAlphaKnown | kTextureUsesAlpha) : kTextureAlphaKnown),
+              "measured texture alpha matches the control");
+        metadata[3] = test.flags;
+        PublishFixtureTexture(app->Renderer(), 5, path, texture, metadata);
+        for (bool pmx : {false, true}) {
+            auto model = BuildModel(device, vertices, indices, {{path, 1.f, 0, indices.size()}}, pmx);
+            for (bool cross : {false, true}) {
+                app->TransparentSortCrossObjects() = cross;
+                const auto before = transparent_sort_cache::GetStatistics();
+                D3DLOCKED_RECT pixels{};
+                RenderOneModelScene(app, device, backbuffer, readback, resource, identity, model.get(), &pixels);
+                readback->UnlockRect();
+                const auto after = transparent_sort_cache::GetStatistics();
+                const bool sorted = after.sourceMisses > before.sourceMisses || after.sourceHits > before.sourceHits;
+                if (sorted != test.sorted) {
+                    std::fprintf(stderr, "FAIL: %s flags=%u resource=%d pmx=%d cross=%d sorted=%d expected=%d\n",
+                                 test.name, unsigned(test.flags), resource, pmx, cross, sorted, test.sorted);
+                    std::exit(1);
+                }
+                if (!test.sorted)
+                    Check(after.planMisses == before.planMisses && after.planHits == before.planHits &&
+                          after.allocations == before.allocations, "excluded texture incurs no sorting plan or allocation");
+            }
+            app->ModelSlot(0) = app->ModelSlot(1) = nullptr;
+        }
+        ReleaseFixtureTexture(app->Renderer(), 5, texture);
     }
-    ReleaseFixtureTexture(app->Renderer(),5,texture);
-    app->TransparentMaterialSortPrecision()=precision;app->TransparentSortCrossObjects()=scope;
-    std::printf("PASS opaque RGB excluded from Maximum, resource=%d\n",resource);
+    app->TransparentMaterialSortPrecision() = precision;
+    app->TransparentSortCrossObjects() = scope;
+    std::printf("PASS texture sort candidates, resource=%d\n", resource);
 }
+#endif
 
 void CheckTransparentCache(MMDApp* app,IDirect3DDevice9* device,IDirect3DSurface9* backbuffer,
                            IDirect3DSurface9* readback,int resource,const D3DMATRIX& identity,Model* model) {
@@ -979,23 +1108,23 @@ void RunSortOffScene(MMDApp* app, IDirect3DDevice9* device,
         }
         const auto forward = one(frontFirst.get());
         const auto reversed = one(rearFirst.get());
-#if MMD_ORIGINAL_PROFILE
-        Check(forward == frontOnly, "original profile retains one authored material walk");
-        Check(reversed != frontOnly, "Off preserves authored material order instead of normalizing both orders");
-        Check(pair(front.get(), rear.get()) == frontOnly,
-              "Off does not move the later opaque model ahead of translucent foreground");
-#else
-        Check(forward == reversed && forward != frontOnly,
-              "full Off keeps native opaque/translucent passes independently of authored material order");
-        for (DWORD pixel : forward) {
-            Check(std::abs(int(pixel >> 16 & 255) - 80) <= 2 &&
-                  std::abs(int(pixel >> 8 & 255) - 176) <= 2 &&
-                  std::abs(int(pixel & 255) - 144) <= 2,
-                  "full Off draws the opaque rear then the translucent foreground exactly once");
+        if (MMD_ORIGINAL_PROFILE || GetModuleHandleW(L"MMEffect.dll") != nullptr) {
+            Check(forward == frontOnly, "original order retains one authored material walk");
+            Check(reversed != frontOnly, "Off preserves authored material order instead of normalizing both orders");
+            Check(pair(front.get(), rear.get()) == frontOnly,
+                  "Off does not move the later opaque model ahead of translucent foreground");
+        } else {
+            Check(forward == reversed && forward != frontOnly,
+                  "full Off keeps native opaque/translucent passes independently of authored material order");
+            for (DWORD pixel : forward) {
+                Check(std::abs(int(pixel >> 16 & 255) - 80) <= 2 &&
+                      std::abs(int(pixel >> 8 & 255) - 176) <= 2 &&
+                      std::abs(int(pixel & 255) - 144) <= 2,
+                      "full Off draws the opaque rear then the translucent foreground exactly once");
+            }
+            Check(pair(front.get(), rear.get()) == forward,
+                  "full Off retains native opaque/translucent pass order across models");
         }
-        Check(pair(front.get(), rear.get()) == forward,
-              "full Off retains native opaque/translucent pass order across models");
-#endif
         Check(pair(rear.get(), front.get()) == reversed,
               "Off follows native model order as well as material order");
 
@@ -1006,8 +1135,28 @@ void RunSortOffScene(MMDApp* app, IDirect3DDevice9* device,
         Check(one(stack.get()) == frontOnly, "Off retains authored triangle order inside a material");
         app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Low;
         const auto sorted = one(stack.get());
-        if (app->AutoTransparentMaterialSortingEnabled())
-            Check(sorted != frontOnly, "enabled sorting changes the near-first overlap fixture");
+        if (app->AutoTransparentMaterialSortingEnabled()) {
+            Check(sorted != frontOnly,
+                  "enabled sorting changes the near-first overlap fixture");
+            // The additive block below reuses this fixture and must keep its
+            // authored near-first GPU order. Prove the non-additive control is
+            // really rewritten to the far-first order first, so a sorter that
+            // stopped touching model buffers could not make both sides pass.
+            // The MME proxy can take the split path without the original
+            // in-place sort, so only the native frame carries this direct GPU
+            // evidence.
+            if (GetModuleHandleW(L"MMEffect.dll") == nullptr) {
+                void* sortedGpu = nullptr;
+                Check(SUCCEEDED(stack->indexBuffer->Lock(0, 0, &sortedGpu,
+                                                         D3DLOCK_READONLY)),
+                      "read the sorted non-additive GPU index buffer");
+                for (std::size_t i = 0; i < farFirst.size(); ++i)
+                    Check((pmx ? static_cast<const std::int32_t*>(sortedGpu)[i]
+                               : static_cast<const WORD*>(sortedGpu)[i]) == farFirst[i],
+                          "Low rewrites the non-additive control to far-first GPU order");
+                stack->indexBuffer->Unlock();
+            }
+        }
         app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Off;
         Check(one(stack.get()) == frontOnly,
               "On to Off restores native GPU index order before drawing");
@@ -1019,6 +1168,43 @@ void RunSortOffScene(MMDApp* app, IDirect3DDevice9* device,
                        : static_cast<const WORD*>(restored)[i]) == nearFirst[i],
                   "Off restores every original GPU triangle index");
         stack->indexBuffer->Unlock();
+        // Additive (postLoadFlag2) models keep the authored triangle order at
+        // every precision: the sort helper must return before it locks or
+        // rewrites their GPU buffer. The non-additive stack above is rewritten
+        // to far-first at Low, so the same sorter would corrupt this model
+        // without that early return. Each tier gets a fresh model so one tier
+        // never reads back a buffer another tier already sorted.
+        for (const TransparentSortPrecision tier :
+             {TransparentSortPrecision::Off, TransparentSortPrecision::Low,
+              TransparentSortPrecision::Standard, TransparentSortPrecision::High,
+              TransparentSortPrecision::Maximum}) {
+            auto additive = BuildModel(device, bothVertices, nearFirst,
+                {{kTwoLayerFrontPath, 1, 0, 12}}, pmx);
+            additive->record->postLoadFlag2 = 1;
+            Check(additive->record->postLoadFlag2 == 1,
+                  "additive fixture selects postLoadFlag2 before its first draw");
+            app->TransparentMaterialSortPrecision() = tier;
+            one(additive.get());
+            void* gpu = nullptr;
+            Check(SUCCEEDED(additive->indexBuffer->Lock(0, 0, &gpu,
+                                                        D3DLOCK_READONLY)),
+                  "read additive GPU index order");
+            for (std::size_t i = 0; i < nearFirst.size(); ++i)
+                Check((pmx ? static_cast<const std::int32_t*>(gpu)[i]
+                           : static_cast<const WORD*>(gpu)[i]) == nearFirst[i],
+                      "additive model keeps every authored GPU index at every precision");
+            additive->indexBuffer->Unlock();
+            for (std::size_t i = 0; i < nearFirst.size(); ++i)
+                Check((pmx ? additive->cpuPmxIndices[i]
+                           : additive->cpuIndices[2 * i]) == nearFirst[i],
+                      "additive model keeps every authored CPU source index");
+            // Slot 0 still names this model; clear it before this tier's local
+            // record is destroyed.
+            app->ClearModelSlots();
+        }
+        app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Off;
+        std::printf("sort-off %s additive postLoadFlag2 GPU order preserved across all precisions\n",
+                    pmx ? "PMX" : "PMD");
         app->ClearModelSlots();
         std::printf("sort-off %s native pass/triangle order and single draw verified\n", pmx ? "PMX" : "PMD");
     }
@@ -1359,11 +1545,1568 @@ void RunPeelBudgetScene(MMDApp* app, IDirect3DDevice9* device,
     ReleaseFixtureTexture(renderer, kPeelBudgetPoolSlot, texture);
 }
 
+
+// ---- --sphere-only: native PMX sphereMode GPU pixel regression -------------
+//
+// A PMX material whose base texture path is empty and whose sphereMode is 1
+// samples its sphere texture as the surface colour on the fixed path and on
+// both embedded shader paths, so the sphere texel's alpha reaches the blend
+// stage. --sphere-mode 2 selects the additive cascade (BShadowSphiaTec with
+// spadd on SM3, D3DTOP_ADD on the fixed path) and mode 3 the TEXCOORD1 cascade
+// (BShadowTexCd2Tec). Both the fixed and the embedded paths keep the sphere
+// texel's alpha as the blend alpha in all three modes. The fixture is one PMX
+// model with two materials; each material owns
+// one quad inside the same [-0.75,0.75] bounds, the near quad at z 0.25 and the
+// far quad at z 0.75. The two authoring orders put the near or the far material
+// first in both the material record and the index buffer.
+//
+// The main matrix renders resources 0 (fixed), 117 (SM2) and 118 (SM3), both
+// author orders, each Off -> Low -> Standard -> High -> Maximum -> Off. The
+// expected pixel is computed here from a double-precision source-over of the
+// two texel colours over the white clear; the sorter, the texture classifier
+// and every control frame are never consulted for it. Off keeps the authored
+// order and the depth write, so near-first keeps only the near layer while
+// far-first blends both; every enabled tier sorts far to near and must show
+// both. The final Off frame must reproduce the first Off frame's RGB bytes and
+// the authored CPU index array must never change.
+//
+// Controls on the same target cover single-layer sampling, sphereMode 0, an
+// opaque sphere alpha and the identical half alpha moved to the base texture
+// path. Mode 2 keeps its control scenes on the original white base: only the
+// materials that actually add a sphere texel lose their base colour, so
+// "a white base plus an additive sphere is saturated" cannot mask the layer
+// order. Mode 3 builds the same scenes from a real 48-byte PMX vertex with one
+// float4 TEXCOORD1 and adds a 2x1 UV-source probe: the two texels are different
+// colours, UV0 points at the other texel than UV1, and a frame with the same
+// UV1 but a moved UV0 must repeat the first probe frame's pixels.
+// Every frame is written to an absolute, new-or-empty capture directory as raw
+// BGRA and as a viewable 24-bit BMP, with one JSONL record per frame and per
+// restore check. A capture or record write failure exits non-zero.
+constexpr wchar_t kSphereNearPath[] = L"alpha_occlusion_sphere_near.bmp";
+constexpr wchar_t kSphereFarPath[] = L"alpha_occlusion_sphere_far.bmp";
+constexpr DWORD kSphereNearTexel = 0x80FF0000u;        // a=0x80 r=0xFF
+constexpr DWORD kSphereFarTexel = 0x800000FFu;         // a=0x80 b=0xFF
+constexpr DWORD kSphereNearOpaqueTexel = 0xFFFF0000u;  // a=0xFF r=0xFF
+constexpr DWORD kSphereFarOpaqueTexel = 0xFF0000FFu;   // a=0xFF b=0xFF
+constexpr UINT kSphereNearSlot = 5;
+constexpr UINT kSphereFarSlot = 6;
+// The mode-3 TEXCOORD1 probe publishes its own 2x1 texture after the main
+// matrix, so it cannot disturb the near/far pair.
+constexpr UINT kSphereUv1Slot = 7;
+constexpr float kSphereLeft = -0.75f;
+constexpr float kSphereTop = 0.75f;
+constexpr float kSphereRight = 0.75f;
+constexpr float kSphereBottom = -0.75f;
+constexpr int kSphereTolerance = 2;
+constexpr double kSphereTexelAlpha = 128.0 / 255.0;
+constexpr int kSphereRoiRadius = 2;  // a 5x5 interior block
+constexpr int kSphereMainStepCount = 6;
+// --sphere-mode is a native PMX sphereMode selector, not a scene switch: it is
+// valid only with --sphere-only. Mode 1 is the default and keeps the original
+// 60-frame matrix; mode 2 runs the same matrix on the additive cascade; mode 3
+// runs it on the TEXCOORD1 cascade and adds the UV-source probe.
+constexpr int kSphereModeDefault = 1;
+constexpr int kSphereModeMin = 1;
+constexpr int kSphereModeMax = 3;
+constexpr int kSphereResourceCount = 3;  // fixed, 117 (SM2) and 118 (SM3)
+// Per resource: two author orders x Off -> ... -> Off, the eight controls
+// (near-only, far-only, sphereMode 0 x2, base-alpha x2, opaque alpha x2), and
+// the three mode-3 UV-source probe frames.
+constexpr int kSphereMainFramesPerResource = 2 * kSphereMainStepCount;
+constexpr int kSphereControlFramesPerResource = 8;
+constexpr int kSphereUv1ProbeFramesPerResource = 3;
+
+struct SphereRoi { int x; int y; };
+// Both centres stay well inside the quad and away from its diagonal, which
+// runs from the lower-left to the upper-right corner of the viewport.
+constexpr SphereRoi kSphereRois[] = {{30, 30}, {66, 66}};
+
+const char* const kSpherePrecisionNames[kSphereMainStepCount] = {
+    "off", "low", "standard", "high", "maximum", "off"};
+constexpr TransparentSortPrecision kSpherePrecisions[kSphereMainStepCount] = {
+    TransparentSortPrecision::Off, TransparentSortPrecision::Low,
+    TransparentSortPrecision::Standard, TransparentSortPrecision::High,
+    TransparentSortPrecision::Maximum, TransparentSortPrecision::Off};
+const char* const kSphereOrderNames[2] = {"near-first", "far-first"};
+
+std::wstring g_sphereCaptureDir;
+HANDLE g_sphereRecord = INVALID_HANDLE_VALUE;
+int g_sphereMode = kSphereModeDefault;
+int g_sphereFrameCount = 0;
+int g_sphereFailedFrames = 0;
+
+// The frame matrix each mode is contracted to render. The startup and end
+// records and the JSONL summary all state these numbers, and main asserts the
+// rendered count against them after the resource loop.
+int SphereMainFrameCount() {
+    return kSphereMainFramesPerResource * kSphereResourceCount;
+}
+
+int SphereControlFrameCount() {
+    return kSphereControlFramesPerResource * kSphereResourceCount;
+}
+
+int SphereUv1ProbeFrameCount() {
+    return (g_sphereMode == 3 ? kSphereUv1ProbeFramesPerResource : 0) *
+           kSphereResourceCount;
+}
+
+int SphereExpectedFrameCount() {
+    return SphereMainFrameCount() + SphereControlFrameCount() +
+           SphereUv1ProbeFrameCount();
+}
+
+bool SphereIsAbsolutePath(const std::wstring& path) {
+    const bool drive = path.size() >= 3 &&
+        ((path[0] >= L'A' && path[0] <= L'Z') ||
+         (path[0] >= L'a' && path[0] <= L'z')) &&
+        path[1] == L':' && (path[2] == L'\\' || path[2] == L'/');
+    const bool unc = path.size() >= 2 && path[0] == L'\\' && path[1] == L'\\';
+    return drive || unc;
+}
+
+bool SphereCreateDirectoryTree(const std::wstring& path) {
+    if (CreateDirectoryW(path.c_str(), nullptr) != 0)
+        return true;
+    if (GetLastError() == ERROR_ALREADY_EXISTS)
+        return true;
+    const std::size_t split = path.find_last_of(L"\\/");
+    if (split == std::wstring::npos)
+        return false;
+    const std::wstring parent = path.substr(0, split);
+    if (!parent.empty() && !(parent.size() == 2 && parent[1] == L':') &&
+        !SphereCreateDirectoryTree(parent))
+        return false;
+    if (CreateDirectoryW(path.c_str(), nullptr) != 0)
+        return true;
+    return GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+bool SphereDirectoryEmpty(const std::wstring& path) {
+    WIN32_FIND_DATAW entry{};
+    const std::wstring pattern = path + L"\\*";
+    HANDLE search = FindFirstFileW(pattern.c_str(), &entry);
+    if (search == INVALID_HANDLE_VALUE)
+        return false;
+    bool empty = true;
+    do {
+        const std::wstring name(entry.cFileName);
+        if (name == L"." || name == L"..")
+            continue;
+        empty = false;
+        break;
+    } while (FindNextFileW(search, &entry) != 0);
+    FindClose(search);
+    return empty;
+}
+
+// The capture directory is usage, not a scene input: a relative path, an
+// existing file or a directory that already holds anything is rejected before
+// a device exists, so a run can never overwrite user files.
+bool SpherePrepareCaptureDirectory(std::wstring* path, std::string* error) {
+    std::wstring normalized = *path;
+    while (normalized.size() > 3 &&
+           (normalized.back() == L'\\' || normalized.back() == L'/'))
+        normalized.pop_back();
+    if (normalized.empty()) {
+        *error = "the directory path is empty";
+        return false;
+    }
+    if (!SphereIsAbsolutePath(normalized)) {
+        *error = "the directory path is not absolute";
+        return false;
+    }
+    const DWORD attributes = GetFileAttributesW(normalized.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            *error = "the path names an existing file";
+            return false;
+        }
+        if (!SphereDirectoryEmpty(normalized)) {
+            *error = "the directory must be new or empty";
+            return false;
+        }
+    } else if (!SphereCreateDirectoryTree(normalized)) {
+        *error = "the directory cannot be created";
+        return false;
+    }
+    *path = normalized;
+    return true;
+}
+
+// Builds one capture path inside a prepared capture directory. Both capture
+// modes share the same validated new-or-empty directory rule and the same
+// ASCII file-name conversion; only the directory differs.
+std::wstring CapturePathIn(const std::wstring& directory, const char* name) {
+    std::wstring wide;
+    for (const char* cursor = name; cursor != nullptr && *cursor != '\0'; ++cursor)
+        wide.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*cursor)));
+    std::wstring path = directory;
+    if (!path.empty() && path.back() != L'\\' && path.back() != L'/')
+        path += L'\\';
+    path += wide;
+    return path;
+}
+
+std::wstring SphereCapturePath(const char* name) {
+    return CapturePathIn(g_sphereCaptureDir, name);
+}
+
+void WriteSphereFile(const std::wstring& path, const void* data,
+                     std::size_t bytes, const char* failure) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(file != INVALID_HANDLE_VALUE, failure);
+    const auto* cursor = static_cast<const unsigned char*>(data);
+    std::size_t remaining = bytes;
+    while (remaining != 0) {
+        const DWORD chunk = static_cast<DWORD>(
+            std::min<std::size_t>(remaining, 0x100000u));
+        DWORD written = 0;
+        Check(WriteFile(file, cursor, chunk, &written, nullptr) != 0 &&
+                  written == chunk,
+              failure);
+        cursor += written;
+        remaining -= written;
+    }
+    Check(CloseHandle(file) != 0, failure);
+}
+
+void WriteSphereBmp(const std::wstring& path, const std::vector<DWORD>& pixels,
+                    int width, int height,
+                    const char* failure = "write the sphere-only BMP frame") {
+    const int rowBytes = (width * 3 + 3) & ~3;
+    const DWORD imageBytes = static_cast<DWORD>(rowBytes) *
+        static_cast<DWORD>(height);
+    BITMAPFILEHEADER fileHeader{};
+    fileHeader.bfType = 0x4D42;
+    fileHeader.bfOffBits = static_cast<DWORD>(
+        sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER));
+    fileHeader.bfSize = fileHeader.bfOffBits + imageBytes;
+    BITMAPINFOHEADER info{};
+    info.biSize = static_cast<DWORD>(sizeof(BITMAPINFOHEADER));
+    info.biWidth = width;
+    info.biHeight = height;  // bottom-up, the BMP storage order
+    info.biPlanes = 1;
+    info.biBitCount = 24;
+    info.biCompression = BI_RGB;
+    info.biSizeImage = imageBytes;
+    std::vector<unsigned char> bytes(
+        static_cast<std::size_t>(fileHeader.bfOffBits) + imageBytes, 0);
+    std::memcpy(bytes.data(), &fileHeader, sizeof(fileHeader));
+    std::memcpy(bytes.data() + sizeof(fileHeader), &info, sizeof(info));
+    unsigned char* image = bytes.data() + fileHeader.bfOffBits;
+    for (int y = 0; y < height; ++y) {
+        const DWORD* row = pixels.data() +
+            static_cast<std::size_t>(height - 1 - y) * width;
+        unsigned char* out = image + static_cast<std::size_t>(y) * rowBytes;
+        for (int x = 0; x < width; ++x) {
+            const DWORD pixel = row[x];
+            out[3 * x + 0] = static_cast<unsigned char>(pixel & 0xFF);
+            out[3 * x + 1] = static_cast<unsigned char>(pixel >> 8 & 0xFF);
+            out[3 * x + 2] = static_cast<unsigned char>(pixel >> 16 & 0xFF);
+        }
+    }
+    WriteSphereFile(path, bytes.data(), bytes.size(), failure);
+}
+
+void AppendCaptureRecord(HANDLE handle, const std::string& line,
+                         const char* openFailure, const char* writeFailure) {
+    Check(handle != INVALID_HANDLE_VALUE, openFailure);
+    std::string text = line;
+    text += '\n';
+    const char* cursor = text.data();
+    std::size_t remaining = text.size();
+    while (remaining != 0) {
+        const DWORD chunk = static_cast<DWORD>(
+            std::min<std::size_t>(remaining, 0x100000u));
+        DWORD written = 0;
+        Check(WriteFile(handle, cursor, chunk, &written, nullptr) != 0 &&
+                  written == chunk,
+              writeFailure);
+        cursor += written;
+        remaining -= written;
+    }
+}
+
+void AppendSphereRecord(const std::string& line) {
+    AppendCaptureRecord(g_sphereRecord, line,
+                        "the sphere-only frame record is open",
+                        "write the sphere-only frame record");
+}
+
+struct SphereColor { int red; int green; int blue; };
+constexpr SphereColor kSphereWhite{255, 255, 255};
+constexpr SphereColor kSphereRed{255, 0, 0};
+constexpr SphereColor kSphereBlue{0, 0, 255};
+// Valid TEXCOORD1 for the mode-3 main matrix and its single-layer controls.
+// The 1x1 sphere textures are point sampled, so any in-range coordinate reads
+// the one texel; the probe below replaces it with two real coordinates.
+constexpr std::array<float, 4> kSphereUv1Center = {0.5f, 0.5f, 0.0f, 1.0f};
+// Mode-3 TEXCOORD1 source probe: a real 2x1 texture of two different
+// half-transparent texels. UV0 points at the other texel than UV1, so only a
+// pass that really samples TEXCOORD1 can produce the expected known colour. The
+// source-over expectations are computed from these texel constants over the
+// white clear, never from a rendered frame.
+constexpr wchar_t kSphereUv1Path[] = L"alpha_occlusion_sphere_uv1_source.bmp";
+constexpr DWORD kSphereUv1Texels[2] = {0x8040C060u, 0x80C04080u};
+constexpr SphereColor kSphereUv1Color0{0x40, 0xC0, 0x60};
+constexpr SphereColor kSphereUv1Color1{0xC0, 0x40, 0x80};
+
+// Double-precision source-over, the independent reference the device's fixed
+// point blend is checked against. Each case spells out its own layer stack.
+SphereColor SphereAlphaOver(SphereColor source, double alpha,
+                            SphereColor destination) {
+    const double inverse = 1.0 - alpha;
+    return {
+        static_cast<int>(std::lround(source.red * alpha +
+                                     destination.red * inverse)),
+        static_cast<int>(std::lround(source.green * alpha +
+                                     destination.green * inverse)),
+        static_cast<int>(std::lround(source.blue * alpha +
+                                     destination.blue * inverse))};
+}
+
+SphereColor SphereNearOnlyExpected() {
+    return SphereAlphaOver(kSphereRed, kSphereTexelAlpha, kSphereWhite);
+}
+
+SphereColor SphereFarOnlyExpected() {
+    return SphereAlphaOver(kSphereBlue, kSphereTexelAlpha, kSphereWhite);
+}
+
+// Far blue first, then near red, both at 0x80/255 over the white clear.
+SphereColor SphereDoubleLayerExpected() {
+    return SphereAlphaOver(
+        kSphereRed, kSphereTexelAlpha,
+        SphereAlphaOver(kSphereBlue, kSphereTexelAlpha, kSphereWhite));
+}
+
+struct SphereCheck {
+    bool passed = true;
+    bool backgroundWhite = true;
+    int maxError[2] = {0, 0};
+    int failedPixels = 0;
+};
+
+struct SphereFrameResult {
+    std::vector<DWORD> pixels;
+    SphereCheck check;
+    std::string bgraName;
+    std::string bmpName;
+};
+
+SphereCheck CheckSpherePixels(const std::vector<DWORD>& pixels, int width,
+                              int height, const int expected[3],
+                              const char* submission) {
+    SphereCheck check;
+    const int backgroundPoints[6][2] = {
+        {4, 4}, {width - 5, 4}, {4, height - 5},
+        {width - 5, height - 5}, {width / 2, 4}, {4, height / 2}};
+    for (const auto& point : backgroundPoints) {
+        const DWORD pixel =
+            pixels[static_cast<std::size_t>(point[1]) * width + point[0]];
+        if ((pixel & 0xFFFFFFu) != 0xFFFFFFu) {
+            check.backgroundWhite = false;
+            break;
+        }
+    }
+    if (!check.backgroundWhite) {
+        std::fprintf(stderr,
+                     "FAIL: %s background is not the white sentinel\n",
+                     submission);
+        check.passed = false;
+        ++g_failures;
+    }
+    for (int roi = 0; roi < 2; ++roi) {
+        int worstPixel = 0;
+        int worstX = kSphereRois[roi].x;
+        int worstY = kSphereRois[roi].y;
+        bool roiPassed = true;
+        for (int dy = -kSphereRoiRadius; dy <= kSphereRoiRadius; ++dy) {
+            for (int dx = -kSphereRoiRadius; dx <= kSphereRoiRadius; ++dx) {
+                const int x = kSphereRois[roi].x + dx;
+                const int y = kSphereRois[roi].y + dy;
+                const DWORD pixel =
+                    pixels[static_cast<std::size_t>(y) * width + x];
+                const int red = static_cast<int>(pixel >> 16 & 0xFF);
+                const int green = static_cast<int>(pixel >> 8 & 0xFF);
+                const int blue = static_cast<int>(pixel & 0xFF);
+                const int error = std::max(
+                    std::abs(red - expected[0]),
+                    std::max(std::abs(green - expected[1]),
+                             std::abs(blue - expected[2])));
+                if (error > check.maxError[roi]) {
+                    check.maxError[roi] = error;
+                    worstPixel = static_cast<int>(pixel);
+                    worstX = x;
+                    worstY = y;
+                }
+                if (error > kSphereTolerance) {
+                    roiPassed = false;
+                    ++check.failedPixels;
+                    ++g_failures;
+                }
+            }
+        }
+        if (!roiPassed) {
+            check.passed = false;
+            std::fprintf(
+                stderr,
+                "FAIL: %s roi=%d center=(%d,%d) worst=(%d,%d) pixel=%08lX "
+                "expected=(%d,%d,%d) max-error=%d tolerance=%d\n",
+                submission, roi, kSphereRois[roi].x, kSphereRois[roi].y,
+                worstX, worstY,
+                static_cast<unsigned long>(static_cast<DWORD>(worstPixel)),
+                expected[0], expected[1], expected[2], check.maxError[roi],
+                kSphereTolerance);
+        }
+    }
+    return check;
+}
+
+void RecordSphereFrame(const char* caseName, int resource,
+                       const char* precision, const char* order, int frame,
+                       const int expected[3], const SphereCheck& check,
+                       const std::string& bgraName,
+                       const std::string& bmpName) {
+    char line[1024];
+    const int length = std::snprintf(
+        line, sizeof(line),
+        "{\"case\":\"%s\",\"sphereMode\":%d,\"resource\":%d,"
+        "\"precision\":\"%s\","
+        "\"order\":\"%s\",\"frame\":%d,\"expectedRGB\":[%d,%d,%d],"
+        "\"width\":%d,\"height\":%d,\"roiMaxError\":[%d,%d],"
+        "\"backgroundWhite\":%s,\"failedPixels\":%d,\"pass\":%s,"
+        "\"bgra\":\"%s\",\"bmp\":\"%s\"}",
+        caseName, g_sphereMode, resource, precision, order, frame, expected[0],
+        expected[1],
+        expected[2], kWidth, kHeight, check.maxError[0], check.maxError[1],
+        check.backgroundWhite ? "true" : "false", check.failedPixels,
+        check.passed ? "true" : "false", bgraName.c_str(), bmpName.c_str());
+    Check(length > 0 && static_cast<std::size_t>(length) < sizeof(line),
+          "format the sphere-only frame record");
+    AppendSphereRecord(line);
+}
+
+void RecordSphereRestore(int resource, const char* order, bool frameRestored,
+                         bool cpuIndicesUnchanged, const std::string& firstOff,
+                         const std::string& finalOff) {
+    char line[640];
+    const int length = std::snprintf(
+        line, sizeof(line),
+        "{\"case\":\"restore\",\"sphereMode\":%d,\"resource\":%d,"
+        "\"order\":\"%s\","
+        "\"frameRGB\":\"%s\",\"cpuIndices\":\"%s\",\"firstOff\":\"%s\","
+        "\"finalOff\":\"%s\"}",
+        g_sphereMode, resource, order,
+        frameRestored ? "restored" : "mismatch",
+        cpuIndicesUnchanged ? "unchanged" : "changed", firstOff.c_str(),
+        finalOff.c_str());
+    Check(length > 0 && static_cast<std::size_t>(length) < sizeof(line),
+          "format the sphere-only restore record");
+    AppendSphereRecord(line);
+}
+
+SphereFrameResult RunSphereFrame(MMDApp* app, IDirect3DDevice9* device,
+                                 IDirect3DSurface9* backbuffer,
+                                 IDirect3DSurface9* readback, int resource,
+                                 const D3DMATRIX& identity, Model* model,
+                                 const char* caseName, const char* precision,
+                                 const char* order, const int expected[3]) {
+    SphereFrameResult result;
+    D3DLOCKED_RECT lock{};
+    RenderOneModelScene(app, device, backbuffer, readback, resource, identity,
+                        model, &lock);
+    // Copy the complete readback before the surface is unlocked, so every
+    // check and every saved image comes from the same frame.
+    result.pixels.assign(static_cast<std::size_t>(kWidth) * kHeight, 0);
+    for (int y = 0; y < kHeight; ++y)
+        std::memcpy(
+            result.pixels.data() + static_cast<std::size_t>(y) * kWidth,
+            static_cast<const char*>(lock.pBits) +
+                static_cast<std::size_t>(y) * lock.Pitch,
+            static_cast<std::size_t>(kWidth) * sizeof(DWORD));
+    Check(SUCCEEDED(readback->UnlockRect()), "unlock the sphere-only frame");
+    const int frame = g_sphereFrameCount++;
+    char stem[192];
+    std::snprintf(stem, sizeof(stem), "m%d_%s_r%d_%s_%s_f%03d", g_sphereMode,
+                  caseName, resource, precision, order, frame);
+    result.bgraName = std::string(stem) + ".bgra";
+    result.bmpName = std::string(stem) + ".bmp";
+    // Both files are written even when the pixel check below fails.
+    WriteSphereFile(SphereCapturePath(result.bgraName.c_str()),
+                    result.pixels.data(),
+                    result.pixels.size() * sizeof(DWORD),
+                    "write the sphere-only BGRA frame");
+    WriteSphereBmp(SphereCapturePath(result.bmpName.c_str()),
+                   result.pixels, kWidth, kHeight);
+    result.check = CheckSpherePixels(result.pixels, kWidth, kHeight, expected,
+                                     stem);
+    if (!result.check.passed)
+        ++g_sphereFailedFrames;
+    RecordSphereFrame(caseName, resource, precision, order, frame, expected,
+                      result.check, result.bgraName, result.bmpName);
+    std::printf(
+        "sphere-only frame=%d sphereMode=%d case=%s resource=%d precision=%s "
+        "order=%s expected=(%d,%d,%d) roi0=%d roi1=%d background=%d pass=%d\n",
+        frame, g_sphereMode, caseName, resource, precision, order, expected[0],
+        expected[1],
+        expected[2], result.check.maxError[0], result.check.maxError[1],
+        result.check.backgroundWhite ? 1 : 0, result.check.passed ? 1 : 0);
+    return result;
+}
+
+struct SphereTextures {
+    // Named nearTexture/farTexture: Windows' minwindef.h defines the empty
+    // macros near and far, so those two identifiers cannot be member names.
+    IDirect3DTexture9* nearTexture = nullptr;
+    IDirect3DTexture9* farTexture = nullptr;
+};
+
+// The tag comes from the production CacheTextureColorAndAlpha measurement of
+// the uploaded texels, not from a hand-written classification. The 1x1
+// textures are point sampled at every coordinate the sphere cascade produces.
+SphereTextures PublishSphereTextures(MMDApp* app, IDirect3DDevice9* device,
+                                     DWORD nearTexel, DWORD farTexel,
+                                     bool softAlpha) {
+    SphereTextures textures;
+    textures.nearTexture = CreateTexture(device, &nearTexel, 1, 1,
+                                         "create the sphere near texture");
+    textures.farTexture = CreateTexture(device, &farTexel, 1, 1,
+                                        "create the sphere far texture");
+    unsigned char nearTag[4]{};
+    unsigned char farTag[4]{};
+    CacheTextureColorAndAlpha(textures.nearTexture, nearTag);
+    CacheTextureColorAndAlpha(textures.farTexture, farTag);
+    const unsigned char expectedFlags =
+        static_cast<unsigned char>(kTextureAlphaKnown |
+                                   (softAlpha ? kTextureUsesAlpha : 0));
+    Check(nearTag[3] == expectedFlags,
+          "the measured sphere near texel alpha classifies as expected");
+    Check(farTag[3] == expectedFlags,
+          "the measured sphere far texel alpha classifies as expected");
+    Check(nearTag[0] == 0xFF && nearTag[1] == 0 && nearTag[2] == 0,
+          "the measured sphere near texel colour is red");
+    Check(farTag[0] == 0 && farTag[1] == 0 && farTag[2] == 0xFF,
+          "the measured sphere far texel colour is blue");
+    PublishFixtureTexture(app->Renderer(), kSphereNearSlot, kSphereNearPath,
+                          textures.nearTexture, nearTag);
+    PublishFixtureTexture(app->Renderer(), kSphereFarSlot, kSphereFarPath,
+                          textures.farTexture, farTag);
+    return textures;
+}
+
+void ReleaseSphereTextures(MMDApp* app, SphereTextures& textures) {
+    auto* renderer = app->Renderer();
+    app->ModelSlot(0) = nullptr;
+    app->ModelSlot(1) = nullptr;
+    ReleaseFixtureTexture(renderer, kSphereFarSlot, textures.farTexture);
+    ReleaseFixtureTexture(renderer, kSphereNearSlot, textures.nearTexture);
+    textures = {};
+    Check(renderer->resourcePool[kSphereNearSlot].heapBuffer == nullptr &&
+              renderer->resourcePool[kSphereNearSlot].comObject == nullptr &&
+              renderer->resourcePool[kSphereFarSlot].heapBuffer == nullptr &&
+              renderer->resourcePool[kSphereFarSlot].comObject == nullptr,
+          "the sphere fixture releases both pool slots without a dangling path");
+}
+
+// The additive sphere cascade adds the sphere texel to the material colour. A
+// white base would saturate every channel and hide the layer order, so the
+// mode-2 fixture keeps the alpha at 1 but zeroes the base colour channels of
+// the materials that really add a sphere. Modes 1 and 3 keep the white base
+// their multiplicative path samples. SphereMode 0 controls never reach this
+// helper, so they also keep the original white base and their white pixel.
+void ApplySphereMaterialMode(mdl::ModelMaterialRecord& material,
+                             int sphereMode) {
+    if (sphereMode == 2) {
+        for (int channel = 0; channel < 3; ++channel) {
+            material.diffuse[channel] = 0.0f;
+            material.diffuseMirror[channel] = 0.0f;
+            material.ambient[channel] = 0.0f;
+        }
+        Check(material.diffuse[3] == 1.0f && material.specular[0] == 0.0f &&
+                  material.specular[1] == 0.0f &&
+                  material.specular[2] == 0.0f,
+              "mode 2 changes the base colour only, not the alpha or specular");
+        Check(material.diffuse[0] == 0.0f && material.diffuse[1] == 0.0f &&
+                  material.diffuse[2] == 0.0f &&
+                  material.diffuseMirror[0] == 0.0f &&
+                  material.diffuseMirror[1] == 0.0f &&
+                  material.diffuseMirror[2] == 0.0f &&
+                  material.ambient[0] == 0.0f && material.ambient[1] == 0.0f &&
+                  material.ambient[2] == 0.0f,
+              "mode 2 zeroes the base colour so the additive sphere is not "
+              "saturated by a white base");
+        return;
+    }
+    Check(material.diffuse[0] == 1.0f && material.diffuse[1] == 1.0f &&
+              material.diffuse[2] == 1.0f && material.diffuseMirror[0] == 1.0f &&
+              material.diffuseMirror[1] == 1.0f &&
+              material.diffuseMirror[2] == 1.0f && material.ambient[0] == 1.0f &&
+              material.ambient[1] == 1.0f && material.ambient[2] == 1.0f,
+          "the white base a multiplicative sphere samples is unchanged");
+}
+
+// One PMX model with two material quads. farFirst swaps both the material
+// record order and the index ranges together, so the scene is identical and
+// only the authoring order differs. baseTexture moves the same half alpha to
+// the base texture path and leaves the sphere path empty. sphereMode is the
+// selected native PMX mode; mode 3 also builds the 48-byte vertex with a
+// float4 TEXCOORD1.
+std::unique_ptr<Model> BuildSphereTwoMaterialModel(
+    IDirect3DDevice9* device, const std::vector<ModelVertex>& vertices,
+    const std::vector<WORD>& nearFirstIndices, bool farFirst,
+    bool sphereEnabled, bool baseTexture, int sphereMode) {
+    const bool usesSphere = !baseTexture && sphereEnabled;
+    const int materialMode = usesSphere ? sphereMode : 0;
+    Check(materialMode == 0 ||
+              (materialMode >= kSphereModeMin && materialMode <= kSphereModeMax),
+          "the sphere fixture material selects 0 or a supported sphereMode");
+    std::vector<WORD> indices;
+    std::vector<MaterialSpec> specs;
+    const wchar_t* nearPath = baseTexture ? kSphereNearPath : L"";
+    const wchar_t* farPath = baseTexture ? kSphereFarPath : L"";
+    if (!farFirst) {
+        indices = nearFirstIndices;
+        specs = {{nearPath, 1.0f, 0, 6}, {farPath, 1.0f, 6, 6}};
+    } else {
+        indices.assign(nearFirstIndices.begin() + 6, nearFirstIndices.end());
+        indices.insert(indices.end(), nearFirstIndices.begin(),
+                       nearFirstIndices.begin() + 6);
+        specs = {{farPath, 1.0f, 0, 6}, {nearPath, 1.0f, 6, 6}};
+    }
+    // Only the mode-3 scene needs the extra UV set; all other modes keep the
+    // plain 274/32 vertices every other fixture builds.
+    std::vector<std::array<float, 4>> additionalUv1;
+    if (materialMode == 3) {
+        additionalUv1.assign(vertices.size(), kSphereUv1Center);
+    }
+    auto model = BuildModel(device, vertices, indices, specs, true,
+                            materialMode == 3 ? &additionalUv1 : nullptr);
+    Check(model->materials.size() == 2, "the sphere fixture has two materials");
+    const wchar_t* const paths[2] = {
+        farFirst ? kSphereFarPath : kSphereNearPath,
+        farFirst ? kSphereNearPath : kSphereFarPath};
+    for (std::size_t i = 0; i < model->materials.size(); ++i) {
+        mdl::ModelMaterialRecord& material = model->materials[i];
+        Check(material.diffuse[3] == 1.0f,
+              "the sphere fixture material diffuse alpha is 1");
+        if (baseTexture) {
+            Check(std::wstring(material.texturePath) == paths[i],
+                  "the base-texture control names the same texel on the base path");
+            Check(material.spherePath[0] == L'\0',
+                  "the base-texture control leaves the sphere path empty");
+            material.sphereMode = 0;
+        } else {
+            Check(material.texturePath[0] == L'\0',
+                  "the sphere fixture keeps the base texture path empty");
+            wcscpy_s(material.spherePath, paths[i]);
+            material.sphereMode = static_cast<std::uint8_t>(materialMode);
+            Check(std::wstring(material.spherePath) == paths[i],
+                  "the sphere fixture material names the sphere texture");
+        }
+        Check(material.sphereMode == static_cast<std::uint8_t>(materialMode),
+              "the sphere fixture material selects the requested sphereMode");
+        if (usesSphere) ApplySphereMaterialMode(material, sphereMode);
+    }
+    Check(model->record->pmxAdditionalUvCount ==
+              static_cast<unsigned>(materialMode == 3 ? 1 : 0),
+          "the two-material scene uses the vertex format its mode needs");
+    Check(model->record->postLoadFlag2 == 0,
+          "the sphere fixture record has postLoadFlag2 0");
+    Check(model->record->displayState == 0,
+          "the sphere fixture record has displayState 0");
+    Check(model->morphAdd.size() == model->materials.size() + 1 &&
+              model->morphMul.size() == model->materials.size() + 1,
+          "the PMX sphere fixture carries one morph pool per material");
+    // BuildModel fills the multiplicative pools with 1 and leaves the additive
+    // pools zeroed; read them back so the fixture proves both identities.
+    for (const auto& pool : model->morphMul) {
+        for (int channel = 0; channel < 4; ++channel)
+            Check(pool.channels.diffuse[channel] == 1.0f &&
+                      pool.channels.textureTint[channel] == 1.0f &&
+                      pool.channels.sphereTint[channel] == 1.0f &&
+                      pool.channels.toonTint[channel] == 1.0f,
+                  "the sphere fixture multiplicative material morphs are 1");
+    }
+    for (const auto& pool : model->morphAdd) {
+        for (int channel = 0; channel < 4; ++channel)
+            Check(pool.channels.diffuse[channel] == 0.0f &&
+                      pool.channels.textureTint[channel] == 0.0f &&
+                      pool.channels.sphereTint[channel] == 0.0f &&
+                      pool.channels.toonTint[channel] == 0.0f,
+                  "the sphere fixture additive material morphs are 0");
+    }
+    return model;
+}
+
+// One quad that samples its sphere texture, for the single-layer controls and
+// the mode-3 UV-source probe. u0/v0 drive the base texture coordinate set;
+// uv1 carries the TEXCOORD1 value of the mode-3 vertex and is ignored by the
+// other modes.
+std::unique_ptr<Model> BuildSphereSingleLayerModel(
+    IDirect3DDevice9* device, float z, const wchar_t* spherePath,
+    int sphereMode, float u0 = 0.5f, float v0 = 0.5f,
+    const std::array<float, 4>* uv1 = nullptr) {
+    Check(sphereMode >= 0 && sphereMode <= kSphereModeMax,
+          "the single-layer sphere control selects a supported sphereMode");
+    Check(sphereMode == 3 || uv1 == nullptr,
+          "only the mode-3 single-layer fixture carries TEXCOORD1");
+    std::vector<ModelVertex> vertices;
+    std::vector<WORD> indices;
+    AppendQuad(vertices, indices, kSphereLeft, kSphereTop, kSphereRight,
+               kSphereBottom, z, u0, v0);
+    std::vector<std::array<float, 4>> additionalUv1;
+    if (sphereMode == 3) {
+        additionalUv1.assign(vertices.size(),
+                             uv1 != nullptr ? *uv1 : kSphereUv1Center);
+    }
+    auto model = BuildModel(device, vertices, indices,
+                            {{L"", 1.0f, 0, indices.size()}}, true,
+                            sphereMode == 3 ? &additionalUv1 : nullptr);
+    mdl::ModelMaterialRecord& material = model->materials[0];
+    Check(material.texturePath[0] == L'\0',
+          "the single-layer sphere control keeps the base texture path empty");
+    wcscpy_s(material.spherePath, spherePath);
+    material.sphereMode = static_cast<std::uint8_t>(sphereMode);
+    Check(material.sphereMode == static_cast<std::uint8_t>(sphereMode),
+          "the single-layer sphere control selects the requested sphereMode");
+    // The helper checks the base colour the selected multiplicative or
+    // additive mode expects.
+    ApplySphereMaterialMode(material, sphereMode);
+    Check(model->record->pmxAdditionalUvCount ==
+              static_cast<unsigned>(sphereMode == 3 ? 1 : 0),
+          "the single-layer scene uses the vertex format its mode needs");
+    Check(model->record->postLoadFlag2 == 0 && model->record->displayState == 0,
+          "the single-layer sphere control record state");
+    return model;
+}
+
+void RunSphereMainMatrix(MMDApp* app, IDirect3DDevice9* device,
+                         IDirect3DSurface9* backbuffer,
+                         IDirect3DSurface9* readback, int resource,
+                         const D3DMATRIX& identity,
+                         const std::vector<ModelVertex>& vertices,
+                         const std::vector<WORD>& nearFirstIndices) {
+    std::unique_ptr<Model> models[2];
+    models[0] = BuildSphereTwoMaterialModel(
+        device, vertices, nearFirstIndices, false, true, false, g_sphereMode);
+    models[1] = BuildSphereTwoMaterialModel(
+        device, vertices, nearFirstIndices, true, true, false, g_sphereMode);
+    for (int order = 0; order < 2; ++order) {
+        Check(models[order]->record->pmxAdditionalUvCount ==
+                  static_cast<unsigned>(g_sphereMode == 3 ? 1 : 0),
+              "the main matrix builds the vertex format of the selected mode");
+    }
+    std::vector<std::int32_t> cpuBefore[2];
+    for (int order = 0; order < 2; ++order)
+        cpuBefore[order] = models[order]->cpuPmxIndices;
+    for (int order = 0; order < 2; ++order) {
+        std::string firstOff;
+        std::string finalOff;
+        std::vector<DWORD> firstOffPixels;
+        bool restored = false;
+        for (int step = 0; step < kSphereMainStepCount; ++step) {
+            const bool off = step == 0 || step == kSphereMainStepCount - 1;
+            const bool nearFirst = order == 0;
+            // Off keeps the authored order and the depth write: near-first
+            // leaves only the near layer, far-first blends both layers. Every
+            // enabled tier sorts far to near, so both orders blend both.
+            // All three modes reach the same independent reference: mode 1 and
+            // mode 3 multiply a white base by the sphere texel, and mode 2's
+            // base is black so its additive sphere texel is the whole colour.
+            // The blend alpha is the sphere texel's in every mode, so the
+            // source-over arithmetic below is the same.
+            const SphereColor expectedColor =
+                off && nearFirst ? SphereNearOnlyExpected()
+                                 : SphereDoubleLayerExpected();
+            const int expected[3] = {expectedColor.red, expectedColor.green,
+                                     expectedColor.blue};
+            app->TransparentMaterialSortPrecision() = kSpherePrecisions[step];
+            const SphereFrameResult frame = RunSphereFrame(
+                app, device, backbuffer, readback, resource, identity,
+                models[order].get(), "main", kSpherePrecisionNames[step],
+                kSphereOrderNames[order], expected);
+            if (step == 0) {
+                firstOffPixels = frame.pixels;
+                firstOff = frame.bmpName;
+            }
+            if (step == kSphereMainStepCount - 1) {
+                finalOff = frame.bmpName;
+                restored = frame.pixels.size() == firstOffPixels.size();
+                if (restored) {
+                    for (std::size_t i = 0; i < frame.pixels.size(); ++i) {
+                        if ((frame.pixels[i] & 0xFFFFFFu) !=
+                            (firstOffPixels[i] & 0xFFFFFFu)) {
+                            restored = false;
+                            break;
+                        }
+                    }
+                }
+                if (!restored) {
+                    std::fprintf(stderr,
+                                 "FAIL: the final Off frame did not restore the "
+                                 "first Off frame, resource=%d order=%s\n",
+                                 resource, kSphereOrderNames[order]);
+                    ++g_failures;
+                }
+            }
+        }
+        // The sorter rewrites the GPU index buffer only; the authored CPU
+        // source array is the invariant compared here.
+        const bool cpuUnchanged = models[order]->cpuPmxIndices == cpuBefore[order];
+        if (!cpuUnchanged) {
+            std::fprintf(stderr,
+                         "FAIL: the sphere fixture CPU indices changed, "
+                         "resource=%d order=%s\n",
+                         resource, kSphereOrderNames[order]);
+            ++g_failures;
+        }
+        RecordSphereRestore(resource, kSphereOrderNames[order], restored,
+                            cpuUnchanged, firstOff, finalOff);
+        std::printf(
+            "sphere-only restore resource=%d order=%s frameRGB=%s "
+            "cpuIndices=%s\n",
+            resource, kSphereOrderNames[order],
+            restored ? "restored" : "mismatch",
+            cpuUnchanged ? "unchanged" : "changed");
+    }
+    app->ModelSlot(0) = nullptr;
+    app->ModelSlot(1) = nullptr;
+}
+
+void RunSphereControlScenes(MMDApp* app, IDirect3DDevice9* device,
+                            IDirect3DSurface9* backbuffer,
+                            IDirect3DSurface9* readback, int resource,
+                            const D3DMATRIX& identity,
+                            const std::vector<ModelVertex>& vertices,
+                            const std::vector<WORD>& nearFirstIndices) {
+    app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Off;
+    {
+        const SphereColor color = SphereNearOnlyExpected();
+        const int expected[3] = {color.red, color.green, color.blue};
+        auto model = BuildSphereSingleLayerModel(device, kNearDepth,
+                                                 kSphereNearPath, g_sphereMode);
+        RunSphereFrame(app, device, backbuffer, readback, resource, identity,
+                       model.get(), "near-only", "off", "single", expected);
+        app->ModelSlot(0) = nullptr;
+    }
+    {
+        const SphereColor color = SphereFarOnlyExpected();
+        const int expected[3] = {color.red, color.green, color.blue};
+        auto model = BuildSphereSingleLayerModel(device, kFarDepth,
+                                                 kSphereFarPath, g_sphereMode);
+        RunSphereFrame(app, device, backbuffer, readback, resource, identity,
+                       model.get(), "far-only", "off", "single", expected);
+        app->ModelSlot(0) = nullptr;
+    }
+    // sphereMode 0 gates the sphere cascade off: no texture reaches the
+    // surface, so the white light and the white toon leave the clear colour.
+    {
+        const int expected[3] = {255, 255, 255};
+        for (int order = 0; order < 2; ++order) {
+            auto model = BuildSphereTwoMaterialModel(
+                device, vertices, nearFirstIndices, order == 1, false, false,
+                g_sphereMode);
+            RunSphereFrame(app, device, backbuffer, readback, resource,
+                           identity, model.get(), "sphere-mode0", "off",
+                           kSphereOrderNames[order], expected);
+            app->ModelSlot(0) = nullptr;
+        }
+    }
+    // The same half alpha moved to the base texture path: classification and
+    // the sorted far-to-near order must produce the identical two-layer pixel.
+    {
+        const SphereColor color = SphereDoubleLayerExpected();
+        const int expected[3] = {color.red, color.green, color.blue};
+        app->TransparentMaterialSortPrecision() =
+            TransparentSortPrecision::Standard;
+        for (int order = 0; order < 2; ++order) {
+            auto model = BuildSphereTwoMaterialModel(
+                device, vertices, nearFirstIndices, order == 1, false, true, 0);
+            RunSphereFrame(app, device, backbuffer, readback, resource,
+                           identity, model.get(), "base-alpha", "standard",
+                           kSphereOrderNames[order], expected);
+            app->ModelSlot(0) = nullptr;
+        }
+    }
+    app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Off;
+}
+
+void RunSphereOpaqueAlphaControl(MMDApp* app, IDirect3DDevice9* device,
+                                 IDirect3DSurface9* backbuffer,
+                                 IDirect3DSurface9* readback, int resource,
+                                 const D3DMATRIX& identity,
+                                 const std::vector<ModelVertex>& vertices,
+                                 const std::vector<WORD>& nearFirstIndices) {
+    app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Off;
+    // Sphere alpha 255 makes each layer opaque, so the near red layer owns
+    // every sampled pixel after the depth test in both authoring orders.
+    const SphereColor color = SphereAlphaOver(kSphereRed, 1.0, kSphereRed);
+    const int expected[3] = {color.red, color.green, color.blue};
+    for (int order = 0; order < 2; ++order) {
+        auto model = BuildSphereTwoMaterialModel(
+            device, vertices, nearFirstIndices, order == 1, true, false,
+            g_sphereMode);
+        RunSphereFrame(app, device, backbuffer, readback, resource, identity,
+                       model.get(), "sphere-alpha255", "off",
+                       kSphereOrderNames[order], expected);
+        app->ModelSlot(0) = nullptr;
+    }
+}
+
+// --sphere-mode 3 samples the sphere texture through TEXCOORD1. A 1x1 texture
+// cannot prove which coordinate set the pass really used, so this probe owns a
+// real 2x1 texture with two different half-transparent texels, gives the quad a
+// UV0 that points at the other texel than UV1, and renders three frames: one
+// per TEXCOORD1 texel, then the first frame again with UV0 moved. The two known
+// colours come from the texel constants with the same source-over reference the
+// main matrix uses, never from a rendered frame; the moved-UV0 frame must be
+// pixel-identical to the first one.
+void RunSphereUv1SourceProbe(MMDApp* app, IDirect3DDevice9* device,
+                             IDirect3DSurface9* backbuffer,
+                             IDirect3DSurface9* readback, int resource,
+                             const D3DMATRIX& identity) {
+    auto* renderer = app->Renderer();
+    IDirect3DTexture9* texture = CreateTexture(
+        device, kSphereUv1Texels, 2, 1,
+        "create the mode-3 TEXCOORD1 source texture");
+    unsigned char tag[4]{};
+    CacheTextureColorAndAlpha(texture, tag);
+    Check((tag[3] & kTextureUsesAlpha) != 0,
+          "the TEXCOORD1 source texture carries half-transparent texels");
+    PublishFixtureTexture(renderer, kSphereUv1Slot, kSphereUv1Path, texture,
+                          tag);
+    app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Off;
+    const SphereColor expectedForTexel[2] = {
+        SphereAlphaOver(kSphereUv1Color0, kSphereTexelAlpha, kSphereWhite),
+        SphereAlphaOver(kSphereUv1Color1, kSphereTexelAlpha, kSphereWhite)};
+    // u0 deliberately names the other texel than u1 in the first two frames.
+    const auto render = [&](float u0, float u1, const char* caseName,
+                            int texel) {
+        const int expected[3] = {expectedForTexel[texel].red,
+                                 expectedForTexel[texel].green,
+                                 expectedForTexel[texel].blue};
+        const std::array<float, 4> uv1 = {u1, 0.5f, 0.0f, 1.0f};
+        auto model = BuildSphereSingleLayerModel(
+            device, kNearDepth, kSphereUv1Path, 3, u0, 0.5f, &uv1);
+        const SphereFrameResult frame = RunSphereFrame(
+            app, device, backbuffer, readback, resource, identity, model.get(),
+            caseName, "off", "single", expected);
+        app->ModelSlot(0) = nullptr;
+        return frame;
+    };
+    const SphereFrameResult texel0 =
+        render(0.75f, 0.25f, "uv1-source-texel0", 0);
+    const SphereFrameResult texel1 =
+        render(0.25f, 0.75f, "uv1-source-texel1", 1);
+    const SphereFrameResult movedUv0 =
+        render(0.25f, 0.25f, "uv1-source-uv0-moved", 0);
+    // Both frames of the pair above sample a different known colour, so the
+    // probe proves TEXCOORD1 is the sampled coordinate; the moved UV0 frame
+    // repeats the first frame although its base coordinate changed.
+    Check(texel0.pixels != texel1.pixels,
+          "the two TEXCOORD1 texels really produce different colours");
+    Check(texel0.pixels == movedUv0.pixels,
+          "moving UV0 leaves the mode-3 sphere sample unchanged");
+    ReleaseFixtureTexture(renderer, kSphereUv1Slot, texture);
+    app->ModelSlot(0) = nullptr;
+    std::printf("sphere-only TEXCOORD1 probe resource=%d frames=3 "
+                "texel0=(%d,%d,%d) texel1=(%d,%d,%d) uv0-moved=identical\n",
+                resource, expectedForTexel[0].red, expectedForTexel[0].green,
+                expectedForTexel[0].blue, expectedForTexel[1].red,
+                expectedForTexel[1].green, expectedForTexel[1].blue);
+}
+
+void RunSphereOnlyResource(MMDApp* app, IDirect3DDevice9* device,
+                           IDirect3DSurface9* backbuffer,
+                           IDirect3DSurface9* readback, int resource,
+                           const D3DMATRIX& identity) {
+    D3DSURFACE_DESC target{};
+    Check(SUCCEEDED(backbuffer->GetDesc(&target)) && target.Width == kWidth &&
+              target.Height == kHeight,
+          "the sphere-only capture target is 96x96");
+    D3DMATRIX world{};
+    Check(SUCCEEDED(device->GetTransform(D3DTS_WORLD, &world)) &&
+              std::memcmp(&world, &identity, sizeof(world)) == 0,
+          "the sphere-only frames use the identity world matrix");
+    const auto savedPrecision = app->TransparentMaterialSortPrecision();
+    const bool savedCrossObjects = app->TransparentSortCrossObjects();
+    app->TransparentSortCrossObjects() = false;
+    Check(!app->TransparentSortCrossObjects(),
+          "sphere-only frames do not sort across objects");
+    Check(g_resolveTarget == nullptr,
+          "sphere-only frames render without multisampling");
+    // The capture pixels are defined by unorm reads and writes with point
+    // sampling, so neither side of the blend may take an sRGB conversion.
+    device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+    for (DWORD stage = 0; stage < 3; ++stage) {
+        device->SetSamplerState(stage, D3DSAMP_SRGBTEXTURE, FALSE);
+        device->SetSamplerState(stage, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+        device->SetSamplerState(stage, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+        device->SetSamplerState(stage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    }
+    // The layers differ only by depth; Off relies on the near layer's depth
+    // write to reject the far layer, so the depth state is fixed here.
+    device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    std::vector<ModelVertex> vertices;
+    std::vector<WORD> indices;
+    AppendQuad(vertices, indices, kSphereLeft, kSphereTop, kSphereRight,
+               kSphereBottom, kNearDepth, 0.5f, 0.5f);
+    AppendQuad(vertices, indices, kSphereLeft, kSphereTop, kSphereRight,
+               kSphereBottom, kFarDepth, 0.5f, 0.5f);
+    Check(vertices.size() == 8 && indices.size() == 12,
+          "the sphere fixture has two overlapping quads");
+
+    SphereTextures soft = PublishSphereTextures(
+        app, device, kSphereNearTexel, kSphereFarTexel, true);
+    RunSphereMainMatrix(app, device, backbuffer, readback, resource, identity,
+                        vertices, indices);
+    RunSphereControlScenes(app, device, backbuffer, readback, resource,
+                           identity, vertices, indices);
+    // Mode 3 alone needs the TEXCOORD1 source evidence; its own slot and path
+    // leave the near/far matrix above untouched.
+    if (g_sphereMode == 3)
+        RunSphereUv1SourceProbe(app, device, backbuffer, readback, resource,
+                                identity);
+    ReleaseSphereTextures(app, soft);
+
+    SphereTextures opaque = PublishSphereTextures(
+        app, device, kSphereNearOpaqueTexel, kSphereFarOpaqueTexel, false);
+    RunSphereOpaqueAlphaControl(app, device, backbuffer, readback, resource,
+                                identity, vertices, indices);
+    ReleaseSphereTextures(app, opaque);
+
+    app->TransparentMaterialSortPrecision() = savedPrecision;
+    app->TransparentSortCrossObjects() = savedCrossObjects;
+    app->ClearModelSlots();
+    std::printf("sphere-only resource=%d frames=%d failures=%d\n", resource,
+                g_sphereFrameCount, g_failures);
+}
+
+
+// ---- --cross-object-only: independent two-model cross-object capture --------
+//
+// Two genuinely separate ModelRecords, one inset quad each. The near model
+// samples the two-layer front texel (ARGB 0x8080A040) at z .25 and the far model
+// the rear texel (ARGB 0x804060C0) at z .75; both quads span [-.75,.75] and
+// sample texel 0 of the already published 2-wide two-layer textures at u .25,
+// v .5. Both materials keep Diffuse.a at 1, so the texel alpha alone decides
+// the blend. The author order only decides which record is submitted first; the
+// scene never stands in one two-material model for the pair.
+//
+// The expected pixel is an independent source-over over the white clear,
+// evaluated per layer with SphereAlphaOver from the known texel colours and the
+// texel alpha 128/255. With precision Off or cross-object sorting disabled the
+// submitted order survives, so only near-first keeps just the near layer; every
+// other combination blends the far layer and then the near layer. The sphere
+// capture's two 5x5 ROIs, 2-unit tolerance and white background sentinel apply
+// unchanged. Every frame is saved as BGRA and BMP and recorded in
+// cross_object_frames.jsonl whether or not its pixels pass.
+constexpr int kCrossObjectResourceCount = 3;  // fixed, 117 (SM2), 118 (SM3)
+constexpr int kCrossObjectFormatCount = 2;    // PMD then PMX
+constexpr int kCrossObjectOrderCount = 2;     // near-first then far-first
+constexpr int kCrossObjectScopeCount = 2;     // cross-object sorting off then on
+constexpr int kCrossObjectPrecisionStepCount = kSphereMainStepCount;
+constexpr int kCrossObjectToggleStepCount = 3;  // false -> true -> false
+static_assert(kSphereMainStepCount == 6,
+              "the cross-object precision round is Off -> ... -> Off");
+static_assert(kSphereResourceCount == kCrossObjectResourceCount,
+              "the cross-object capture runs on the same three resources");
+constexpr int kCrossObjectPrecisionFramesPerFormat =
+    kCrossObjectOrderCount * kCrossObjectScopeCount *
+    kCrossObjectPrecisionStepCount;  // 24
+constexpr int kCrossObjectToggleFramesPerFormat =
+    kCrossObjectOrderCount * kCrossObjectToggleStepCount;  // 6
+constexpr int kCrossObjectFramesPerResource =
+    kCrossObjectFormatCount * (kCrossObjectPrecisionFramesPerFormat +
+                               kCrossObjectToggleFramesPerFormat);  // 60
+constexpr int kCrossObjectExpectedFrameCount =
+    kCrossObjectFramesPerResource * kCrossObjectResourceCount;  // 180
+constexpr int kCrossObjectPrecisionRestoreCount =
+    kCrossObjectFormatCount * kCrossObjectOrderCount *
+    kCrossObjectScopeCount * kCrossObjectResourceCount;  // 24
+constexpr int kCrossObjectScopeToggleRestoreCount =
+    kCrossObjectFormatCount * kCrossObjectOrderCount *
+    kCrossObjectResourceCount;  // 12
+
+constexpr float kCrossObjectLeft = -0.75f;
+constexpr float kCrossObjectTop = 0.75f;
+constexpr float kCrossObjectRight = 0.75f;
+constexpr float kCrossObjectBottom = -0.75f;
+constexpr float kCrossObjectSamplerU = 0.25f;
+constexpr float kCrossObjectSamplerV = 0.5f;
+const char* const kCrossObjectFormatNames[kCrossObjectFormatCount] = {"pmd",
+                                                                     "pmx"};
+
+// The known texels come from the constants the published textures are built
+// from; the expected colours are derived here, never read back from a frame.
+constexpr DWORD kCrossObjectNearTexel = kTwoLayerFrontTexel;
+constexpr DWORD kCrossObjectFarTexel = kTwoLayerRearTexel;
+static_assert(((kCrossObjectNearTexel >> 24) & 0xFFu) == 0x80u,
+              "the near cross-object texel keeps alpha 128");
+static_assert(((kCrossObjectFarTexel >> 24) & 0xFFu) == 0x80u,
+              "the far cross-object texel keeps alpha 128");
+constexpr double kCrossObjectTexelAlpha = 128.0 / 255.0;
+
+constexpr SphereColor CrossObjectTexelColor(DWORD texel) {
+    return {static_cast<int>((texel >> 16) & 0xFFu),
+            static_cast<int>((texel >> 8) & 0xFFu),
+            static_cast<int>(texel & 0xFFu)};
+}
+
+SphereColor CrossObjectNearOnlyExpected() {
+    return SphereAlphaOver(CrossObjectTexelColor(kCrossObjectNearTexel),
+                           kCrossObjectTexelAlpha, kSphereWhite);
+}
+
+SphereColor CrossObjectDoubleLayerExpected() {
+    return SphereAlphaOver(
+        CrossObjectTexelColor(kCrossObjectNearTexel), kCrossObjectTexelAlpha,
+        SphereAlphaOver(CrossObjectTexelColor(kCrossObjectFarTexel),
+                        kCrossObjectTexelAlpha, kSphereWhite));
+}
+
+std::wstring g_crossObjectCaptureDir;
+HANDLE g_crossObjectRecord = INVALID_HANDLE_VALUE;
+int g_crossObjectFrameCount = 0;
+int g_crossObjectFailedFrames = 0;
+int g_crossObjectPrecisionRestores = 0;
+int g_crossObjectScopeToggleRestores = 0;
+
+bool CrossObjectFullRgbEqual(const std::vector<DWORD>& first,
+                             const std::vector<DWORD>& final) {
+    if (first.size() != final.size())
+        return false;
+    for (std::size_t i = 0; i < first.size(); ++i)
+        if ((first[i] & 0xFFFFFFu) != (final[i] & 0xFFFFFFu))
+            return false;
+    return true;
+}
+
+struct CrossObjectFrameResult {
+    std::vector<DWORD> pixels;
+    SphereCheck check;
+    std::string bgraName;
+    std::string bmpName;
+};
+
+void RecordCrossObjectFrame(const char* caseName, const char* formatName,
+                            int resource, const char* precision,
+                            bool crossObjects, const char* order, int step,
+                            int frame, const int expected[3],
+                            const SphereCheck& check,
+                            const std::string& bgraName,
+                            const std::string& bmpName) {
+    char line[2048];
+    const int length = std::snprintf(
+        line, sizeof(line),
+        "{\"case\":\"%s\",\"format\":\"%s\",\"resource\":%d,"
+        "\"precision\":\"%s\",\"crossObjects\":%s,\"order\":\"%s\","
+        "\"step\":%d,\"frame\":%d,\"width\":%d,\"height\":%d,"
+        "\"expectedRGB\":[%d,%d,%d],\"roiMaxError\":[%d,%d],"
+        "\"backgroundWhite\":%s,\"failedPixels\":%d,\"pass\":%s,"
+        "\"bgra\":\"%s\",\"bmp\":\"%s\"}",
+        caseName, formatName, resource, precision,
+        crossObjects ? "true" : "false", order, step, frame, kWidth, kHeight,
+        expected[0], expected[1], expected[2], check.maxError[0],
+        check.maxError[1], check.backgroundWhite ? "true" : "false",
+        check.failedPixels, check.passed ? "true" : "false",
+        bgraName.c_str(), bmpName.c_str());
+    Check(length > 0 && static_cast<std::size_t>(length) < sizeof(line),
+          "format the cross-object frame record");
+    AppendCaptureRecord(g_crossObjectRecord, line,
+                        "the cross-object frame record is open",
+                        "write the cross-object frame record");
+}
+
+// The cpuIndices field in both restore records reports the four-vector check:
+// each model's cpuIndices and cpuPmxIndices compared with its own initial value.
+void RecordCrossObjectPrecisionRestore(const char* formatName, int resource,
+                                       const char* order, bool crossObjects,
+                                       bool frameRestored,
+                                       bool cpuIndicesUnchanged,
+                                       const std::string& firstOff,
+                                       const std::string& finalOff) {
+    char line[2048];
+    const int length = std::snprintf(
+        line, sizeof(line),
+        "{\"case\":\"precision-restore\",\"format\":\"%s\",\"resource\":%d,"
+        "\"order\":\"%s\",\"crossObjects\":%s,\"precision\":\"off\","
+        "\"frameRGB\":\"%s\",\"cpuIndices\":\"%s\",\"firstOff\":\"%s\","
+        "\"finalOff\":\"%s\"}",
+        formatName, resource, order, crossObjects ? "true" : "false",
+        frameRestored ? "restored" : "mismatch",
+        cpuIndicesUnchanged ? "unchanged" : "changed", firstOff.c_str(),
+        finalOff.c_str());
+    Check(length > 0 && static_cast<std::size_t>(length) < sizeof(line),
+          "format the cross-object precision restore record");
+    AppendCaptureRecord(g_crossObjectRecord, line,
+                        "the cross-object frame record is open",
+                        "write the cross-object frame record");
+}
+
+void RecordCrossObjectScopeRestore(const char* formatName, int resource,
+                                   const char* order, bool frameRestored,
+                                   bool cpuIndicesUnchanged,
+                                   const std::string& firstFrame,
+                                   const std::string& finalFrame) {
+    char line[2048];
+    const int length = std::snprintf(
+        line, sizeof(line),
+        "{\"case\":\"scope-restore\",\"format\":\"%s\",\"resource\":%d,"
+        "\"order\":\"%s\",\"precision\":\"standard\","
+        "\"scope\":\"false-true-false\",\"frameRGB\":\"%s\","
+        "\"cpuIndices\":\"%s\",\"firstScope\":\"%s\","
+        "\"finalScope\":\"%s\"}",
+        formatName, resource, order,
+        frameRestored ? "restored" : "mismatch",
+        cpuIndicesUnchanged ? "unchanged" : "changed", firstFrame.c_str(),
+        finalFrame.c_str());
+    Check(length > 0 && static_cast<std::size_t>(length) < sizeof(line),
+          "format the cross-object scope restore record");
+    AppendCaptureRecord(g_crossObjectRecord, line,
+                        "the cross-object frame record is open",
+                        "write the cross-object frame record");
+}
+
+std::unique_ptr<Model> BuildCrossObjectModel(IDirect3DDevice9* device, float z,
+                                             const wchar_t* texturePath,
+                                             bool pmx) {
+    std::vector<ModelVertex> vertices;
+    std::vector<WORD> indices;
+    AppendQuad(vertices, indices, kCrossObjectLeft, kCrossObjectTop,
+               kCrossObjectRight, kCrossObjectBottom, z,
+               kCrossObjectSamplerU, kCrossObjectSamplerV);
+    Check(vertices.size() == 4 && indices.size() == 6,
+          "the cross-object fixture model is one inset quad");
+    auto model = BuildModel(device, vertices, indices,
+                            {{texturePath, 1.0f, 0, indices.size()}}, pmx);
+    Check(model->record != nullptr && model->materials.size() == 1,
+          "the cross-object model record is independent with one material");
+    Check(std::wstring(model->materials[0].texturePath) == texturePath,
+          "the cross-object model names its own texel texture");
+    Check(model->materials[0].diffuse[3] == 1.0f,
+          "the cross-object material diffuse alpha is 1");
+    Check(model->record->physicsMode == (pmx ? 2 : 0),
+          "the cross-object model uses the requested ABI");
+    Check(pmx ? model->cpuPmxIndices.size() == indices.size()
+              : model->cpuIndices.size() == indices.size() * 2,
+          "the cross-object model keeps its authored CPU source indices");
+    return model;
+}
+
+CrossObjectFrameResult RunCrossObjectFrame(
+    MMDApp* app, IDirect3DDevice9* device, IDirect3DSurface9* backbuffer,
+    IDirect3DSurface9* readback, int resource, const D3DMATRIX& identity,
+    Model* first, Model* second, const char* caseName, const char* formatName,
+    const char* precision, bool crossObjects, const char* order, int step,
+    const int expected[3]) {
+    CrossObjectFrameResult result;
+    D3DLOCKED_RECT lock{};
+    RenderArrangement(app, device, backbuffer, readback, resource, identity,
+                      first, second, &lock);
+    result.pixels.assign(static_cast<std::size_t>(kWidth) * kHeight, 0);
+    for (int y = 0; y < kHeight; ++y)
+        std::memcpy(
+            result.pixels.data() + static_cast<std::size_t>(y) * kWidth,
+            static_cast<const char*>(lock.pBits) +
+                static_cast<std::size_t>(y) * lock.Pitch,
+            static_cast<std::size_t>(kWidth) * sizeof(DWORD));
+    Check(SUCCEEDED(readback->UnlockRect()), "unlock the cross-object frame");
+    const int frame = g_crossObjectFrameCount++;
+    char stem[256];
+    std::snprintf(stem, sizeof(stem), "cross_%s_r%d_%s_c%d_%s_step%d_f%03d",
+                  formatName, resource, order, crossObjects ? 1 : 0, precision,
+                  step, frame);
+    result.bgraName = std::string(stem) + ".bgra";
+    result.bmpName = std::string(stem) + ".bmp";
+    // Both files are written even when the pixel check below fails.
+    WriteSphereFile(CapturePathIn(g_crossObjectCaptureDir,
+                                  result.bgraName.c_str()),
+                    result.pixels.data(),
+                    result.pixels.size() * sizeof(DWORD),
+                    "write the cross-object BGRA frame");
+    WriteSphereBmp(CapturePathIn(g_crossObjectCaptureDir,
+                                 result.bmpName.c_str()),
+                   result.pixels, kWidth, kHeight,
+                   "write the cross-object BMP frame");
+    result.check = CheckSpherePixels(result.pixels, kWidth, kHeight, expected,
+                                     stem);
+    if (!result.check.passed)
+        ++g_crossObjectFailedFrames;
+    RecordCrossObjectFrame(caseName, formatName, resource, precision,
+                           crossObjects, order, step, frame, expected,
+                           result.check, result.bgraName, result.bmpName);
+    std::printf(
+        "cross-object frame=%d case=%s format=%s resource=%d precision=%s "
+        "crossObjects=%d order=%s step=%d expected=(%d,%d,%d) roi0=%d roi1=%d "
+        "background=%d pass=%d\n",
+        frame, caseName, formatName, resource, precision,
+        crossObjects ? 1 : 0, order, step, expected[0], expected[1],
+        expected[2], result.check.maxError[0], result.check.maxError[1],
+        result.check.backgroundWhite ? 1 : 0, result.check.passed ? 1 : 0);
+    return result;
+}
+
+void RunCrossObjectResource(MMDApp* app, IDirect3DDevice9* device,
+                            IDirect3DSurface9* backbuffer,
+                            IDirect3DSurface9* readback, int resource,
+                            const D3DMATRIX& identity) {
+    D3DSURFACE_DESC target{};
+    Check(SUCCEEDED(backbuffer->GetDesc(&target)) && target.Width == kWidth &&
+              target.Height == kHeight,
+          "the cross-object capture target is 96x96");
+    D3DMATRIX world{};
+    Check(SUCCEEDED(device->GetTransform(D3DTS_WORLD, &world)) &&
+              std::memcmp(&world, &identity, sizeof(world)) == 0,
+          "the cross-object frames use the identity world matrix");
+    Check(g_resolveTarget == nullptr,
+          "cross-object frames render without multisampling");
+    const auto savedPrecision = app->TransparentMaterialSortPrecision();
+    const bool savedCrossObjects = app->TransparentSortCrossObjects();
+    device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+    for (DWORD stage = 0; stage < 3; ++stage) {
+        device->SetSamplerState(stage, D3DSAMP_SRGBTEXTURE, FALSE);
+        device->SetSamplerState(stage, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+        device->SetSamplerState(stage, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+        device->SetSamplerState(stage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    }
+    // Off relies on the near layer's depth write to reject the far layer, so
+    // the depth state is fixed here.
+    device->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+    device->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    const int firstFrameOfResource = g_crossObjectFrameCount;
+    for (int format = 0; format < kCrossObjectFormatCount; ++format) {
+        const bool pmx = format == 1;
+        const char* const formatName = kCrossObjectFormatNames[format];
+        auto nearModel = BuildCrossObjectModel(device, kNearDepth,
+                                               kTwoLayerFrontPath, pmx);
+        auto farModel = BuildCrossObjectModel(device, kFarDepth,
+                                              kTwoLayerRearPath, pmx);
+        Check(nearModel->record.get() != farModel->record.get(),
+              "the cross-object pair holds two independent model records");
+        Check(nearModel->vertexBuffer != farModel->vertexBuffer &&
+                  nearModel->indexBuffer != farModel->indexBuffer,
+              "the cross-object pair holds independent GPU buffers");
+        const void* const nearCpu = pmx
+            ? static_cast<const void*>(nearModel->cpuPmxIndices.data())
+            : static_cast<const void*>(nearModel->cpuIndices.data());
+        const void* const farCpu = pmx
+            ? static_cast<const void*>(farModel->cpuPmxIndices.data())
+            : static_cast<const void*>(farModel->cpuIndices.data());
+        Check(nearCpu != farCpu,
+              "the cross-object pair does not share a CPU index array");
+        // Snapshot all four authored CPU source vectors, not only the pair the
+        // selected ABI fills: the other ABI's vectors must stay empty as well.
+        const std::vector<std::uint16_t> nearPmdBefore = nearModel->cpuIndices;
+        const std::vector<std::int32_t> nearPmxBefore =
+            nearModel->cpuPmxIndices;
+        const std::vector<std::uint16_t> farPmdBefore = farModel->cpuIndices;
+        const std::vector<std::int32_t> farPmxBefore =
+            farModel->cpuPmxIndices;
+        const auto cpuIndicesUnchanged = [&] {
+            return nearModel->cpuIndices == nearPmdBefore &&
+                   nearModel->cpuPmxIndices == nearPmxBefore &&
+                   farModel->cpuIndices == farPmdBefore &&
+                   farModel->cpuPmxIndices == farPmxBefore;
+        };
+        const auto recordCpuState = [&](const char* stage) {
+            const bool unchanged = cpuIndicesUnchanged();
+            if (!unchanged) {
+                std::fprintf(stderr,
+                             "FAIL: the cross-object CPU source indices "
+                             "changed, format=%s resource=%d stage=%s\n",
+                             formatName, resource, stage);
+                ++g_failures;
+            }
+            return unchanged;
+        };
+        for (int order = 0; order < kCrossObjectOrderCount; ++order) {
+            const char* const orderName = kSphereOrderNames[order];
+            Model* const first = order == 0 ? nearModel.get() : farModel.get();
+            Model* const second = order == 0 ? farModel.get() : nearModel.get();
+            for (int scope = 0; scope < kCrossObjectScopeCount; ++scope) {
+                const bool crossObjects = scope == 1;
+                app->TransparentSortCrossObjects() = crossObjects;
+                Check(app->TransparentSortCrossObjects() == crossObjects,
+                      "the cross-object frame sets the requested sort scope");
+                bool restored = false;
+                std::vector<DWORD> firstOffPixels;
+                std::string firstOffName;
+                std::string finalOffName;
+                for (int step = 0; step < kCrossObjectPrecisionStepCount;
+                     ++step) {
+                    const bool off =
+                        step == 0 ||
+                        step == kCrossObjectPrecisionStepCount - 1;
+                    // Off keeps the author order, and scope=false keeps it at
+                    // every tier because each model owns one material and one
+                    // triangle pair. Only then does near-first keep just the
+                    // near layer; everything else blends far and then near.
+                    const bool nearOnly =
+                        order == 0 && (off || !crossObjects);
+                    const SphereColor expectedColor =
+                        nearOnly ? CrossObjectNearOnlyExpected()
+                                 : CrossObjectDoubleLayerExpected();
+                    const int expected[3] = {expectedColor.red,
+                                             expectedColor.green,
+                                             expectedColor.blue};
+                    app->TransparentMaterialSortPrecision() =
+                        kSpherePrecisions[step];
+                    const CrossObjectFrameResult frame = RunCrossObjectFrame(
+                        app, device, backbuffer, readback, resource, identity,
+                        first, second, "precision", formatName,
+                        kSpherePrecisionNames[step], crossObjects, orderName,
+                        step, expected);
+                    if (step == 0) {
+                        firstOffPixels = frame.pixels;
+                        firstOffName = frame.bmpName;
+                    }
+                    if (step == kCrossObjectPrecisionStepCount - 1) {
+                        finalOffName = frame.bmpName;
+                        restored = CrossObjectFullRgbEqual(frame.pixels,
+                                                           firstOffPixels);
+                        if (!restored) {
+                            std::fprintf(
+                                stderr,
+                                "FAIL: the final Off frame did not restore the "
+                                "first Off frame, format=%s resource=%d "
+                                "order=%s crossObjects=%d\n",
+                                formatName, resource, orderName, crossObjects);
+                            ++g_failures;
+                        }
+                    }
+                }
+                app->ModelSlot(0) = nullptr;
+                app->ModelSlot(1) = nullptr;
+                const bool cpuUnchanged = recordCpuState("precision");
+                ++g_crossObjectPrecisionRestores;
+                RecordCrossObjectPrecisionRestore(
+                    formatName, resource, orderName, crossObjects, restored,
+                    cpuUnchanged, firstOffName, finalOffName);
+                std::printf(
+                    "cross-object restore kind=precision format=%s "
+                    "resource=%d order=%s crossObjects=%d first=%s final=%s "
+                    "frameRGB=%s cpuIndices=%s\n",
+                    formatName, resource, orderName, crossObjects,
+                    firstOffName.c_str(), finalOffName.c_str(),
+                    restored ? "restored" : "mismatch",
+                    cpuUnchanged ? "unchanged" : "changed");
+            }
+            // Standard precision scope toggle: false -> true -> false. The
+            // first and last frames must be pixel-identical in RGB.
+            app->TransparentMaterialSortPrecision() =
+                TransparentSortPrecision::Standard;
+            std::vector<DWORD> firstTogglePixels;
+            std::vector<DWORD> finalTogglePixels;
+            std::string firstToggleName;
+            std::string finalToggleName;
+            for (int step = 0; step < kCrossObjectToggleStepCount; ++step) {
+                const bool crossObjects = step == 1;
+                const bool nearOnly = order == 0 && !crossObjects;
+                const SphereColor expectedColor =
+                    nearOnly ? CrossObjectNearOnlyExpected()
+                             : CrossObjectDoubleLayerExpected();
+                const int expected[3] = {expectedColor.red,
+                                         expectedColor.green,
+                                         expectedColor.blue};
+                app->TransparentSortCrossObjects() = crossObjects;
+                const CrossObjectFrameResult frame = RunCrossObjectFrame(
+                    app, device, backbuffer, readback, resource, identity,
+                    first, second, "scope-toggle", formatName, "standard",
+                    crossObjects, orderName, step, expected);
+                if (step == 0) {
+                    firstTogglePixels = frame.pixels;
+                    firstToggleName = frame.bmpName;
+                }
+                if (step == kCrossObjectToggleStepCount - 1) {
+                    finalTogglePixels = frame.pixels;
+                    finalToggleName = frame.bmpName;
+                }
+            }
+            app->ModelSlot(0) = nullptr;
+            app->ModelSlot(1) = nullptr;
+            const bool scopeRestored = CrossObjectFullRgbEqual(
+                finalTogglePixels, firstTogglePixels);
+            if (!scopeRestored) {
+                std::fprintf(stderr,
+                             "FAIL: the final scope=false frame did not "
+                             "restore the first scope=false frame, format=%s "
+                             "resource=%d order=%s\n",
+                             formatName, resource, orderName);
+                ++g_failures;
+            }
+            const bool cpuUnchanged = recordCpuState("scope-toggle");
+            ++g_crossObjectScopeToggleRestores;
+            RecordCrossObjectScopeRestore(formatName, resource, orderName,
+                                          scopeRestored, cpuUnchanged,
+                                          firstToggleName, finalToggleName);
+            std::printf(
+                "cross-object restore kind=scope format=%s resource=%d "
+                "order=%s scope=false-true-false first=%s final=%s "
+                "frameRGB=%s cpuIndices=%s\n",
+                formatName, resource, orderName, firstToggleName.c_str(),
+                finalToggleName.c_str(),
+                scopeRestored ? "restored" : "mismatch",
+                cpuUnchanged ? "unchanged" : "changed");
+        }
+        nearModel.reset();
+        farModel.reset();
+    }
+    Check(g_crossObjectFrameCount - firstFrameOfResource ==
+              kCrossObjectFramesPerResource,
+          "the cross-object resource rendered its contracted frame count");
+    app->TransparentMaterialSortPrecision() = savedPrecision;
+    app->TransparentSortCrossObjects() = savedCrossObjects;
+    app->ClearModelSlots();
+    std::printf("cross-object resource=%d frames=%d failures=%d\n", resource,
+                g_crossObjectFrameCount, g_failures);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    // --msaa combines with any of the scene switches, so every argument is
-    // read instead of only the first one.
+    (void)argc;
+    (void)argv;
+    // The capture directory has to accept Windows Unicode, so the command line
+    // is read as UTF-16. Every existing switch stays ASCII and keeps its exact
+    // UTF-8 comparison; only the directory value uses the wide text.
+    int wideArgumentCount = 0;
+    LPWSTR* wideArgumentList =
+        CommandLineToArgvW(GetCommandLineW(), &wideArgumentCount);
+    if (wideArgumentList == nullptr) {
+        std::fputs("Cannot read the command line\n", stderr);
+        return 2;
+    }
+    std::vector<std::string> arguments;
+    std::vector<std::wstring> argumentTexts;
+    arguments.reserve(static_cast<std::size_t>(wideArgumentCount));
+    argumentTexts.reserve(static_cast<std::size_t>(wideArgumentCount));
+    for (int i = 1; i < wideArgumentCount; ++i) {
+        const std::wstring text(wideArgumentList[i]);
+        std::string utf8(text.size() * 4 + 1, '\0');
+        const int length = WideCharToMultiByte(
+            CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+            utf8.data(), static_cast<int>(utf8.size()), nullptr, nullptr);
+        if (length <= 0) {
+            std::fputs("Cannot convert a command-line argument\n", stderr);
+            LocalFree(wideArgumentList);
+            return 2;
+        }
+        utf8.resize(static_cast<std::size_t>(length));
+        arguments.push_back(std::move(utf8));
+        argumentTexts.push_back(text);
+    }
+    LocalFree(wideArgumentList);
+
+    // Every switch is validated completely before a marker DLL is loaded or a
+    // device is created. Old legal command lines keep their exact meaning;
+    // unknown, duplicated, missing and conflicting arguments are usage errors.
     bool intersectionsOnly = false;
     bool lowAlphaOnly = false;
     bool peelBudgetOnly = false;
@@ -1371,18 +3114,47 @@ int main(int argc, char** argv) {
     bool maximumFullSize = false;
     bool msaaRequested = false;
     bool sortOffOnly = false;
+    bool sphereOnly = false;
+    bool crossObjectOnly = false;
+    bool sphereModeSeen = false;
+    int sphereMode = kSphereModeDefault;
     bool precisionRequested = false;
     bool crossObjects = false;
+    std::wstring mmeMarkerPath;
+    bool markerRequested = false;
+    bool captureDirectoryRequested = false;
+    std::wstring captureDirectory;
+    bool precisionSeen = false;
+    bool crossObjectsSeen = false;
+    bool markerSeen = false;
+    bool sortOffSeen = false;
+    bool intersectionsSeen = false;
+    bool lowAlphaSeen = false;
+    bool peelBudgetSeen = false;
+    bool maximumLimitSeen = false;
+    bool maximumFullSizeSeen = false;
+    bool msaaSeen = false;
+    bool sphereSeen = false;
+    bool crossObjectSeen = false;
+    bool captureSeen = false;
     TransparentSortPrecision precision = TransparentSortPrecision::Standard;
     const char* precisionName = "standard";
-    HMODULE mmeMarker = nullptr;
-    for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--precision") == 0) {
-            if (++i == argc) {
+    const auto duplicate = [](const char* option) {
+        std::fprintf(stderr, "Duplicate option %s\n", option);
+        return 2;
+    };
+    for (std::size_t i = 0; i < arguments.size(); ++i) {
+        const char* argument = arguments[i].c_str();
+        if (std::strcmp(argument, "--precision") == 0) {
+            if (precisionSeen) return duplicate(argument);
+            precisionSeen = true;
+            // A following option is a missing value, not a precision name.
+            if (++i == arguments.size() ||
+                arguments[i].compare(0, 2, "--") == 0) {
                 std::fputs("--precision needs low, standard, high or maximum\n", stderr);
                 return 2;
             }
-            precisionName = argv[i];
+            precisionName = arguments[i].c_str();
             if (std::strcmp(precisionName, "low") == 0) precision = TransparentSortPrecision::Low;
             else if (std::strcmp(precisionName, "standard") == 0) precision = TransparentSortPrecision::Standard;
             else if (std::strcmp(precisionName, "high") == 0) precision = TransparentSortPrecision::High;
@@ -1392,37 +3164,108 @@ int main(int argc, char** argv) {
                 return 2;
             }
             precisionRequested = true;
-        } else if (std::strcmp(argv[i], "--cross-objects") == 0) {
-            crossObjects=true;
-        } else if (std::strcmp(argv[i], "--mme-marker") == 0) {
-            Check(i + 1 < argc, "MME presence marker requires a DLL path");
-            mmeMarker = LoadLibraryA(argv[++i]);
-            Check(mmeMarker && GetModuleHandleW(L"MMEffect.dll") == mmeMarker,
-                  "load inert MMEffect.dll presence marker");
-        } else if (std::strcmp(argv[i], "--sort-off") == 0)
+        } else if (std::strcmp(argument, "--cross-objects") == 0) {
+            if (crossObjectsSeen) return duplicate(argument);
+            crossObjectsSeen = true;
+            crossObjects = true;
+        } else if (std::strcmp(argument, "--mme-marker") == 0) {
+            if (markerSeen) return duplicate(argument);
+            markerSeen = true;
+            // Reject a following option as a missing DLL path before any
+            // LoadLibrary call can turn the next switch into a file name.
+            if (++i == arguments.size() ||
+                arguments[i].compare(0, 2, "--") == 0) {
+                std::fputs("--mme-marker needs a DLL path\n", stderr);
+                return 2;
+            }
+            mmeMarkerPath = argumentTexts[i];
+            markerRequested = true;
+        } else if (std::strcmp(argument, "--sort-off") == 0) {
+            if (sortOffSeen) return duplicate(argument);
+            sortOffSeen = true;
             sortOffOnly = true;
-        else if (std::strcmp(argv[i], "--intersections") == 0)
+        } else if (std::strcmp(argument, "--intersections") == 0) {
+            if (intersectionsSeen) return duplicate(argument);
+            intersectionsSeen = true;
             intersectionsOnly = true;
-        else if (std::strcmp(argv[i], "--low-alpha") == 0)
+        } else if (std::strcmp(argument, "--low-alpha") == 0) {
+            if (lowAlphaSeen) return duplicate(argument);
+            lowAlphaSeen = true;
             lowAlphaOnly = true;
-        else if (std::strcmp(argv[i], "--peel-budget") == 0)
+        } else if (std::strcmp(argument, "--peel-budget") == 0) {
+            if (peelBudgetSeen) return duplicate(argument);
+            peelBudgetSeen = true;
             peelBudgetOnly = true;
-        else if (std::strcmp(argv[i], "--maximum-limit") == 0)
+        } else if (std::strcmp(argument, "--maximum-limit") == 0) {
+            if (maximumLimitSeen) return duplicate(argument);
+            maximumLimitSeen = true;
             maximumLimitOnly = true;
-        else if (std::strcmp(argv[i], "--maximum-full-size") == 0) {
-            // Same mode and same scenes, on the original 96x96 stress target.
+        } else if (std::strcmp(argument, "--maximum-full-size") == 0) {
+            if (maximumFullSizeSeen) return duplicate(argument);
+            maximumFullSizeSeen = true;
             maximumLimitOnly = true;
             maximumFullSize = true;
-        } else if (std::strcmp(argv[i], "--msaa") == 0)
+        } else if (std::strcmp(argument, "--msaa") == 0) {
+            if (msaaSeen) return duplicate(argument);
+            msaaSeen = true;
             msaaRequested = true;
+        } else if (std::strcmp(argument, "--sphere-only") == 0) {
+            if (sphereSeen) return duplicate(argument);
+            sphereSeen = true;
+            sphereOnly = true;
+        } else if (std::strcmp(argument, "--cross-object-only") == 0) {
+            if (crossObjectSeen) return duplicate(argument);
+            crossObjectSeen = true;
+            crossObjectOnly = true;
+        } else if (std::strcmp(argument, "--sphere-mode") == 0) {
+            if (sphereModeSeen) return duplicate(argument);
+            sphereModeSeen = true;
+            // A following option is a missing value, not a mode number.
+            if (++i == arguments.size() ||
+                arguments[i].compare(0, 2, "--") == 0) {
+                std::fputs("--sphere-mode needs 1, 2 or 3\n", stderr);
+                return 2;
+            }
+            const char* modeText = arguments[i].c_str();
+            if (std::strcmp(modeText, "1") == 0) sphereMode = 1;
+            else if (std::strcmp(modeText, "2") == 0) sphereMode = 2;
+            else if (std::strcmp(modeText, "3") == 0) sphereMode = 3;
+            else {
+                std::fputs("--sphere-mode needs 1, 2 or 3\n", stderr);
+                return 2;
+            }
+        } else if (std::strcmp(argument, "--capture-dir") == 0) {
+            if (captureSeen) return duplicate(argument);
+            captureSeen = true;
+            // Absolute Windows paths never begin with '--', so this only
+            // catches a following switch used where the directory belongs.
+            if (++i == arguments.size() ||
+                arguments[i].compare(0, 2, "--") == 0) {
+                std::fputs("--capture-dir needs an absolute directory\n", stderr);
+                return 2;
+            }
+            captureDirectory = argumentTexts[i];
+            captureDirectoryRequested = true;
+        } else {
+            std::fprintf(stderr, "Unknown argument: %s\n", argument);
+            return 2;
+        }
+    }
+    // --sphere-mode is a sphereMode selector, not a scene switch: it is only
+    // legal on the --sphere-only run and is rejected before any device or
+    // capture directory exists.
+    if (sphereModeSeen && !sphereOnly) {
+        std::fputs("--sphere-mode is only valid with --sphere-only\n", stderr);
+        return 2;
     }
     if (int(intersectionsOnly) + int(lowAlphaOnly) + int(peelBudgetOnly) +
-            int(maximumLimitOnly) + int(sortOffOnly) > 1) {
+            int(maximumLimitOnly) + int(sortOffOnly) + int(sphereOnly) +
+            int(crossObjectOnly) > 1) {
         std::fputs("Choose a single scene mode\n", stderr);
         return 2;
     }
     const bool ordinary = !intersectionsOnly && !lowAlphaOnly && !peelBudgetOnly &&
-        !maximumLimitOnly && !sortOffOnly;
+        !maximumLimitOnly && !sortOffOnly && !sphereOnly && !crossObjectOnly;
     if (precisionRequested && !ordinary) {
         std::fputs("--precision applies only to ordinary occlusion; scene modes select their own tier\n", stderr);
         return 2;
@@ -1433,6 +3276,68 @@ int main(int argc, char** argv) {
         return 2;
     }
 #endif
+    if (sphereOnly) {
+        g_sphereMode = sphereMode;
+        if (crossObjects || markerRequested || msaaRequested) {
+            std::fputs("--sphere-only cannot be combined with --cross-objects, --mme-marker or --msaa\n", stderr);
+            return 2;
+        }
+        if (!captureDirectoryRequested) {
+            std::fputs("--sphere-only requires --capture-dir <absolute directory>\n", stderr);
+            return 2;
+        }
+        std::string captureError;
+        if (!SpherePrepareCaptureDirectory(&captureDirectory, &captureError)) {
+            std::fprintf(stderr, "Invalid --capture-dir: %s\n", captureError.c_str());
+            return 2;
+        }
+        g_sphereCaptureDir = captureDirectory;
+    } else if (crossObjectOnly) {
+        // --sphere-mode was rejected above because it needs --sphere-only, and
+        // --precision was rejected because this is not the ordinary scene.
+        if (crossObjects || markerRequested || msaaRequested) {
+            std::fputs("--cross-object-only cannot be combined with --cross-objects, --mme-marker or --msaa\n", stderr);
+            return 2;
+        }
+        if (!captureDirectoryRequested) {
+            std::fputs("--cross-object-only requires --capture-dir <absolute directory>\n", stderr);
+            return 2;
+        }
+        std::string captureError;
+        if (!SpherePrepareCaptureDirectory(&captureDirectory, &captureError)) {
+            std::fprintf(stderr, "Invalid --capture-dir: %s\n", captureError.c_str());
+            return 2;
+        }
+        g_crossObjectCaptureDir = captureDirectory;
+    } else if (captureDirectoryRequested) {
+        std::fputs("--capture-dir is only valid with --sphere-only or --cross-object-only\n", stderr);
+        return 2;
+    }
+    HMODULE mmeMarker = nullptr;
+    if (markerRequested) {
+        mmeMarker = LoadLibraryW(mmeMarkerPath.c_str());
+        Check(mmeMarker && GetModuleHandleW(L"MMEffect.dll") == mmeMarker,
+              "load inert MMEffect.dll presence marker");
+    }
+    if (sphereOnly) {
+        const std::wstring recordPath =
+            SphereCapturePath("sphere_only_frames.jsonl");
+        g_sphereRecord = CreateFileW(recordPath.c_str(), GENERIC_WRITE, 0,
+                                     nullptr, CREATE_ALWAYS,
+                                     FILE_ATTRIBUTE_NORMAL, nullptr);
+        Check(g_sphereRecord != INVALID_HANDLE_VALUE,
+              "create the sphere-only frame record");
+    }
+    if (crossObjectOnly) {
+        const std::wstring recordPath =
+            CapturePathIn(g_crossObjectCaptureDir, "cross_object_frames.jsonl");
+        g_crossObjectRecord = CreateFileW(recordPath.c_str(), GENERIC_WRITE, 0,
+                                          nullptr, CREATE_ALWAYS,
+                                          FILE_ATTRIBUTE_NORMAL, nullptr);
+        Check(g_crossObjectRecord != INVALID_HANDLE_VALUE,
+              "create the cross-object frame record");
+    }
+
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     // One local target size drives the window, the device, the readback surface
     // and the MSAA resolve surface. Maximum defaults to 16x16; the other modes
@@ -1440,6 +3345,29 @@ int main(int argc, char** argv) {
     const int targetWidth = maximumLimitOnly && !maximumFullSize ? 16 : kWidth;
     const int targetHeight =
         maximumLimitOnly && !maximumFullSize ? 16 : kHeight;
+    if (sphereOnly) {
+        std::printf("SPHERE_ONLY BEGIN capture-dir=%ls target=%dx%d "
+                    "sphereMode=%d resources=0,117,118 main-frames=%d "
+                    "control-frames=%d uv1-probe-frames=%d total-frames=%d "
+                    "tolerance=%d\n",
+                    g_sphereCaptureDir.c_str(), targetWidth, targetHeight,
+                    g_sphereMode, SphereMainFrameCount(),
+                    SphereControlFrameCount(), SphereUv1ProbeFrameCount(),
+                    SphereExpectedFrameCount(), kSphereTolerance);
+    }
+    if (crossObjectOnly) {
+        std::printf("CROSS_OBJECT BEGIN capture-dir=%ls target=%dx%d "
+                    "resources=0,117,118 formats=pmd,pmx orders=near-first,"
+                    "far-first scopes=false,true precision-steps=%d "
+                    "toggle-steps=%d expected-frames=%d "
+                    "precision-restores=%d scope-restores=%d tolerance=%d\n",
+                    g_crossObjectCaptureDir.c_str(), targetWidth, targetHeight,
+                    kCrossObjectPrecisionStepCount,
+                    kCrossObjectToggleStepCount,
+                    kCrossObjectExpectedFrameCount,
+                    kCrossObjectPrecisionRestoreCount,
+                    kCrossObjectScopeToggleRestoreCount, kSphereTolerance);
+    }
     HWND window = CreateWindowW(L"STATIC", L"Alpha occlusion regression",
                                 WS_POPUP, 0, 0, targetWidth, targetHeight,
                                 nullptr, nullptr, GetModuleHandleW(nullptr),
@@ -1497,7 +3425,7 @@ int main(int argc, char** argv) {
     app->Renderer() = renderer.get();
     app->Hwnd() = window;
     app->EnglishUI() = 1;
-    app->TransparentSortCrossObjects() = crossObjects || !ordinary;
+    app->TransparentSortCrossObjects() = crossObjects || (!ordinary && !sphereOnly);
     app->PlaybackActive() = 1;
     if (ordinary) {
         app->TransparentMaterialSortPrecision() = precision;
@@ -1871,7 +3799,30 @@ int main(int argc, char** argv) {
             renderer->hdrTexture = toonTexture;
         }
         std::printf("renderer resource=%d\n", resource);
-        if(ordinary)CheckOpaqueTextureExcluded(app.get(),device,backbuffer,readback,resource,identity);
+        if (sphereOnly) {
+            RunSphereOnlyResource(app.get(), device, backbuffer, readback,
+                                  resource, identity);
+            if (renderer->effect) {
+                reinterpret_cast<IUnknown*>(renderer->effect)->Release();
+                renderer->effect = nullptr;
+                renderer->hdrTexture = nullptr;
+            }
+            continue;
+        }
+        if (crossObjectOnly) {
+            RunCrossObjectResource(app.get(), device, backbuffer, readback,
+                                   resource, identity);
+            if (renderer->effect) {
+                reinterpret_cast<IUnknown*>(renderer->effect)->Release();
+                renderer->effect = nullptr;
+                renderer->hdrTexture = nullptr;
+            }
+            continue;
+        }
+#if !MMD_ORIGINAL_PROFILE
+        if (ordinary)
+            CheckTextureSortCandidates(app.get(), device, backbuffer, readback, resource, identity, mmeMarker != nullptr);
+#endif
         if (sortOffOnly) {
             RunSortOffScene(app.get(), device, backbuffer, readback, resource, identity);
             if (renderer->effect) {
@@ -2319,13 +4270,16 @@ int main(int argc, char** argv) {
             renderer->hdrTexture = nullptr;
         }
     }
-    if (targetWidth >= 64 && targetHeight >= 64)
 #if !MMD_ORIGINAL_PROFILE
+    if (!sphereOnly && !crossObjectOnly && targetWidth >= 64 &&
+        targetHeight >= 64)
         CheckBatchedPixels(device, backbuffer, readback, targetWidth, targetHeight);
 #endif
     app->ModelSlot(0) = nullptr;
     app->ModelSlot(1) = nullptr;
+#if !MMD_ORIGINAL_PROFILE
     mikumikustudio::transparent_sort_cache::Release(app.get());
+#endif
     readback->Release();
     if (g_resolveTarget) {
         g_resolveTarget->Release();
@@ -2343,6 +4297,90 @@ int main(int argc, char** argv) {
     d3d->Release();
     DestroyWindow(window);
 
+    if (sphereOnly) {
+        Check(g_sphereFrameCount == SphereExpectedFrameCount(),
+              "the sphere-only run rendered the frame matrix of its mode");
+        if (g_sphereRecord != INVALID_HANDLE_VALUE) {
+            char summary[512];
+            const int length = std::snprintf(
+                summary, sizeof(summary),
+                "{\"summary\":true,\"sphereMode\":%d,\"frames\":%d,"
+                "\"expectedFrames\":%d,\"failedFrames\":%d,"
+                "\"failures\":%d,\"mainFrames\":%d,"
+                "\"controlFrames\":%d,\"uv1ProbeFrames\":%d,"
+                "\"tolerance\":%d}",
+                g_sphereMode, g_sphereFrameCount, SphereExpectedFrameCount(),
+                g_sphereFailedFrames, g_failures, SphereMainFrameCount(),
+                SphereControlFrameCount(), SphereUv1ProbeFrameCount(),
+                kSphereTolerance);
+            Check(length > 0 && static_cast<std::size_t>(length) < sizeof(summary),
+                  "format the sphere-only summary record");
+            AppendSphereRecord(summary);
+            Check(CloseHandle(g_sphereRecord) != 0,
+                  "close the sphere-only frame record");
+            g_sphereRecord = INVALID_HANDLE_VALUE;
+        }
+        std::printf("SPHERE_ONLY END sphereMode=%d frames=%d "
+                    "expected_frames=%d failed_frames=%d failures=%d "
+                    "tolerance=%d\n",
+                    g_sphereMode, g_sphereFrameCount,
+                    SphereExpectedFrameCount(), g_sphereFailedFrames,
+                    g_failures, kSphereTolerance);
+    }
+    if (crossObjectOnly) {
+        // Write the summary and the END line before the fatal frame-matrix
+        // assertions, so a contract violation still leaves its numbers on disk
+        // instead of vanishing with the exit.
+        if (g_crossObjectRecord != INVALID_HANDLE_VALUE) {
+            char summary[1024];
+            const int length = std::snprintf(
+                summary, sizeof(summary),
+                "{\"summary\":true,\"frames\":%d,\"expectedFrames\":%d,"
+                "\"failedFrames\":%d,\"failures\":%d,"
+                "\"precisionRestores\":%d,\"expectedPrecisionRestores\":%d,"
+                "\"scopeRestores\":%d,\"expectedScopeRestores\":%d,"
+                "\"tolerance\":%d}",
+                g_crossObjectFrameCount, kCrossObjectExpectedFrameCount,
+                g_crossObjectFailedFrames, g_failures,
+                g_crossObjectPrecisionRestores,
+                kCrossObjectPrecisionRestoreCount,
+                g_crossObjectScopeToggleRestores,
+                kCrossObjectScopeToggleRestoreCount, kSphereTolerance);
+            Check(length > 0 &&
+                      static_cast<std::size_t>(length) < sizeof(summary),
+                  "format the cross-object summary record");
+            AppendCaptureRecord(g_crossObjectRecord, summary,
+                                "the cross-object frame record is open",
+                                "write the cross-object summary record");
+            Check(CloseHandle(g_crossObjectRecord) != 0,
+                  "close the cross-object frame record");
+            g_crossObjectRecord = INVALID_HANDLE_VALUE;
+        }
+        std::printf("CROSS_OBJECT END capture-dir=%ls frames=%d "
+                    "expected_frames=%d failed_frames=%d failures=%d "
+                    "precision_restores=%d/%d scope_restores=%d/%d "
+                    "tolerance=%d\n",
+                    g_crossObjectCaptureDir.c_str(), g_crossObjectFrameCount,
+                    kCrossObjectExpectedFrameCount,
+                    g_crossObjectFailedFrames, g_failures,
+                    g_crossObjectPrecisionRestores,
+                    kCrossObjectPrecisionRestoreCount,
+                    g_crossObjectScopeToggleRestores,
+                    kCrossObjectScopeToggleRestoreCount, kSphereTolerance);
+        Check(g_crossObjectFrameCount == kCrossObjectExpectedFrameCount,
+              "the cross-object run rendered the frame matrix of its mode");
+        Check(g_crossObjectPrecisionRestores ==
+                  kCrossObjectPrecisionRestoreCount,
+              "the cross-object run recorded every precision Off restore");
+        Check(g_crossObjectScopeToggleRestores ==
+                  kCrossObjectScopeToggleRestoreCount,
+              "the cross-object run recorded every scope toggle restore");
+        if (g_crossObjectFailedFrames != 0) {
+            std::fprintf(stderr, "FAIL: %d cross-object frames failed\n",
+                         g_crossObjectFailedFrames);
+            return 1;
+        }
+    }
     if (g_failures != 0) {
         std::fprintf(stderr,
                      "FAIL: %d alpha-occlusion pixel samples\n",
@@ -2359,6 +4397,16 @@ int main(int argc, char** argv) {
     }
     if (maximumLimitOnly) {
         std::puts("Maximum-limit layer accumulation pixel regression passed.");
+        return 0;
+    }
+    if (sphereOnly) {
+        std::printf("Native PMX sphereMode=%d sphere-alpha GPU pixel regression "
+                    "passed.\n",
+                    g_sphereMode);
+        return 0;
+    }
+    if (crossObjectOnly) {
+        std::puts("Cross-object transparent sort capture passed.");
         return 0;
     }
     std::puts("Semi-transparent material occlusion pixel regressions passed.");

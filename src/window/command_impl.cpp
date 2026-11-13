@@ -31,13 +31,17 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <exception>
 
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/accessory_motion_io.hpp"
 #include "mikumikustudio/ui_message.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
+#include "../io/project_open.hpp"
+#include "../model/vmd_import_target.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_vpd_import.hpp"
 #include "../plugins/native_audio_history.hpp"
@@ -280,13 +284,73 @@ void CmdSavePose(MMDApp* app) {
 //   ==IDOK 才走 ResetAppState；之后无标志写。
 // ---------------------------------------------------------------------------
 void CmdResetState(MMDApp* app) {
+    if (!app) return;
+    // 204 整条命令防重入：确认框与失败提示都会泵消息，期间重入的 204
+    // 会再走一遍确认和 reset。thread_local 活动标记覆盖整个命令，
+    // 任何 return 或异常离开时由守卫自动释放。
+    static thread_local bool commandActive = false;
+    if (commandActive) return;
+    struct CommandActiveGuard {
+        bool* active;
+        explicit CommandActiveGuard(bool* flag) : active(flag) { *active = true; }
+        ~CommandActiveGuard() { *active = false; }
+        CommandActiveGuard(const CommandActiveGuard&) = delete;
+        CommandActiveGuard& operator=(const CommandActiveGuard&) = delete;
+    } commandActiveGuard(&commandActive);
+    if (app->SceneMutationInProgress()) return;
+#if !MMD_ORIGINAL_PROFILE
+    if (app->sceneMutationFinishing || app->sceneCloseHold) return;
+#endif
     background_save::Wait(app);
     if (SceneSaveInProgress()) return;
     app->state.enterKeyState = 1;               // 0x46DE02 [app+0xC0]
+    // 确认框会泵消息，期间工程可能被替换或修改（重入的 204、合法
+    // LoadSceneFile、相机载荷与脏标记修订）。记录工程身份与隔离状态，
+    // IDOK 后不一致就放弃本次 New，不对已被替换的工程 reset。
+    const auto sceneGenerationBefore = app->SceneGeneration();
+    const auto sceneRevisionBefore = app->SceneRevision();
+    const bool recoveryPendingAtPrompt = app->sceneRecoveryPending;
     const int r = ShowUiMessage(app, MainHwnd(app), UiMessage::NewScene,
                                 MB_OKCANCEL | MB_TOPMOST);
-    if (r == IDOK) {
-        ResetAppState(app);                     // 0x46DE52 -> 0x44E540
+    if (r == IDOK
+        && app->SceneGeneration() == sceneGenerationBefore
+        && app->SceneRevision() == sceneRevisionBefore
+        && app->sceneRecoveryPending == recoveryPendingAtPrompt
+        && !SceneSaveInProgress()
+        && !app->SceneMutationInProgress()
+#if !MMD_ORIGINAL_PROFILE
+        && !app->sceneMutationFinishing && !app->sceneCloseHold
+#endif
+    ) {
+        // 真实 reset 可能已拆掉一部分场景再抛异常，也可能先改 UI 语言。
+        // 记录调用前的语言与隔离状态；成功只由 reset 尾部清标志。
+        const unsigned char language = app->EnglishUI();
+        const bool recoveryPendingBefore = app->sceneRecoveryPending;
+        bool refused = false;
+        try {
+            refused = !ResetAppState(app);      // 0x46DE52 -> 0x44E540
+        } catch (const std::exception& error) {
+            // 场景可能已部分重置：在提示泵消息前先隔离。不回滚、不清理、
+            // 不重试；后续由一次真实 reset 走完才解除。
+            app->sceneRecoveryPending = true;
+            runtime_log::Write(
+                "PMM File > New: ResetAppState threw after language %u / sceneRecoveryPending %d: %s",
+                static_cast<unsigned>(language),
+                static_cast<int>(recoveryPendingBefore),
+                error.what() != nullptr ? error.what() : "(null)");
+            refused = true;
+        } catch (...) {
+            app->sceneRecoveryPending = true;
+            runtime_log::Write(
+                "PMM File > New: ResetAppState threw an unknown exception after language %u / sceneRecoveryPending %d",
+                static_cast<unsigned>(language),
+                static_cast<int>(recoveryPendingBefore));
+            refused = true;
+        }
+        // 失败提示可能泵消息，按调用前语言收口；拒绝不额外改隔离状态。
+        app->EnglishUI() = language;
+        if (refused)
+            ShowUiMessage(app, MainHwnd(app), UiMessage::NewSceneRefused, MB_OK | MB_ICONWARNING);
     }
 }
 
@@ -299,16 +363,10 @@ void CmdResetState(MMDApp* app) {
 //   LoadSceneFile 之后派发层无任何标志写（不置脏）。
 // ---------------------------------------------------------------------------
 void CmdOpenScene(MMDApp* app) {
-    background_save::Wait(app);
-    if (SceneSaveInProgress()) return;
+    ProjectOpenUiScope open(app);
+    if (!open.Prepare()) return;
     app->state.enterKeyState = 1;               // 0x46DE5C [app+0xC0]
-    if (app->SceneModified() != 0) {            // 0x46DE66 脏场景确认
-        const int r = ShowUiMessage(app, MainHwnd(app), UiMessage::OpenUnsaved,
-                                    MB_OKCANCEL | MB_TOPMOST);
-        if (r != IDOK) {
-            return;
-        }
-    }
+    if (!open.ConfirmDiscard(true)) return;
     SetCurrentDirectoryW(app->ExeDir());
     wchar_t path[kDialogPathLen];
     swprintf_s(path, kDialogPathLen, kFmtEmptyPath, L"", L"");
@@ -332,7 +390,7 @@ void CmdOpenScene(MMDApp* app) {
     ofn.lpstrTitle = app->EnglishUI() != 0
                          ? L"open file data"
                          : kTitleOpenFileJp;
-    if (!GetUiOpenFileNameW(&ofn)) {
+    if (!GetUiOpenFileNameW(&ofn) || !open.CanContinue()) {
         return;
     }
     if (LoadSceneFile(path) && RememberFileDialogDirs(app)) {
@@ -434,11 +492,12 @@ bool SaveSceneAs(MMDApp* app, HWND owner) {
     ofn.lpstrTitle = app->EnglishUI() != 0
                          ? L"save file"
                          : kTitleSaveFileJp;
-    if (!GetUiSaveFileNameW(&ofn)) {
+    // The modal picker can dispatch a project replacement before it returns.
+    const auto generation = app->SceneGeneration();
+    if (!GetUiSaveFileNameW(&ofn) || app->SceneGeneration() != generation) {
         return false;
     }
     background_save::Options options;
-    const auto generation = app->SceneGeneration();
     options.completed = [app, destination = std::wstring(path), generation](bool success) {
         if (success && app->SceneGeneration() == generation && RememberFileDialogDirs(app)) {
             wchar_t* dir = ExtractDirFromPath(
@@ -456,6 +515,9 @@ bool SaveSceneAs(MMDApp* app, HWND owner) {
 //   尾部先置脏（0x46C2A0 [0xA1B31]）再置 reseat（0x469B0D [0x9FCC1]）。
 // ---------------------------------------------------------------------------
 void CmdLoadMotion(MMDApp* app) {
+    const VmdImportTarget target(*app);
+    const HWND pickerOwner = app->FloatingWindow() ? app->FloatingWindow() : MainHwnd(app);
+    if (app->sceneRecoveryPending || app->SceneMutationInProgress()) return;
     app->state.enterKeyState = 1;               // 0x46C11E [app+0xC0]
     SetCurrentDirectoryW(app->ExeDir());
     wchar_t path[kDialogPathLen];
@@ -464,10 +526,8 @@ void CmdLoadMotion(MMDApp* app) {
     OPENFILENAMEW ofn;
     memset(&ofn, 0, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = app->FloatingWindow() != nullptr
-                        ? app->FloatingWindow()
-                        : MainHwnd(app);
     ofn.lpstrFilter = L"Vocaloid Motion Data files(*.vmd)\0*.vmd\0";
+    ofn.hwndOwner = pickerOwner;
     ofn.lpstrFile = path;
     ofn.nMaxFile = kDialogPathLen;
     ofn.Flags = OFN_FILEMUSTEXIST;              // 0x1000
@@ -480,15 +540,15 @@ void CmdLoadMotion(MMDApp* app) {
     ofn.lpstrTitle = app->EnglishUI() != 0
                          ? L"load motion data"
                          : kTitleLoadMotionJp;
-    if (!GetUiOpenFileNameW(&ofn)) {
-        return;
-    }
+    if (!GetUiOpenFileNameW(&ofn) || !target.Current(*app) || !IsWindow(pickerOwner) ||
+        pickerOwner != (app->FloatingWindow() ? app->FloatingWindow() : MainHwnd(app))) return;
+    const auto scene = app->SceneGeneration();
+    if (!ImportVmdFile(app, path) || app->SceneGeneration() != scene) return;
     if (RememberFileDialogDirs(app)) {
         wchar_t* dir = ExtractDirFromPath(
             app->PathWorkspace().projectDirectory, path, kPathFieldCapacity);
         CopyDirPathW(app->DirMotion(), dir);
     }
-    LoadVmdFile(path);                          // 0x46C29B -> 0x434B60
     app->SceneModified() = 1;                   // 0x46C2A0 [0xA1B31]
     app->PhysicsResetPending() = 1;             // 0x469B0D [0x9FCC1]
 }
@@ -506,6 +566,7 @@ void CmdLoadMotion(MMDApp* app) {
 //   "vmd"）。SaveVmdFile 之后无任何标志写（不置脏）。
 // ---------------------------------------------------------------------------
 void CmdSaveMotion(MMDApp* app) {
+    if (app->sceneRecoveryPending || app->SceneMutationInProgress()) return;
     app->state.dialogFlags[17] = 1;             // 0x46BE50 [app+0x78]
     app->state.enterKeyState = 1;               // 0x46BE57 [app+0xC0]
     // 选中帧点扫描（0x46BE61..0x46BF64）。
@@ -538,7 +599,7 @@ void CmdSaveMotion(MMDApp* app) {
     } else {
         // 模型模式：骨/表情/显示三张模型帧表（x64 模型 +0x2790/+0x2798/+0x27A0）。
         any = false;
-        unsigned char* const model = app->SelectedModel();
+        unsigned char* const model = app->SelectedModelSlot() < kModelSlotCount ? app->SelectedModel() : nullptr;
         if (model != nullptr) {
             any = anyAllocatedKey(mdl::BoneKeys(model),
                                   mdl::BoneKeyCapacity(*mdl::Mdl(model))) ||
@@ -558,6 +619,7 @@ void CmdSaveMotion(MMDApp* app) {
                     MB_TOPMOST);                // 0x40000
         return;
     }
+    const VmdImportTarget target(*app);
     SetCurrentDirectoryW(app->ExeDir());
     wchar_t path[kDialogPathLen];
     swprintf_s(path, kDialogPathLen, kFmtEmptyPath, L"", L"");
@@ -580,15 +642,11 @@ void CmdSaveMotion(MMDApp* app) {
     ofn.lpstrTitle = app->EnglishUI() != 0
                          ? L"save motion data"
                          : kTitleSaveMotionJp;
-    if (!GetUiSaveFileNameW(&ofn)) {
-        return;
+    if (!GetUiSaveFileNameW(&ofn) || !target.SameTarget(*app)) return;
+    if (SaveVmdFile(path) && target.SameTarget(*app) && RememberFileDialogDirs(app)) {
+        wchar_t directory[kPathFieldCapacity]{};
+        CopyDirPathW(app->DirMotion(), ExtractDirFromPath(directory, path, kPathFieldCapacity));
     }
-    if (RememberFileDialogDirs(app)) {
-        wchar_t* dir = ExtractDirFromPath(
-            app->PathWorkspace().projectDirectory, path, kPathFieldCapacity);
-        CopyDirPathW(app->DirMotion(), dir);
-    }
-    SaveVmdFile(path);                          // 0x46C114 -> 0x419370，无标志写
 }
 
 // ---------------------------------------------------------------------------
@@ -596,7 +654,7 @@ void CmdSaveMotion(MMDApp* app) {
 //   [dialogFlags[17]]=1; enterKeyState=1（无模式门）-> 打开对话框（owner=
 //   浮动窗否则主窗，DirBg/0xA4CFC 或 "UserFile\BackGround"，defExt "avi"，
 //   EN 标题 "load AVI file"/JP 即 L"AVI"）-> 回写目录、整路径入
-//   aviBackgroundPath（0x9F0B8）-> LoadAviFile -> 置脏。不置 reseat。
+//   Publish the new video and mark the scene dirty only after opening succeeds.
 // ---------------------------------------------------------------------------
 void CmdLoadAvi(MMDApp* app) {
     app->state.dialogFlags[17] = 1;             // 0x46B1BF [app+0x78]
@@ -628,17 +686,12 @@ void CmdLoadAvi(MMDApp* app) {
     ofn.lpstrTitle = app->EnglishUI() != 0
                          ? L"Open background video"
                          : L"背景動画を開く";
-    if (!GetUiOpenFileNameW(&ofn)) {
-        return;
-    }
+    if (!GetUiOpenFileNameW(&ofn) || !TryReplaceBackgroundVideo(app, path)) return;
     if (RememberFileDialogDirs(app)) {
-        wchar_t* dir = ExtractDirFromPath(
-            app->PathWorkspace().projectDirectory, path, kPathFieldCapacity);
-        CopyDirPathW(app->DirBg(), dir);
+        wchar_t dir[kPathFieldCapacity];
+        CopyDirPathW(app->DirBg(), ExtractDirFromPath(dir, path, kPathFieldCapacity));
     }
-    wcscpy_s(app->AviBackgroundPath(), kDialogPathLen, path);  // 0x46B339
-    LoadAviFile(app);                           // 0x46B355 -> 0x433250
-    app->SceneModified() = 1;                   // 0x46B35A [0xA1B31]
+    app->SceneModified() = 1;
 }
 
 }  // namespace mikumikustudio

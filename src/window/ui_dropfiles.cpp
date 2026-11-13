@@ -1,4 +1,4 @@
-#include "mikumikustudio/background_save.hpp"
+#include "../io/project_open.hpp"
 #include "mikumikustudio/pmm_paths.hpp"
 #include "mikumikustudio/native_media.hpp"
 #include "mikumikustudio/ui_translation.hpp"
@@ -76,6 +76,7 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_vpd_import.hpp"
 #include "../plugins/native_audio_history.hpp"
+#include "../plugins/native_picture_history.hpp"
 #endif
 #include "mikumikustudio/ui_message.hpp"
 #include "mikumikustudio/text_encoding.hpp"
@@ -151,27 +152,34 @@ void WideToSjisPath(char* dst, const wchar_t* src, rsize_t size) {
 }  // namespace
 
 void HandleDropFiles(HDROP hDrop) {
+    struct DropScope {
+        HDROP handle;
+        ~DropScope() { DragFinish(handle); }
+    } drop{hDrop};
     MMDApp* app = g_Block;
+    if (!app) return;
 
-    const int fileCount = DragQueryFileA(hDrop, 0xFFFFFFFF, nullptr, 0);
-    for (int iFile = 0; iFile < fileCount; ++iFile) {
-        // 0x461360: the original passes cch = 0x200 for a 256-wchar buffer,
-        // which overflows it for paths longer than 255 wchars. The
-        // The port deliberately deviates by passing _countof(szFile) instead.
-        // Defect B2-13.
-        wchar_t szFile[256];
-        DragQueryFileW(hDrop, iFile, szFile, _countof(szFile));
+    const UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+    for (UINT iFile = 0; iFile < fileCount; ++iFile) {
+        wchar_t szFile[kPathFieldCapacity]{};
+        const UINT length = DragQueryFileW(hDrop, iFile, nullptr, 0);
+        if (length >= _countof(szFile)) {
+            const wchar_t* text[] = {
+                L"ファイルのパスが長すぎます。短いパスに移動してからやり直してください。",
+                L"The file path is too long. Move the file to a shorter path and try again.",
+                L"文件路径过长。请将文件移到较短的路径后重试。"};
+            const wchar_t* title[] = {L"ファイルを開く", L"Open file", L"打开文件"};
+            const auto language = app->EnglishUI() <= 2 ? app->EnglishUI() : 1;
+            MessageBoxW(MainHwnd(app), text[language], title[language], MB_OK | MB_ICONERROR);
+            continue;
+        }
+        if (length == 0 || DragQueryFileW(hDrop, iFile, szFile, _countof(szFile)) != length)
+            continue;
 
         // ---- .pmm - project file -----------------------------------------
         if (pmm_paths::IsProject(szFile)) {
-            background_save::Wait(app);
-            if (SceneSaveInProgress()) { DragFinish(hDrop); return; }
-            if (app->SceneModified() != 0) {
-                const int r = ShowUiMessage(app, MainHwnd(app), UiMessage::OpenUnsaved,
-                                            MB_OKCANCEL);
-                if (r != IDOK)
-                    return;  // 0x4613F9: original returns, DragFinish skipped
-            }
+            ProjectOpenUiScope open(app);
+            if (!open.Prepare() || !open.ConfirmDiscard(false)) return;
             if (LoadSceneFile(szFile) && DirMenuChecked(app)) {
                 wchar_t directory[kPathFieldCapacity]{};
                 wcscpy_s(app->DirUser(), 0x3E8, ExtractDirFromPath(directory, szFile, kPathFieldCapacity));
@@ -216,10 +224,13 @@ void HandleDropFiles(HDROP hDrop) {
         // ---- .vmd - motion data -------------------------------------------
         if (wcsstr(szFile, L".vmd") || wcsstr(szFile, L".VMD") ||
             wcsstr(szFile, L".Vmd")) {
+            const auto scene = app->SceneGeneration();
+            const bool imported = ImportVmdFile(app, szFile);
+            if (app->SceneGeneration() != scene) return;
+            if (!imported) continue;
             if (DirMenuChecked(app)) {
                 wcscpy_s(app->DirMotion(), 0x3E8, DirOf(app, szFile));  // 0xA24E0
             }
-            LoadVmdFile(szFile);                                      // 0x434B60
             app->SceneModified() = 1;
             continue;
         }
@@ -245,14 +256,13 @@ void HandleDropFiles(HDROP hDrop) {
 
         // ---- .avi - video ---------------------------------------------------
         if (media::IsVideoPath(szFile)) {
-            if (DirMenuChecked(app)) {
-                wcscpy_s(app->DirBg(), 0x3E8, DirOf(app, szFile));     // 0xA3C50
+            if (TryReplaceBackgroundVideo(app, szFile)) {
+                if (DirMenuChecked(app)) {
+                    wchar_t dir[kPathFieldCapacity];
+                    CopyDirPathW(app->DirBg(), ExtractDirFromPath(dir, szFile, kPathFieldCapacity));
+                }
+                app->SceneModified() = 1;
             }
-            wcscpy_s(app->state.aviBackgroundPath, 0x100, szFile);              // 0x9E1EC
-            // original: sub_433250(this) reads the path from app+647660;
-            // the stub interface takes the path - pass the same buffer
-            LoadAviFile(app);                                        // 0x433250
-            app->SceneModified() = 1;
             continue;
         }
 
@@ -318,11 +328,14 @@ void HandleDropFiles(HDROP hDrop) {
             }
         }
         // .bmp or .jpg matched: backdrop tail shared at 0x46199F
-        wcscpy_s(app->state.pictureBackgroundPath, 0x100, szFile);    // 0x9E448
-        LoadBackgroundPicture(app);                                   // 0x4337A0
+#if MMD_ORIGINAL_PROFILE
+        wcscpy_s(app->state.pictureBackgroundPath, 0x100, szFile);
+        LoadBackgroundPicture(app);
         app->SceneModified() = 1;
+#else
+        if (!plugins::TryLoadBoundPicture(app, szFile)) (void)TryReplaceBackgroundPicture(app, szFile);
+#endif
     }
-    DragFinish(hDrop);  // 0x461BF7 (not reached by the cancel path above)
 }
 
 }  // namespace mikumikustudio

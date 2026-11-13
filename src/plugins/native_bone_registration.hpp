@@ -3,8 +3,61 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "shared_history.hpp"
 #include "mikumikustudio/bone_scale.hpp"
+#include "native_bone_evaluation.hpp"
+#include <new>
 namespace mikumikustudio { class MMDApp; }
+namespace mikumikustudio::bone_scale {
+// Owner-module integration hook: allocation-free, checked upper bound for live
+// AuthoringState capture plus AuthoringRestore(source,target) when restore is
+// true; PoseStorageLease (including newly owned empty registry/ring sentinels)
+// when lease is true; and before/after pose maps, including at most boneCount
+// added pose nodes, when evaluate is true. Exclude existing live rings/caches.
+// Null target means the live authoring is also the target. Return UINT64_MAX
+// on overflow. No source or registry mutation is permitted.
+std::uint64_t DeletionPreparationBytes(const unsigned char* model,
+    const AuthoringState* target, bool restore, bool lease, bool evaluate) noexcept;
+}
+namespace mikumikustudio::bone_curve {
+// Owner-module integration hook: allocation-free, checked upper bound for the
+// live authoring validation capture and AuthoringRestore(source,target), with
+// copied free tracks, native baselines, registration sets and any staged empty
+// registry node/sentinels. Null target means live authoring. Exclude existing
+// live undo/redo contents. Return UINT64_MAX on overflow.
+std::uint64_t DeletionPreparationBytes(const unsigned char* model,
+    const AuthoringState* target) noexcept;
+}
 namespace mikumikustudio::plugins {
+class RetainedSceneObject;
+using ModelDeletionOwnerVisitor = void (*)(void*, const std::shared_ptr<RetainedSceneObject>&);
+// Owner-module hook: only new RetainSceneObject bookkeeping, including physics
+// owner capture if absent; zero for an already retained owner. No allocations.
+// A missing published scene identity is unsupported (UINT64_MAX); scene
+// admission must register it before cancellable candidate preparation.
+std::uint64_t ModelDeletionOwnerPreparationBytes(MMDApp&, unsigned modelSlot) noexcept;
+// Fixed evaluation object, sample array and sorted-index scratch only. Pose
+// map copies are charged by bone_scale::DeletionPreparationBytes.
+std::uint64_t BoneDeletionEvaluationStorageBytes(std::size_t affectedCount) noexcept;
+namespace model_delete_budget {
+// A structured payload reservation, not allocator/process accounting. Scratch
+// is conservatively retained in the charge so sibling peaks cannot each reuse
+// the full allowance. Callers commit their local balance only after success.
+struct Bytes {
+    std::uint64_t value = 0;
+    void Add(std::uint64_t count, std::uint64_t stride = 1) {
+        if (count == UINT64_MAX || (stride && count > (UINT64_MAX - value) / stride)) throw std::bad_alloc();
+        value += count * stride;
+    }
+    template<class T> void Array(std::uint64_t count) { Add(count, sizeof(T)); }
+    template<class T> void Nodes(std::uint64_t count) {
+        Add(1, sizeof(T) + 4 * sizeof(void*)); // MSVC tree sentinel.
+        Add(count, sizeof(T) + 4 * sizeof(void*));
+    }
+    void Take(std::uint64_t& remaining) const {
+        if (value > remaining) throw std::bad_alloc();
+        remaining -= value;
+    }
+};
+}
 class DisplayKeyDeletion;
 struct RangeScaleResult;
 struct ModelPasteFamilyResult;
@@ -14,6 +67,33 @@ struct BoneRegistrationOptions {
     int physicsMode = 2;
     bool automaticInterpolation = false;
     bool physicsEnabled = false;
+};
+struct BoneDeletionTarget {
+    unsigned bone;
+    BoneEvaluationSample zeroPose;
+};
+class PreparedBoneKeyDeletion : public PreparedHistoryChange {
+public:
+    virtual const std::vector<BoneDeletionTarget>& ZeroTargets() const noexcept = 0;
+    virtual void VisitRetainedModels(void*, ModelDeletionOwnerVisitor) const = 0;
+};
+class BoneKeyDeletion : public HistoryChange {
+public:
+    // Enumerate existing holders only, without allocation or RetainSceneObject.
+    // Includes any attached display record. Duplicates share one collector;
+    // the visitor may throw. RetainedBytes remains record-payload accounting.
+    virtual void VisitRetainedModels(void*, ModelDeletionOwnerVisitor) const = 0;
+    // zeroSelectors is the direction's frame-zero display target, never the
+    // current-playhead window. Required when this record has a display part or
+    // any evaluated bone has a selector. Without a display edit the coordinator
+    // must supply guarded frame-zero windows from the registered display track;
+    // live windows are never a fallback. No pointers are retained.
+    // Negative playback publishes keys/authoring/metadata only; a future signed
+    // aggregate exclusively owns final pose publication, including dirty policy.
+    virtual MmsResult PrepareSigned(bool forward, const std::vector<mdl::BoneOrderEntry>* zeroSelectors,
+        std::unique_ptr<PreparedBoneKeyDeletion>&) noexcept = 0;
+    virtual MmsResult PrepareSignedBudgeted(bool forward, const std::vector<mdl::BoneOrderEntry>* zeroSelectors,
+        std::uint64_t& remainingBytes, std::unique_ptr<PreparedBoneKeyDeletion>&) noexcept = 0;
 };
 // Builds both directions entirely in private storage. Null output on success
 // means no authored change. Only owned bone pools and unchanged solver switches
@@ -30,6 +110,10 @@ MmsResult PlanBoneRegistration(MMDApp&, unsigned modelSlot,
 // none of the three families has an explicit mark; frame zero is not implied.
 MmsResult PlanBoneKeyDeletion(MMDApp&, unsigned modelSlot, bool automaticInterpolation,
     std::shared_ptr<HistoryChange>&, bool selectedAtCurrentFrame = false,
+    bool allowOtherMarks = false, std::shared_ptr<DisplayKeyDeletion> display = {},
+    const std::vector<unsigned>* selectedSlots = nullptr) noexcept;
+MmsResult PlanSignedBoneKeyDeletion(MMDApp&, unsigned modelSlot, bool automaticInterpolation,
+    std::shared_ptr<BoneKeyDeletion>&, bool selectedAtCurrentFrame = false,
     bool allowOtherMarks = false, std::shared_ptr<DisplayKeyDeletion> display = {},
     const std::vector<unsigned>* selectedSlots = nullptr) noexcept;
 MmsResult PlanBoneFrameLine(MMDApp&, unsigned modelSlot, int frame, bool insert, bool automaticInterpolation,

@@ -33,7 +33,8 @@ struct ModelHudFixture:CameraHudFixture{
         app->RenderWidth()=1280;app->RenderHeight()=720;app->state.selectedClipW=3.75f;app->CameraPerspective()=1;
         first.selected={1,1};first.m->physicsMode=2;
         for(unsigned i=0;i<2;++i){auto& bone=first.bones[i];bone.type=i?mdl::BoneType::Ik:mdl::BoneType::Move;bone.parent=-1;bone.tailBone=1-int(i);
-            bone.physicsDisabled=std::uint8_t(i);bone.hasRigidBody=std::uint8_t(i);bone.flags|=mdl::kBoneFlagVisible;
+            bone.physicsDisabled=std::uint8_t(i);bone.hasRigidBody=std::uint8_t(i);
+            bone.flags|=mdl::kBoneFlagVisible|mdl::kBoneFlagRotatable|mdl::kBoneFlagMovable;
             for(unsigned n=0;n<16;++n)bone.matInit[n]=bone.matWorld[n]=(n%5==0)?1.f:0.f;
             bone.position[0]=float(i)*3;bone.position[1]=float(i)+1;bone.position[2]=float(i)*-2;
             bone.trans[0]=1.125f+float(i);bone.trans[1]=-.625f-float(i);bone.trans[2]=3.3125f+float(i);
@@ -231,6 +232,69 @@ void ModelHudNetZeroAndLease(){
             f.history.History(true)==MMS_OK&&ModelHudSame(ModelHudRead(f.first),after)&&!bone_scale::HasPoseStorage(f.first.raw()),
             "ordinary HUD undo/redo never tries to publish a scale table against an absent runtime entry");}
 }
+void ModelHudFingerSetup(ModelHudFixture& f,bool chain,bool fixed){
+    f.first.selected={1,1};f.first.m->selectedBone=0;f.first.m->physicsMode=2;
+    for(unsigned i=0;i<2;++i){auto& bone=f.first.bones[i];bone.type=mdl::BoneType::RotateMove;
+        bone.parent=chain&&i?0:-1;bone.flags&=~(mdl::kBoneFlagFixedAxis|mdl::kBoneFlagMovable);}
+    auto& second=f.first.bones[1];second.localAxes[0]=0;second.localAxes[1]=1;second.localAxes[2]=0;
+    if(fixed){second.type=mdl::BoneType::FixedAxis;second.flags|=mdl::kBoneFlagFixedAxis;
+        second.axis[0]=.4f;second.axis[1]=.7f;second.axis[2]=.2f;}
+}
+void ModelHudMultiJointHistory(){
+    using Mode=plugins::SharedHistory::RecordingMode;
+    for(auto mode:{Mode::AllOperations,Mode::ExplicitOnly})for(int operation:{3,4,5,9,10,11})
+    for(int coordinate:{0,1,2})for(bool chain:{false,true})for(bool fixed:{false,true}){
+        ModelHudFixture f,firstOnly,secondOnly;
+        for(auto* fixture:{&f,&firstOnly,&secondOnly}){ModelHudFingerSetup(*fixture,chain,fixed);fixture->app->state.coordinateSystem=coordinate;}
+        firstOnly.first.selected={1,0};secondOnly.first.selected={0,1};secondOnly.first.m->selectedBone=1;
+        plugins::NativePoseTestBinding binding(*f.app,f.history);Check(f.history.SetMode(mode)==MMS_OK,"set multijoint shared history mode");
+        const auto before=ModelHudRead(f.first);const ModelHudInvariant invariant(f);
+        Check(plugins::BeginModelHudGesture(*f.app,f.history,nullptr,operation)==MMS_OK,"reserve the full multijoint rotation before any live bone write");
+        for(int dy:{-7,3,-11}){
+            ModelHudNativeSample(*firstOnly.app,operation,9,dy);ModelHudNativeSample(*secondOnly.app,operation,9,dy);
+            Check(ModelHudBoundSample(*f.app,operation,9,dy)==MMS_OK,"apply one isolated multijoint rotation sample");
+            const auto actual=ModelHudRead(f.first),one=ModelHudRead(firstOnly.first),two=ModelHudRead(secondOnly.first);
+            Check(actual.bones[0]==one.bones[0]&&actual.bones[1]==two.bones[1]&&actual.dirty[0]==one.dirty[0]&&actual.dirty[1]==two.dirty[1]&&!f.history.UndoCount(),
+                "each joint matches its independent actual native edit with own axes and fixed constraints, without per-bone history");
+        }
+        const auto after=ModelHudRead(f.first);
+        for(unsigned i=0;i<2;++i)Check(!std::memcmp(after.bones[i].data(),before.bones[i].data(),3*sizeof(float))&&
+            std::memcmp(after.bones[i].data()+3,before.bones[i].data()+3,4*sizeof(float)),
+            "parent and child rotation-only joints both rotate while keeping their translation channels unchanged");
+        bool changed=false;Check(plugins::EndModelHudGesture(*f.app,changed)==MMS_OK&&changed,"finish one complete multijoint gesture");
+        if(mode==Mode::AllOperations){Check(f.history.UndoCount()==1&&f.history.History(false)==MMS_OK&&ModelHudSame(ModelHudRead(f.first),before),
+                "one common undo restores the entire multijoint pose and physics marks");
+            Check(f.history.History(true)==MMS_OK&&ModelHudSame(ModelHudRead(f.first),after),"one common redo restores every captured joint without re-running input math");}
+        else Check(!f.history.UndoCount()&&!f.history.RedoCount()&&ModelHudSame(ModelHudRead(f.first),after),"explicit-only multijoint preview preserves its draft without adding history");
+        invariant.Unchanged(f);
+    }
+    for(unsigned reason=0;reason<3;++reason){ModelHudFixture f;ModelHudFingerSetup(f,true,true);plugins::NativePoseTestBinding binding(*f.app,f.history);
+        const auto before=ModelHudRead(f.first);Check(plugins::BeginModelHudGesture(*f.app,f.history,nullptr,9)==MMS_OK&&ModelHudBoundSample(*f.app,9,0,-7)==MMS_OK,
+            "preview selected finger parent and fixed-axis child before cancellation");
+        const auto preview=ModelHudRead(f.first);
+        if(reason==0)plugins::HandleModelHudMessage(*f.app,nullptr,WM_CANCELMODE,0,0);
+        else if(reason==1){f.first.selected[1]=0;Check(!plugins::AllowModelHudPreview(*f.app,9),"selection change invalidates the whole multijoint gesture");}
+        else{f.first.bones[1].trans[0]=88.25f;plugins::CancelModelHudGesture(*f.app);}
+        auto expected=before;if(reason==2){expected.bones[1][0]=88.25f;expected.dirty[1]=preview.dirty[1];}
+        Check(!plugins::ModelHudGestureActive(*f.app)&&!f.history.UndoCount()&&ModelHudSame(ModelHudRead(f.first),expected),
+            "multijoint cancellation restores all owned rotations while preserving external secondary translation");
+    }
+    {ModelHudFixture f;ModelHudFingerSetup(f,true,true);plugins::NativePoseTestBinding binding(*f.app,f.history);const auto before=ModelHudRead(f.first);
+        failAfter=0;const auto result=plugins::BeginModelHudGesture(*f.app,f.history,nullptr,9);failAfter=-1;
+        Check(result==MMS_E_MEMORY&&!plugins::ModelHudGestureActive(*f.app)&&!f.history.UndoCount()&&ModelHudSame(ModelHudRead(f.first),before),
+            "failed multijoint history preparation leaves every bone and the journal unchanged");}
+    for(bool fixed:{false,true}){ModelHudFixture f;ModelHudFingerSetup(f,true,fixed);f.first.m->physicsMode=0;f.app->state.coordinateSystem=0;
+        auto& second=f.first.bones[1];second.tailBone=-1;std::memset(second.localAxes,0,sizeof(second.localAxes));
+        if(!fixed){std::memset(second.name,0,sizeof(second.name));std::memcpy(second.name,"\x8E\x77",3);}
+        plugins::NativePoseTestBinding binding(*f.app,f.history);const auto before=ModelHudRead(f.first);
+        Check(plugins::BeginModelHudGesture(*f.app,f.history,nullptr,9)==MMS_E_NOT_READY&&!plugins::ModelHudGestureActive(*f.app)&&
+            !f.history.UndoCount()&&ModelHudSame(ModelHudRead(f.first),before),
+            "an invalid secondary fixed/local-axis tail rejects the whole gesture before the valid primary changes");
+        f.first.selected[1]=0;
+        Check(plugins::BeginModelHudGesture(*f.app,f.history,nullptr,9)==MMS_OK,"unselected secondary axis dependency does not reject a valid primary gesture");
+        plugins::CancelModelHudGesture(*f.app);
+    }
+}
 void ModelHudTailReferenceAdmission(){
     const char* names[]={"\x89\x45\x8E\xE8\x8E\xF1","\x89\x45\x82\xD0\x82\xB6","\x89\x45\x98\x72",
         "\x8D\xB6\x8E\xE8\x8E\xF1","\x8D\xB6\x82\xD0\x82\xB6","\x8D\xB6\x98\x72","prefix\x8E\x77" "suffix"};
@@ -273,9 +337,28 @@ struct ModelHudReleaseWindow{
     ~ModelHudReleaseWindow(){armed=false;plugins::CancelModelHudGesture(*fixture.app);if(GetCapture()==owner)ReleaseCapture();
         SetWindowLongPtrW(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(editProc));SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(ownerProc));
         fixture.app->FloatingWindow()=floating;fixture.app->ViewportRect()=originalView;active=nullptr;if(cursorValid)SetCursorPos(cursor.x,cursor.y);}
-    void Cursor(int x,int y){HudFixtureCursor(*fixture.app,owner,{x,y},
-        "place actual OS model HUD cursor independently from stale message lParam",
-        "real model HUD cursor round-trips through actual screen and client coordinates");}
+    void Cursor(int x,int y){
+        // Position this hidden fixture only while its original system STATIC
+        // procedure is installed. Moving a MicWndProc window would invoke real
+        // layout callbacks, invalidating the coordinate fixture and gesture.
+        // A press/release pair may need two placements, so restore only our own
+        // procedures around each placement rather than weakening its safety gate.
+        const auto capture=GetCapture(),focus=GetFocus();const auto source=plugins::ModelHudPreviewSource(*fixture.app);
+        Check(GetWindowLongPtrW(owner,GWLP_WNDPROC)==reinterpret_cast<LONG_PTR>(MicWndProc)&&
+            GetWindowLongPtrW(edit,GWLP_WNDPROC)==reinterpret_cast<LONG_PTR>(EditProc),
+            "model HUD coordinate setup detaches only its own hidden-window message procedures");
+        Check(SetWindowLongPtrW(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(editProc))==reinterpret_cast<LONG_PTR>(EditProc)&&
+            SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(ownerProc))==reinterpret_cast<LONG_PTR>(MicWndProc),
+            "restore original hidden STATIC and EDIT procedures before coordinate setup");
+        HudFixtureCursor(*fixture.app,owner,{x,y},
+            "place actual OS model HUD cursor independently from stale message lParam",
+            "model HUD fixture cursor round-trips through actual screen and client coordinates");
+        Check(SetWindowLongPtrW(owner,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(MicWndProc))==reinterpret_cast<LONG_PTR>(ownerProc)&&
+            SetWindowLongPtrW(edit,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(EditProc))==reinterpret_cast<LONG_PTR>(editProc),
+            "restore real MicWndProc and reentry EDIT procedures before dispatching model HUD input");
+        Check(GetCapture()==capture&&GetFocus()==focus&&plugins::ModelHudPreviewSource(*fixture.app)==source,
+            "coordinate fixture preserves capture, focus and the exact pending model HUD gesture");
+    }
     static LRESULT CALLBACK EditProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp){auto* self=active;const auto proc=self->editProc;
         if(message==WM_SETTEXT&&self->armed){self->armed=false;self->observed=true;auto& f=self->fixture;
             Check(!ModelHudSame(ModelHudRead(f.first),self->original),"model release readout callback sees a real accepted native pose sample");
@@ -315,7 +398,7 @@ void ModelHudRealPress(){
             SendMessageW(owner,WM_LBUTTONUP,0,MAKELPARAM(1,1));
             Check(!plugins::ModelHudGestureActive(*f.app)&&!f.history.UndoCount()&&ModelHudSame(ModelHudRead(f.first),before)&&
                 f.app->EditMode()==editMode&&f.app->InteractionDragMode()==ViewportDragMode::None&&PoseRingDigest(f.first)==ring&&GetCapture()!=owner,
-                "real press/release centre warp is an exact no-op, restores the original edit cursor and does not consume history or capture");
+                "native press/release at the prepared centre coordinates is an exact no-op, restores the edit cursor and consumes no history or capture; this is not cursor-warp acceptance");
         }
         SetWindowPos(owner,nullptr,previous.left,previous.top,previous.right-previous.left,previous.bottom-previous.top,SWP_NOZORDER|SWP_NOACTIVATE);
         viewport_corner_settings::ResetCacheForTest(corner);
@@ -356,4 +439,4 @@ void ModelHudRealReleaseAndReentry(){
     }
 }
 }
-void NativeModelHudHistoryChecks(){ModelHudMathAndHistory();ModelHudForeignAndCancellation();ModelHudSelectionAxesAndAuthors();ModelHudIdentityFailureAndRedo();ModelHudNetZeroAndLease();ModelHudTailReferenceAdmission();ModelHudRealPress();ModelHudRealReleaseAndReentry();}
+void NativeModelHudHistoryChecks(){ModelHudMathAndHistory();ModelHudForeignAndCancellation();ModelHudSelectionAxesAndAuthors();ModelHudIdentityFailureAndRedo();ModelHudNetZeroAndLease();ModelHudMultiJointHistory();ModelHudTailReferenceAdmission();ModelHudRealPress();ModelHudRealReleaseAndReentry();}

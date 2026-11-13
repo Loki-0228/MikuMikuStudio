@@ -11,7 +11,7 @@ namespace mikumikustudio::pmm_versions {
 namespace fs = std::filesystem;
 inline std::vector<fs::path> Pair(const fs::path& project, bool plugins = false) {
     std::vector<fs::path> paths{project, pmm_paths::Effect(project)};
-    if (plugins) paths.emplace_back(project.native() + L".mms-plugins.json");
+    if (plugins) paths.emplace_back(project.native() + pmm_paths::PluginSidecarSuffix);
     return paths;
 }
 inline bool Exists(const fs::path& path, bool& exists) {
@@ -115,49 +115,46 @@ public:
         for (auto lock : locks_) CloseHandle(lock);
         SetLastError(error);
     }
+    // Includes the active level and the vacant terminal level. Recovery must
+    // lock the recorded depth: a partially moved level may already look empty.
+    bool Plan(const fs::path& target, bool plugins, std::vector<std::vector<fs::path>>& levels,
+              std::size_t recordedLevels = 0) {
+        levels = {Pair(target, plugins)};
+        std::vector<fs::path> projects;
+        do {
+            const fs::path next(levels.back().front().native() + L"1");
+            if (!VersionPath(next)) return false;
+            auto paths = Pair(next, plugins);
+            bool occupied = false;
+            if (!recordedLevels) {
+                for (const auto& path : paths) {
+                    bool exists = false;
+                    if (!Exists(path, exists)) return false;
+                    occupied |= exists;
+                }
+            }
+            projects.push_back(next);
+            levels.push_back(std::move(paths));
+            if (!recordedLevels && !occupied) break;
+        } while (!recordedLevels || levels.size() < recordedLevels);
+        return LockVersions(projects);
+    }
     bool Prepare(const fs::path& target, bool plugins) {
         bool exists = false;
         if (!Exists(target, exists)) return false;
         if (!exists) return true;
-        const auto active = Pair(target, plugins);
-        const fs::path first(target.native() + L"1");
-        if (!VersionPath(first)) return false;
-        const auto previous = Pair(first, plugins);
-        std::vector<fs::path> projects;
-        {
-            std::vector<std::vector<fs::path>> levels{active};
-            for (;;) {
-                const fs::path next(levels.back().front().native() + L"1");
-                if (!VersionPath(next)) return false;
-                auto paths = Pair(next, plugins);
-                bool occupied = false;
-                for (const auto& path : paths) {
-                    if (!Exists(path, exists)) return false;
-                    occupied |= exists;
-                }
-                projects.push_back(next);
-                levels.push_back(std::move(paths));
-                if (!occupied) break;
-            }
-            for (std::size_t i = levels.size() - 1; i > 1; --i)
-                for (std::size_t j = 0; j < active.size(); ++j)
-                    moved_.push_back({levels[i-1][j], levels[i][j]});
-        }
-        for (std::size_t j = 0; j < active.size(); ++j) copied_.push_back({active[j], previous[j]});
-        if (plugins && !LockVersions(projects)) return false;
+        std::vector<std::vector<fs::path>> levels;
+        if (!Plan(target, plugins, levels)) return false;
+        for (std::size_t i = levels.size() - 1; i > 1; --i)
+            for (std::size_t j = 0; j < levels[0].size(); ++j)
+                moved_.push_back({levels[i-1][j], levels[i][j]});
+        for (std::size_t j = 0; j < levels[0].size(); ++j) copied_.push_back({levels[0][j], levels[1][j]});
         return Execute();
     }
     void Commit() noexcept { committed_ = true; }
 };
 
-// Original profile has no plugin pair publisher. Preserve the PMM/EMM pair
-// with the same preparation/rollback rules around its single atomic replace.
-inline bool Publish(const fs::path& temporary, const fs::path& target) {
-    Retention retention;
-    if (!retention.Prepare(target, false)) return false;
-    if (!MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-        return false;
-    retention.Commit();
-    return true;
-}
+// Original publication shares the durable file transaction implementation,
+// without constructing plugin data. Failure preserves a Win32 error code.
+bool Publish(const fs::path& temporary, const fs::path& target) noexcept;
 }

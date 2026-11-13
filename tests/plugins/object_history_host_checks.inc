@@ -155,7 +155,7 @@ void Run(MMDApp* app) {
           "duplicate owner in a measurement batch is charged once");
     accessory->parentModel=0;accessory->parentBone=0;
     app->AccessoryKeys(0)[0].parentModel=0;app->AccessoryKeys(0)[0].parentBone=0;
-    auto store=CreateSceneStore(app);SceneClient client;auto api=store->Api(client);
+    auto store=CreateSceneStore(app);SceneClient client;auto api=([&]{ MmsSceneApiV1 value{}; if (store->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     MmsSceneQueryV1 query{};query.h=Header<MmsSceneQueryV1>();query.channels=MMS_CHANNEL_MESH|MMS_CHANNEL_BONES;query.time={0,1};
     MmsSnapshotV1 snapshot{};MmsSpan objects{};
     Check(api.acquire(api.context,&query,&snapshot)==MMS_OK && api.objects(api.context,snapshot.handle,&objects)==MMS_OK && objects.count==2,

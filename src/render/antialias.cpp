@@ -56,6 +56,20 @@ struct Target {
     D3DFORMAT depthFormat=D3DFMT_UNKNOWN;
     unsigned samples=0, historyIndex=0;
     float historyJitterX=0, historyJitterY=0;
+    // Exact camera projection read at frame start and the jittered matrix the
+    // temporal pass actually wrote. The pair is readable only while this
+    // frame's scope owns the device projection.
+    D3DMATRIX originalProjection{},jitteredProjection{};
+    bool projectionValid=false;
+    // Shadow configuration of the last temporal frame. ShadowMode,
+    // ShadowDistance, adaptive resolution, filter enhancement and the
+    // resolution limit change the projected shadow maps the history was drawn
+    // against, so a change restarts the sample phase like a timeline or
+    // viewport discontinuity. shadowStateValid guards the first frame.
+    bool shadowStateValid=false,adaptiveShadowResolution=false,shadowFilterEnhanced=false;
+    std::int32_t shadowMode=0;
+    float shadowDistance=0;
+    unsigned shadowResolutionLimit=0;
     Algorithm algorithm=Algorithm::MmdOriginal;
     D3DVIEWPORT9 historyViewport{};
     int frame=0;
@@ -451,6 +465,18 @@ void ApplyRenderState(MMDApp* app) {
     ApplyRenderStateChecked(app);
 }
 void Release(MMDApp* app){outline_multisample::Release(app);motion::Release(app);targets.erase(app);}
+bool UnjitteredProjection(MMDApp* app,float projection[16]) {
+    if(build_profile::original || !app || !projection)return false;
+    const auto found=targets.find(app);
+    if(found==targets.end() || !found->second.projectionValid)return false;
+    const auto& target=found->second;
+    // Only the matrix this frame actually wrote belongs to our record. An MME
+    // custom projection, a restored camera matrix, or a stale frame never
+    // matches, so the caller keeps exactly what it read.
+    if(std::memcmp(projection,&target.jitteredProjection,sizeof(target.jitteredProjection))!=0)return false;
+    std::memcpy(projection,&target.originalProjection,sizeof(target.originalProjection));
+    return true;
+}
 bool DrawOutline(MMDApp* app,unsigned char* model,unsigned firstIndex,
                  unsigned indexCount,const float* uniformColor) {
     if(build_profile::original || !app || !model || !PostProcess(app->antialiasing))return false;
@@ -763,6 +789,7 @@ struct FrameScope::Impl {
     explicit Impl(MMDApp* value):app(value),device(value->Renderer()->device) {}
     HRESULT Restore() {
         if(restored)return restoration;restored=true;
+        if(auto found=targets.find(app);found!=targets.end())found->second.projectionValid=false;
         const auto remember=[&](HRESULT hr){if(SUCCEEDED(restoration) && FAILED(hr))restoration=hr;};
         remember(device->SetDepthStencilSurface(nullptr));remember(device->SetRenderTarget(0,previous.Get()));
         remember(device->SetDepthStencilSurface(depth.Get()));remember(device->SetViewport(&viewport));
@@ -772,6 +799,7 @@ struct FrameScope::Impl {
         return restoration;
     }
     ~Impl(){
+        if(auto found=targets.find(app);found!=targets.end())found->second.projectionValid=false;
         outline_multisample::Cancel(app);if(bindingsChanged)Restore();
         if(temporal) {
             motion::Cancel(app);
@@ -781,6 +809,8 @@ struct FrameScope::Impl {
 };
 FrameScope::FrameScope(MMDApp* app) {
     if(build_profile::original)return;
+    // A new frame must never expose the previous frame's camera projection.
+    if(auto found=targets.find(app);found!=targets.end())found->second.projectionValid=false;
     Initialize(app);ApplyRenderState(app);
     if(app->antialiasing.outlineMode!=OutlineMode::Multisample || !PostProcess(app->antialiasing))
         outline_multisample::Release(app);
@@ -817,14 +847,33 @@ FrameScope::FrameScope(MMDApp* app) {
     p.temporal=Temporal(app->antialiasing.algorithm);
     if(p.temporal) {
         // Camera and deformed-geometry motion are reprojected. Only a timeline
-        // discontinuity or a change of output domain discards the whole history.
+        // discontinuity, a change of output domain, or a change of the shadow
+        // settings that shape the projected shadow maps discards the history.
+        const auto shadowMode=app->ShadowMode();
+        const auto shadowDistance=app->ShadowDistance();
+        const auto adaptiveShadowResolution=app->AdaptiveShadowResolution();
+        const auto shadowFilterEnhanced=app->ShadowFilterEnhanced();
+        const auto shadowResolutionLimit=app->ShadowResolutionLimit();
+        // Compare the fields individually; the owning state carries padding
+        // that a whole-structure memcmp would also read.
+        const bool shadowStateChanged=t.shadowStateValid &&
+            (t.shadowMode!=shadowMode || t.shadowDistance!=shadowDistance ||
+             t.adaptiveShadowResolution!=adaptiveShadowResolution ||
+             t.shadowFilterEnhanced!=shadowFilterEnhanced ||
+             t.shadowResolutionLimit!=shadowResolutionLimit);
         const auto delta=static_cast<long long>(app->CurrentFrame())-t.frame;
         if(t.samples && (delta<0 || (delta>8 && !app->PlaybackActive() && !app->RecordingWindow()) ||
-            t.recording!=(app->RecordingWindow()!=nullptr) || std::memcmp(&t.historyViewport,&p.viewport,sizeof(p.viewport))!=0)) {
+            t.recording!=(app->RecordingWindow()!=nullptr) || shadowStateChanged ||
+            std::memcmp(&t.historyViewport,&p.viewport,sizeof(p.viewport))!=0)) {
             t.samples=0;motion::Release(app);
         }
         t.historyViewport=p.viewport;
         t.frame=app->CurrentFrame();t.recording=app->RecordingWindow()!=nullptr;
+        // Record after the comparison so an unchanged configuration keeps the
+        // accumulated history while a changed one re-baselines from this frame.
+        t.shadowStateValid=true;t.shadowMode=shadowMode;t.shadowDistance=shadowDistance;
+        t.adaptiveShadowResolution=adaptiveShadowResolution;t.shadowFilterEnhanced=shadowFilterEnhanced;
+        t.shadowResolutionLimit=shadowResolutionLimit;
         const bool twoPhase=SmaaTemporal(app->antialiasing.algorithm);
         const unsigned sample=t.samples%8+1;
         // Official T2x pattern, expressed in a bottom-to-top projection axis.
@@ -837,9 +886,13 @@ FrameScope::FrameScope(MMDApp* app) {
         else {
             p.jitterX=dx*p.viewport.Width/(2*t.description.Width);
             p.jitterY=-dy*p.viewport.Height/(2*t.description.Height);
-            auto projection=p.projection;
-            for(int i=0;i<4;++i){projection.m[i][0]+=dx*projection.m[i][3];projection.m[i][1]+=dy*projection.m[i][3];}
-            p.device->SetTransform(D3DTS_PROJECTION,&projection);
+            D3DMATRIX jittered=p.projection;
+            for(int i=0;i<4;++i){jittered.m[i][0]+=dx*jittered.m[i][3];jittered.m[i][1]+=dy*jittered.m[i][3];}
+            // Publish the pair only once the device accepted the jittered
+            // matrix; failed writes must leave planning on the live projection.
+            if(SUCCEEDED(p.device->SetTransform(D3DTS_PROJECTION,&jittered))) {
+                t.originalProjection=p.projection;t.jitteredProjection=jittered;t.projectionValid=true;
+            }
         }
     }
     p.device->SetDepthStencilSurface(nullptr);

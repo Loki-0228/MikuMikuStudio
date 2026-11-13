@@ -10,15 +10,22 @@
 
 namespace mikumikustudio::mdl { struct ModelRecord; struct MorphRecord; struct BoneRecord; struct DisplayGroup; }
 namespace mikumikustudio::text_encoding {
-// PMM has fixed byte fields and no declared code page. Keep legacy encodings
-// when exact; use a UTF-8 BOM only for text no legacy code page can represent.
+// PMM has fixed byte fields and no declared code page.
 bool Decode(const char* bytes, unsigned int codePage, std::wstring& result);
 bool EncodeExact(const wchar_t* text, unsigned int codePage, std::string& result);
-// The PMX loader's fixed-byte mirror: CP932 with its current-CRT-locale
+// Previous PMX fixed-byte mirror: CP932 with its current-CRT-locale
 // fallback, then byte truncation with space for NUL, even inside a DBCS pair.
 // This is not a reversible display encoding and does not change the locale.
 void EncodePmxMirror(char* destination, std::size_t capacity, const wchar_t* text);
+// Current fixed PMX identity; full Unicode captions stay in model metadata.
+void EncodePmxName(char* destination, std::size_t capacity, const wchar_t* text);
+// Only accept a legacy token at the same index when both table sizes agree.
+bool MatchesOldPmxName(const char* saved, const wchar_t* text, std::size_t capacity);
+std::array<unsigned int, 6> PathDecodingOrder();
 bool EncodePath(char* destination, std::size_t capacity, const wchar_t* path);
+// Use marked UTF-8 if an unmarked PMM path would select a different file.
+bool EncodeProjectPath(char* destination, std::size_t capacity, const wchar_t* path);
+bool IsLegacyPathEncoding(const char* encoded, const wchar_t* path);
 bool EncodeDisplay(char* destination, std::size_t capacity, const wchar_t* text);
 std::wstring Display(const char* text);
 std::wstring LegacyFilename(const char* text, const wchar_t* resolvedPath);

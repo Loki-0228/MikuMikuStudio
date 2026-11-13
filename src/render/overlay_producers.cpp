@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/ui_language.hpp"
@@ -90,7 +91,7 @@ void PrepareFrameTextOverlay(MMDApp* app) {  // 0x423420
         append(left - 2.0f, top - 2.0f, right - 2.0f, bottom - 2.0f,
                u0, v0, u1, v1, shifted);
     };
-    auto digits = [&](const char* text, float& xOffset, float top,
+    auto digits = [&](const char* text, int origin, float& xOffset, float top,
                       float atlasV0, float atlasV1,
                       D3DCOLOR foreground, D3DCOLOR shifted) {
         for (const char* p = text; *p != '\0'; ++p) {
@@ -102,7 +103,7 @@ void PrepareFrameTextOverlay(MMDApp* app) {  // 0x423420
             if (digit < 0 || digit > 9)
                 continue;
             const float u0 = static_cast<float>(16 * digit) / 512.0f;
-            const float left = static_cast<float>(view.left +
+            const float left = static_cast<float>(origin +
                 static_cast<int>(xOffset * scale));
             pair(left, top, left + 12.5f * scale, top + 25.0f * scale,
                  u0, atlasV0, u0 + 15.0f / 512.0f, atlasV1,
@@ -115,6 +116,10 @@ void PrepareFrameTextOverlay(MMDApp* app) {  // 0x423420
     // the scaled offset to int, matching the original x87-to-int sequence.
     if (app->FpsOverlayEnabled() != 0) {
         const int fps = app->FramesPerSecond();
+        // The scale row occupies the usual FPS location when docked bottom-left.
+        const bool bottomLeftHud = !build_profile::original && !app->RecordingWindow() &&
+            !app->PlaybackActive() && viewport_corner_settings::Current() == viewport_tool_layout::Corner::BottomLeft;
+        const int fpsOrigin = bottomLeftHud ? view.right - static_cast<int>(185.0f * scale) : view.left;
         const float fpsTop = static_cast<float>(view.bottom -
             static_cast<int>(30.0f * scale));
         if (fps > 0) {
@@ -124,13 +129,13 @@ void PrepareFrameTextOverlay(MMDApp* app) {  // 0x423420
             if (numeric) {
                 char value[256]{};
                 std::snprintf(value, sizeof(value), "%3d", fps);
-                digits(value, xOffset, fpsTop, 0.375f, 0.43554688f,
+                digits(value, fpsOrigin, xOffset, fpsTop, 0.375f, 0.43554688f,
                        0xFFE0E0E0u, 0xFF0000FFu);
             } else {
                 // 0x42382F: the A4420 path substitutes two fixed glyphs.
                 xOffset = 27.0f;
                 for (int glyph = 0; glyph < 2; ++glyph) {
-                    const float left = static_cast<float>(view.left +
+                    const float left = static_cast<float>(fpsOrigin +
                         static_cast<int>(xOffset * scale));
                     pair(left, fpsTop, left + 12.5f * scale,
                          fpsTop + 25.0f * scale,
@@ -140,7 +145,7 @@ void PrepareFrameTextOverlay(MMDApp* app) {  // 0x423420
                 }
             }
             xOffset += 4.0f;
-            const float left = static_cast<float>(view.left +
+            const float left = static_cast<float>(fpsOrigin +
                 static_cast<int>(xOffset * scale));
             pair(left, fpsTop, left + 90.0f * scale,
                  fpsTop + 25.0f * scale,
@@ -154,7 +159,7 @@ void PrepareFrameTextOverlay(MMDApp* app) {  // 0x423420
             // every non-English UI as Japanese made the Chinese caption read
             // "1fps 未満" (defect reported 2026-09-22).
             const bool japanese = app->EnglishUI() == kUiJapanese;
-            const float left = static_cast<float>(view.left -
+            const float left = static_cast<float>(fpsOrigin -
                 static_cast<int>(-30.5f * scale));
             const float width = (japanese ? 125.0f : 150.0f) * scale;
             pair(left, fpsTop, left + width, fpsTop + 25.0f * scale,
@@ -173,7 +178,7 @@ void PrepareFrameTextOverlay(MMDApp* app) {  // 0x423420
         float xOffset = 15.0f;
         const float top = static_cast<float>(view.top -
             static_cast<int>(-5.0f * scale));
-        digits(frameText, xOffset, top, 0.5f, 0.56054688f,
+        digits(frameText, view.left, xOffset, top, 0.5f, 0.56054688f,
                0xFF000000u, 0xFFFFFFFFu);
         xOffset += 4.0f;
         // Keep the label and punctuation in separate atlas cells. A single
@@ -192,7 +197,7 @@ void PrepareFrameTextOverlay(MMDApp* app) {  // 0x423420
         for (int i = 0; i < 3; ++i) {
             char timePart[32]{};
             std::snprintf(timePart, sizeof(timePart), "%02d", parts[i]);
-            digits(timePart, xOffset, top, 0.5f, 0.56054688f,
+            digits(timePart, view.left, xOffset, top, 0.5f, 0.56054688f,
                    0xFF000000u, 0xFFFFFFFFu);
             if (i < 2) glyph(288, 15, 12.5f);
         }

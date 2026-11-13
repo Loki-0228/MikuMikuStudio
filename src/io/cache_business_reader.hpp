@@ -1,5 +1,6 @@
 #pragma once
 #include "cache_business_codec.hpp"
+#include "cache_source_registry.hpp"
 #include "mikumikustudio/cache_catalog.hpp"
 #include <memory>
 
@@ -28,6 +29,10 @@ public:
     const cache_catalog::Snapshot& Source() const noexcept;
     const Index& Value() const noexcept;
     const Manifest& Description() const noexcept;
+    // Validated source/operation metadata from the same catalog CAS snapshot.
+    // Raw payloads are not opened or pinned here; recovery still requires the
+    // store to bind and verify the recorded directory identity.
+    const SourceRegistry& Sources() const noexcept;
     // Invalid and moved-from objects return static empty values. References to
     // a valid object's values expire when it is destroyed or replaced.
 private:
@@ -42,7 +47,9 @@ private:
 // validates all cross-page relationships before publishing output once.
 // Every failure preserves output and its existing leases. source may refer to
 // output.Source(). Successful output retains all page leases until destruction
-// or move replacement. Effect/texture payloads named by entries are not opened.
+// or move replacement. Effect/texture and raw source payloads are not opened.
+// Both legacy v1 manifests and composite business roots are accepted; source
+// owners are checked against the actual assembled project pages, not counts.
 // Invalid denotes invalid arguments; damaged/missing/mismatched stored data is
 // RecoveryRequired. Codec Unsupported/Limit/AllocationFailure remain distinct.
 // File-layer Io remains Io, including allocation failures hidden by that layer.

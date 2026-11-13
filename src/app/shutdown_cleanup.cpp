@@ -1,6 +1,9 @@
 #include "mikumikustudio/background_save.hpp"
+#include "mikumikustudio/legacy_mmd_plugin.hpp"
+#include "mikumikustudio/legacy_playback_map.hpp"
 #include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_clipboard.hpp"
+#include "mikumikustudio/bone_edit_axes.hpp"
 #include "mikumikustudio/update_coordinator.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/autosave.hpp"
@@ -82,6 +85,10 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/background_identity.hpp"
+#include "../plugins/native_picture_gesture.hpp"
+#endif
 #include <objbase.h>  // CoUninitialize
 #include <dshow.h>    // IMediaControl/IMediaEvent complete types
 #include <vfw.h>      // AVIFile*/AVIStream*/DrawDib*
@@ -316,7 +323,6 @@ int NvapiStereoDestroyHandle(void* stereoHandle) {
 void DisposeRenderSubsystem(D3DRenderer* sub) {
     shadow_filter::ReleaseRenderer(sub, true);
     CancelDefaultEffectCompilation(sub);
-    InvalidateTextureLookup();
 #if !MMD_ORIGINAL_PROFILE
     ClearTransparentPeelingCache();
 #endif
@@ -332,17 +338,7 @@ void DisposeRenderSubsystem(D3DRenderer* sub) {
     ReleaseSlot(sub->device);             // +120032
     ReleaseSlot(sub->d3d9);               // +120028  0x406CE8
 
-    for (int k = 0; k < 10000; ++k) {    // 0x406CF3
-        ResourcePoolEntry& entry = sub->resourcePool[k];
-        if (entry.heapBuffer != nullptr) {   // +4        0x406D00
-            std::free(entry.heapBuffer);
-            entry.heapBuffer = nullptr;
-        }
-        if (entry.comObject != nullptr) {    // +8        0x406D17
-            entry.comObject->Release();      // vtable+8
-            entry.comObject = nullptr;
-        }
-    }
+    ReleaseTexturePool(*sub);             // 0x406CF3
 
     if (sub->stereoEnabled != 0)         // +120166  0x406D23
         NvapiStereoDestroyHandle(sub->stereoHandle);  // +120020  0x406D32
@@ -468,6 +464,13 @@ void TeardownDShowGraphCoUninit(DShowRecorder* rec) {
 #include "mikumikustudio/transparent_sort_cache.hpp"
 
 void ShutdownCleanup(MMDApp* app) {
+    legacy_mmd_plugin::Stop();
+    legacy_playback_map::Detach(app);
+    ResetBoneHudPreview(app);
+#if !MMD_ORIGINAL_PROFILE
+    plugins::CancelPictureGesture(*app);
+    plugins::background_identity::Mutation mediaMutation(app, true, true, true);
+#endif
     transparent_sort_cache::Release(app);
     negative_frames::Reset(app);
     frame_clipboard::Reset(app);

@@ -152,11 +152,15 @@ void HandleVScroll(LPARAM lParam, WPARAM wParam) {
 // Reference: ../translated/MikuMikuDance/fcn_0044bd70.cpp
 // =========================================================================//
 void HandleMouseWheel(int delta) {
+    HandleMouseWheel(delta, g_Block->MouseX());
+}
+
+void HandleMouseWheel(int delta, int clientX) {
     MMDApp* app = g_Block;
     HWND hwnd = static_cast<HWND>(app->Hwnd());
     const std::int16_t wheel = static_cast<std::int16_t>(delta);  // original __int16
 
-    if (app->MouseX() <=
+    if (clientX <=
         app->SidebarWidth()) {
         // playing: three line-steps on the timeline strip per notch
         if (wheel <= 0) {

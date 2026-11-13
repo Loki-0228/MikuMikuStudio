@@ -134,6 +134,7 @@
 
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/panel_controls.hpp"
@@ -962,12 +963,7 @@ void LoadVsqFile(MMDApp* app, const wchar_t* path) {  // was Sub435FE0
     if (s.state.waveEnabled != 0) {
         TimelineDrawTicks(s.state.timelineStartFrame,
                           s.state.sidebarWidth);
-        RECT rc;
-        rc.left = 6;
-        rc.top = 0x5F;
-        rc.right = static_cast<LONG>(
-            s.state.sidebarWidth) - 3;
-        rc.bottom = 0x92;
+        RECT rc = TimelineRulerDamage(app);
         InvalidateRect(hwnd, &rc, 0);                               // 0x529280
     }
     if (s.state.aviBackgroundEnabled == 1)

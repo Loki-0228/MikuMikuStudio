@@ -1,11 +1,16 @@
 #pragma once
 #include <array>
 #include <cmath>
+#include <limits>
+#if !MMD_ORIGINAL_PROFILE
+#include "../src/plugins/background_identity.hpp"
+#endif
 
 // Exercise native window procedures without moving the user's pointer or focus.
 namespace cursor_checks {
 inline HWND foreground = nullptr, capture = nullptr;
 inline bool held = false, control = false;
+inline bool warpSucceeds = true, positionSucceeds = true;
 inline int warps = 0, visibility = 0;
 inline HCURSOR cursor = nullptr;
 inline HWND WINAPI Foreground() { return foreground; }
@@ -14,10 +19,36 @@ inline SHORT WINAPI Key(int key) {
     return (held && key == VK_LBUTTON) || (control && key == VK_CONTROL) ? SHORT(0x8000) : 0;
 }
 inline POINT pointer{};
-inline BOOL WINAPI Position(LPPOINT p) { *p=pointer; return TRUE; }
-inline BOOL WINAPI Warp(int x, int y) { pointer={x,y}; ++warps; return TRUE; }
+inline BOOL WINAPI Position(LPPOINT p) { if (!positionSucceeds) return FALSE; *p=pointer; return TRUE; }
+inline BOOL WINAPI Warp(int x, int y) { ++warps; if (!warpSucceeds) return FALSE; pointer={x,y}; return TRUE; }
+inline BOOL WINAPI Release() { capture = nullptr; return TRUE; }
 inline HCURSOR WINAPI Cursor(HCURSOR next) { auto previous = cursor; cursor = next; return previous; }
 inline int WINAPI Visibility(BOOL show) { return visibility += show ? 1 : -1; }
+// Reusable OS-input boundary for other real-host tests. Production frame math,
+// input dispatch, background resources and journal code remain unmodified.
+class ScopedInputHooks final {
+public:
+    ScopedInputHooks() {
+        foreground=capture=nullptr;held=control=false;warps=visibility=0;
+        warpSucceeds=positionSucceeds=true;pointer={};cursor=nullptr;
+        const auto install=[](auto api,auto callback) {
+            Check(MH_CreateHook(reinterpret_cast<void*>(api),reinterpret_cast<void*>(callback),nullptr)==MH_OK &&
+                  MH_EnableHook(reinterpret_cast<void*>(api))==MH_OK,"install isolated actual-input boundary");
+        };
+        install(&GetForegroundWindow,&Foreground);install(&GetCapture,&Capture);install(&ReleaseCapture,&Release);
+        install(&GetKeyState,&Key);install(&GetAsyncKeyState,&Key);install(&GetCursorPos,&Position);
+        install(&SetCursorPos,&Warp);install(&SetCursor,&Cursor);install(&ShowCursor,&Visibility);
+    }
+    ~ScopedInputHooks() {
+        for(void* api:{reinterpret_cast<void*>(&GetForegroundWindow),reinterpret_cast<void*>(&GetCapture),
+            reinterpret_cast<void*>(&ReleaseCapture),reinterpret_cast<void*>(&GetKeyState),reinterpret_cast<void*>(&GetAsyncKeyState),
+            reinterpret_cast<void*>(&GetCursorPos),reinterpret_cast<void*>(&SetCursorPos),reinterpret_cast<void*>(&SetCursor),
+            reinterpret_cast<void*>(&ShowCursor)}) {MH_DisableHook(api);MH_RemoveHook(api);}
+        foreground=capture=nullptr;held=control=false;warpSucceeds=positionSucceeds=true;
+    }
+    ScopedInputHooks(const ScopedInputHooks&)=delete;
+    ScopedInputHooks& operator=(const ScopedInputHooks&)=delete;
+};
 inline void Run(MMDApp* app) {
     const auto saved = std::make_unique<MMDAppState>(app->state);
     const auto savedGesture = app->backgroundGesture;
@@ -61,6 +92,25 @@ inline void Run(MMDApp* app) {
     Check(warps == 1, "capture loss prevents recentering over another window");
     HandleViewportToolRelease(app);
     Check(warps == 1 && visibility == 0, "capture cancellation restores visibility without warping");
+    if (!build_profile::original && scale > 1) {
+        capture = main;
+        app->LeftMouseButtonState() = 0;
+        app->MouseX() = frame.right - int(70 * scale);
+        app->MouseY() = frame.bottom - int(65 * scale);
+        const auto position = [&] {
+            return std::array<float, 3>{app->CameraPositionX(), app->CameraPositionY(), app->CameraPositionZ()};
+        };
+        const auto before = position();
+        Check(HandleViewportToolPress(app) && static_cast<int>(app->ViewToolDragOperation()) == 16,
+              "pressing the enlarged camera Y handle starts its actual native gesture");
+        pointer.y += 12;
+        MouseInteractionBegin(app);
+        ModeCameraAdjust(app, 1);
+        MouseInteractionEnd(app);
+        held = false; HandleViewportToolRelease(app);
+        Check(position() != before && app->ViewToolDragOperation() == ViewportToolAction::None && visibility == 0,
+              "the enlarged handle moves the camera and completes on release");
+    }
     RECT client{}; GetClientRect(main,&client);
     const auto headerPoint = [&](int operation) {
         auto panels = FramePanelLayout(app);
@@ -110,6 +160,39 @@ inline void Run(MMDApp* app) {
         const int cancelWarps=warps;capture=nullptr;
         HandleViewportToolRelease(app);
         Check(warps==cancelWarps && visibility==0,"header capture loss restores visibility without moving pointer");
+    }
+    for (int operation : {1,2}) {
+        capture=foreground=main;held=true;control=false;app->CtrlModifierState()=0;app->LeftMouseButtonState()=0;
+        headerPoint(operation);
+        const POINT clicked{app->MouseX(),app->MouseY()};
+        pointer=clicked;ClientToScreen(main,&pointer);const auto stationary=pointer;
+        warpSucceeds=false;
+        Check(HandleViewportToolPress(app) && app->MouseX()==clicked.x && app->MouseY()==clicked.y &&
+              app->PreviousMouseX()==clicked.x && app->PreviousMouseY()==clicked.y &&
+              pointer.x==stationary.x && pointer.y==stationary.y,
+              "failed initial centering retains the actual pointer sample and matching previous coordinates");
+        const auto cameraValues=[&]{return std::array<float,4>{app->CameraDistance(),app->CameraPositionX(),app->CameraPositionY(),app->CameraPositionZ()};};
+        const auto before=cameraValues();
+        MouseInteractionBegin(app);MouseInteractionEnd(app);
+        Check(cameraValues()==before && app->MouseX()==clicked.x && app->MouseY()==clicked.y,
+              "stationary pointer after denied initial warp cannot manufacture camera movement");
+        held=false;HandleViewportToolRelease(app);warpSucceeds=true;
+        app->LeftMouseButtonState()=0;held=true;headerPoint(operation);
+        Check(HandleViewportToolPress(app),"start a fresh successful centered drag before later warp failure");
+        pointer={view.left-3,view.top-5};ClientToScreen(main,&pointer);
+        warpSucceeds=false;
+        MouseInteractionBegin(app);MouseInteractionEnd(app);
+        Check(app->MouseX()==view.left-3 && app->MouseY()==view.top-5 &&
+              app->PreviousMouseX()==view.left-3 && app->PreviousMouseY()==view.top-5,
+              "failed boundary centering preserves the real out-of-bounds current and previous samples");
+        const auto after=cameraValues();
+        MouseInteractionBegin(app);MouseInteractionEnd(app);
+        Check(cameraValues()==after,"stationary pointer after a failed boundary warp cannot repeat a phantom delta");
+        warpSucceeds=true;RecentreCenteredDragCursor(app);
+        Check(app->MouseX()==(view.left+view.right)/2 && app->MouseY()==(view.top+view.bottom)/2 &&
+              app->PreviousMouseX()==app->MouseX() && app->PreviousMouseY()==app->MouseY(),
+              "a later successful boundary warp restores the established centered sampling behavior");
+        held=false;HandleViewportToolRelease(app);
     }
     const auto camera = [&] {
         return std::array<float, 6>{app->CameraDistance(), app->CameraPositionX(), app->CameraPositionY(),
@@ -175,6 +258,140 @@ inline void Run(MMDApp* app) {
                   "topmost video gesture does not move the picture underneath");
         }
     }
+#if !MMD_ORIGINAL_PROFILE
+    // Drive the actual header press/frame samples while changing the production
+    // identity registry exactly as loaders do. These fixtures model identity
+    // publication; they do not claim to exercise another codec or file decoder.
+    namespace identity = plugins::background_identity;
+    using Target = MMDApp::BackgroundGesture::Target;
+    const auto release = [&] { held = false; HandleViewportToolRelease(app); };
+    for (bool video : {false, true}) {
+        app->PictureBackgroundEnabled() = 1; app->AviBackgroundEnabled() = video;
+        auto& x = video ? app->AviOffsetX() : app->PictureOffsetX();
+        auto& y = video ? app->AviOffsetY() : app->PictureOffsetY();
+        auto& mediaScale = video ? app->AviScale() : app->PictureScale();
+        const auto kind = video ? identity::Kind::Video : identity::Kind::Picture;
+        auto* path = video ? app->AviBackgroundPath() : app->PictureBackgroundPath();
+        wcscpy_s(path, 256, video ? L"same-background.avi" : L"same-background.bmp");
+        x = 20; y = 15; mediaScale = 1;
+        press(2); move(3, 4);
+        const auto oldTicket = app->backgroundGesture.media;
+        {
+            identity::Mutation replacement(app, !video, video);
+            x = 71; y = 82; mediaScale = .75f;
+        }
+        Check(identity::Acquire(app, kind) != oldTicket, "same-path replacement receives a different media identity");
+        move(11, 7);
+        Check(x == 71 && y == 82 && mediaScale == .75f && app->backgroundGesture.target == Target::Empty,
+              "old header drag cannot overwrite a same-path replacement");
+        move(5, 5);
+        Check(x == 71 && y == 82 && mediaScale == .75f && camera() == cameraBefore,
+              "stale media drag stays inert until release and never falls through to camera");
+        release();
+
+        // A new object at an old address has a different application domain,
+        // even when media kind, path and placement are unchanged.
+        press(1);
+        const auto oldInstance = app->backgroundGesture.instance;
+        { identity::Mutation closing(app, true, true, true); }
+        Check(identity::Register(app) && identity::Instance(app) != oldInstance,
+              "closed application address registers a fresh identity");
+        move(0, -10);
+        Check(x == 71 && y == 82 && mediaScale == .75f && app->backgroundGesture.target == Target::Empty,
+              "stale drag cannot write into a new application identity at the same address");
+        release();
+
+        {
+            identity::Mutation replacing(app, !video, video, false, !video);
+            press(2); move(8, 9);
+            Check(app->backgroundGesture.target == Target::Empty && x == 71 && y == 82 && mediaScale == .75f,
+                  "cannot start placement while the selected media is being mutated");
+        }
+        move(8, 9);
+        Check(x == 71 && y == 82 && mediaScale == .75f && camera() == cameraBefore,
+              "a rejected press remains rejected when media mutation ends");
+        release();
+
+        press(2);
+        {
+            identity::Mutation replacing(app, !video, video, false, !video);
+            move(8, 9);
+            Check(x == 71 && y == 82 && mediaScale == .75f && app->backgroundGesture.target == Target::Empty,
+                  "active media mutation rejects the whole drag sample without a partial write");
+        }
+        move(8, 9);
+        Check(x == 71 && y == 82 && mediaScale == .75f,
+              "a rejected sample does not resume after a failed replacement");
+        release();
+
+        if (!video) {
+            press(2);
+            const auto ticket = app->backgroundGesture.media;
+            { identity::Mutation failedCandidate(app, true, false, false, true); }
+            Check(identity::IsCurrent(app, kind, ticket), "unpublished failed picture candidate preserves old media identity");
+            move(8, 9);
+            Check(app->backgroundGesture.target == Target::Picture && (x != 71 || y != 82),
+                  "existing drag continues after a failed candidate when no sample crossed the mutation");
+            release();
+        }
+        x = 20; y = 15; mediaScale = 1;
+        press(2); mediaScale = .625f;
+        move(8, 9);
+        Check(x == 20 && y == 15 && mediaScale == .625f && app->backgroundGesture.target == Target::Empty,
+              "pan rejects an external scale edit without writing either offset");
+        release();
+
+        // Hiding the selected media ends this preview; showing it again must
+        // not resume the old pointer deltas or select the picture underneath.
+        x = 20; y = 15; mediaScale = 1;
+        press(2);
+        if (video) app->AviBackgroundEnabled() = 0;
+        else app->PictureBackgroundEnabled() = 0;
+        move(7, 8);
+        Check(app->backgroundGesture.target == Target::Empty && x == 20 && y == 15,
+              "hiding selected media rejects the pending placement sample");
+        if (video) app->AviBackgroundEnabled() = 1;
+        else app->PictureBackgroundEnabled() = 1;
+        move(7, 8);
+        Check(x == 20 && y == 15 && mediaScale == 1 && camera() == cameraBefore,
+              "showing media again does not resume a cancelled preview");
+        release();
+
+        for (float invalidScale : {std::numeric_limits<float>::quiet_NaN(),
+                                   std::numeric_limits<float>::infinity(), -1.0f, 0.0f}) {
+            x = 20; y = 15; mediaScale = invalidScale;
+            press(1); move(0, -20);
+            Check(std::isfinite(mediaScale) && mediaScale > 1 &&
+                  app->backgroundGesture.target == (video ? Target::Video : Target::Picture),
+                  "zoom normalizes invalid starting scale without invalid integer conversion");
+            release();
+        }
+        x = 20; y = 15; mediaScale = 1;
+        press(1);
+        // The subtraction is representable: -1 - INT_MAX == INT_MIN.
+        app->PreviousMouseY() = (std::numeric_limits<int>::max)();
+        move(0, (std::numeric_limits<int>::min)());
+        Check(mediaScale == 100 && camera() == cameraBefore,
+              "minimum signed mouse delta enlarges media to the upper zoom limit");
+        release();
+
+        // Any external field change terminates ownership of this preview.
+        // Zoom must not write its scale first and discover the conflict later.
+        for (unsigned field = 0; field != 3; ++field) {
+            x = 20; y = 15; mediaScale = 1;
+            press(1);
+            if (field == 0) x = 123; else if (field == 1) y = 234; else mediaScale = .5f;
+            const int foreignX = x, foreignY = y; const float foreignScale = mediaScale;
+            move(0, -20);
+            Check(x == foreignX && y == foreignY && mediaScale == foreignScale &&
+                  app->backgroundGesture.target == Target::Empty && camera() == cameraBefore,
+                  "external placement edit cancels all preview writes, including zoom scale");
+            release();
+            Check(x == foreignX && y == foreignY && mediaScale == foreignScale,
+                  "ending a conflicted drag does not roll back external placement");
+        }
+    }
+#endif
     app->PictureBackgroundEnabled() = app->AviBackgroundEnabled() = 0;
     press(2); move(20, 20); held = false; HandleViewportToolRelease(app);
     Check(camera() == cameraBefore, "Ctrl drag without visible media does not move camera");

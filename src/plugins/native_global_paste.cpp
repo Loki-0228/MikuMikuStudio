@@ -74,17 +74,27 @@ struct GlobalPaste final:HistoryChange,std::enable_shared_from_this<GlobalPaste>
     }
 };
 }
-MmsResult PlanGlobalKeyPaste(MMDApp& app,std::shared_ptr<HistoryChange>& out) noexcept {
-    out.reset();
-    if(app.PlaybackActive()||app.FrameStepPlayback()||app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
-    if(app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+MmsResult CaptureGlobalPastePayload(MMDApp& app,GlobalPasteSource& out) noexcept {
+    out={};
     return Boundary([&]()->MmsResult {
-        const auto counts=app.ClipboardCounts();GlobalPasteSource source;source.frameOffset=unsigned(app.CurrentFrame());
+        const auto counts=app.ClipboardCounts();GlobalPasteSource source;
         if(!CopySource(app.CameraClipboard(),counts.cameras,mdl::KeyPoolLimit<mdl::CameraKey>(),source.cameras)||
             !CopySource(app.LightClipboard(),counts.lights,mdl::KeyPoolLimit<mdl::LightKey>(),source.lights)||
             !CopySource(app.ShadowClipboard(),counts.shadows,mdl::KeyPoolLimit<mdl::SelfShadowKey>(),source.shadows)||
             !CopySource(app.GravityClipboard(),counts.gravity,mdl::KeyPoolLimit<mdl::GravityKey>(),source.gravity)||
             !CopySource(app.AccessoryClipboard(),counts.accessories,mdl::KeyPoolLimit<mdl::AccessoryKey>(),source.accessories))return MMS_E_ARGUMENT;
+        out=std::move(source);return MMS_OK;
+    });
+}
+MmsResult PlanGlobalKeyPaste(MMDApp& app,std::shared_ptr<HistoryChange>& out) noexcept {
+    out.reset();
+    if(app.PlaybackActive()||app.FrameStepPlayback()||app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+    const int frame=app.CurrentFrame();
+    if(frame<0||frame>frame_limits::maximum)return MMS_E_ARGUMENT;
+    return Boundary([&]()->MmsResult {
+        GlobalPasteSource source;
+        if(auto result=CaptureGlobalPastePayload(app,source))return result;
+        source.frameOffset=unsigned(frame);
         return PlanGlobalKeyPaste(app,source,out);
     });
 }
@@ -120,3 +130,5 @@ MmsResult PlanGlobalKeyPaste(MMDApp& app,const GlobalPasteSource& source,std::sh
 }
 }
 #endif
+
+#include "native_global_copy.inc"

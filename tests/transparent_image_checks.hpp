@@ -109,14 +109,14 @@ void TransparentImages(MMDApp* app) {
     // directory must not select the encoder or alpha behaviour for the file.
     const auto directory = output / L"still-png-directory.png";
     fs::create_directories(directory);
-    Check(MH_CreateHook(reinterpret_cast<void*>(&GetSaveFileNameW), &StillSaveDialog, nullptr) == MH_OK &&
-        MH_EnableHook(reinterpret_cast<void*>(&GetSaveFileNameW)) == MH_OK, "control still-image format selection");
+    StillSaveDialogProbe pickerProbe;
     const int width = app->RenderWidth(), height = app->RenderHeight();
     app->RenderWidth() = 64; app->RenderHeight() = 48;
     for (int format = 0; format < std::size(seq::kFormats); ++format) {
         const wchar_t* extension = format == 1 ? L".JPEG" : format == 2 ? L".PNG" :
             format == 3 ? L".DDS" : seq::kFormats[format].extension;
         stillPath = directory / (L"still_" + std::to_wstring(format) + extension);
+        selectedStillType = format == 0 ? 3u : format == 2 ? 1u : static_cast<UINT>(format + 1);
         stillPickers = 0;
         SendMessageW(app->MainWindow(), WM_COMMAND, 276, 0);
         Check(stillPickers == 1 && app->RecordingWindow(), "single-image format starts through its menu command");
@@ -128,7 +128,6 @@ void TransparentImages(MMDApp* app) {
         if (format <= 3) CheckBackgroundAlpha(stillPath, seq::SupportsAlpha(format), seq::SupportsAlpha(format));
     }
     app->RenderWidth() = width; app->RenderHeight() = height;
-    MH_DisableHook(reinterpret_cast<void*>(&GetSaveFileNameW)); MH_RemoveHook(reinterpret_cast<void*>(&GetSaveFileNameW));
     ResetAppState(app);
 
     // Half coverage is independent of model shaders. Decode the actual files

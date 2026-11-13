@@ -278,6 +278,59 @@ std::shared_ptr<RetainedSceneObject> RetainSceneObject(MMDApp& app, uint32_t kin
     auto result = std::shared_ptr<RetainedSceneObject>(new RetainedSceneObject(std::make_unique<RetainedSceneObject::Impl>(app, kind, slot, object)));
     retainedObjects[key] = result; return result;
 }
+#if !MMD_ORIGINAL_PROFILE
+MmsResult MeasureGlobalDeletionParentPreparation(MMDApp& app,unsigned slot,std::uint64_t& bytes)noexcept{
+    if(slot>=kModelSlotCount)return MMS_E_ARGUMENT;
+    auto* object=app.ModelSlot(slot);if(!object)return MMS_E_ARGUMENT;
+    // Preparation may acquire an owner, but cannot publish a permanent scene
+    // identity: cancelling that owner would leave the registration behind.
+    // Scene admission/planning must establish identity before this phase.
+    MmsObjectRef identity{};
+    if(!FindSceneObjectIdentity(object,identity))return MMS_E_NOT_READY;
+    const auto found=retainedObjects.find({&app,object});
+    if(found!=retainedObjects.end())if(auto retained=found->second.lock()){
+        const auto& value=*retained->impl_;
+        if(value.kind!=MMS_OBJECT_MODEL||value.slot!=slot||!value.present||
+            !SceneObjectPresent(object,value.id)||!value.MembershipCurrent())return MMS_E_STALE;
+        bytes=0;return MMS_OK;
+    }
+    // Match the audited allocation layout in ModelPhysicsResources. The
+    // process-lifetime registry's existing sentinel/proxy is not allocated by
+    // this operation. A stale weak entry is replaced without allocating a node.
+#if defined(_MSVC_STL_VERSION) && _MSVC_STL_VERSION == 143 && _MSVC_STL_UPDATE == 202503L && !_HAS_CXX23
+    std::uint64_t measured=sizeof(RetainedSceneObject);bool valid=true;
+    const auto add=[&](std::uint64_t amount)noexcept{
+        if(!valid)return;
+        if(amount>=UINT64_MAX-measured){valid=false;return;}
+        measured+=amount;
+    };
+    add(sizeof(RetainedSceneObject::Impl));add(sizeof(std::_Ref_count<RetainedSceneObject>));
+    if(found==retainedObjects.end()){
+        if(retainedObjects.size()==retainedObjects.max_size())return MMS_E_MEMORY;
+        using Node=std::_Tree_node<decltype(retainedObjects)::value_type,void*>;
+        add(sizeof(Node));
+#if defined(_M_IX86) || defined(_M_X64)
+        if(sizeof(Node)>=std::_Big_allocation_threshold
+#ifdef __cpp_aligned_new
+            &&alignof(Node)<=__STDCPP_DEFAULT_NEW_ALIGNMENT__
+#endif
+        )add(std::_Non_user_size);
+#endif
+    }
+    if(!valid)return MMS_E_MEMORY;
+    std::uint64_t nested=0;
+    if(const auto result=ModelPhysicsResources::MeasureCapturePreparation(object,nested))return result;
+    add(nested);if(!valid)return MMS_E_MEMORY;
+    bytes=measured;return MMS_OK;
+#else
+    return MMS_E_NOT_READY;
+#endif
+}
+std::uint64_t ModelDeletionOwnerPreparationBytes(MMDApp& app,unsigned slot)noexcept{
+    std::uint64_t bytes=0;
+    return MeasureGlobalDeletionParentPreparation(app,slot,bytes)==MMS_OK?bytes:UINT64_MAX;
+}
+#endif
 std::shared_ptr<HistoryChange> RetainedSceneObject::CaptureRemoval(uint64_t resourceBytes) {
     return CaptureRemovalBatch({shared_from_this()}, resourceBytes);
 }

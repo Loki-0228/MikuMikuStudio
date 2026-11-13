@@ -1,7 +1,9 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "autosave_dialog.hpp"
+#include "native_dialog_backdrop.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ui_scale.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 #include <ShObjIdl.h>
 #include <commctrl.h>
@@ -75,6 +77,7 @@ void UpdateNaming(HWND dialog,NamingContext& context) {
     EnableWindow(GetDlgItem(dialog,IDOK),valid);
 }
 }
+
 INT_PTR CALLBACK NamingProc(HWND dialog,UINT msg,WPARAM wp,LPARAM lp) {
     auto* c=reinterpret_cast<NamingContext*>(GetWindowLongPtrW(dialog,DWLP_USER));
     if(msg==WM_INITDIALOG) {
@@ -99,7 +102,9 @@ INT_PTR CALLBACK NamingProc(HWND dialog,UINT msg,WPARAM wp,LPARAM lp) {
         SendDlgItemMessageW(dialog,Pattern,EM_SETLIMITTEXT,240,0);
         SetDlgItemTextW(dialog,Pattern,c->pattern.c_str());UpdateNaming(dialog,*c);
         SetFocus(GetDlgItem(dialog,Pattern));SendDlgItemMessageW(dialog,Pattern,EM_SETSEL,-1,-1);
-        SetTimer(dialog,1,1000,nullptr);return FALSE;
+        SetTimer(dialog,1,1000,nullptr);
+        native_dialog_backdrop::Attach(dialog, ui_scale::Percent());
+        return FALSE;
     }
     if(!c)return FALSE;
     if(msg==WM_CTLCOLORSTATIC && reinterpret_cast<HWND>(lp)==GetDlgItem(dialog,Preview)) {
@@ -169,6 +174,7 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT msg, WPARAM wp, LPARAM lp) {
             AddTip(dialog, *c, KeepPrevious);
             AddTip(dialog, *c, Folder);
         }
+        native_dialog_backdrop::Attach(dialog, ui_scale::Percent());
         return TRUE;
     }
     if (!c) return FALSE;

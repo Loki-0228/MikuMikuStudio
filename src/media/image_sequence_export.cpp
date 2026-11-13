@@ -14,8 +14,11 @@
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/recording_state.hpp"
 #include "mikumikustudio/transparent_capture.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "staged_output_publication.hpp"
 #include <cmath>
 #include <algorithm>
+#include <atomic>
 #include <climits>
 #include <cwctype>
 #include <filesystem>
@@ -26,8 +29,9 @@
 namespace mikumikustudio::image_sequence {
 namespace {
 struct Session { Options options; std::uint64_t written = 0; };
+struct StillSession { bool alpha; std::optional<StillFileIdentity> overwrite; bool frameReady = false; };
 std::unordered_map<MMDApp*, Session> sessions;
-std::unordered_map<MMDApp*, bool> stills;
+std::unordered_map<MMDApp*, StillSession> stills;
 template<class Key>
 std::uint32_t TrackEnd(const Key* keys, std::size_t capacity, std::uint32_t head = 0) {
     std::uint32_t last = 0;
@@ -62,14 +66,36 @@ int FormatFromPath(const wchar_t* path) {
     return -1;
 }
 bool SupportsAlpha(int format) { return format == 2 || format == 3; }
-void BeginStill(MMDApp* app, int format) { stills.insert_or_assign(app, SupportsAlpha(format)); }
+std::optional<StillFileIdentity> ReadStillFileIdentity(const wchar_t* path) noexcept {
+    const HANDLE file = CreateFileW(path, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return std::nullopt;
+    recording_output_path::FileIdentity identity{};
+    const DWORD read = recording_output_path::ReadIdentity(file, identity);
+    CloseHandle(file);
+    if (read != ERROR_SUCCESS) return std::nullopt;
+    return StillFileIdentity{identity.volume, identity.index,
+        (std::uint64_t(identity.modified.dwHighDateTime) << 32) | identity.modified.dwLowDateTime, identity.size};
+}
+void BeginStill(MMDApp* app, int format, std::optional<StillFileIdentity> overwrite) {
+    stills.insert_or_assign(app, StillSession{SupportsAlpha(format), overwrite});
+}
 bool StillActive(MMDApp* app) { return stills.find(app) != stills.end(); }
+void SetStillFrameReady(MMDApp* app, bool ready) {
+    const auto still = stills.find(app);
+    if (still != stills.end()) still->second.frameReady = ready;
+}
+bool StillFrameReady(MMDApp* app) {
+    const auto still = stills.find(app);
+    return still != stills.end() && still->second.frameReady;
+}
 void EndStill(MMDApp* app) { if (stills.erase(app)) ReleaseTransparentCapture(app); }
 bool Transparent(MMDApp* app) {
     const auto found = sessions.find(app);
     if (found != sessions.end()) return SupportsAlpha(found->second.options.format);
     const auto still = stills.find(app);
-    return app && app->RecordingWindow() && still != stills.end() && still->second;
+    return app && app->RecordingWindow() && still != stills.end() && still->second.alpha;
 }
 long SaveSurface(const wchar_t* path, int format, IDirect3DSurface9* surface, bool transparent) {
     auto& api = d3dx::Get();
@@ -106,6 +132,57 @@ long SaveSurface(const wchar_t* path, int format, IDirect3DSurface9* surface, bo
     hr = pixels->UnlockRect();
     if (FAILED(hr)) return hr;
     return api.saveSurfaceToFileW(path, kFormats[format].d3dxFormat, pixels.Get(), nullptr, nullptr);
+}
+
+long SaveStillSurface(MMDApp* app, const wchar_t* path, IDirect3DSurface9* surface,
+                      bool transparent, std::wstring& retained) {
+    retained.clear();
+    const int format = FormatFromPath(path);
+    if (format < 0 || !surface) return E_INVALIDARG;
+    std::error_code pathError;
+    const auto destination = std::filesystem::absolute(path, pathError);
+    if (pathError) return HRESULT_FROM_WIN32(pathError.value());
+    const auto directory = destination.parent_path();
+    const auto still = stills.find(app);
+    const auto overwrite = still != stills.end() ? still->second.overwrite : std::nullopt;
+    std::optional<recording_output_path::FileIdentity> approved;
+    if (overwrite) {
+        approved = recording_output_path::FileIdentity{overwrite->volume, overwrite->file, overwrite->size,
+            {static_cast<DWORD>(overwrite->lastWrite), static_cast<DWORD>(overwrite->lastWrite >> 32)}};
+    }
+
+    // Keep staging on the same volume and use a short leaf so a valid still
+    // path can be saved even when its directory is near the legacy limit.
+    static std::atomic<unsigned long> next{GetTickCount() ^ GetCurrentProcessId()};
+    for (int attempt = 0; attempt < 64; ++attempt) {
+        wchar_t name[9]{};
+        swprintf_s(name, L"~%07lX", next.fetch_add(1, std::memory_order_relaxed) & 0x0fffffffUL);
+        const auto temporary = directory / name;
+        std::wstring backup;
+        if (approved) {
+            name[0] = L'!';
+            backup = (directory / name).native();
+            // Near-limit legacy paths still have room for a spare short name.
+            if (backup.size() + 4 < MAX_PATH) backup += L".bak";
+        }
+        const HANDLE reserved = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (reserved == INVALID_HANDLE_VALUE) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) continue;
+            return HRESULT_FROM_WIN32(error);
+        }
+        CloseHandle(reserved);
+        HRESULT result = SaveSurface(temporary.c_str(), format, surface, transparent);
+        if (SUCCEEDED(result)) {
+            result = staged_output::Publish(temporary.native(), destination.native(), approved, std::move(backup), retained);
+            if (!retained.empty()) runtime_log::WritePath("Still previous output retained at", retained.c_str());
+            if (SUCCEEDED(result)) return result;
+        }
+        DeleteFileW(temporary.c_str());
+        return result;
+    }
+    return HRESULT_FROM_WIN32(ERROR_FILE_EXISTS);
 }
 
 const wchar_t* Text(MMDApp* app, const wchar_t* zh, const wchar_t* en, const wchar_t* ja) {

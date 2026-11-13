@@ -338,6 +338,7 @@ class EvaluationMeshSource {
     MmsEvaluationApiV1_5 api_{};
     friend class EvaluationMeshServices;
     friend class EvaluationMaterialServices;
+    friend class EvaluationReferenceServices;
 public:
     EvaluationMeshSource() noexcept=default;
     EvaluationMeshSource(const EvaluationMeshSource&)=delete;
@@ -509,6 +510,7 @@ class EvaluationMaterialSource {
     EvaluationMeshSource mesh_;
     MmsEvaluationApiV1_6 api_{};
     friend class EvaluationMaterialServices;
+    friend class EvaluationReferenceServices;
 public:
     EvaluationMaterialSource() noexcept=default;
     EvaluationMaterialSource(const EvaluationMaterialSource&)=delete;
@@ -564,6 +566,94 @@ public:
         if(result!=MMS_OK)return result;if(!candidate)return MMS_E_FAILED;
         const auto prefix=evaluation_detail::MeshPrefix(api_);
         out.mesh_.lease_.Adopt(evaluation_detail::Prefix(prefix),candidate);out.mesh_.api_=prefix;out.api_=api_;return MMS_OK;
+    }
+};
+
+// 1.7 owns the same source handle used by the material/mesh views. Reference
+// reads return caller-owned copies; they do not retain pixels or files.
+namespace evaluation_detail {
+inline MmsEvaluationApiV1_6 MaterialPrefix(const MmsEvaluationApiV1_7& api) noexcept {
+    MmsEvaluationApiV1_6 result{};
+    static_assert(offsetof(MmsEvaluationApiV1_7,getReferenceCapabilities)==sizeof(result),"evaluation reference prefix");
+    std::memcpy(&result,&api,sizeof(result));return result;
+}
+inline bool CompleteReference(const MmsEvaluationApiV1_7& api) noexcept {
+    return CompleteMaterial(MaterialPrefix(api)) && api.getReferenceCapabilities && api.createReferenceSceneSource &&
+        api.readMaterialReferences && api.readToonTable;
+}
+template<std::size_t N> bool Terminated(const uint16_t (&text)[N]) noexcept {
+    for(auto value:text) if(!value)return true;
+    return false;
+}
+}
+
+class EvaluationReferenceServices;
+class EvaluationReferenceSource {
+    EvaluationMaterialSource material_;
+    MmsEvaluationApiV1_7 api_{};
+    friend class EvaluationReferenceServices;
+public:
+    EvaluationReferenceSource() noexcept=default;
+    EvaluationReferenceSource(const EvaluationReferenceSource&)=delete;
+    EvaluationReferenceSource& operator=(const EvaluationReferenceSource&)=delete;
+    EvaluationReferenceSource(EvaluationReferenceSource&&) noexcept=default;
+    EvaluationReferenceSource& operator=(EvaluationReferenceSource&&)=delete;
+    explicit operator bool() const noexcept {return bool(material_);}
+    MmsHandle get() const noexcept {return material_.get();}
+    const EvaluationMaterialSource& Material() const noexcept {return material_;}
+    const MmsEvaluationApiV1_7& api() const noexcept {return api_;}
+    MmsResult ReadMaterialReferences(std::uint32_t model,std::uint32_t index,MmsEvaluationMaterialReferencesV1& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::Read(out,[&](auto& value){return api_.readMaterialReferences(api_.context,get(),model,index,&value);},
+            [index](const auto& value){return evaluation_detail::Id(value.material) && value.index==index && !value.reserved &&
+                (value.flags==MMS_EVALUATION_MATERIAL_FORMAT_PMD || value.flags==MMS_EVALUATION_MATERIAL_FORMAT_PMX) &&
+                evaluation_detail::Terminated(value.texturePath) && evaluation_detail::Terminated(value.spherePath) && evaluation_detail::Terminated(value.toonPath);});
+    }
+    MmsResult ReadToonTable(std::uint32_t model,MmsEvaluationToonTableV1& out) const noexcept {
+        if(!*this)return MMS_E_NOT_READY;
+        return evaluation_detail::Read(out,[&](auto& value){return api_.readToonTable(api_.context,get(),model,&value);},
+            [](const auto& value){return evaluation_detail::Terminated(value.modelDirectory);});
+    }
+    MmsResult Retain(EvaluationReferenceSource& out) const noexcept {
+        const auto result=material_.Retain(out.material_);if(result==MMS_OK)out.api_=api_;return result;
+    }
+    MmsResult Release() noexcept {const auto result=material_.Release();if(result==MMS_OK)api_={};return result;}
+    MmsHandle detach() noexcept {api_={};return material_.detach();}
+};
+
+class EvaluationReferenceServices {
+    MmsEvaluationApiV1_7 api_{};
+    bool ready_=false;
+public:
+    EvaluationReferenceServices() noexcept=default;
+    static MmsResult Query(const MmsHostV1& host,EvaluationReferenceServices& out) noexcept {
+        if(host.h.size<sizeof(host)||host.h.major!=1)return MMS_E_VERSION;
+        if(!host.queryService)return MMS_E_ARGUMENT;
+        return evaluation_detail::Call([&]() -> MmsResult {
+            MmsEvaluationApiV1_7 table{};
+            const auto result=host.queryService(host.context,{"mms.scene.evaluate",18},1,7,static_cast<std::uint32_t>(sizeof(table)),&table);
+            if(result!=MMS_OK)return result;
+            if(table.h.size<sizeof(table)||table.h.major!=1||table.h.minor<7)return MMS_E_VERSION;
+            if(!evaluation_detail::CompleteReference(table))return MMS_E_UNSUPPORTED;
+            EvaluationReferenceServices candidate;candidate.api_=table;candidate.ready_=true;out=candidate;return MMS_OK;
+        });
+    }
+    bool ready() const noexcept {return ready_;}
+    const MmsEvaluationApiV1_7& api() const noexcept {return api_;}
+    MmsResult Capabilities(MmsEvaluationReferenceCapsV1& out) const noexcept {
+        if(!ready_)return MMS_E_NOT_READY;
+        return evaluation_detail::Read(out,[&](auto& value){return api_.getReferenceCapabilities(api_.context,&value);},
+            [](const auto& value){return !(value.flags&~MMS_EVALUATION_REFERENCE_CAP_RUNTIME_FIELDS)&&!value.reserved;});
+    }
+    MmsResult Capture(EvaluationReferenceSource& out,std::uint64_t maxRetainedBytes=0) const noexcept {
+        if(!ready_)return MMS_E_NOT_READY;if(out)return MMS_E_BUSY;
+        const MmsEvaluationSceneQueryV1 query{evaluation_detail::Header<MmsEvaluationSceneQueryV1>(),maxRetainedBytes,0,0};
+        MmsHandle candidate=0;const auto result=evaluation_detail::Call([&]{return api_.createReferenceSceneSource(api_.context,&query,&candidate);});
+        if(result!=MMS_OK)return result;if(!candidate)return MMS_E_FAILED;
+        const auto material=evaluation_detail::MaterialPrefix(api_);
+        const auto mesh=evaluation_detail::MeshPrefix(material);
+        out.material_.mesh_.lease_.Adopt(evaluation_detail::Prefix(mesh),candidate);
+        out.material_.mesh_.api_=mesh;out.material_.api_=material;out.api_=api_;return MMS_OK;
     }
 };
 } // namespace mms::sdk

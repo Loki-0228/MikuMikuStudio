@@ -367,7 +367,7 @@ void Run(MMDApp* app) {
     const auto flags = reinterpret_cast<std::uint64_t(*)()>(GetProcAddress(library, "GetProbeFlags"));
     Check(value && flags && (flags() & 1) && !(flags() & 2), "real registration plugin negotiates controlled edit service");
     auto scene = CreateSceneStore(app); SceneClient client;
-    Context context(*app, *history, scene->Api(client), value);
+    Context context(*app, *history, ([&]{ MmsSceneApiV1 value{}; if (scene->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }()), value);
     MorphLanes(context); DisplayRegistration(context); Rejections(context);
     std::puts("PASS actual four-lane morph and display/IK/parent registration with native/plugin history");
 }

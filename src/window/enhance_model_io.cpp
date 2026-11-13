@@ -13,6 +13,7 @@
 #include "playback_timing_ui.hpp"
 #include "mikumikustudio/sequence_scatter.hpp"
 #include "viewport_corner_menu.hpp"
+#include "mikumikustudio/ui_scale.hpp"
 #include "enhanced_model_save.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_object_commands.hpp"
@@ -1564,6 +1565,7 @@ void RefreshMenuLanguage(MMDApp* app) {  // was Sub40B5A0, VA 0x0040B5A0
     RefreshTransparentSortPrecisionMenu(app);
     // Refresh the Help menu's corner label along with the interface language.
     viewport_corner_menu::EnsureItem(app);
+    ui_scale::RefreshMenu(app);
     autosave::RefreshMenu(app);
     viewport_render_scale::RefreshMenu(app);
     DrawMenuBar(hwnd);

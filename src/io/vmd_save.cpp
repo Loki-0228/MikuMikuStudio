@@ -71,15 +71,8 @@
 namespace mikumikustudio {
 namespace {
 
-unsigned char* ActiveModel(MMDApp* app) {
-    return app->SelectedModel();
-}
-
 const char kCameraLightName[] =  // 0x52BCB8 "カメラ・照明" (byte-exact)
     "\x83\x4a\x83\x81\x83\x89\x81\x45\x8f\xc6\x96\xbe";
-const char kJpCannotSave[] =  // 0x52BCE4
-    "\x83\x74\x83\x40\x83\x43\x83\x8b\x82\xaa\x95\xdb\x91\xb6\x82\xc5\x82"
-    "\xab\x82\xdc\x82\xb9\x82\xf1:%d";
 
 #if MMD_ORIGINAL_PROFILE
 struct OriginalNames {
@@ -131,30 +124,23 @@ bool PrepareOriginalNames(unsigned char* raw, OriginalNames& names) {
 }  // namespace
 
 // ---- VA 0x00419370 --------------------------------------------------------
-static void SaveVmdFileImpl(const wchar_t* path) {
+static bool SaveVmdFileImpl(const wchar_t* path) {
     MMDApp* app = g_Block;
-    if (app == nullptr) return;
+    if (!app || !path || !*path) return false;
     auto& s = *app;
 
     const bool cameraMode = s.state.optflag[0] != 0;
-    unsigned char* const model = ActiveModel(app);
+    unsigned char* const model = cameraMode || s.SelectedModelSlot() >= kModelSlotCount ? nullptr : s.SelectedModel();
+    if (!cameraMode && !model) return false;
+    const unsigned language = s.EnglishUI() <= 2 ? s.EnglishUI() : 1;
 #if MMD_ORIGINAL_PROFILE
     OriginalNames names;
-    if (!cameraMode && (!model || !PrepareOriginalNames(model, names))) {
+    if (!cameraMode && !PrepareOriginalNames(model, names)) {
         original_file_encoding::Refuse(app->Hwnd(), s.EnglishUI(), L"VMD");
-        return;
+        return false;
     }
 #else
     bone_scale_io::PrefixFingerprint prefix;
-    extended_names::MotionNames fullNames;
-    bool extendedNames = !cameraMode && model && !extended_names::LegacyNamesFit(*mdl::Mdl(model), true);
-    extended_names::MotionScope unicodeScope(extendedNames);
-    if (extendedNames) {
-        const auto& m = *mdl::Mdl(model);
-        fullNames.model = text_encoding::ModelName(m, false);
-        for (unsigned i=0;i<m.boneCount;++i) fullNames.bones.push_back(text_encoding::BoneName(m.boneTable[i],false));
-        for (unsigned i=0;i<m.morphCount;++i) fullNames.morphs.push_back(text_encoding::MorphName(m.morphs[i],false));
-    }
 #endif
     std::uint64_t standardBytes=0;
     bool writeFailed = false;
@@ -229,6 +215,10 @@ static void SaveVmdFileImpl(const wchar_t* path) {
     // MMS: the selected `.x` keys ride behind the standard sections and share
     // the motion's minimum frame (accessory_motion_io.hpp).
 #if !MMD_ORIGINAL_PROFILE
+    extended_names::MotionNames fullNames;
+    const bool extendedNames = !cameraMode && model &&
+        extended_names::PrepareMotionNames(*mdl::Mdl(model), morphCnt != 0, fullNames);
+    extended_names::MotionScope unicodeScope(extendedNames);
     std::vector<accessory_motion_io::Track> accessoryTracks;
     if (cameraMode)
         accessoryTracks = accessory_motion_io::CaptureSelected(app, minFrame);
@@ -247,18 +237,25 @@ static void SaveVmdFileImpl(const wchar_t* path) {
         if (error == 0 || error != EEXIST) break;
     }
     if (fd < 0) {
-        char text[256];
-        if (s.state.englishUI != 0)
-            sprintf_s(text, 0x100, "Cannot save file:%d", errno);
-        else
-            sprintf_s(text, 0x100, kJpCannotSave, errno);
-        LegacyUiMessageBoxA(static_cast<HWND>(s.Hwnd()), text, "", 0);
-        return;
+        const wchar_t* messages[] = {
+            L"選択した場所に VMD を保存できません。フォルダーと書き込み権限を確認してください。",
+            L"Cannot save the VMD to the chosen location. Check the folder and its write permissions.",
+            L"无法将 VMD 保存到所选位置。请检查文件夹是否存在以及是否有写入权限。"};
+        MessageBoxW(static_cast<HWND>(s.Hwnd()), messages[language], L"VMD", MB_OK | MB_ICONERROR);
+        return false;
     }
 
     struct TemporaryFile {
-        int& fd; const std::wstring& path;
-        ~TemporaryFile() { if (fd >= 0) _close(fd); DeleteFileW(path.c_str()); }
+        int& fd;
+        std::wstring& path;
+        void Discard() {
+            if (!path.empty()) DeleteFileW(path.c_str());
+            path.clear();
+        }
+        ~TemporaryFile() {
+            if (fd >= 0) _close(fd);
+            Discard();
+        }
     } cleanup{fd, temporary};
 
     // The 25-byte header text and the 12-byte camera name are both shorter than
@@ -561,31 +558,44 @@ static void SaveVmdFileImpl(const wchar_t* path) {
     if (!writeFailed && !MoveFileExW(temporary.c_str(), path,
                                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         writeFailed = true;
-#if !MMD_ORIGINAL_PROFILE
-    if(!writeFailed&&extendedNames){
-        const auto compatibility=save_compatibility::InspectMotion(*mdl::Mdl(model));std::wstring copy;
-        if(compatibility.canCopyLegacy)save_compatibility::CopyPrefix(path,standardBytes,copy);
-        save_compatibility::Notify(*app,compatibility,copy,compatibility.canCopyLegacy);
-    }
-#endif
     if (writeFailed) {
-        DeleteFileW(temporary.c_str()); // only the file created exclusively above
+        cleanup.Discard();
         const wchar_t* messages[] = {
             L"VMD を完全に保存できませんでした。既存のファイルは変更されていません。",
             L"The VMD could not be saved completely. The existing file was preserved.",
             L"VMD 未能完整保存，已有文件已保留。"};
         MessageBoxW(static_cast<HWND>(s.Hwnd()),
-                    messages[s.state.englishUI <= 2 ? s.state.englishUI : 1],
+                    messages[language],
                     L"VMD", MB_OK | MB_ICONERROR);
+        return false;
     }
+    temporary.clear();
+#if !MMD_ORIGINAL_PROFILE
+    if (extendedNames) {
+        try {
+            auto compatibility = save_compatibility::InspectMotion(*mdl::Mdl(model));
+            std::wstring copy;
+            if (fullNames.boneRig || fullNames.morphTable) {
+                compatibility.namesNeedExtension = true;
+                compatibility.canCopyLegacy = false;
+            }
+            if (compatibility.canCopyLegacy) save_compatibility::CopyPrefix(path, standardBytes, copy);
+            save_compatibility::Notify(*app, compatibility, copy, compatibility.canCopyLegacy);
+        } catch (const std::exception&) {
+            runtime_log::Write("VMD saved; compatibility follow-up failed");
+        }
+    }
+#endif
+    return true;
 }
 
-void SaveVmdFile(const wchar_t* path) {
-    try { SaveVmdFileImpl(path); }
+bool SaveVmdFile(const wchar_t* path) {
+    try { return SaveVmdFileImpl(path); }
     catch (const std::exception&) {
-        if (!g_Block) return;
+        if (!g_Block) return false;
         const wchar_t* messages[] = {L"VMD の保存に必要なメモリを確保できないか、データが無効です。", L"VMD saving failed: insufficient memory or invalid data.", L"VMD 保存失败：内存不足或数据无效。"};
         if (g_Block->MainWindow()) MessageBoxW(g_Block->MainWindow(), messages[g_Block->EnglishUI() <= 2 ? g_Block->EnglishUI() : 1], L"VMD", MB_OK | MB_ICONERROR);
+        return false;
     }
 }
 

@@ -202,8 +202,9 @@ void PostViewRefresh(MMDApp* app) {
 
     // ---- bone readout ------------------------------------------------------
     unsigned char* model = app->SelectedModel();
-    const std::int32_t boneIdx = mikumikustudio::mdl::Mdl(model)->selectedBone;
-    if (boneIdx < 0) {                                     // 0x40D401 jl
+    const auto* native = model ? mdl::Mdl(model) : nullptr;
+    const auto boneIdx = native ? native->selectedBone : -1;
+    if (boneIdx < 0 || !native->boneTable || static_cast<unsigned>(boneIdx) >= native->boneCount) {
         for (int id = 0x220; id <= 0x226; ++id)
             SetReadoutText(app, GetDlgItem(hwnd, id), "-----");
 #if !MMD_ORIGINAL_PROFILE

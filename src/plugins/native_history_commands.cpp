@@ -3,6 +3,7 @@
 #include "native_pose_scope.hpp"
 #include "native_model_outline_ui.hpp"
 #include "native_object_commands.hpp"
+#include "native_picture_history.hpp"
 #include "native_camera_follow_ui.hpp"
 #include "history_runtime.hpp"
 #include "mikumikustudio/animation_curve_editor.hpp"
@@ -67,6 +68,7 @@ void PublishBoundHistoryEffects(MMDApp& app, SharedHistory& history, HistoryEffe
         // second queue. The existing coordinator coalesces this wake.
         if (HasHistoryEffect(effects, HistoryEffects::Viewport)) updates::RequestViewport(&app, false);
     } catch (...) { refreshFailed = true; }
+    if (!RefreshBoundPictureUi(app)) refreshFailed = true;
     if (refreshFailed) RequestBoundHistoryUiRefresh(&app, effects);
 }
 void PublishBoundPoseEdit(MMDApp& app, SharedHistory& history, bool physicsReset) noexcept {

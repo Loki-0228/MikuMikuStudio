@@ -1,6 +1,57 @@
 #include "scene_identity.hpp"
 #include <bcrypt.h>
+#include <limits>
 namespace mikumikustudio::plugins {
+#if !MMD_ORIGINAL_PROFILE
+MmsResult SceneIdentity::MeasureGetPreparation(const void* token,std::uint64_t& bytes)const noexcept{
+    if(!token)return MMS_E_ARGUMENT;
+    if(const auto found=entries_.find(token);found!=entries_.end()){
+        if(!found->second.present)return MMS_E_STALE;
+        bytes=0;return MMS_OK;
+    }
+    if(!nextGeneration_)return MMS_E_NOT_READY;
+    if(entries_.size()==entries_.max_size()||known_.size()==known_.max_size())return MMS_E_MEMORY;
+#if defined(_MSVC_STL_VERSION) && _MSVC_STL_VERSION == 143 && _MSVC_STL_UPDATE == 202503L && !_HAS_CXX23
+    using EntryNode=std::_Tree_node<decltype(entries_)::value_type,void*>;
+    using KnownNode=std::_Tree_node<decltype(known_)::value_type,void*>;
+    using Elements=decltype(Entry::elements);
+    using ElementNode=std::_Tree_node<Elements::value_type,void*>;
+    std::uint64_t measured=0;
+    const auto allocation=[&](std::uint64_t amount,std::size_t alignment)noexcept{
+#if defined(_M_IX86) || defined(_M_X64)
+        if(amount>=std::_Big_allocation_threshold
+#ifdef __cpp_aligned_new
+            &&alignment<=__STDCPP_DEFAULT_NEW_ALIGNMENT__
+#endif
+        ){
+            if(amount>(std::numeric_limits<std::size_t>::max)()-std::_Non_user_size)return false;
+            amount+=std::_Non_user_size;
+        }
+#endif
+        (void)alignment;
+        if(amount>(std::numeric_limits<std::size_t>::max)()||amount>=UINT64_MAX-measured)return false;
+        measured+=amount;return true;
+    };
+    // Get inserts one known-ID node and one entry node. Its stack Entry first
+    // constructs an empty elements map; moving Entry into the registry buys a
+    // second empty sentinel before swapping maps. Both global registry heads
+    // already exist. No Element value is inserted and no identity is created
+    // by this query. Use the actual private container node types, not layouts.
+    if(!allocation(sizeof(KnownNode),alignof(KnownNode))||
+        !allocation(sizeof(EntryNode),alignof(EntryNode))||
+        !allocation(sizeof(ElementNode),alignof(ElementNode))||
+        !allocation(sizeof(ElementNode),alignof(ElementNode)))return MMS_E_MEMORY;
+#if _ITERATOR_DEBUG_LEVEL != 0
+    // Empty-map construction and move construction each buy one proxy.
+    if(!allocation(sizeof(std::_Container_proxy),alignof(std::_Container_proxy))||
+        !allocation(sizeof(std::_Container_proxy),alignof(std::_Container_proxy)))return MMS_E_MEMORY;
+#endif
+    bytes=measured;return MMS_OK;
+#else
+    (void)bytes;return MMS_E_NOT_READY;
+#endif
+}
+#endif
 MmsId SceneIdentity::NewId() {
     MmsId id{};
     do {
@@ -18,8 +69,10 @@ const SceneIdentity::Entry& SceneIdentity::Get(const void* token) {
     }
     if (!nextGeneration_) throw std::overflow_error("scene generation exhausted");
     Entry entry; entry.object = {NewId(), nextGeneration_++};
-    known_.insert(entry.object.id);
-    return entries_.emplace(token, std::move(entry)).first->second;
+    const auto id = entry.object.id;
+    known_.insert(id);
+    try { return entries_.emplace(token, std::move(entry)).first->second; }
+    catch (...) { known_.erase(id); throw; }
 }
 const SceneIdentity::Entry* SceneIdentity::Retained(const void* token) const noexcept {
     const auto found = entries_.find(token);
@@ -76,14 +129,21 @@ void SceneIdentity::Replace(const std::vector<Restore>& objects) {
         if (!object.restoreElements) entry.elements.clear();
         if (!replacement.emplace(object.token, std::move(entry)).second) throw std::invalid_argument("duplicate restored object");
     }
-    auto known = known_;
+    std::set<MmsId, IdLess> pending;
     // Retire positional IDs omitted after adaptation. Ordinary element tables
     // do not need a second persistent copy in the known-object registry.
     for (const auto& object : objects) {
-        known.insert(object.entry.object.id);
+        if (!known_.count(object.entry.object.id)) pending.insert(object.entry.object.id);
         if (!object.restoreElements)
-            for (const auto& element : object.entry.elements) known.insert(element.second);
+            for (const auto& element : object.entry.elements)
+                if (!known_.count(element.second)) pending.insert(element.second);
     }
-    entries_.swap(replacement); known_.swap(known); nextGeneration_ = generation;
+    // Keep every historical ID without cloning the process-lifetime set on
+    // each load. Both sets use the same always-equal standard allocator and
+    // nonthrowing integer comparator. Preflight merge's size check too: all
+    // validation and allocation must finish before publishing either table.
+    if (pending.size() > known_.max_size() - known_.size())
+        throw std::length_error("scene identity registry capacity");
+    entries_.swap(replacement); known_.merge(pending); nextGeneration_ = generation;
 }
 }

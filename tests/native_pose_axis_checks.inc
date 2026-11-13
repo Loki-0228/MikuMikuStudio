@@ -505,11 +505,43 @@ void PoseAxisPreparedDraftChecks() {
 #include "native_pose_physics_readout_checks.inc"
 #include "native_rotation_draft_checks.inc"
 #include "native_pose_takeover_checks.inc"
+void LockedBoneNumericOverrideChecks() {
+    for (bool bound : {false, true}) for (bool floating : {false, true}) {
+        PoseNumericFixture f;
+        std::unique_ptr<plugins::NativePoseTestBinding> binding;
+        if (bound) binding = std::make_unique<plugins::NativePoseTestBinding>(*f.app, f.history);
+        RotationDraftPanel fields(f, floating);
+        f.first.m->physicsMode = 2;
+        auto& bone = f.first.bones[0];
+        bone.flags = mdl::kBoneFlagVisible; // PMX with neither transform permission
+        fields.base.Draft(0, "6.5");
+        SendMessageA(fields.base.Field(0), WM_KEYDOWN, VK_RETURN, 0);
+        Check(bone.trans[0] == 6.5f && f.history.UndoCount() == (bound ? 1u : 0u),
+              "Enter overrides the locked PMX position through the actual numeric edit");
+        fields.Draft(0, "30");
+        SendMessageA(fields.Field(0), WM_KEYDOWN, VK_RETURN, 0);
+        Check(std::abs(bone.rotQuat[0] - .258819f) < .0001f && f.history.UndoCount() == (bound ? 2u : 0u),
+              "Enter overrides the locked PMX rotation through the actual numeric edit");
+        for (auto kind : {AxisKind::Position, AxisKind::Rotation}) {
+            const auto id = static_cast<unsigned short>(kind == AxisKind::Position ? 537 : 540);
+            if (floating) DispatchSeparateWindowCommand(f.app.get(), id);
+            else CmdControl500(f.app.get(), f.app->MainWindow(), id, BN_DOUBLECLICKED);
+        }
+        Check(bone.trans[0] == 0 && std::abs(bone.rotQuat[0]) < .0001f && f.history.UndoCount() == (bound ? 4u : 0u),
+              "axis reset notifications clear both overrides through the selected history route");
+        if (bound) Check(f.history.History(false) == MMS_OK && f.history.History(false) == MMS_OK &&
+              bone.trans[0] == 6.5f && std::abs(bone.rotQuat[0] - .258819f) < .0001f &&
+              f.history.History(true) == MMS_OK && f.history.History(true) == MMS_OK &&
+              bone.trans[0] == 0 && std::abs(bone.rotQuat[0]) < .0001f,
+              "locked PMX overrides and resets keep the ordinary history ordering");
+    }
+}
 void NativePoseAxisChecks() {
     wchar_t desktop[128]{}; DWORD desktopBytes = 0;
     Check(GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME,
         desktop, sizeof desktop, &desktopBytes) && !_wcsicmp(desktop, L"Default"),
         "pose-axis fixture runs only on the inherited Default desktop");
+    std::puts("RUN LockedBoneNumericOverrideChecks"); LockedBoneNumericOverrideChecks();
     std::puts("RUN PoseAxisPositionChecks"); PoseAxisPositionChecks();
     std::puts("RUN PoseAxisRotationChecks"); PoseAxisRotationChecks();
     std::puts("RUN PoseAxisScaleChecks"); PoseAxisScaleChecks();

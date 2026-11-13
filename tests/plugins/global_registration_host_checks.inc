@@ -357,7 +357,7 @@ void Run(MMDApp* app) {
     const auto library=GetModuleHandleW(L"manager_edit_probe.dll");const auto value=reinterpret_cast<int(*)()>(GetProcAddress(library,"GetProbeValue"));
     const auto flags=reinterpret_cast<std::uint64_t(*)()>(GetProcAddress(library,"GetProbeFlags"));
     Check(value&&flags&&(flags()&1)&&!(flags()&2),"real global probe DLL negotiates controlled edit service");
-    auto scene=CreateSceneStore(app);SceneClient client;Context c(*app,*history,scene->Api(client),value);
+    auto scene=CreateSceneStore(app);SceneClient client;Context c(*app,*history,([&]{ MmsSceneApiV1 value{}; if (scene->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }()),value);
     for(unsigned family=0;family<commands.size();++family)RoundTrip(c,family);
     ImportIdentity(c);Rejections(c);std::puts("PASS actual camera light accessory shadow registration and real plugin history");
 }

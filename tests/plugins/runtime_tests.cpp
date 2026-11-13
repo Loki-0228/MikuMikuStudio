@@ -39,6 +39,7 @@ static MmsString S(const char* s) { return {s, std::strlen(s)}; }
 static void Write(const fs::path& path, const std::string& bytes) { fs::create_directories(path.parent_path()); std::ofstream f(path, std::ios::binary); f << bytes; if (!f) throw std::runtime_error("fixture write failed"); }
 #include "ui_preferences_file_checks.inc"
 #include "storage_checks.inc"
+#include "version_storage_crash_checks.inc"
 #include "edit_checks.inc"
 #include "ui_property_stage_checks.inc"
 #include "shared_history_checks.inc"
@@ -373,7 +374,7 @@ static void LoaderChecks(const fs::path& root, const fs::path& sample) {
     }
 }
 static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
-    for (const std::string mode : {"failcreate", "failstart", "busy", "queue", "scenelease"}) {
+    for (const std::string mode : {"failcreate", "failstart", "busy", "queue", "scenelease", "storagelease-busy", "storagelease-hold"}) {
         const auto package = root / Wide(mode) / "PLUGINS" / "test"; fs::create_directories(package);
         fs::copy_file(fixture, package / "lifecycle.dll");
         const auto id = "org.example." + mode; Write(package / "plugin.json", ManifestText(id, "lifecycle.dll"));
@@ -381,6 +382,11 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
         auto count = [&](const char* marker) { return std::count_if(logs.begin(), logs.end(), [&](const auto& s) { return s.find(marker) != std::string::npos; }); };
         auto scene = std::make_shared<SceneStore>([](const auto&, auto& out) {auto data=std::make_shared<SceneData>();data->supported=MMS_CHANNEL_BONES;out=data;return MMS_OK;});
         Manager manager(root / "userdata", [&](const auto& s) { logs.push_back(s); }, std::function<void()>{}, false, scene);
+        if (mode.find("storagelease")!=std::string::npos) {
+            StoredRecords records;StoredData data;data.schema=1;data.bytes.resize(sizeof(int));
+            const int value=42;std::memcpy(data.bytes.data(),&value,sizeof(value));records.emplace(id,std::move(data));
+            manager.Storage().Saved(records);
+        }
         manager.Load(package.parent_path()); CHECK(count("NEGOTIATION_PASS") == 1);
         if (mode == "failcreate") {
             CHECK(count("CREATE_TASK_ACCEPTED") == 1); CHECK(count("TASK_CANCEL") == 1); CHECK(count("TASK_RUN") == 0);
@@ -393,12 +399,64 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
         } else if(mode=="scenelease") {
             CHECK(count("SCENE_READ_PASS")==1); CHECK(!manager.Stop());
             CHECK(GetModuleHandleW(L"lifecycle.dll")!=nullptr && count("DESTROY")==0);
-            CHECK(manager.Stop()); CHECK(count("STOP_SCENE_READ_PASS")==1 && count("DESTROY")==1);
+            CHECK(count("STOP_SCENE_BUSY")==1 && manager.Stop()); CHECK(count("STOP_SCENE_READ_PASS")==1 && count("DESTROY")==1);
+        } else if(mode=="storagelease-busy") {
+            CHECK(count("STORAGE_LEASE_ACQUIRED")==1 && !manager.Stop());
+            CHECK(GetModuleHandleW(L"lifecycle.dll")!=nullptr && count("DESTROY")==0 && count("STOP_STORAGE_BUSY")==1);
+            CHECK(manager.Stop() && count("STOP_STORAGE_RELEASED")==1 && count("DESTROY")==1);
+        } else if(mode=="storagelease-hold") {
+            CHECK(count("STORAGE_LEASE_ACQUIRED")==1 && !manager.Stop());
+            const auto module=GetModuleHandleW(L"lifecycle.dll");
+            using Counter=uint32_t(MMS_CALL*)();using Release=MmsResult(MMS_CALL*)();
+            auto stops=module?reinterpret_cast<Counter>(GetProcAddress(module,"StorageLeaseProbeStops")):nullptr;
+            auto release=module?reinterpret_cast<Release>(GetProcAddress(module,"StorageLeaseProbeRelease")):nullptr;
+            CHECK(stops && release && count("DESTROY")==0 && count("STOP_STORAGE_RETAINED")==1);
+            if (stops && release) {
+                CHECK(stops()==1 && !manager.Stop() && stops()==1 && count("DESTROY")==0);
+                CHECK(release()==MMS_OK && manager.Stop() && count("DESTROY")==1 && count("STOP_STORAGE_RETAINED")==1);
+            }
         } else {
+            CHECK(mode == "busy");
+            auto& registry = manager.Ui();
+            const auto command = id + ".command", buttonId = id + ".preview-stop-button";
+            auto* owner = registry.commands.at(command)->owner;
+            CHECK(owner != nullptr);
+            auto ownerApi = registry.Api(*owner);
+            MmsUiElementV1 element{}; element.h = Header<MmsUiElementV1>();
+            element.id = Text(buttonId); element.ownerPlugin = Text(id);
+            element.parentId = S("mms.toolbar.main.extensions"); element.commandId = Text(command);
+            element.kind = MMS_UI_BUTTON; element.capabilities = MMS_UI_HIDE;
+            MmsHandle button = 0;
+            CHECK(ownerApi.registerElement(ownerApi.context, &element, &button) == MMS_OK && button != 0);
+            CHECK(registry.EffectiveLayout(registry.elements.at(buttonId)).visible);
+            // The trusted test drives the internal preview API with the real
+            // loaded client's identity; the DLL has no public preview service.
+            const std::vector<LayoutPreviewValue> hidden{{button, PreviewVisible, false}};
+            MmsHandle preview = 0;
+            CHECK(registry.BeginLayoutPreview(*owner, hidden, preview) == MMS_OK && preview != 0);
+            CHECK(registry.ApplyLayoutPreview(*owner, preview, 1, hidden) == MMS_OK);
+            CHECK(!registry.EffectiveLayout(registry.elements.at(buttonId)).visible && registry.elements.at(buttonId).visible);
             CHECK(!manager.Stop()); CHECK(GetModuleHandleW(L"lifecycle.dll") != nullptr);
-            UiClient visitor{&manager.Ui(), "example.visitor"}; auto api = manager.Ui().Api(visitor); auto command = id + ".command";
+            LayoutPreviewInfo revoked{};
+            CHECK(registry.QueryLayoutPreview(*owner, preview, revoked) == MMS_OK && revoked.state == LayoutPreviewState::Revoked);
+            CHECK(owner->stopping && registry.EffectiveLayout(registry.elements.at(buttonId)).visible);
+            MmsHandle untouched = 987;
+            CHECK(registry.BeginLayoutPreview(*owner, hidden, untouched) == MMS_E_NOT_READY && untouched == 987);
+            CHECK(registry.ApplyLayoutPreview(*owner, preview, revoked.revision, hidden) == MMS_E_NOT_READY);
+            UiClient visitor{&manager.Ui(), "example.visitor"}; auto api = manager.Ui().Api(visitor);
             CHECK(api.invoke(api.context, Text(command), {}, {}) == MMS_E_NOT_READY); CHECK(count("COMMAND_INVOKED") == 0);
-            CHECK(!manager.Stop()); CHECK(manager.Stop()); CHECK(count("STOP_BUSY") == 2); CHECK(count("DESTROY") == 1);
+            CHECK(!manager.Stop());
+            LayoutPreviewInfo again{};
+            CHECK(registry.QueryLayoutPreview(*owner, preview, again) == MMS_OK && again.state == LayoutPreviewState::Revoked && again.revision == revoked.revision);
+            CHECK(registry.EffectiveLayout(registry.elements.at(buttonId)).visible);
+            CHECK(registry.BeginLayoutPreview(*owner, hidden, untouched) == MMS_E_NOT_READY && untouched == 987);
+            CHECK(registry.ApplyLayoutPreview(*owner, preview, again.revision, hidden) == MMS_E_NOT_READY);
+            CHECK(GetModuleHandleW(L"lifecycle.dll") != nullptr && count("DESTROY") == 0);
+            // Remove the host test's extra command reference before the DLL's
+            // third stop attempt unregisters its own command and unloads.
+            CHECK(ownerApi.unregisterItem(ownerApi.context, button) == MMS_OK);
+            CHECK(registry.ReleaseLayoutPreview(*owner, preview) == MMS_OK);
+            CHECK(manager.Stop()); CHECK(count("STOP_BUSY") == 2); CHECK(count("DESTROY") == 1);
         }
         CHECK(manager.Stop()); CHECK(GetModuleHandleW(L"lifecycle.dll") == nullptr);
         std::cout << "lifecycle " << mode << " PASS\n";
@@ -407,6 +465,38 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
 int wmain(int argc, wchar_t** argv) {
     const fs::path root = fs::temp_directory_path() / (L"mms-abi-contract-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        if (argc == 2 && std::wstring(argv[1]) == L"--version-stage-cleanup-identity-only")
+            return version_storage_crash::RunStageCleanupIdentityCase();
+        if (argc == 2 && std::wstring(argv[1]) == L"--version-prepublication-cleanup-only")
+            return version_storage_crash::RunPrepublicationCleanupIdentity();
+        if (argc == 2 && std::wstring(argv[1]) == L"--version-effect-cleanup-identity-only")
+            return version_storage_crash::RunStageCleanupIdentityCase(version_storage_crash::CleanupMember::Effect);
+        if (argc == 2 && std::wstring(argv[1]) == L"--version-journal-cleanup-identity-only") {
+            version_storage_crash::RunJournalReplacement();
+            return version_storage_crash::RunStageCleanupIdentityCase(version_storage_crash::CleanupMember::Journal);
+        }
+        if (argc == 2 && std::wstring(argv[1]) == L"--version-decision-identity-only")
+            return version_storage_crash::RunDecisionIdentity();
+        if (argc == 2 && std::wstring(argv[1]) == L"--version-archive-identity-only")
+            return version_storage_crash::RunArchiveIdentity();
+        if (argc == 2 && std::wstring(argv[1]) == L"--version-storage-crash-only")
+            return version_storage_crash::Run();
+        if (argc == 3 && std::wstring(argv[1]) == L"--version-storage-crash-write")
+            return version_storage_crash::Writer(argv[2], false);
+        if (argc == 3 && std::wstring(argv[1]) == L"--version-storage-original-archive-write")
+            return version_storage_crash::OriginalArchiveWriter(argv[2]);
+        if (argc == 3 && std::wstring(argv[1]) == L"--version-storage-crash-publish")
+            return version_storage_crash::Writer(argv[2], true);
+        if (argc == 3 && std::wstring(argv[1]) == L"--version-storage-crash-recover")
+            return version_storage_crash::Recovery(argv[2]);
+        if (argc == 3 && std::wstring(argv[1]) == L"--version-storage-recovery-write")
+            return version_storage_crash::RecoveryWriter(argv[2]);
+        if (argc == 3 && std::wstring(argv[1]) == L"--version-storage-recovery-interrupt")
+            return version_storage_crash::InterruptRecovery(argv[2]);
+        if (argc == 3 && std::wstring(argv[1]) == L"--version-storage-recovery-first")
+            return version_storage_crash::RetryRecovery(argv[2], 1);
+        if (argc == 3 && std::wstring(argv[1]) == L"--version-storage-recovery-second")
+            return version_storage_crash::RetryRecovery(argv[2], 2);
         if (argc == 2 && std::wstring(argv[1]) == L"--version-storage-only") {
             CHECK(!fs::exists(root)); fs::create_directories(root);
             VersionStorageChecks(root);

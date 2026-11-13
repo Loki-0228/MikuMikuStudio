@@ -3,6 +3,7 @@
 #include "native_pose_scope.hpp"
 #include "native_model_outline_ui.hpp"
 #include "native_camera_hud_history.hpp"
+#include "native_picture_gesture.hpp"
 #include "native_accessory_hud_history.hpp"
 #include "native_model_hud_history.hpp"
 #include "native_history_commands.hpp"
@@ -10,6 +11,7 @@
 #include "native_viewport_reset_camera.hpp"
 #include "scene_object_history.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/key_pool.hpp"
@@ -25,6 +27,7 @@
 namespace mikumikustudio {
 void ConsumeRightButtonDrag(MMDApp*);
 void ConsumeMiddleButtonPan(MMDApp*);
+bool HandlePictureGestureInput(MMDApp*,HWND,UINT,WPARAM,LPARAM) noexcept;
 }
 namespace mikumikustudio::plugins {
 namespace {
@@ -350,16 +353,17 @@ MmsResult BeginViewportCameraGesture(MMDApp& a,SharedHistory& h,HWND owner,UINT 
     });
 }
 bool CancelViewportCameraGesture(MMDApp& a) noexcept {
+    const bool pictureRestored=CancelPictureGesture(a);
     const bool outlineRestored=CancelBoundModelOutlineGesture(a);
     const bool boneHudRestored=CancelModelHudGesture(a);
     const bool hudRestored=CancelCameraHudGesture(a);
     const bool accessoryRestored=CancelAccessoryHudGesture(a);
     const bool modelRestored=CancelViewportModelGesture(a);
-    if(!gesture || gesture->app!=&a)return modelRestored||hudRestored||accessoryRestored||boneHudRestored||outlineRestored;
+    if(!gesture || gesture->app!=&a)return pictureRestored||modelRestored||hudRestored||accessoryRestored||boneHudRestored||outlineRestored;
     auto current=std::move(gesture);const bool restored=current->Rollback();current->transaction.reset();
     a.state.rightMouseButtonState=0;a.state.middleMouseButtonState=0;
     if(current->owner && GetCapture()==current->owner)ReleaseCapture();
-    return restored||modelRestored||hudRestored||accessoryRestored||boneHudRestored||outlineRestored;
+    return restored||pictureRestored||modelRestored||hudRestored||accessoryRestored||boneHudRestored||outlineRestored;
 }
 bool AllowViewportCameraPreview(MMDApp& a,UINT button) noexcept {
     if(modelGesture&&modelGesture->app==&a)return AllowViewportModelPreview(a,button);
@@ -567,6 +571,7 @@ MmsResult AdjustViewportNumpadPresets(MMDApp& app,SharedHistory& history,std::ui
     });
 }
 bool HandleBoundViewportMessage(MMDApp& a,HWND owner,UINT msg,WPARAM wp,LPARAM lp) noexcept {
+    if(HandlePictureGestureInput(&a,owner,msg,wp,lp))return true;
     if(HandleModelHudMessage(a,owner,msg,wp,lp))return true;
     if(HandleCameraHudMessage(a,owner,msg,wp,lp))return true;
     if(HandleAccessoryHudMessage(a,owner,msg,wp,lp))return true;
@@ -581,7 +586,7 @@ bool HandleBoundViewportMessage(MMDApp& a,HWND owner,UINT msg,WPARAM wp,LPARAM l
     auto* history=BoundNativePoseHistory(&a);if(!history)return false;
     if(msg==WM_MOUSEWHEEL){
         const bool floating=owner && owner==a.FloatingWindow();
-        if(!floating && a.MouseX()<=a.SidebarWidth())return false;
+        if (!floating && WheelClientX(owner, lp, a.MouseX()) <= a.SidebarWidth()) return false;
         bool changed=false;
         const auto result=a.CameraMode()?AdjustViewportCameraWheel(a,*history,static_cast<std::int16_t>(HIWORD(wp)),floating,changed):
             AdjustViewportModelWheel(a,*history,static_cast<std::int16_t>(HIWORD(wp)),floating,changed);

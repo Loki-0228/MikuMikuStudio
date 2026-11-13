@@ -42,8 +42,10 @@ template<class Key> bool Marked(const Key* keys, std::size_t capacity) noexcept 
 // Follow every root so shared slots and malformed unrelated tracks cannot
 // make a deletion silently unlink somebody else's key. Frame-zero heads may
 // carry a nonzero previous sentinel after the legacy last-key deletion.
-template<class Read> std::vector<Dependency> TrackChains(unsigned count, std::size_t capacity, Read read, Owners& owners) {
+template<class Read> std::vector<Dependency> TrackChains(unsigned count, std::size_t capacity, Read read, Owners& owners,
+    bool reserve=false) {
     owners.clear(); std::vector<Dependency> dependencies;
+    if(reserve)dependencies.reserve(capacity);
     for (unsigned morph = 0; morph < count; ++morph) {
         unsigned slot = morph, previous = 0, frame = 0; bool ended = false;
         for (std::size_t hop = 0; hop < capacity; ++hop) {
@@ -61,17 +63,17 @@ template<class Read> std::vector<Dependency> TrackChains(unsigned count, std::si
     }
     return dependencies;
 }
-std::vector<Dependency> Chains(const mdl::ModelRecord& model, Owners& owners) {
+std::vector<Dependency> Chains(const mdl::ModelRecord& model, Owners& owners,bool reserve=false) {
     const auto capacity = mdl::MorphKeyCapacity(model.morphKeys);
     if (!model.morphs || !model.morphKeys || model.morphCount > capacity)
         throw std::invalid_argument("missing morph tracks");
-    return TrackChains(model.morphCount, capacity, [&](unsigned slot) { return model.morphKeys[slot]; }, owners);
+    return TrackChains(model.morphCount, capacity, [&](unsigned slot) { return model.morphKeys[slot]; }, owners,reserve);
 }
 void AddBytes(std::uint64_t& bytes, std::size_t count, std::size_t stride) noexcept {
     if (count > (UINT64_MAX - bytes) / stride) bytes = UINT64_MAX;
     else bytes += std::uint64_t(count) * stride;
 }
-struct MorphDeletion final : HistoryChange, std::enable_shared_from_this<MorphDeletion> {
+struct MorphDeletion final : MorphKeyDeletion, std::enable_shared_from_this<MorphDeletion> {
     MMDApp& app;
     unsigned modelSlot;
     unsigned char* model;
@@ -84,6 +86,9 @@ struct MorphDeletion final : HistoryChange, std::enable_shared_from_this<MorphDe
     std::vector<Rule> rules;
     bool frameLine = false, preserveEditedValues = false, preserveKeyMarks = false;
     std::uint32_t maxBefore = 0, maxAfter = 0;
+    void VisitRetainedModels(void* context,ModelDeletionOwnerVisitor visit) const override {
+        visit(context,lifetime);
+    }
     MorphDeletion(MMDApp& owner, unsigned slot) : app(owner), modelSlot(slot), model(app.ModelSlot(slot)),
         lifetime(RetainSceneObject(app, MMS_OBJECT_MODEL, slot)), morphs(mdl::Mdl(model)->morphs),
         count(mdl::Mdl(model)->morphCount), poolIdentity(mdl::MorphKeyPoolIdentity(mdl::Mdl(model)->morphKeys)),
@@ -99,9 +104,9 @@ struct MorphDeletion final : HistoryChange, std::enable_shared_from_this<MorphDe
         }
         return true;
     }
-    struct Candidate final : PreparedHistoryChange {
+    struct Candidate final : PreparedMorphKeyDeletion {
         std::shared_ptr<MorphDeletion> source;
-        bool forward, published = false;
+        bool forward, published = false, publishWeights = true;
         mdl::MorphKey* pool;
         std::size_t capacity;
         int frame;
@@ -109,6 +114,9 @@ struct MorphDeletion final : HistoryChange, std::enable_shared_from_this<MorphDe
         std::vector<mdl::MorphKey> current;
         std::vector<Dependency> dependencies;
         std::vector<float> beforeValues, afterValues;
+        std::vector<MorphDeletionTarget> zeroTargets;
+        const std::vector<MorphDeletionTarget>& ZeroTargets() const noexcept override { return zeroTargets; }
+        void VisitRetainedModels(void* context,ModelDeletionOwnerVisitor visit) const override {source->VisitRetainedModels(context,visit);}
         Candidate(std::shared_ptr<MorphDeletion> owner, bool direction) : source(std::move(owner)), forward(direction),
             pool(mdl::Mdl(source->model)->morphKeys), capacity(mdl::MorphKeyCapacity(pool)), frame(source->app.CurrentFrame()) {}
         const mdl::MorphKey* Target(unsigned slot) const noexcept {
@@ -139,18 +147,49 @@ struct MorphDeletion final : HistoryChange, std::enable_shared_from_this<MorphDe
                 pool[patch.slot] = forward ? patch.after : patch.before;
                 if (source->preserveKeyMarks) pool[patch.slot].allocated = mark;
             }
-            for (std::size_t i = 0; i < source->rules.size(); ++i)
+            for (std::size_t i = 0; publishWeights && i < source->rules.size(); ++i)
                 source->morphs[source->rules[i].morph].value = afterValues[i];
             if (source->frameLine) mdl::Mdl(source->model)->maxFrame = forward ? source->maxAfter : source->maxBefore;
             published = true;
         }
     };
     MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
-        out.reset(); if (!Structure()) return MMS_E_STALE;
-        if (app.CurrentFrame() < 0 || app.CurrentFrame() > frame_limits::maximum) return MMS_E_ARGUMENT;
+        out.reset();
+        std::unique_ptr<PreparedMorphKeyDeletion> candidate;
+        if (auto result = PrepareCandidate(forward, false, candidate)) return result;
+        out = std::move(candidate); return MMS_OK;
+    }
+    MmsResult PrepareSigned(bool forward, std::unique_ptr<PreparedMorphKeyDeletion>& out) override {
+        return PrepareCandidate(forward, true, out);
+    }
+    MmsResult PrepareSignedBudgeted(bool forward,std::uint64_t& remainingBytes,
+        std::unique_ptr<PreparedMorphKeyDeletion>& out) noexcept override {
+        out.reset();if(!Structure())return MMS_E_STALE;
+        if(app.CurrentFrame()<frame_limits::minimum||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+        return Boundary([&]()->MmsResult {
+            const auto liveCapacity=mdl::MorphKeyCapacity(mdl::Mdl(model)->morphKeys);
+            model_delete_budget::Bytes bytes;bytes.Add(sizeof(Candidate));
+            bytes.Array<Dependency>(liveCapacity);bytes.Nodes<Owners::value_type>(liveCapacity);
+            bytes.Array<mdl::MorphKey>(patches.size());
+            bytes.Array<float>(rules.size());bytes.Array<float>(rules.size());
+            bytes.Array<MorphDeletionTarget>(rules.size());
+            bytes.Add(morph_curve::DeletionPreparationBytes(model,liveCapacity));
+            auto remaining=remainingBytes;bytes.Take(remaining);
+            std::unique_ptr<PreparedMorphKeyDeletion> prepared;
+            if(auto result=PrepareCandidate(forward,true,prepared,true))return result;
+            if(!prepared)return MMS_E_NOT_READY;
+            out=std::move(prepared);remainingBytes=remaining;return MMS_OK;
+        });
+    }
+    MmsResult PrepareCandidate(bool forward, bool signedPreparation, std::unique_ptr<PreparedMorphKeyDeletion>& out,
+        bool budgeted=false) {
+        if (!Structure()) return MMS_E_STALE;
+        if (app.CurrentFrame() < (signedPreparation ? frame_limits::minimum : 0) ||
+            app.CurrentFrame() > frame_limits::maximum) return MMS_E_ARGUMENT;
         return Boundary([&]() -> MmsResult {
             auto candidate = std::make_unique<Candidate>(shared_from_this(), forward);
-            Owners owners; candidate->dependencies = Chains(*mdl::Mdl(model), owners);
+            candidate->publishWeights = candidate->frame >= 0;
+            Owners owners; candidate->dependencies = Chains(*mdl::Mdl(model), owners,budgeted);
             candidate->current.reserve(patches.size());
             for (const auto& patch : patches) {
                 const auto live = candidate->pool[patch.slot];
@@ -165,7 +204,16 @@ struct MorphDeletion final : HistoryChange, std::enable_shared_from_this<MorphDe
                 return static_cast<const Candidate*>(context)->Target(slot);
             };
             candidate->beforeValues.reserve(rules.size()); candidate->afterValues.reserve(rules.size());
+            if (signedPreparation) candidate->zeroTargets.reserve(rules.size());
             for (const auto& rule : rules) {
+                candidate->beforeValues.push_back(morphs[rule.morph].value);
+                if (signedPreparation) {
+                    float zero = 0;
+                    if (!morph_curve::SampleLayersTarget(candidate->layers, view, int(rule.morph), 0, zero, error))
+                        return MMS_E_ARGUMENT;
+                    candidate->zeroTargets.push_back({rule.morph, zero});
+                }
+                if (!candidate->publishWeights) continue;
                 float value = 0;
                 if (!morph_curve::SampleLayersTarget(candidate->layers, view, int(rule.morph), candidate->frame, value, error))
                     return MMS_E_ARGUMENT;
@@ -180,7 +228,7 @@ struct MorphDeletion final : HistoryChange, std::enable_shared_from_this<MorphDe
                         return MMS_E_ARGUMENT;
                     if (!SameFloat(evaluated, morphs[rule.morph].value)) value = morphs[rule.morph].value;
                 }
-                candidate->beforeValues.push_back(morphs[rule.morph].value); candidate->afterValues.push_back(value);
+                candidate->afterValues.push_back(value);
             }
             if (!candidate->IsCurrent()) return MMS_E_STALE;
             out = std::move(candidate); return MMS_OK;
@@ -831,6 +879,12 @@ MmsResult PlanMorphKeyMultiply(MMDApp& app, unsigned slot, const MorphMultiplyOp
 MmsResult PlanMorphKeyDeletion(MMDApp& app, unsigned slot, std::shared_ptr<HistoryChange>& out, bool allowOtherMarks,
     const std::vector<unsigned>* selectedSlots) noexcept {
     out.reset();
+    std::shared_ptr<MorphKeyDeletion> change;
+    if (auto result = PlanSignedMorphKeyDeletion(app, slot, change, allowOtherMarks, selectedSlots)) return result;
+    out = std::move(change); return MMS_OK;
+}
+MmsResult PlanSignedMorphKeyDeletion(MMDApp& app, unsigned slot, std::shared_ptr<MorphKeyDeletion>& out, bool allowOtherMarks,
+    const std::vector<unsigned>* selectedSlots) noexcept {
     if (slot >= kModelSlotCount || !app.ModelSlot(slot) || app.PlaybackActive() || app.FrameStepPlayback() ||
         app.state.recordPlaybackStartPending || app.SceneMutationInProgress()) return MMS_E_NOT_READY;
     return Boundary([&]() -> MmsResult {
@@ -844,7 +898,7 @@ MmsResult PlanMorphKeyDeletion(MMDApp& app, unsigned slot, std::shared_ptr<Histo
         }
         const auto capacity = mdl::MorphKeyCapacity(model.morphKeys);
         if (selectedSlots && !ValidKeySelection(*selectedSlots, capacity)) return MMS_E_ARGUMENT;
-        if (selectedSlots ? selectedSlots->empty() : !Marked(model.morphKeys, capacity)) return MMS_OK;
+        if (selectedSlots ? selectedSlots->empty() : !Marked(model.morphKeys, capacity)) { out.reset(); return MMS_OK; }
         Owners owners; Chains(model, owners);
         std::map<unsigned, Patch> planned; std::set<unsigned> affected;
         const auto write = [&](unsigned index) -> mdl::MorphKey& {

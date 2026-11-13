@@ -25,6 +25,35 @@ namespace {
 using Kind=curve_host::Kind;
 constexpr double pi=3.14159265358979323846;
 void Add(std::uint64_t& bytes,std::uint64_t count,std::uint64_t stride=1)noexcept{bytes=stride&&count>(UINT64_MAX-bytes)/stride?UINT64_MAX:bytes+count*stride;}
+struct PreparationFailure { MmsResult result; };
+struct PreparationBudget {
+    std::uint64_t remaining;
+    void Charge(std::uint64_t count,std::uint64_t stride=1){
+        if(stride&&count>remaining/stride)throw PreparationFailure{MMS_E_MEMORY};
+        remaining-=count*stride;
+    }
+};
+template<class F>MmsResult BudgetBoundary(F&& f)noexcept{
+    try{return f();}catch(const PreparationFailure& failure){return failure.result;}
+    catch(const std::length_error&){return MMS_E_MEMORY;}
+    catch(const std::bad_alloc&){return MMS_E_MEMORY;}
+    catch(const std::invalid_argument&){return MMS_E_ARGUMENT;}
+    catch(...){return MMS_E_FAILED;}
+}
+template<class T>void Reserve(std::vector<T>& values,std::size_t count,PreparationBudget* budget){
+    if(count<=values.capacity())return;
+    if(count>values.max_size())throw std::bad_alloc();
+    if(budget)budget->Charge(count,sizeof(T));
+    values.reserve(count);
+    // Charge requested storage before allocation and any implementation's
+    // excess capacity immediately afterwards. Replaced buffers are not refunded.
+    if(budget)budget->Charge(values.capacity()-count,sizeof(T));
+}
+void AppendHolder(GlobalDeletionObjects& objects,const std::shared_ptr<RetainedSceneObject>& owner,PreparationBudget* budget){
+    if(!owner||std::find(objects.begin(),objects.end(),owner)!=objects.end())return;
+    if(budget){if(objects.size()==objects.max_size())throw std::bad_alloc();Reserve(objects,objects.size()+1,budget);}
+    objects.push_back(owner);
+}
 template<class K>K*& Pool(MMDApp& app,unsigned slot){
     if constexpr(std::is_same_v<K,mdl::CameraKey>)return app.CameraKeys();
     else if constexpr(std::is_same_v<K,mdl::LightKey>)return app.LightKeys();
@@ -124,9 +153,9 @@ template<class K>std::array<double,12> NativePose(const std::vector<K>& keys,uns
     return v;
 }
 template<class K>bool Equal(K a,K b,bool marks=true)noexcept{if(!marks)a.selected=b.selected=0;return !std::memcmp(&a,&b,sizeof(K));}
-template<class K>void ValidateChain(const std::vector<K>& keys){
+template<class K>void ValidateChain(const std::vector<K>& keys,PreparationBudget* budget=nullptr){
     if(keys.empty())throw std::invalid_argument("curve write missing pool");
-    std::vector<unsigned char> visited(keys.size());unsigned index=0,previous=0,last=0;
+    std::vector<unsigned char> visited;Reserve(visited,keys.size(),budget);visited.resize(keys.size());unsigned index=0,previous=0,last=0;
     for(std::size_t hop=0;;++hop){if(index>=keys.size()||visited[index])throw std::invalid_argument("curve write cyclic keys");
         const auto& key=keys[index];if(key.frame>frame_limits::maximum||(!hop&&key.frame)||(hop&&(key.frame<=last||key.previous!=previous)))throw std::invalid_argument("curve write key order");
         visited[index]=1;if(!key.next)break;previous=index;last=key.frame;index=key.next;}
@@ -165,18 +194,29 @@ struct FrameMark {
     std::uint32_t frame;unsigned char selected;
     bool operator==(const FrameMark& other)const noexcept{return frame==other.frame&&selected==other.selected;}
 };
-template<class Read>std::vector<FrameMark> CaptureFrameMarks(std::size_t capacity,Read read){
+template<class Read>std::vector<FrameMark> CaptureFrameMarks(std::size_t capacity,Read read,PreparationBudget* budget=nullptr){
     std::vector<FrameMark> marks;unsigned slot=0;
+    if(budget){std::size_t count=0;
+        for(;;){if(slot>=capacity||count>=capacity)throw std::invalid_argument("curve selection chain");
+            ++count;if(!read(slot).next)break;slot=read(slot).next;}
+        Reserve(marks,count,budget);slot=0;
+    }
     for(std::size_t hops=0;;++hops){if(slot>=capacity||hops>=capacity)throw std::invalid_argument("curve selection chain");
         const auto& key=read(slot);marks.push_back({key.frame,key.selected});if(!key.next)break;slot=key.next;}
     return marks;
 }
-void ParentAt(MMDApp& app,int model,int bone,std::vector<Parent>& parents){
+void ParentAt(MMDApp& app,int model,int bone,std::vector<Parent>& parents,PreparationBudget* budget=nullptr){
     if(model==-1)return;if(model<0||model>=kModelSlotCount||bone<0||!app.ModelSlot(model))throw std::invalid_argument("curve write parent model");
     auto* pointer=app.ModelSlot(model);const auto& value=*mdl::Mdl(pointer);
     if(!value.boneTable||unsigned(bone)>=value.boneCount)throw std::invalid_argument("curve write parent bone");
-    if(std::none_of(parents.begin(),parents.end(),[&](const auto& p){return p.slot==unsigned(model);}))
+    if(std::none_of(parents.begin(),parents.end(),[&](const auto& p){return p.slot==unsigned(model);})){
+        if(budget){
+            std::uint64_t bytes=0;
+            if(const auto result=MeasureGlobalDeletionParentPreparation(app,unsigned(model),bytes))throw PreparationFailure{result};
+            budget->Charge(bytes);Reserve(parents,parents.size()+1,budget);
+        }
         parents.push_back({unsigned(model),value.boneCount,pointer,value.boneTable,RetainSceneObject(app,MMS_OBJECT_MODEL,unsigned(model)),SceneObjectIdentity(pointer).generation});
+    }
 }
 template<class K>void ParentKey(MMDApp& app,const K& key,std::vector<Parent>& parents){
     if constexpr(std::is_same_v<K,mdl::CameraKey>||std::is_same_v<K,mdl::AccessoryKey>)ParentAt(app,key.parentModel,key.parentBone,parents);
@@ -214,15 +254,18 @@ class PreparedDeletePart {
 public:
     virtual ~PreparedDeletePart()=default;
     virtual bool IsCurrent()const noexcept=0;
+    virtual GlobalDeletionTarget ZeroTarget()const noexcept=0;
+    virtual void AppendRetainedObjects(GlobalDeletionObjects&,PreparationBudget*)const=0;
     // The aggregate validates every participant before the first publication.
     virtual void PublishOwned()noexcept=0;
 };
 class DeletePart {
 public:
     virtual ~DeletePart()=default;
-    virtual MmsResult Prepare(bool,std::unique_ptr<PreparedDeletePart>&)=0;
+    virtual MmsResult Prepare(bool,bool,std::unique_ptr<PreparedDeletePart>&,PreparationBudget*)=0;
     virtual std::uint64_t RetainedBytes()const noexcept=0;
     virtual bool Changed()const noexcept=0;
+    virtual void AppendRetainedObjects(GlobalDeletionObjects&)const=0;
 };
 template<class K>struct FamilyDelete final:DeletePart,std::enable_shared_from_this<FamilyDelete<K>>{
     MMDApp& app;Kind kind;unsigned slot;std::uint64_t identity,generation=1;std::size_t capacity;
@@ -275,9 +318,9 @@ template<class K>struct FamilyDelete final:DeletePart,std::enable_shared_from_th
         return {&keys,keys.size(),[](const void* value,unsigned i)noexcept->const void*{
             const auto& rows=*static_cast<const std::vector<K>*>(value);return i<rows.size()?&rows[i]:nullptr;}};
     }
-    void ParentPose(const std::array<double,12>& pose,std::vector<Parent>& out){
-        if constexpr(std::is_same_v<K,mdl::CameraKey>)ParentAt(app,int(pose[9]),int(pose[10]),out);
-        else if constexpr(std::is_same_v<K,mdl::AccessoryKey>)ParentAt(app,int(pose[10]),int(pose[11]),out);
+    void ParentPose(const std::array<double,12>& pose,std::vector<Parent>& out,PreparationBudget* budget=nullptr){
+        if constexpr(std::is_same_v<K,mdl::CameraKey>)ParentAt(app,int(pose[9]),int(pose[10]),out,budget);
+        else if constexpr(std::is_same_v<K,mdl::AccessoryKey>)ParentAt(app,int(pose[10]),int(pose[11]),out,budget);
     }
     bool Structure()const noexcept{
         if(mdl::KeyPoolIdentity(Pool<K>(app,slot))!=identity||mdl::KeyPoolCapacity(Pool<K>(app,slot))<capacity||!ExclusivePool<K>(app,kind,slot))return false;
@@ -285,15 +328,22 @@ template<class K>struct FamilyDelete final:DeletePart,std::enable_shared_from_th
         for(const auto& parent:parents)if(!parent.Current(app))return false;return true;
     }
     struct Candidate final:PreparedDeletePart{
-        std::shared_ptr<FamilyDelete> source;bool forward,consumed=false,preserveSelection=false;
+        std::shared_ptr<FamilyDelete> source;bool forward,consumed=false,preserveSelection=false,deferPose=false;
         std::uint64_t generation,objectGeneration=0;int frame;K* pool;std::size_t capacity;
-        std::vector<K> current,target;std::array<double,12> beforePose,afterPose;
+        std::vector<K> current,target;std::array<double,12> beforePose,afterPose,zeroPose{};
         std::uint32_t cursor,targetCursor;unsigned char active;
         std::vector<Parent> parents;std::vector<std::uint64_t> parentGenerations;
         std::unique_ptr<curve_host::TrackAuthoring::Target> curves,sourceCurves;
-        Candidate(std::shared_ptr<FamilyDelete> s,bool f):source(std::move(s)),forward(f),generation(source->generation),
-            frame(source->app.CurrentFrame()),pool(Pool<K>(source->app,source->slot)),capacity(mdl::KeyPoolCapacity(pool)),current(pool,pool+capacity),target(current),
-            beforePose(ReadPose<K>(source->app,source->slot)),afterPose(beforePose),cursor(Cursor<K>(source->app,source->slot)),targetCursor(cursor),active(Active<K>(source->app,source->slot)){}
+        Candidate(std::shared_ptr<FamilyDelete> s,bool f,PreparationBudget* budget):source(std::move(s)),forward(f),generation(source->generation),
+            frame(source->app.CurrentFrame()),pool(Pool<K>(source->app,source->slot)),capacity(mdl::KeyPoolCapacity(pool)),
+            beforePose(ReadPose<K>(source->app,source->slot)),afterPose(beforePose),cursor(Cursor<K>(source->app,source->slot)),targetCursor(cursor),active(Active<K>(source->app,source->slot)){
+            Reserve(current,capacity,budget);current.assign(pool,pool+capacity);
+            Reserve(target,capacity,budget);target.assign(current.begin(),current.end());
+        }
+        GlobalDeletionTarget ZeroTarget()const noexcept override{return {source->kind,source->slot,source->object,zeroPose};}
+        void AppendRetainedObjects(GlobalDeletionObjects& objects,PreparationBudget* budget)const override{
+            AppendHolder(objects,source->owner,budget);for(const auto& parent:parents)AppendHolder(objects,parent.owner,budget);
+        }
         bool IsCurrent()const noexcept override{
             if(consumed||source->generation!=generation||!source->Structure()||!source->authoring.IsCurrent()||source->app.CurrentFrame()!=frame||
                 Pool<K>(source->app,source->slot)!=pool||mdl::KeyPoolCapacity(pool)!=capacity||std::memcmp(pool,current.data(),capacity*sizeof(K))||
@@ -309,56 +359,78 @@ template<class K>struct FamilyDelete final:DeletePart,std::enable_shared_from_th
             // including marks on untouched slots, after the payload exchange.
             if(preserveSelection){unsigned index=0;for(;;){pool[index].selected=target[index].selected;if(!pool[index].next)break;index=pool[index].next;}}
             curves->Publish(source->owner?static_cast<void*>(source->object):pool);
-            if constexpr(std::is_same_v<K,mdl::AccessoryKey>){
-                AccessoryAttachmentEvaluation attachment(&source->app,source->slot);
-                WritePose<K>(source->app,source->slot,afterPose);attachment.Complete({int(afterPose[10]),int(afterPose[11])});
-            }else WritePose<K>(source->app,source->slot,afterPose);
+            if(!deferPose){
+                if constexpr(std::is_same_v<K,mdl::AccessoryKey>){
+                    AccessoryAttachmentEvaluation attachment(&source->app,source->slot);
+                    WritePose<K>(source->app,source->slot,afterPose);attachment.Complete({int(afterPose[10]),int(afterPose[11])});
+                }else WritePose<K>(source->app,source->slot,afterPose);
+            }
             Cursor<K>(source->app,source->slot)=targetCursor;
             source->preserveSelection=preserveSelection;source->published=true;++source->generation;consumed=true;
         }
     };
-    MmsResult Prepare(bool forward,std::unique_ptr<PreparedDeletePart>& out)override{
+    MmsResult Prepare(bool forward,bool signedPreparation,std::unique_ptr<PreparedDeletePart>& out,PreparationBudget* budget)override{
         out.reset();if(!Structure()||!authoring.IsCurrent()||generation==UINT64_MAX)return MMS_E_STALE;
-        return Boundary([&]()->MmsResult{
+        const auto prepare=[&]()->MmsResult{
             if(!published&&(!forward||app.CurrentFrame()!=initialFrame||ReadPose<K>(app,slot)!=initialPose||
                 Cursor<K>(app,slot)!=beforeCursor||Active<K>(app,slot)!=beforeActive||!initialAuthoring.CapturedCurrent()))return MMS_E_STALE;
             if(!published&&owner&&SceneObjectIdentity(object).generation!=objectGeneration)return MMS_E_STALE;
             for(const auto& parent:parents)if(!published&&SceneObjectIdentity(parent.model).generation!=parent.initialGeneration)return MMS_E_STALE;
-            auto candidate=std::make_unique<Candidate>(this->shared_from_this(),forward);
+            if(budget)budget->Charge(sizeof(Candidate));
+            auto candidate=std::make_unique<Candidate>(this->shared_from_this(),forward,budget);
+            candidate->deferPose=signedPreparation&&candidate->frame<0;
             if(!Finite(candidate->beforePose))return MMS_E_ARGUMENT;
             const auto& expectedSource=forward?original:expected;
             for(std::size_t i=0;i<capacity;++i)if(!Equal(candidate->current[i],expectedSource[i],!published))return MMS_E_STALE;
-            ValidateChain(candidate->current);ValidateNativeFallback(candidate->current);
+            ValidateChain(candidate->current,budget);ValidateNativeFallback(candidate->current);
             for(const auto& patch:patches)candidate->target[patch.slot]=forward?patch.after:patch.before;
-            ValidateChain(candidate->target);ValidateNativeFallback(candidate->target);
-            if(published){const auto marks=CaptureFrameMarks(candidate->current.size(),[&](unsigned i)->const K&{return candidate->current[i];});
+            ValidateChain(candidate->target,budget);ValidateNativeFallback(candidate->target);
+            if(published){const auto marks=CaptureFrameMarks(candidate->current.size(),[&](unsigned i)->const K&{return candidate->current[i];},budget);
                 candidate->preserveSelection=preserveSelection||marks!=(forward?beforeMarks:afterMarks);
                 if(candidate->preserveSelection){unsigned index=0;for(;;){auto& key=candidate->target[index];
                     const auto at=std::lower_bound(marks.begin(),marks.end(),key.frame,[](const auto& mark,unsigned frame){return mark.frame<frame;});
                     key.selected=at!=marks.end()&&at->frame==key.frame?at->selected:0;if(!key.next)break;index=key.next;}}
             }
             const auto resetChannels=rootReset?ResetRootChannels<K>():0u;
+            if(budget){
+                std::uint64_t bytes=0;
+                if(const auto result=curve_host::MeasureGlobalDeletionRetimingPreparation(authoring,View(candidate->target),frameMap,forward,resetChannels,bytes))return result;
+                budget->Charge(bytes);
+                if(const auto result=curve_host::MeasureGlobalDeletionRetimingPreparation(authoring,View(candidate->current),frameMap,!forward,resetChannels,bytes))return result;
+                budget->Charge(bytes);
+            }
             candidate->curves=authoring.PrepareRetimed(View(candidate->target),frameMap,forward,resetChannels,true);
             candidate->sourceCurves=authoring.PrepareRetimed(View(candidate->current),frameMap,!forward,resetChannels,true);
-            const auto sample=[&](const auto& curves,const auto& keys){
-                if(!curves->Authored())return NativePose<K>(keys,unsigned(candidate->frame));
-                std::array<double,12> pose{};if(!curves->Sample(candidate->frame,pose))throw std::invalid_argument("deleted track sample");
+            const auto sample=[&](const auto& curves,const auto& keys,int sampleFrame){
+                if(!curves->Authored())return NativePose<K>(keys,unsigned(sampleFrame));
+                std::array<double,12> pose{};if(!curves->Sample(sampleFrame,pose))throw std::invalid_argument("deleted track sample");
                 pose=AuthoredPose<K>(pose);
-                if constexpr(std::is_same_v<K,mdl::GravityKey>){const auto native=NativePose<K>(keys,unsigned(candidate->frame));
+                if constexpr(std::is_same_v<K,mdl::GravityKey>){const auto native=NativePose<K>(keys,unsigned(sampleFrame));
                     pose[5]=(std::uint32_t(native[5])&0xffffff00u)|std::uint8_t(pose[5]);}
                 return pose;
             };
-            if(candidate->beforePose==sample(candidate->sourceCurves,candidate->current))candidate->afterPose=sample(candidate->curves,candidate->target);
+            if(!candidate->deferPose&&candidate->beforePose==sample(candidate->sourceCurves,candidate->current,candidate->frame))
+                candidate->afterPose=sample(candidate->curves,candidate->target,candidate->frame);
+            if(signedPreparation){candidate->zeroPose=sample(candidate->curves,candidate->target,0);
+                if(!Finite(candidate->zeroPose))return MMS_E_ARGUMENT;}
             if(!Finite(candidate->afterPose))return MMS_E_ARGUMENT;
-            unsigned index=0;while(candidate->target[index].frame<unsigned(candidate->frame)&&candidate->target[index].next)index=candidate->target[index].next;
+            const auto cursorFrame=unsigned(std::max(candidate->frame,0));
+            unsigned index=0;while(candidate->target[index].frame<cursorFrame&&candidate->target[index].next)index=candidate->target[index].next;
             candidate->targetCursor=!forward&&candidate->frame==initialFrame?beforeCursor:index;
-            candidate->parents=parents;ParentPose(candidate->beforePose,candidate->parents);ParentPose(candidate->afterPose,candidate->parents);
+            if(budget)Reserve(candidate->parents,parents.size(),budget);
+            candidate->parents=parents;ParentPose(candidate->beforePose,candidate->parents,budget);ParentPose(candidate->afterPose,candidate->parents,budget);
+            if(signedPreparation)ParentPose(candidate->zeroPose,candidate->parents,budget);
+            if(budget)Reserve(candidate->parentGenerations,candidate->parents.size(),budget);
             for(const auto& parent:candidate->parents)candidate->parentGenerations.push_back(SceneObjectIdentity(parent.model).generation);
             if(owner)candidate->objectGeneration=SceneObjectIdentity(object).generation;
             if(!candidate->IsCurrent())return MMS_E_STALE;out=std::move(candidate);return MMS_OK;
-        });
+        };
+        return budget?BudgetBoundary(prepare):Boundary(prepare);
     }
     bool Changed()const noexcept override{return dataChanged;}
+    void AppendRetainedObjects(GlobalDeletionObjects& objects)const override{
+        AppendHolder(objects,owner,nullptr);for(const auto& parent:parents)AppendHolder(objects,parent.owner,nullptr);
+    }
     std::uint64_t RetainedBytes()const noexcept override{
         std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);Add(bytes,original.capacity()+expected.capacity(),sizeof(K));
         Add(bytes,patches.capacity(),sizeof(Patch));Add(bytes,frameMap.capacity(),sizeof(frameMap[0]));
@@ -366,19 +438,26 @@ template<class K>struct FamilyDelete final:DeletePart,std::enable_shared_from_th
         Add(bytes,authoring.RetainedBytes());Add(bytes,initialAuthoring.RetainedBytes());return bytes;
     }
 };
-struct GlobalDelete final:HistoryChange,std::enable_shared_from_this<GlobalDelete>{
+struct GlobalDelete final:GlobalKeyDeletion,std::enable_shared_from_this<GlobalDelete>{
     MMDApp& app;int initialFrame;std::uint32_t initialLast;std::uint64_t generation=1;bool published=false,fallback;
     std::array<unsigned char,259> initialRows{};
     std::vector<std::shared_ptr<DeletePart>> parts;
+    GlobalDeletionObjects objects;
+    const GlobalDeletionObjects& RetainedObjects()const noexcept override{return objects;}
     static std::array<unsigned char,259> Rows(MMDApp& app)noexcept{
         std::array<unsigned char,259> result{};for(unsigned i=0;i<4;++i)result[i]=app.state.globalTrackSelected[i];
         for(unsigned i=0;i<kModelSlotCount;++i)if(const auto* object=app.AccessorySlot(i))result[4+i]=object->rowSelected;return result;
     }
     explicit GlobalDelete(MMDApp& a,bool f):app(a),initialFrame(a.CurrentFrame()),initialLast(a.LastRegisteredFrame()),fallback(f),initialRows(Rows(a)){}
-    struct Candidate final:PreparedHistoryChange{
+    struct Candidate final:PreparedGlobalKeyDeletion{
         std::shared_ptr<GlobalDelete> source;std::uint64_t generation;int frame;std::uint32_t last;bool consumed=false;
         std::array<unsigned char,259> rows{};
         std::vector<std::unique_ptr<PreparedDeletePart>> parts;
+        std::vector<GlobalDeletionTarget> zeroTargets;
+        GlobalDeletionObjects objects;
+        MMDApp* OwnerApp()const noexcept override{return &source->app;}
+        const std::vector<GlobalDeletionTarget>& ZeroTargets()const noexcept override{return zeroTargets;}
+        const GlobalDeletionObjects& RetainedObjects()const noexcept override{return objects;}
         explicit Candidate(std::shared_ptr<GlobalDelete> s):source(std::move(s)),generation(source->generation),frame(source->app.CurrentFrame()),last(source->app.LastRegisteredFrame()),rows(Rows(source->app)){}
         bool IsCurrent()const noexcept override{
             if(consumed||source->generation!=generation||source->app.CurrentFrame()!=frame||source->app.LastRegisteredFrame()!=last)return false;
@@ -390,17 +469,40 @@ struct GlobalDelete final:HistoryChange,std::enable_shared_from_this<GlobalDelet
             source->published=true;++source->generation;consumed=true;
         }
     };
-    MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out)override{
+    MmsResult PrepareImpl(bool forward,bool signedPreparation,std::unique_ptr<PreparedGlobalKeyDeletion>& out,PreparationBudget* budget=nullptr){
         out.reset();if(generation==UINT64_MAX)return MMS_E_NOT_READY;
-        if(app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+        if(app.CurrentFrame()<(signedPreparation?frame_limits::minimum:0)||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
         if(!published&&(!forward||app.CurrentFrame()!=initialFrame||app.LastRegisteredFrame()!=initialLast))return MMS_E_STALE;
         if(!published&&fallback&&Rows(app)!=initialRows)return MMS_E_STALE;
-        return Boundary([&]()->MmsResult{auto candidate=std::make_unique<Candidate>(shared_from_this());
-            for(const auto& part:parts){std::unique_ptr<PreparedDeletePart> prepared;if(auto result=part->Prepare(forward,prepared))return result;
-                if(!prepared)return MMS_E_NOT_READY;candidate->parts.push_back(std::move(prepared));}
-            if(!candidate->IsCurrent())return MMS_E_STALE;out=std::move(candidate);return MMS_OK;});
+        const auto prepare=[&]()->MmsResult{
+            if(budget)budget->Charge(sizeof(Candidate));
+            auto candidate=std::make_unique<Candidate>(shared_from_this());
+            if(budget){Reserve(candidate->parts,parts.size(),budget);if(signedPreparation)Reserve(candidate->zeroTargets,parts.size(),budget);}
+            for(const auto& part:parts){std::unique_ptr<PreparedDeletePart> prepared;if(auto result=part->Prepare(forward,signedPreparation,prepared,budget))return result;
+                if(!prepared)return MMS_E_NOT_READY;
+                prepared->AppendRetainedObjects(candidate->objects,budget);
+                if(signedPreparation)candidate->zeroTargets.push_back(prepared->ZeroTarget());
+                candidate->parts.push_back(std::move(prepared));}
+            if(!candidate->IsCurrent())return MMS_E_STALE;out=std::move(candidate);return MMS_OK;};
+        return budget?BudgetBoundary(prepare):Boundary(prepare);
+    }
+    MmsResult Prepare(bool forward,std::unique_ptr<PreparedHistoryChange>& out)override{
+        out.reset();std::unique_ptr<PreparedGlobalKeyDeletion> candidate;
+        const auto result=PrepareImpl(forward,false,candidate);if(!result)out=std::move(candidate);return result;
+    }
+    MmsResult PrepareSigned(bool forward,std::unique_ptr<PreparedGlobalKeyDeletion>& out)noexcept override{
+        return PrepareImpl(forward,true,out);
+    }
+    MmsResult PrepareSignedBudgeted(bool forward,std::uint64_t& remainingBytes,
+        std::unique_ptr<PreparedGlobalKeyDeletion>& out)noexcept override{
+        out.reset();PreparationBudget budget{remainingBytes};
+        const auto result=BudgetBoundary([&]{return PrepareImpl(forward,true,out,&budget);});
+        if(!result)remainingBytes=budget.remaining;
+        else out.reset();
+        return result;
     }
     std::uint64_t RetainedBytes()const noexcept override{std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);Add(bytes,parts.capacity(),sizeof(parts[0]));
+        Add(bytes,objects.capacity(),sizeof(objects[0]));
         for(const auto& part:parts)Add(bytes,part->RetainedBytes());return bytes;}
 };
 template<class K>bool HasMarks(K* keys){const auto count=mdl::KeyPoolCapacity(keys);for(std::size_t i=0;i<count;++i)if(keys[i].selected)return true;return false;}
@@ -411,13 +513,13 @@ bool FallbackRow(MMDApp& app,Kind kind,unsigned slot)noexcept{
     return app.GlobalTrackSelected(track)!=0;
 }
 }
-MmsResult PlanGlobalKeyDeletion(MMDApp& app,std::shared_ptr<HistoryChange>& out,bool selectedAtCurrentFrame)noexcept{
+MmsResult PlanSignedGlobalKeyDeletion(MMDApp& app,std::shared_ptr<GlobalKeyDeletion>& out,bool selectedAtCurrentFrame)noexcept{
     out.reset();if(app.PlaybackActive()||app.FrameStepPlayback()||app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
-    if(app.CurrentFrame()<0||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+    if(app.CurrentFrame()<frame_limits::minimum||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
     return Boundary([&]()->MmsResult{
         const bool explicitMarks=HasMarks(app.CameraKeys())||HasMarks(app.LightKeys())||HasMarks(app.ShadowKeys())||HasMarks(app.GravityKeys())||
             [&]{for(unsigned i=0;i<kModelSlotCount;++i)if(HasMarks(app.AccessoryKeys(i)))return true;return false;}();
-        const bool fallback=!explicitMarks&&selectedAtCurrentFrame&&app.CurrentFrame()!=0;
+        const bool fallback=!explicitMarks&&selectedAtCurrentFrame&&app.CurrentFrame()>0;
         if(!explicitMarks&&!fallback)return MMS_OK;
         auto change=std::make_shared<GlobalDelete>(app,fallback);bool changed=false;
         const auto add=[&](auto* pool,Kind kind,unsigned slot){using K=std::remove_pointer_t<decltype(pool)>;
@@ -428,8 +530,15 @@ MmsResult PlanGlobalKeyDeletion(MMDApp& app,std::shared_ptr<HistoryChange>& out,
         };
         add(app.CameraKeys(),Kind::Camera,0);add(app.LightKeys(),Kind::Light,0);add(app.ShadowKeys(),Kind::Shadow,0);add(app.GravityKeys(),Kind::Gravity,0);
         for(unsigned slot=0;slot<kModelSlotCount;++slot)add(app.AccessoryKeys(slot),Kind::Accessory,slot);
-        if(changed)out=std::move(change);return MMS_OK;
+        if(changed){for(const auto& part:change->parts)part->AppendRetainedObjects(change->objects);out=std::move(change);}return MMS_OK;
     });
+}
+MmsResult PlanGlobalKeyDeletion(MMDApp& app,std::shared_ptr<HistoryChange>& out,bool selectedAtCurrentFrame)noexcept{
+    out.reset();if(app.PlaybackActive()||app.FrameStepPlayback()||app.state.recordPlaybackStartPending||app.SceneMutationInProgress())return MMS_E_NOT_READY;
+    if(app.CurrentFrame()<0)return MMS_E_ARGUMENT;
+    std::shared_ptr<GlobalKeyDeletion> change;
+    const auto result=PlanSignedGlobalKeyDeletion(app,change,selectedAtCurrentFrame);
+    if(!result)out=std::move(change);return result;
 }
 }
 #endif

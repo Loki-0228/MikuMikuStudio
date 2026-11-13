@@ -60,23 +60,28 @@ MmsResult SceneStore::Acquire(SceneClient& client, const MmsSceneQueryV1* query,
     *out = {Header<MmsSnapshotV1>(), handle, lease->data->revision, lease->data->structure, lease->data->pose};
     return MMS_OK;
 }
-MmsSceneApiV1 SceneStore::Api(SceneClient& client) {
-    client.store = this;
+MmsResult SceneStore::Api(SceneClient& client, MmsSceneApiV1& out) {
+    SceneStore* expected = nullptr;
+    if (!client.store.compare_exchange_strong(expected, this, std::memory_order_acq_rel) && expected != this)
+        return MMS_E_CONFLICT;
     MmsSceneApiV1 api{}; api.h = Header<MmsSceneApiV1>(); api.context = &client;
-    api.acquire = [](void* p, const MmsSceneQueryV1* q, MmsSnapshotV1* out) { return Boundary([&] { auto& c = *static_cast<SceneClient*>(p); return c.store->Acquire(c, q, out); }); };
+    api.acquire = [](void* p, const MmsSceneQueryV1* q, MmsSnapshotV1* out) { return Boundary([&] { auto& c = *static_cast<SceneClient*>(p); auto* s=c.store.load(std::memory_order_acquire); return s ? s->Acquire(c, q, out) : MMS_E_NOT_READY; }); };
     api.release = [](void* p, MmsHandle h) {
-        auto& c = *static_cast<SceneClient*>(p); std::lock_guard<std::mutex> lock(c.store->mutex_);
-        auto it = c.store->leases_.find(h); if (it != c.store->leases_.end() && it->second->owner == &c) c.store->leases_.erase(it);
+        auto& c = *static_cast<SceneClient*>(p); auto* s=c.store.load(std::memory_order_acquire); if (!s) return;
+        std::lock_guard<std::mutex> lock(s->mutex_);
+        auto it = s->leases_.find(h); if (it != s->leases_.end() && it->second->owner == &c) s->leases_.erase(it);
     };
     api.objects = [](void* p, MmsHandle h, MmsSpan* out) { return Boundary([&]() -> MmsResult {
         auto& c = *static_cast<SceneClient*>(p); if (!out) return MMS_E_ARGUMENT;
-        auto lease = c.store->Find(c, h); if (!lease) return MMS_E_STALE;
+        auto* s=c.store.load(std::memory_order_acquire); if (!s) return MMS_E_NOT_READY;
+        auto lease = s->Find(c, h); if (!lease) return MMS_E_STALE;
         *out = {lease->objects.data(), lease->objects.size(), sizeof(MmsObjectV1), 1}; return MMS_OK;
     }); };
     api.readChannel = [](void* p, MmsHandle h, MmsObjectRef object, uint32_t channel, MmsSpan* out) { return Boundary([&]() -> MmsResult {
         auto& c = *static_cast<SceneClient*>(p);
         if (!out || !channel || (channel & (channel - 1)) || (channel & ~511u)) return MMS_E_ARGUMENT;
-        auto lease = c.store->Find(c, h); if (!lease) return MMS_E_STALE;
+        auto* s=c.store.load(std::memory_order_acquire); if (!s) return MMS_E_NOT_READY;
+        auto lease = s->Find(c, h); if (!lease) return MMS_E_STALE;
         if (!(lease->channels & channel)) return MMS_E_NOT_READY;
         auto selected = std::find_if(lease->objects.begin(), lease->objects.end(), [&](const auto& record) { return Same(record.object.id, object.id); });
         if (selected == lease->objects.end()) return MMS_E_NOT_FOUND;
@@ -86,6 +91,6 @@ MmsSceneApiV1 SceneStore::Api(SceneClient& client) {
         if (value == record->values.end()) return MMS_E_UNSUPPORTED;
         *out = value->second; return MMS_OK;
     }); };
-    return api;
+    out = api; return MMS_OK;
 }
 }

@@ -22,6 +22,7 @@
 #include <Windows.h>
 #include <d3d9.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +37,8 @@
 #include "mikumikustudio/viewport_corner_settings.hpp"
 #include "mikumikustudio/viewport_tool_layout.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
+#include "mikumikustudio/ui_scale.hpp"
 
 namespace mikumikustudio { int ViewportToolAtPointForTest(MMDApp*); }
 
@@ -152,7 +155,21 @@ bool HasQuad(const std::vector<QuadBox>& quads, const QuadBox& want) {
     return false;
 }
 
-void DrawChecks(HWND window, IDirect3DDevice9* device) {
+void ArrangeTestScene(MMDApp& app, const RECT& client) {
+    const auto panels = mikumikustudio::MainPanelLayout(&app, client.bottom);
+    const auto rows = mikumikustudio::FitViewportToolbarRows(panels.bottomTop, mikumikustudio::ui_scale::Percent());
+    mikumikustudio::FrameViewportGeometry geometry;
+    Check(mikumikustudio::CalculateFrameViewport(client, app.SidebarWidth(), 0, mikumikustudio::FrameViewportMode::Docked,
+              app.RenderWidth(), app.RenderHeight(), geometry, 0, 0, 0, panels.bottomExtra, rows),
+          "fit a scene in the test window with the current toolbar reserves");
+    app.ViewportRect() = geometry.scene;
+}
+
+float ExpectedHudScale(const RECT& view, int percent) {
+    return std::min({percent / 100.0f, (view.right - view.left) / 360.0f, (view.bottom - view.top) / 177.0f});
+}
+
+void DrawChecks(HWND window, IDirect3DDevice9* device, int percent) {
     auto app = std::make_unique<MMDApp>();
     ResetAppState(*app);
     BlockGuard blockGuard(app.get());
@@ -179,6 +196,9 @@ void DrawChecks(HWND window, IDirect3DDevice9* device) {
     app->state.optflag[0] = 1;   // 相机面板：跳过骨骼投影路径
     app->state.coordinateSystem = 0;
     app->EnglishUI() = 1;
+    app->FpsOverlayEnabled() = 1;
+    app->FramesPerSecond() = 60;
+    ArrangeTestScene(*app, client);
 
     Check(SUCCEEDED(device->CreateVertexBuffer(0x6D60, D3DUSAGE_WRITEONLY,
         0, D3DPOOL_MANAGED, &app->OverlayVertices(), nullptr)), "allocate caption batch");
@@ -188,11 +208,10 @@ void DrawChecks(HWND window, IDirect3DDevice9* device) {
         settings::ResetCacheForTest(corner);
         for (float sceneScale : kScales) {
             renderer->viewScale = sceneScale;
-            app->ViewportRect() = {109, 50, client.right - 80, client.bottom - 210};
             const RECT view = FrameOverlayRect(app.get());
             Check(!IsRectEmpty(&view), "the hidden client has a real presentation rectangle");
             const float scale = FrameOverlayScale(app.get());
-            Check(scale == 1.0f, "HUD size is independent of scene scale when it fits");
+            Check(scale == ExpectedHudScale(view, percent), "HUD follows the configured percentage and available space");
             const layout::Anchor a = layout::Make(view, scale, corner);
             app->SpriteOverlayPrimitiveCount() = 0;
             mikumikustudio::PrepareFrameSpriteOverlay(app.get());
@@ -240,9 +259,16 @@ void DrawChecks(HWND window, IDirect3DDevice9* device) {
             mikumikustudio::PrepareFrameTextOverlay(app.get());
             void* textData = nullptr;
             const int count = app->TextOverlayPrimitiveCount() * 3;
-            if (app->OverlayVertices() && count >= 54 && SUCCEEDED(
+            if (app->OverlayVertices() && count >= 90 && SUCCEEDED(
                     app->OverlayVertices()->Lock(0, 0, &textData, D3DLOCK_READONLY))) {
-                const float* vertex = static_cast<const float*>(textData) + (count - 54) * 7;
+                const float* fps = static_cast<const float*>(textData);
+                if (corner == Corner::BottomLeft) {
+                    const float hudRight = a.X(-30.0f);
+                    for (int i = 0; i < 36; ++i)
+                        Check(fps[i * 7] > hudRight && fps[i * 7] <= view.right,
+                              "the FPS text stays clear of the left HUD scale row");
+                }
+                const float* vertex = fps + (count - 54) * 7;
                 float left = vertex[0], right = left, top = vertex[1], bottom = top;
                 for (int i = 0; i < 54; ++i) {
                     if (vertex[i * 7] < left) left = vertex[i * 7];
@@ -273,7 +299,7 @@ void DrawChecks(HWND window, IDirect3DDevice9* device) {
 }
 
 // ---- 3) 命中 -------------------------------------------------------------
-void HitChecks(HWND window, IDirect3DDevice9* device) {
+void HitChecks(HWND window, IDirect3DDevice9* device, int percent) {
     auto app = std::make_unique<MMDApp>();
     ResetAppState(*app);
     BlockGuard blockGuard(app.get());
@@ -296,23 +322,23 @@ void HitChecks(HWND window, IDirect3DDevice9* device) {
     model->boneCount = 1;
     model->selectedBone = 0;
     model->boneSelection = &selected;
-    model->physicsMode = 1;
+    model->physicsMode = 2;
 
     struct Row { int xUnits, yUnits, modelOp, cameraOp; };
     const Row rows[] = {{110, 105, 9, 18}, {70, 105, 10, 19}, {30, 105, 11, 20},
                         {110, 65, 12, 15}, {70, 65, 13, 16}, {30, 65, 14, 17}};
     RECT client{};
     Check(GetClientRect(window, &client), "get the logical input client");
+    ArrangeTestScene(*app, client);
 
     for (Corner corner : kCorners) {
         settings::ResetCacheForTest(corner);
         for (float sceneScale : kScales) {
             renderer->viewScale = sceneScale;
-            app->ViewportRect() = {109, 50, client.right - 80, client.bottom - 210};
             const RECT view = FrameOverlayRect(app.get());
             Check(!IsRectEmpty(&view), "the input fixture uses the real hidden client");
             const float scale = FrameOverlayScale(app.get());
-            Check(scale == 1.0f, "HUD size is independent of scene scale when it fits");
+            Check(scale == ExpectedHudScale(view, percent), "HUD hit geometry follows the fitted percentage");
             const layout::Anchor a = layout::Make(view, scale, corner);
             app->ModelSlot(0) = reinterpret_cast<unsigned char*>(model.get());
             app->SetSelectedModelSlot(0);
@@ -324,6 +350,10 @@ void HitChecks(HWND window, IDirect3DDevice9* device) {
                 app->MouseX() = app->PreviousMouseX() = x;
                 app->MouseY() = app->PreviousMouseY() = y;
                 app->state.optflag[0] = 0;
+                bone.flags = 0;
+                Check(mikumikustudio::ViewportToolAtPointForTest(app.get()) == 0,
+                      "a visible HUD cell cannot start a drag for a locked PMX bone");
+                bone.flags = mikumikustudio::mdl::kBoneFlagRotatable | mikumikustudio::mdl::kBoneFlagMovable;
                 Check(mikumikustudio::ViewportToolAtPointForTest(app.get()) == row.modelOp,
                       "model-panel row cell maps to its own axis operation");
 
@@ -449,7 +479,13 @@ void SettingsChecks() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    int percent = 100;
+    if (argc == 3 && std::strcmp(argv[1], "--expect-ui-percent") == 0) {
+        percent = std::atoi(argv[2]);
+        mikumikustudio::ui_scale::ApplyAtStartup();
+        Check(mikumikustudio::ui_scale::Percent() == percent, "read the expected percentage from isolated app settings");
+    }
     MappingChecks();
     SettingsChecks();
 
@@ -478,9 +514,9 @@ int main() {
             const int height = MulDiv(960, 96, dpi);
             Check(SetWindowPos(window, nullptr, 0, 0, width, height,
                 SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOZORDER), "resize logical client for DPI fixture");
-            std::printf("HUD layout and hit tests at simulated %d DPI\n", dpi);
-            DrawChecks(window, device);
-            HitChecks(window, device);
+            std::printf("HUD layout and hit tests at %d%% and simulated %d DPI\n", percent, dpi);
+            DrawChecks(window, device, percent);
+            HitChecks(window, device, percent);
         }
     }
     if (device != nullptr) device->Release();

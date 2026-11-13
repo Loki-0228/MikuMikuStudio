@@ -69,7 +69,7 @@ bool SameCurveKeyData(mdl::BoneKey a, mdl::BoneKey b) noexcept {
 void AddBytes(std::uint64_t& total, std::uint64_t amount) noexcept {
     total = amount > UINT64_MAX - total ? UINT64_MAX : total + amount;
 }
-struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<RegistrationChange> {
+struct RegistrationChange final : BoneKeyDeletion, std::enable_shared_from_this<RegistrationChange> {
     MMDApp& app;
     unsigned slot;
     unsigned char* model;
@@ -104,7 +104,12 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
     bool publishMetadata = true;
     bool preserveKeyMarks = false;
     bool published = false;
+    bool deletionRecord = false;
     unsigned char rulePhysicsMode = 0;
+    void VisitRetainedModels(void* context,ModelDeletionOwnerVisitor visit) const override {
+        visit(context,lifetime);
+        if(display)display->VisitRetainedModels(context,visit);
+    }
     RegistrationChange(MMDApp& a, unsigned s)
         : app(a), slot(s), model(a.ModelSlot(s)), lifetime(RetainSceneObject(a, MMS_OBJECT_MODEL, s)),
           bones(mdl::Mdl(model)->boneTable), count(mdl::Mdl(model)->boneCount),
@@ -144,10 +149,13 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
         for (const auto& p : poses) if (bones[p.bone].physicsDisabled != p.physics) return false;
         return true;
     }
-    struct Candidate final : PreparedHistoryChange {
+    struct Candidate final : PreparedBoneKeyDeletion {
         std::shared_ptr<RegistrationChange> source;
         bool forward;
         std::unique_ptr<mdl::BoneKeyPoolGrowth> growth;
+        // Keep the reversible reservation alive through both signed halves.
+        // It must precede authoring guards that otherwise freeze absence.
+        std::unique_ptr<bone_scale::PoseStorageLease> signedPoseStorage;
         std::unique_ptr<bone_scale::AuthoringRestore> scale;
         std::unique_ptr<bone_curve::AuthoringRestore> curves;
         std::unique_ptr<PreparedHistoryChange> evaluation;
@@ -165,10 +173,55 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
         std::size_t morphCapacity, displayCapacity;
         std::uint32_t currentMax, currentLast;
         int currentSearch;
+        bool signedPreparation=false, deferPose=false, consumed=false;
+        int sourceFrame=0, sourcePhysics=0;
+        unsigned char sourceModelPhysics=0;
+        std::uint64_t sourceGeneration=0;
+        mdl::BoneOrderEntry* sourceOrder=nullptr;
+        unsigned sourceOrderCount=0;
+        struct SourceBone {
+            unsigned bone; mdl::BoneType type; unsigned char rigid, physics; int selector;
+            PoseValue pose; bone_scale::Matrix scale;
+        };
+        std::vector<SourceBone> signedBones;
+        std::vector<mdl::BoneOrderEntry> sourceSelectors;
+        std::vector<BoneDeletionTarget> zeroTargets;
+        struct Parent {
+            unsigned slot; unsigned char* model; mdl::BoneRecord* bones; unsigned count;
+            std::uint64_t generation; std::shared_ptr<RetainedSceneObject> owner;
+            bool Current(MMDApp& app) const noexcept {
+                MmsObjectRef identity{};
+                return owner->Present() && app.ModelSlot(slot)==model && SceneObjectPresent(model,owner->Id()) &&
+                    FindSceneObjectIdentity(model,identity) && identity.generation==generation &&
+                    mdl::Mdl(model)->boneTable==bones && mdl::Mdl(model)->boneCount==count;
+            }
+        };
+        std::vector<Parent> parents;
+        void VisitRetainedModels(void* context,ModelDeletionOwnerVisitor visit) const override {
+            source->VisitRetainedModels(context,visit);
+            for(const auto& parent:parents)visit(context,parent.owner);
+        }
+        const std::vector<BoneDeletionTarget>& ZeroTargets() const noexcept override { return zeroTargets; }
         Candidate(std::shared_ptr<RegistrationChange> s, bool f) : source(std::move(s)), forward(f) {}
         bool IsCurrent() const noexcept override {
+            if (signedPreparation && consumed) return false;
+            if (signedPoseStorage && !signedPoseStorage->IsCurrent()) return false;
             if (!source->Structure() || !growth || !growth->IsCurrent()) return false;
             const auto& m = *mdl::Mdl(source->model);
+            if(signedPreparation) {
+                MmsObjectRef identity{};
+                if(source->app.CurrentFrame()!=sourceFrame || source->app.PlaybackPhysicsMode()!=sourcePhysics ||
+                    m.physicsMode!=sourceModelPhysics || m.bonePhysicsState!=dirty ||
+                    !FindSceneObjectIdentity(source->model,identity) || identity.generation!=sourceGeneration ||
+                    m.boneOrderTable!=sourceOrder || m.boneOrderCount!=sourceOrderCount)return false;
+                if(!sourceSelectors.empty() && std::memcmp(sourceOrder,sourceSelectors.data(),sourceSelectors.size()*sizeof(mdl::BoneOrderEntry)))return false;
+                for(const auto& bone:signedBones)if(m.boneTable[bone.bone].type!=bone.type ||
+                    m.boneTable[bone.bone].hasRigidBody!=bone.rigid || m.boneTable[bone.bone].physicsDisabled!=bone.physics ||
+                    m.boneTable[bone.bone].slotIndex!=bone.selector ||
+                    !SamePose(ReadPose(m,bone.bone),bone.pose,7|Rotation|Dirty) ||
+                    bone_scale::Pose(source->model,int(bone.bone))!=bone.scale)return false;
+                for(const auto& parent:parents)if(!parent.Current(source->app))return false;
+            }
             if (m.bonePhysicsState != dirty || m.morphKeys != morphs || m.displayKeys != displays ||
                 mdl::MorphKeyCapacity(morphs) != morphCapacity || mdl::KeyPoolCapacity(displays) != displayCapacity ||
                 (source->publishMetadata && (m.maxFrame != currentMax || m.searchCursor != currentSearch ||
@@ -204,6 +257,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
                 (!evaluation || evaluation->IsCurrent());
         }
         void Publish() noexcept override {
+            if(signedPreparation && !IsCurrent())std::terminate();
             // SharedHistory validates the complete aggregate before this call.
             // None of these independent side-table exchanges reads native keys.
             if (!growth->Publish()) std::terminate();
@@ -217,7 +271,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
                 }
                 else m.boneKeys[patch.slot].allocated = target.allocated;
             }
-            for (const auto& patch : source->poses) {
+            if(!deferPose)for (const auto& patch : source->poses) {
                 const auto& target = forward ? patch.after : patch.before;
                 auto& bone = m.boneTable[patch.bone];
                 for (unsigned axis = 0; axis < 3; ++axis)
@@ -240,10 +294,82 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
             if (evaluation) evaluation->Publish();
             if (!growth->Accept()) std::terminate();
             source->published=true;
+            consumed=true;
         }
     };
     MmsResult Prepare(bool forward, std::unique_ptr<PreparedHistoryChange>& out) override {
+        out.reset();std::unique_ptr<PreparedBoneKeyDeletion> candidate;
+        const auto result=PrepareImpl(forward,false,nullptr,candidate);
+        if(!result)out=std::move(candidate);return result;
+    }
+    MmsResult PrepareSigned(bool forward,const std::vector<mdl::BoneOrderEntry>* zeroSelectors,
+        std::unique_ptr<PreparedBoneKeyDeletion>& out) noexcept override {
+        out.reset();if(!deletionRecord)return MMS_E_NOT_READY;
+        if(app.CurrentFrame()<frame_limits::minimum || app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+        if(display && !zeroSelectors)return MMS_E_ARGUMENT;
+        return PrepareImpl(forward,true,zeroSelectors,out);
+    }
+    MmsResult PrepareSignedBudgeted(bool forward,const std::vector<mdl::BoneOrderEntry>* zeroSelectors,
+        std::uint64_t& remainingBytes,std::unique_ptr<PreparedBoneKeyDeletion>& out) noexcept override {
+        out.reset();if(!deletionRecord)return MMS_E_NOT_READY;
+        if(!Structure())return MMS_E_STALE;
+        if(app.CurrentFrame()<frame_limits::minimum||app.CurrentFrame()>frame_limits::maximum)return MMS_E_ARGUMENT;
+        const auto& m=*mdl::Mdl(model);
+        if((display&&!zeroSelectors)||(zeroSelectors&&zeroSelectors->size()!=m.boneOrderCount))return MMS_E_ARGUMENT;
+        return Boundary([&]()->MmsResult {
+            model_delete_budget::Bytes bytes;bytes.Add(sizeof(Candidate));
+            bytes.Array<mdl::BoneKey>(keys.size());bytes.Array<mdl::BoneKey>(keyDependencies.size());
+            bytes.Array<PoseValue>(poses.size());bytes.Array<bone_scale::Matrix>(poses.size());
+            bytes.Add(morphFlags.size());bytes.Add(displayFlags.size());
+            bytes.Array<std::uint32_t>(tailCursors.size());bytes.Array<std::uint32_t>(tailCursors.size());
+            bytes.Add(tailCursors.size());bytes.Add(tailCursors.size());
+            bytes.Array<mdl::BoneOrderEntry>(m.boneOrderCount);
+            bytes.Array<Candidate::SourceBone>(evaluationBones.size());
+            bytes.Array<BoneDeletionTarget>(evaluationBones.size());
+            // At most two distinct parents per evaluated bone (source/zero).
+            const auto parentCapacity=evaluationBones.size()>kModelSlotCount/2?kModelSlotCount:evaluationBones.size()*2;
+            bytes.Array<Candidate::Parent>(parentCapacity);
+            std::array<bool,kModelSlotCount> parents{};
+            const auto parent=[&](const mdl::BoneOrderEntry& window) {
+                if(window.linkedModel==-1)return;
+                if(window.linkedModel<0||window.linkedModel>=kModelSlotCount||!app.ModelSlot(window.linkedModel))
+                    throw std::invalid_argument("signed bone selector parent");
+                parents[window.linkedModel]=true;
+            };
+            for(const auto bone:evaluationBones) {
+                if(bone>=m.boneCount)return MMS_E_ARGUMENT;
+                const auto selector=m.boneTable[bone].slotIndex;
+                if(selector<0)continue;
+                if(!zeroSelectors||!m.boneOrderTable||unsigned(selector)>=m.boneOrderCount)return MMS_E_ARGUMENT;
+                parent(static_cast<const mdl::BoneOrderEntry*>(m.boneOrderTable)[selector]);parent((*zeroSelectors)[selector]);
+            }
+            for(unsigned index=0;index<parents.size();++index)if(parents[index])
+                bytes.Add(ModelDeletionOwnerPreparationBytes(app,index));
+            // Deletions never grow a pool; BoneKeyPoolGrowth still owns its
+            // cancellable visit snapshot and its small private token.
+            const auto capacity=mdl::BoneKeyCapacity(m.boneKeys);
+            for(const auto& patch:keys)if(patch.slot>=capacity)return MMS_E_STALE;
+            bytes.Add(mdl::BoneKeyPoolGrowth::NoGrowthPreparationBytes(capacity));
+            const bool evaluates=app.CurrentFrame()>=0&&!evaluationBones.empty();
+            bytes.Add(bone_scale::DeletionPreparationBytes(model,forward?&scaleAfter:&scaleBefore,
+                scaleChanged||observeAuthoring,app.CurrentFrame()<0&&!evaluationBones.empty(),evaluates));
+            if(curvesChanged||observeAuthoring)bytes.Add(bone_curve::DeletionPreparationBytes(model,forward?curveAfter.get():curveBefore.get()));
+            if(evaluates) {
+                bytes.Add(BoneDeletionEvaluationStorageBytes(evaluationBones.size()));
+                if(display)bytes.Add(display->SelectorPreparationBytes());
+            }
+            auto remaining=remainingBytes;bytes.Take(remaining);
+            std::unique_ptr<PreparedBoneKeyDeletion> prepared;
+            if(auto result=PrepareSigned(forward,zeroSelectors,prepared))return result;
+            if(!prepared)return MMS_E_NOT_READY;
+            out=std::move(prepared);remainingBytes=remaining;return MMS_OK;
+        });
+    }
+    MmsResult PrepareImpl(bool forward,bool signedPreparation,const std::vector<mdl::BoneOrderEntry>* zeroSelectors,
+        std::unique_ptr<PreparedBoneKeyDeletion>& out) {
         out.reset(); if (!Structure()) return MMS_E_STALE;
+        if(signedPreparation && !zeroSelectors)for(const auto bone:evaluationBones)
+            if(bone>=count || bones[bone].slotIndex>=0)return MMS_E_ARGUMENT;
         return Boundary([&]() -> MmsResult {
             auto& m = *mdl::Mdl(model);
             if(!published&&!forward)return MMS_E_STALE;
@@ -252,6 +378,45 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
                 app.state.lastRegisteredFrame != (forward ? lastBefore : lastAfter))) return MMS_E_STALE;
             const auto capacity = mdl::BoneKeyCapacity(m.boneKeys);
             auto candidate = std::make_unique<Candidate>(shared_from_this(), forward);
+            if(signedPreparation) {
+                candidate->currentKeys.reserve(keys.size());candidate->dependencyKeys.reserve(keyDependencies.size());
+                candidate->currentPoses.reserve(poses.size());candidate->currentScales.reserve(poses.size());
+                candidate->currentMorph.reserve(morphFlags.size());candidate->currentDisplay.reserve(displayFlags.size());
+                candidate->currentTailCursors.reserve(tailCursors.size());candidate->targetTailCursors.reserve(tailCursors.size());
+                candidate->currentTailActive.reserve(tailCursors.size());candidate->targetTailActive.reserve(tailCursors.size());
+            }
+            candidate->signedPreparation=signedPreparation;
+            candidate->deferPose=signedPreparation && app.CurrentFrame()<0;
+            if(signedPreparation) {
+                candidate->signedBones.reserve(evaluationBones.size());candidate->zeroTargets.reserve(evaluationBones.size());
+                candidate->parents.reserve(evaluationBones.size()>kModelSlotCount/2?kModelSlotCount:evaluationBones.size()*2);
+                candidate->sourceFrame=app.CurrentFrame();candidate->sourcePhysics=app.PlaybackPhysicsMode();
+                candidate->sourceModelPhysics=m.physicsMode;candidate->sourceGeneration=SceneObjectIdentity(model).generation;
+                candidate->sourceOrder=static_cast<mdl::BoneOrderEntry*>(m.boneOrderTable);candidate->sourceOrderCount=m.boneOrderCount;
+                if(candidate->sourceOrder && m.boneOrderCount)candidate->sourceSelectors.assign(candidate->sourceOrder,candidate->sourceOrder+m.boneOrderCount);
+                if(zeroSelectors && zeroSelectors->size()!=m.boneOrderCount)return MMS_E_ARGUMENT;
+                const auto parent=[&](const mdl::BoneOrderEntry& window) {
+                    if(window.linkedModel==-1)return;
+                    if(window.linkedModel<0 || window.linkedModel>=kModelSlotCount || window.linkedBone<0 ||
+                        !app.ModelSlot(window.linkedModel))throw std::invalid_argument("signed bone selector parent");
+                    auto* raw=app.ModelSlot(window.linkedModel);const auto& record=*mdl::Mdl(raw);
+                    if(!record.boneTable || unsigned(window.linkedBone)>=record.boneCount)throw std::invalid_argument("signed bone selector parent bone");
+                    if(std::none_of(candidate->parents.begin(),candidate->parents.end(),[&](const auto& p){return p.model==raw;}))
+                        candidate->parents.push_back({unsigned(window.linkedModel),raw,record.boneTable,record.boneCount,
+                            SceneObjectIdentity(raw).generation,RetainSceneObject(app,MMS_OBJECT_MODEL,unsigned(window.linkedModel))});
+                };
+                for(const auto bone:evaluationBones) {
+                    if(bone>=m.boneCount)return MMS_E_ARGUMENT;
+                    const auto& record=m.boneTable[bone];
+                    candidate->signedBones.push_back({bone,record.type,record.hasRigidBody,record.physicsDisabled,record.slotIndex,
+                        ReadPose(m,bone),bone_scale::Pose(model,int(bone))});
+                    if(record.slotIndex>=0) {
+                        if(!m.boneOrderTable || unsigned(record.slotIndex)>=m.boneOrderCount)return MMS_E_ARGUMENT;
+                        parent(candidate->sourceOrder[record.slotIndex]);
+                        if(zeroSelectors)parent((*zeroSelectors)[record.slotIndex]);
+                    }
+                }
+            }
             candidate->dirty = m.bonePhysicsState; candidate->morphs = m.morphKeys; candidate->displays = m.displayKeys;
             candidate->morphCapacity = mdl::MorphKeyCapacity(m.morphKeys); candidate->displayCapacity = mdl::KeyPoolCapacity(m.displayKeys);
             candidate->currentMax = m.maxFrame; candidate->currentSearch = m.searchCursor;
@@ -279,6 +444,7 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
             if ((scaleChanged || observeAuthoring) && !bone_scale::AuthoringState::Capture(model).Equals(forward ? scaleBefore : scaleAfter)) return MMS_E_STALE;
             if ((curvesChanged || observeAuthoring) && !bone_curve::AuthoringState::Capture(model)->Equals(forward ? *curveBefore : *curveAfter)) return MMS_E_STALE;
             if (!mdl::BoneKeyPoolGrowth::Prepare(m, needed, candidate->growth)) return MMS_E_MEMORY;
+            if(candidate->deferPose&&!evaluationBones.empty())candidate->signedPoseStorage=bone_scale::PoseStorageLease::Prepare(model);
             if (scaleChanged || observeAuthoring) candidate->scale = bone_scale::AuthoringRestore::Prepare(model,
                 forward ? scaleAfter : scaleBefore, candidate->growth->CandidateCapacity());
             if (curvesChanged || observeAuthoring) candidate->curves = bone_curve::AuthoringRestore::Prepare(model, forward ? *curveAfter : *curveBefore);
@@ -290,13 +456,14 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
                 candidate->currentTailActive.push_back(tailActiveTable?tailActiveTable[entry.bone]:0);
                 unsigned cursor=entry.bone;
                 if(published&&candidate->tailFrame!=tailInitialFrame){
-                    if(candidate->tailFrame<0||candidate->tailFrame>frame_limits::maximum)return MMS_E_NOT_READY;
+                    if((candidate->tailFrame<0&&!signedPreparation)||candidate->tailFrame>frame_limits::maximum)return MMS_E_NOT_READY;
+                    const auto cursorFrame=unsigned((std::max)(candidate->tailFrame,0));
                     for(std::size_t hop=0;hop<candidate->growth->CandidateCapacity();++hop){
                         const auto found=std::lower_bound(keys.begin(),keys.end(),cursor,[](const KeyPatch& patch,unsigned index){return patch.slot<index;});
                         const auto* key=found!=keys.end()&&found->slot==cursor&&found->data?(forward?&found->after:&found->before):
                             cursor<capacity?&m.boneKeys[cursor]:nullptr;
                         if(!key)return MMS_E_STALE;
-                        if(key->frame>=unsigned(candidate->tailFrame)||!key->next)break;
+                        if(key->frame>=cursorFrame||!key->next)break;
                         cursor=key->next;
                     }
                 }else if(!forward)cursor=entry.before;
@@ -319,12 +486,22 @@ struct RegistrationChange final : HistoryChange, std::enable_shared_from_this<Re
                 };
                 view.scale = forward ? &scaleAfter : &scaleBefore;
                 view.curves = forward ? curveAfter.get() : curveBefore.get();
+                if(signedPreparation) {
+                    view.selectors=zeroSelectors&&!zeroSelectors->empty()?zeroSelectors->data():nullptr;
+                    view.selectorCount=zeroSelectors?zeroSelectors->size():0;
+                    for(const auto bone:evaluationBones) {
+                        BoneEvaluationSample sample;
+                        if(auto result=SampleBoneEvaluation(m.boneTable[bone],bone,count,app.PlaybackPhysicsMode(),0,view,sample))return result;
+                        candidate->zeroTargets.push_back({bone,sample});
+                    }
+                    view.selectors=nullptr;view.selectorCount=0;
+                }
                 std::vector<mdl::BoneOrderEntry> selectors;
-                if (display) {
+                if (display && !candidate->deferPose) {
                     if (auto result = display->TargetSelectors(forward, selectors)) return result;
                     view.selectors = selectors.data(); view.selectorCount = selectors.size();
                 }
-                if (auto result = PrepareBoneEvaluation(app, slot, evaluationBones, view, candidate->evaluation)) return result;
+                if (!candidate->deferPose)if (auto result = PrepareBoneEvaluation(app, slot, evaluationBones, view, candidate->evaluation)) return result;
             }
             if (!candidate->IsCurrent()) return MMS_E_STALE;
             out = std::move(candidate); return MMS_OK;
@@ -1155,6 +1332,15 @@ MmsResult PlanBoneKeyDeletion(MMDApp& app, unsigned slot, bool automaticInterpol
     std::shared_ptr<HistoryChange>& out, bool selectedAtCurrentFrame,
     bool allowOtherMarks, std::shared_ptr<DisplayKeyDeletion> display,
     const std::vector<unsigned>* selectedSlots) noexcept {
+    out.reset();std::shared_ptr<BoneKeyDeletion> change;
+    const auto result=PlanSignedBoneKeyDeletion(app,slot,automaticInterpolation,change,selectedAtCurrentFrame,
+        allowOtherMarks,std::move(display),selectedSlots);
+    if(!result)out=std::move(change);return result;
+}
+MmsResult PlanSignedBoneKeyDeletion(MMDApp& app, unsigned slot, bool automaticInterpolation,
+    std::shared_ptr<BoneKeyDeletion>& out, bool selectedAtCurrentFrame,
+    bool allowOtherMarks, std::shared_ptr<DisplayKeyDeletion> display,
+    const std::vector<unsigned>* selectedSlots) noexcept {
     out.reset();
     return Boundary([&]() -> MmsResult {
         if (!ReadyForKeyPlan(app, slot)) return MMS_E_NOT_READY;
@@ -1189,6 +1375,7 @@ MmsResult PlanBoneKeyDeletion(MMDApp& app, unsigned slot, bool automaticInterpol
         }
         if (selected.empty() && !display) return MMS_OK;
         auto change = NewKeyChange(app, slot);
+        change->deletionRecord=true;
         DeletePlannedKeys(plan, selected, change->scaleAfter, automaticInterpolation);
         CaptureRules(*change, rules);
         const bool changed = FinishKeyPlan(plan, *change, owners);

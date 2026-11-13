@@ -808,12 +808,14 @@ void Heartbeat(int frame) noexcept {
 void NormalExit(int code) noexcept {
     SetPhase("process teardown");
     Write("NORMAL_EXIT code=%d", code);
+    Trace("NORMAL_EXIT code=%d", code);
 }
 
 void BeginShutdown() noexcept {
     Write("SHUTDOWN begin");
     SetPhase("process teardown");
-    shuttingDown.store(true, std::memory_order_relaxed);
+    if (!shuttingDown.exchange(true, std::memory_order_relaxed))
+        Trace("SHUTDOWN begin");
 }
 
 [[noreturn]] void Fatal(const char* reason) noexcept {

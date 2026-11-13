@@ -62,6 +62,9 @@
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/bottom_panel_resize.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
 
 namespace mikumikustudio {
 void RefreshAfterFrameApply(MMDApp*);
@@ -290,7 +293,7 @@ static void FillSelectionRecords(MMDApp* app, const Key* keys,
 static void SelectionStats(MMDApp* app, int x, int y, HWND hwnd) {
     app->SelectionBoxDragging() = 1;
     app->SelectionBoxAnchorX() = x - 6;
-    app->SelectionBoxAnchorY() = y - 0x91;
+    app->SelectionBoxAnchorY() = y - kTimelineGridTop;
     if (app->TimelineSelectionChanged() != 0) {
         memset(app->TimelineSelectionRegion(), 0, 0x40);        // 656364 (0xA03EC)
         if (app->state.optflag[0] != 0) {   // 760 (0x2F8)
@@ -1158,11 +1161,7 @@ static void HandleLButtonDown_FrameStripHit(MMDApp* app, HWND hwnd,
     if (app->state.waveEnabled != 0) {  // 657100 (0xA06CC)
         TimelineDrawTicks(app->state.timelineStartFrame,
                           app->SidebarWidth());
-        RECT rc2;
-        rc2.left = 6;
-        rc2.top = 95;
-        rc2.right = sidebar - 3;
-        rc2.bottom = 146;
+        RECT rc2 = TimelineRulerDamage(app);
         InvalidateRect(hwnd, &rc2, 0);
         if (app->state.wavPlaysOnFrameMove != 0) {  // 655766 (0xA0196)
             // gate flag read BEFORE the 0xA02B6 store (asm zf capture)
@@ -1197,6 +1196,13 @@ static void HandleLButtonDown_FrameStripHit(MMDApp* app, HWND hwnd,
 static void HandleLButtonDown_NameRowRectHit(MMDApp* app, std::int32_t x,
                                              std::int32_t y,
                                              std::int32_t bottom) {
+#if !MMD_ORIGINAL_PROFILE
+    const RECT curve = BottomCurveRect(app, bottom);
+    if (!PtInRect(&curve, {x, y})) return;
+    const POINT design = BottomCurveDesignPoint(curve, {x, y});
+    x = 8 + design.x;
+    y = bottom - 135 + design.y;
+#endif
     const std::int32_t boneOff =
         static_cast<std::int8_t>(app->state.interpCurveControlCache[1]) + bottom;
     const std::int32_t boneTop =
@@ -1242,7 +1248,8 @@ void HandleLButtonDown(MMDApp* app) {
     const HWND hwnd = static_cast<HWND>(app->state.hwnd);  // 657080
     RECT rc;
     GetClientRect(hwnd, &rc);
-    const std::int32_t y = app->MouseY();
+    const std::int32_t clientY = app->MouseY();
+    const auto layout = MainPanelLayout(app, rc.bottom);
     const std::int32_t x = app->MouseX();
     const std::int32_t sidebar = app->SidebarWidth();
 
@@ -1250,44 +1257,78 @@ void HandleLButtonDown(MMDApp* app) {
     // Controls move as one layout batch before each repaint. Gates as in the
     // original): y <= bottom-0x9E(158) && x <= sidebar+6 &&
     // [0xA0D38]==0 && sidebar <= x.
-    if (y <= rc.bottom - 0x9E && x <= sidebar + 6 &&
+    if (clientY <= layout.bottomTop + 2 && x <= sidebar + 6 &&
         app->FloatingWindow() == nullptr && sidebar <= x) {
+#if !MMD_ORIGINAL_PROFILE
+        // Claim before invoking plugin refresh: it may dispatch another input
+        // message, including a failed start that must invalidate this attempt.
+        if (app->sidebarSizing.active || app->sidebarSizing.preparing ||
+            app->bottomPanelSizing.dragging >= 0 || app->bottomPanelSizing.preparing) return;
+        const auto epoch = ++app->sidebarSizingSerial;
+        const auto bottomEpoch = app->bottomPanelSizingSerial;
+        app->sidebarSizing.preparing = true;
+        app->sidebarSizing.epoch = epoch;
+        std::uint64_t token = 0;
+        if (!plugins::BeginLayoutInteraction(app,31,token)) {
+            if (app->sidebarSizingSerial == epoch) app->sidebarSizing.preparing = false;
+            return;
+        }
+        RECT current{};
+        const int currentX = app->MouseX(), currentY = app->MouseY();
+        const int currentSide = app->SidebarWidth();
+        if (app->sidebarSizingSerial != epoch || app->bottomPanelSizingSerial != bottomEpoch || app->sidebarSizing.active ||
+            !app->sidebarSizing.preparing ||
+            app->bottomPanelSizing.dragging >= 0 || app->bottomPanelSizing.preparing || app->FullscreenMode() ||
+            app->FloatingWindow() || !GetClientRect(hwnd,&current) ||
+            !IsWindow(hwnd) || GetCapture() != hwnd ||
+            currentY > MainPanelLayout(app, current.bottom).bottomTop + 2 || currentX < currentSide || currentX > currentSide + 6) {
+            if (app->sidebarSizingSerial == epoch) app->sidebarSizing.preparing = false;
+            plugins::EndLayoutInteraction(app,token);
+            return;
+        }
+        app->sidebarSizing = {true,currentSide,app->SidebarRatio(),token,epoch};
+#else
         app->sidebarSizing = {true, app->SidebarWidth(), app->SidebarRatio()};
+#endif
         app->SidebarResizeDragging() = 1;
         return;
     }
     // row gates used by every region below (0x446B01-0x446B3A):
     //   var_1A0 = y < bottom - 0xF8 (248) ; var_190 = y > 0xA0 (160)
-    const bool rowGateY = y > 0xA0 &&
-        y < rc.bottom - 0xF8 - panel::TimelinePanelShift(sidebar);
+    const int y = layout.DesignY(clientY);
+    const int timelineX = layout.DesignX(x);
+    const int timelineRight = layout.DesignX(sidebar - layout.Pixels(18));
+    const bool rowGateY = y > 0xA0 && y < 0xA0 + 200 * 14 && clientY < layout.timelineBottom;
 
     // ---- S2: margin column (X in (4,20)): row-type display toggle
-    if (rowGateY && x > 4 && x < 0x14) {
+    if (rowGateY && timelineX > 4 && timelineX < 0x14) {
         HandleLButtonDown_MarginColumnToggle(app, y);
         return;
     }
 
     // ---- S3: name column (X in (20,95]): bone/morph row selection
-    if (rowGateY && x > 0x14 && x <= 0x5F) {
+    if (rowGateY && timelineX > 0x14 && timelineX <= 0x5F) {
         HandleLButtonDown_NameColumnHit(app, hwnd, y);
         return;
     }
 
     // ---- S5: main area (X in (95, sidebar-18) && row gates) --------------
     // (0x447390-0x447A4C) gate fail falls into S7 (name-row rects).
-    if (rowGateY && x > 0x5F && x < sidebar - 0x12) {
-        HandleLButtonDown_TimelineAreaHit(app, hwnd, x, y);
+    if (rowGateY && timelineX > 0x5F && timelineX < timelineRight &&
+        Div13(timelineX - 100) < layout.FrameColumns(sidebar)) {
+        HandleLButtonDown_TimelineAreaHit(app, hwnd, timelineX, y);
         return;
     }
 
     // ---- S7: header strip (y in (144,160))
-    if (x < sidebar - 0x12 && y > 0x90 && y < 0xA0 && x > 0x64) {
-        HandleLButtonDown_FrameStripHit(app, hwnd, x, y, sidebar);
+    if (timelineX < timelineRight && y > 0x90 && y < 0xA0 && timelineX > 0x64 &&
+        Div13(timelineX - 100) < layout.FrameColumns(sidebar)) {
+        HandleLButtonDown_FrameStripHit(app, hwnd, timelineX, y, sidebar);
         return;
     }
 
     // ---- S7b: bone/morph name-row rects
-    HandleLButtonDown_NameRowRectHit(app, x, y, rc.bottom);
+    HandleLButtonDown_NameRowRectHit(app, x, clientY, rc.bottom);
 }
 
 }  // namespace mikumikustudio

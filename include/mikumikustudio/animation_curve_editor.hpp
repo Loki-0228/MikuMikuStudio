@@ -71,6 +71,9 @@ struct Channel {
     // change with the UI language. Empty paths remain root-level channels.
     std::vector<Collection> collections;
     std::vector<NativeCameraInterval> preservedCameraIntervals;
+    // Native bone lanes share whole keyframes. Moving one lane retimes the
+    // whole group, while its values remain part of the original native pose.
+    std::string keyFrameGroup;
 };
 struct Source {
     std::string id;
@@ -165,6 +168,9 @@ bool IsWindowSessionCurrent(void* window, const std::weak_ptr<void>& session);
 // must not also reach the owner's per-frame editing shortcuts.
 bool OwnsWindow(void* owner, void* window);
 void SetLanguage(void* owner, unsigned language);
+// Call on the UI thread after loading or changing the host's interface scale.
+// Also sets the percentage used by editors subsequently opened on that thread.
+void RefreshInterfaceScale(int percent);
 // Queues a read of a matching source in an already open editor. Call on the
 // owner's UI thread after native registration; this never writes key data.
 void NotifySourceChanged(void* owner, const std::string& sourceId);

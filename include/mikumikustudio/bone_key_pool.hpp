@@ -104,6 +104,9 @@ public:
     // Preparation allocates and registers private storage but does not publish.
     static bool Prepare(ModelRecord&, std::uint64_t slotsNeeded,
                         std::unique_ptr<BoneKeyPoolGrowth>& out) noexcept;
+    // Checked payload bound for the token and visit snapshot when Prepare
+    // does not grow the pool. The caller separately validates that condition.
+    static std::uint64_t NoGrowthPreparationBytes(std::size_t capacity) noexcept;
     // Read only until Publish. Publish refreshes a grown pool from the live
     // source, so staged writes would be lost. No-growth returns the live pool.
     BoneKey* CandidatePool() const noexcept;

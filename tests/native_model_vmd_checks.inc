@@ -67,6 +67,97 @@ void ModelVmdUnicodeChecks(){
     Check(DecodeModelVmdSource(nullptr,file.path.c_str(),5,unchanged)!=MMS_OK&&unchanged.version==99,"Unicode dictionary owner count mismatch rejects complete standard payload atomically");
 }
 
+void ModelVmdSameNameRigChecks(bool withMorphs = false){
+    using namespace plugins;
+    std::array<std::array<mdl::MorphRecord, 2>, 2> morphs{};
+    std::array<std::array<mdl::PmdVertexMorphEntry, 2>, 2> offsets{};
+    ModelPasteFixture fixture;
+    auto& app=*fixture.app;
+    for(auto* model:{&fixture.first,&fixture.second}){
+        std::strcpy(model->m->name,"fixture");
+        for(auto& bone:model->bones)std::strcpy(bone.name,"same-bone");
+        model->bones[1].position[0]=8;
+    }
+
+    // Export one key on each bone at the same frame, with no other families.
+    auto& source=*fixture.second.m;
+    source.boneKeys[0].allocated=0;
+    source.boneKeys[2].allocated=1;
+    source.boneKeys[3]=source.boneKeys[2];
+    source.boneKeys[1].next=3;
+    source.boneKeys[3].previous=1;
+    source.boneKeys[3].position[0]=35;
+    bone_scale::ClearKey(fixture.second.raw(),2);
+    source.morphKeys[0].allocated=0;
+    source.displayKeys[3].allocated=0;
+    if (withMorphs) {
+        const std::array models{fixture.first.m.get(), fixture.second.m.get()};
+        for (unsigned slot = 0; slot < models.size(); ++slot) {
+            auto& model = *models[slot];
+            model.morphCount = 2;
+            model.morphs = morphs[slot].data();
+            std::fill_n(model.morphKeys, mdl::MorphKeyCapacity(model), mdl::MorphKey{});
+            for (unsigned owner = 0; owner < model.morphCount; ++owner) {
+                auto& morph = model.morphs[owner];
+                std::strcpy(morph.name, "same-morph");
+                morph.panel = mdl::MorphPanel::eye;
+                morph.offsetCount = 1;
+                morph.vertexEntries = &offsets[slot][owner];
+                offsets[slot][owner].offset[0] = static_cast<float>(owner);
+            }
+        }
+        for (unsigned owner = 0; owner < source.morphCount; ++owner) {
+            const auto key = owner + source.morphCount;
+            source.morphKeys[owner].next = key;
+            source.morphKeys[key] = {source.boneKeys[2].frame, owner, 0, owner == 0 ? .25f : .75f, 1, {}};
+        }
+    }
+
+    VmdDecodeFile file;
+    // Keep the compatibility notice and import UI refresh out of this check.
+    const auto window=app.MainWindow();
+    app.MainWindow()=nullptr;
+    app.SelectedModelSlot()=1;
+    SaveVmdFile(file.path.c_str());
+    app.SelectedModelSlot()=0;
+    constexpr unsigned frame=40;
+    app.CurrentFrame()=frame;
+    ModelVmdSource decoded;
+    Check(DecodeModelVmdSource(nullptr,file.path.c_str(),frame,decoded)==MMS_OK&&decoded.hasUnicodeNames&&
+        decoded.source.bones.size()==2&&decoded.source.morphs.size()==(withMorphs ? 2 : 0)&&decoded.source.displays.empty()&&
+        decoded.names.boneRig&&decoded.names.morphTable.has_value()==withMorphs,
+        "real VMD export preserves the expected bone and morph fingerprints");
+
+    fixture.first.bones[1].position[0]=9;
+    if (withMorphs) offsets[0][1].offset[0] = 2;
+    const auto changedRig=fixture.first.Digest();
+    std::shared_ptr<HistoryChange> change;
+    Check(PlanModelVmdImport(app,0,decoded,change)==MMS_OK&&!change&&fixture.first.Digest()==changedRig,
+        "changed definitions leave ambiguous VMD tracks unmapped");
+
+    fixture.first.bones[1].position[0]=8;
+    if (withMorphs) offsets[0][1].offset[0] = 1;
+    const ModelKeyState before(fixture.first);
+    NativePoseTestBinding binding(app,fixture.history);
+    LoadVmdFile(file.path.c_str());
+    app.MainWindow()=window;
+    const auto* first=ModelVmdBoneAt(*fixture.first.m,0,frame);
+    const auto* second=ModelVmdBoneAt(*fixture.first.m,1,frame);
+    Check(fixture.history.UndoCount()==1&&first&&second&&first->position[0]==20&&second->position[0]==35,
+        "bound VMD import restores both same-name tracks to their ordered bone owners");
+    if (withMorphs) {
+        const auto* keys = fixture.first.m->morphKeys;
+        const auto a = keys[0].next, b = keys[1].next;
+        Check(a != b && keys[a].frame == frame && keys[b].frame == frame &&
+              keys[a].value == .25f && keys[b].value == .75f,
+              "bound VMD import restores two distinct morph tracks in the same transaction as the bones");
+        const ModelKeyState after(fixture.first);
+        Check(fixture.history.History(false) == MMS_OK && before.Matches(fixture.first) &&
+              fixture.history.History(true) == MMS_OK && after.Matches(fixture.first),
+              "one undo and redo restore both imported families");
+    }
+}
+
 VmdDecodeBytes ModelVmdWithScale(VmdDecodeBytes prefix,bone_scale_io::VmdExtension extension){
     bone_scale_io::PrefixFingerprint fingerprint;fingerprint.Append(prefix.data(),prefix.size());
     extension.prefixBytes=fingerprint.bytes();extension.prefixCrc32=fingerprint.crc32();
@@ -143,7 +234,7 @@ void NativeModelVmdScaleChecks(){
 
 void NativeModelVmdChecks(){
     using namespace plugins;
-    ModelVmdDistinctCurveChecks();ModelVmdUnicodeChecks();NativeModelVmdScaleChecks();
+    ModelVmdDistinctCurveChecks();ModelVmdUnicodeChecks();ModelVmdSameNameRigChecks();ModelVmdSameNameRigChecks(true);NativeModelVmdScaleChecks();
     for(bool displaySection:{false,true}){
         ModelPasteFixture fixture;auto bytes=ModelVmdFixtureBytes();const auto motion=VmdDecodeMotion();
         std::memset(bytes.data()+54,0,15);std::memcpy(bytes.data()+54,fixture.first.bones[0].name,15);

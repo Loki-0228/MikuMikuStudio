@@ -766,6 +766,40 @@ bool ReadDetached(const unsigned char* model,int bone,Tracks& out) {
     if(!ReconcileSnapshot(next,hash,std::move(native)))throw std::invalid_argument("detached bone curve reconciliation");
     out=std::move(next.tracks);return true;
 }
+bool CaptureCopyAuthoring(const unsigned char* model,const std::vector<int>& selectedBones,
+    std::vector<CopyAuthoring>& out,std::string& error) {
+    out.clear();error.clear();
+    if(!model){error="Invalid bone curve copy model.";return false;}
+    const auto* record=mdl::Mdl(model);
+    // Do not use Current: even a stale deferred owner must be refused, and a
+    // stale completed owner must remain in the registry without being pruned.
+    const auto state=states.find(model);
+    if(state!=states.end()&&state->second.deferredEdits){error="Unfinished bone curve copy source edit.";return false;}
+    for(int bone:selectedBones)if(bone<0||unsigned(bone)>=record->boneCount){
+        error="Invalid bone curve copy index.";return false;
+    }
+    if(selectedBones.empty()||state==states.end()||state->second.identity!=record->boneTable||state->second.curves.empty())return true;
+    if(record->boneCount&&!record->boneTable){error="Invalid bone curve copy bones.";return false;}
+    std::vector<CopyAuthoring> candidate;
+    std::set<int> seen;
+    try {
+        for(int bone:selectedBones){
+            const auto authored=state->second.curves.find(bone);
+            // No author means no native lookup and no synthesized lane keys.
+            if(authored==state->second.curves.end()||!seen.insert(bone).second)continue;
+            if(!ValidateFreeTracks(authored->second.tracks,error))return false;
+            CopyAuthoring entry{bone,{}};
+            if(!ReadDetached(model,bone,entry.tracks)){
+                error="Unavailable bone curve copy author.";return false;
+            }
+            if(!ValidateFreeTracks(entry.tracks,error))return false;
+            candidate.push_back(std::move(entry));
+        }
+    } catch(const std::invalid_argument& failure) {
+        error=failure.what();return false;
+    }
+    out.swap(candidate);return true;
+}
 bool DecodeVmdTracks(const unsigned char* model,const std::uint8_t* data,std::size_t size,int offset,
     const std::vector<int>* targets,std::vector<VmdTrackImport>& out,std::string& error){
     if(!model||offset<0||size<12||VmdBlockSize(data,size)!=size){error="Invalid bone curve extension.";return false;}
@@ -921,6 +955,43 @@ struct AuthoringRestore::Impl {
     decltype(states)::node_type storage;
     bool published=false;
 };
+std::uint64_t DeletionPreparationBytes(const unsigned char* model,const AuthoringState* target) noexcept {
+    if(!model||(target&&!target->impl_))return UINT64_MAX;
+    const auto found=states.find(model);
+    const auto* source=found==states.end()?nullptr:&found->second.curves;
+    const auto* destination=target?&target->impl_->curves:source;
+    std::uint64_t bytes=0;
+    constexpr auto curveNode=sizeof(Curves::value_type)+4*sizeof(void*);
+    const auto capture=[&](const Curves* curves) {
+        AddRetainedBytes(bytes,1,sizeof(AuthoringState));
+        AddRetainedBytes(bytes,1,sizeof(AuthoringState::Impl));
+        AddRetainedBytes(bytes,1,curveNode); // Empty MSVC tree sentinel too.
+        if(!curves)return;
+        AddRetainedBytes(bytes,curves->size(),curveNode);
+        for(const auto& entry:*curves) {
+            for(const auto& track:entry.second.tracks)
+                AddRetainedBytes(bytes,track.keys.capacity(),sizeof(ac::Key));
+            AddRetainedBytes(bytes,entry.second.baseline.capacity(),sizeof(NativeKey));
+            AddRetainedBytes(bytes,1,registrationNodeBytes);
+            AddRetainedBytes(bytes,entry.second.registrations.size(),registrationNodeBytes);
+        }
+    };
+    capture(source); // Validation snapshot; conservatively keep its charge.
+    AddRetainedBytes(bytes,1,sizeof(AuthoringRestore));
+    AddRetainedBytes(bytes,1,sizeof(AuthoringRestore::Impl));
+    capture(source); // Restore's independently owned before state.
+    capture(destination); // Restore's target clone.
+    if(destination&&!destination->empty()) {
+        constexpr auto registryNode=sizeof(decltype(states)::value_type)+4*sizeof(void*);
+        AddRetainedBytes(bytes,1,registryNode); // privateStorage's sentinel.
+        AddRetainedBytes(bytes,1,registryNode); // Extracted node, with State.
+        // Preparing that node constructs only empty maps, never copies rings.
+        constexpr auto emptyMaps=1+std::tuple_size<decltype(State::undo)>::value+
+            std::tuple_size<decltype(State::redo)>::value;
+        AddRetainedBytes(bytes,emptyMaps,curveNode);
+    }
+    return bytes;
+}
 AuthoringRestore::AuthoringRestore()=default;
 AuthoringRestore::~AuthoringRestore()=default;
 AuthoringRestore::AuthoringRestore(AuthoringRestore&&) noexcept=default;
@@ -1062,8 +1133,15 @@ bool DrawPreview(MMDApp& app){
     auto* model=app.SelectedModel();if(!model)return false;
     const int bone=mdl::Mdl(model)->selectedBone;auto* entry=Current(model,bone);if(!entry)return false;
     const int channel=int(SendMessageW(GetDlgItem(app.MainWindow(),panel::kInterpCurveCombo),CB_GETCURSEL,0,0));
-    const int first=channel<3?std::max(0,channel):channel==4?6:3;
-    const int count=channel>=3?3:1;
+    int first = 0;
+    int count = static_cast<int>(entry->tracks.size());
+    if (channel < 3) {
+        first = std::max(0, channel);
+        count = 1;
+    } else if (channel != bone_scale::kInterpBoneAll) {
+        first = channel == bone_scale::kInterpScaleChannel ? 6 : 3;
+        count = 3;
+    }
     HDC dc=app.CurveDC();auto pen=CreatePen(PS_SOLID,1,RGB(app.UiTextRed(),app.UiTextGreen(),app.UiTextBlue()));
     auto old=SelectObject(dc,pen);
     for(int c=first;c<first+count;++c){const auto& track=entry->tracks[c];if(track.keys.size()<2)continue;

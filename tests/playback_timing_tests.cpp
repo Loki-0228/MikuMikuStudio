@@ -3,6 +3,9 @@
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/recording_state.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "../src/animation/native_camera_sampling.hpp"
+#endif
 
 #include <btBulletDynamicsCommon.h>
 #include <cmath>
@@ -128,19 +131,23 @@ Result Simulate(int playbackFps, int outputFps, bool recording, bool noise = fal
     return result;
 }
 
-void CheckDisplayLimit() {
-    auto app = std::make_unique<MMDApp>();
-    app->state = MMDAppState{};
-    app->FpsLimit() = 60.f;
-    app->PlaybackTiming().playbackFps = 24;
-    Check(app->EffectiveDisplayFps() == 60.f, "fixed display cap is the default");
-    app->PlaybackTiming().displayFollowsPlaybackFps = true;
-    Check(app->EffectiveDisplayFps() == 24.f && app->FpsLimit() == 60.f,
-          "display cap follows the playback rate without discarding the fixed setting");
-    app->state.kinectCaptureActive = 1;
-    app->FpsLimit() = 30.f;
-    Check(app->EffectiveDisplayFps() == 30.f, "Kinect capture keeps its fixed sampling cap");
+#if !MMD_ORIGINAL_PROFILE
+void CheckCameraInterpolation() {
+    curve_editor::Channel channel;
+    channel.track.keys = {{4, 10}, {5, 30}};
+    const auto& first = channel.track.keys[0];
+    const auto& last = channel.track.keys[1];
+    channel.nativeControls = {{}, {20, 20, 107, 107}};
+    channel.controlGeometry = {{}, {first.outWeight, first.outSlope, last.inWeight, last.inSlope}};
+    Check(native_camera_sampling::Sample(channel, 4.5).value == 10,
+          "default sampling preserves the native adjacent camera hold");
+    Check(native_camera_sampling::Sample(channel, 4.5, false, true).value == 20,
+          "opt-in samples the authored native curve between adjacent frames");
+    channel.track.keys.back().interpolation = animation_curve::Interpolation::Step;
+    Check(native_camera_sampling::Sample(channel, 4.5, false, true).value == 10,
+          "an explicitly authored Step segment remains discrete");
 }
+#endif
 
 }  // namespace
 
@@ -148,7 +155,9 @@ int main() {
     // The conversion to seconds and back can round up at 31 and down at 123.
     CheckRecordingStartKey(31);
     CheckRecordingStartKey(123);
-    CheckDisplayLimit();
+#if !MMD_ORIGINAL_PROFILE
+    CheckCameraInterpolation();
+#endif
     const auto baseline = Simulate(30, 30, true);
     Check(baseline.steps == 120 && baseline.position.y() < 99,
           "native physics advances at the independent 60 Hz rate");

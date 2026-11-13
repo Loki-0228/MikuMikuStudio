@@ -6,6 +6,6 @@ namespace mikumikustudio { class MMDApp; }
 namespace mikumikustudio::plugins {
 // Explicit migration binding only. A bound unsupported/rejected operation
 // returns true to prevent a partial edit through the legacy undo rings.
-bool TryPasteBoundKeys(MMDApp*, HWND, bool mirror) noexcept;
+bool TryPasteBoundKeys(MMDApp*, HWND, bool mirror, bool* missingTrack = nullptr) noexcept;
 }
 #endif

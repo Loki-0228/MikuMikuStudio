@@ -343,6 +343,93 @@ void SceneMaterial(const BoneTransformContext& context,bool pmx){
     for(auto& reader:readers)reader=std::thread([&]{for(unsigned n=0;n<100;++n)for(unsigned i=0;i<2;++i){MeshSceneMaterial value{};if(!retained->MaterialAt(0,i,value)||!SameMaterial(value,expected[i]))++errors;}});
     for(auto& reader:readers)reader.join();CHECK(errors==0);
 }
+void MaterialReferences(){
+    currentCase="material references frozen and bounded";
+    for(bool pmx:{false,true}) {
+        std::unique_ptr<MeshSceneSource> captured;
+        {
+            Model model;MaterialFixture fixture(model,pmx);
+            auto& first=fixture.materials[0];
+            const wchar_t texture[]=L"textures/\u9ad8\u5149.png",sphere[]=L"sphere.spa",toon[]=L"toon/toon01.bmp";
+            const wchar_t directory[]=L"C:\\models\\\u9ad8\u5149\\";
+            std::copy(std::begin(directory),std::end(directory),model.record->modelDirectory);
+            const char custom[]={char(0x83),char(0x65),char(0x83),char(0x58),char(0x83),char(0x67),'.','b','m','p','\0'};
+            std::copy(std::begin(custom),std::end(custom),model.record->pmdToonFileNames[0]);
+            std::fill(std::begin(model.record->pmdToonFileNames[1]),std::end(model.record->pmdToonFileNames[1]),'x');
+            std::copy(std::begin(texture),std::end(texture),first.texturePath);
+            std::copy(std::begin(sphere),std::end(sphere),first.spherePath);
+            std::copy(std::begin(toon),std::end(toon),first.toonPath);
+            first.toonReference=7;first.sphereMode=2;first.flags=0xa5;
+            // Preserve the native sentinel byte verbatim: PMX custom toon and
+            // the fallback/shared toon have distinct interpretations downstream.
+            fixture.materials[1].toonReference=pmx?0xfe:0xff;
+            BoneSceneModelInput input{0,{781,782,1},model.raw()};
+            auto legacy=MeshSceneSource::CaptureWithMaterials(&input,1);
+            MeshSceneMaterialReferences out{};
+            CHECK(!legacy->HasMaterialReferences()&&!legacy->MaterialReferencesAt(0,0,out));
+            MeshSceneToonTableReferences table{};
+            CHECK(!legacy->ToonTableReferencesAt(0,table));
+            captured=MeshSceneSource::CaptureWithMaterialReferences(&input,1);
+            CHECK(captured->HasMaterialReferences()&&captured->HasMaterials());
+            CHECK(captured->MaterialReferencesAt(0,0,out));
+            CHECK(std::wcscmp(out.texturePath.data(),texture)==0&&std::wcscmp(out.spherePath.data(),sphere)==0&&std::wcscmp(out.toonPath.data(),toon)==0);
+            CHECK(out.physicsMode==(pmx?2:0)&&out.toonReference==7&&out.sphereMode==2&&out.flags==0xa5);
+            MeshSceneMaterialReferences second{};
+            CHECK(captured->MaterialReferencesAt(0,1,second)&&second.toonReference==(pmx?0xfe:0xff));
+            CHECK(captured->ToonTableReferencesAt(0,table));
+            CHECK(std::wcscmp(table.modelDirectory.data(),directory)==0);
+            CHECK(std::equal(std::begin(custom),std::end(custom),table.fileNames[0].begin()));
+            CHECK(std::all_of(table.fileNames[1].begin(),table.fileNames[1].end(),[](char c){return c=='x';}));
+            const auto retained=captured->RetainedBytes();
+            CHECK(Throws<std::length_error>([&]{MeshSceneSource::CaptureWithMaterialReferences(&input,1,retained-1);}));
+            CHECK(MeshSceneSource::CaptureWithMaterialReferences(&input,1,retained)->RetainedBytes()==retained);
+            // Allocation failure must not alter an existing source, nor consume
+            // or rewrite the live model. Sweep until a complete capture works.
+            const auto originalFirst=first;
+            const auto originalSecond=fixture.materials[1];
+            const auto saved=out; const auto savedToons=table;
+            bool capturedAgain=false; unsigned allocationFailures=0;
+            for(int allowance=0;allowance<1024 && !capturedAgain;++allowance) {
+                failAfter=allowance;
+                try { auto candidate=MeshSceneSource::CaptureWithMaterialReferences(&input,1,retained); failAfter=-1;
+                    CHECK(candidate && candidate->RetainedBytes()==retained); capturedAgain=true; }
+                catch(const std::bad_alloc&) { failAfter=-1; ++allocationFailures; }
+                catch(...) { failAfter=-1; throw; }
+                MeshSceneMaterialReferences still{}; MeshSceneToonTableReferences stillToons{};
+                CHECK(captured->MaterialReferencesAt(0,0,still)&&captured->ToonTableReferencesAt(0,stillToons));
+                CHECK(std::memcmp(&still,&saved,sizeof(still))==0 && stillToons.modelDirectory==savedToons.modelDirectory && stillToons.fileNames==savedToons.fileNames);
+                CHECK(std::memcmp(&first,&originalFirst,sizeof(first))==0 && std::memcmp(&fixture.materials[1],&originalSecond,sizeof(originalSecond))==0);
+            }
+            CHECK(capturedAgain && allocationFailures>0);
+            std::fill(std::begin(model.record->modelDirectory),std::end(model.record->modelDirectory),L'x');
+            CHECK(Throws<std::invalid_argument>([&]{MeshSceneSource::CaptureWithMaterialReferences(&input,1);}));
+            std::copy(std::begin(directory),std::end(directory),model.record->modelDirectory);
+            std::fill(std::begin(first.texturePath),std::end(first.texturePath),L'x');
+            CHECK(Throws<std::invalid_argument>([&]{MeshSceneSource::CaptureWithMaterialReferences(&input,1);}));
+            CHECK(MeshSceneSource::CaptureWithMaterials(&input,1)!=nullptr);
+        }
+        MeshSceneMaterialReferences out{};
+        MeshSceneToonTableReferences table{};
+        CHECK(captured->ToonTableReferencesAt(0,table));
+        CHECK(std::wcscmp(table.modelDirectory.data(),L"C:\\models\\\u9ad8\u5149\\")==0);
+        CHECK(static_cast<unsigned char>(table.fileNames[0][0])==0x83 && table.fileNames[1][99]=='x');
+        const auto savedTable=table;
+        CHECK(!captured->ToonTableReferencesAt(1,table) && table.modelDirectory==savedTable.modelDirectory && table.fileNames==savedTable.fileNames);
+        CHECK(captured->MaterialReferencesAt(0,0,out)&&std::wcscmp(out.texturePath.data(),L"textures/\u9ad8\u5149.png")==0);
+        MeshSceneMaterialReferences untouched=out;
+        CHECK(!captured->MaterialReferencesAt(0,2,out)&&std::memcmp(&out,&untouched,sizeof(out))==0);
+        CHECK(!captured->MaterialReferencesAt(1,0,out)&&std::memcmp(&out,&untouched,sizeof(out))==0);
+        CHECK(captured->MaterialReferencesAt(0,1,out)&&out.texturePath[0]==0&&out.toonPath[0]==0&&out.toonReference==(pmx?0xfe:0xff));
+        // Independent readers use the same source after the model is gone.
+        std::atomic<unsigned> errors{0};std::array<std::thread,4> readers;
+        for(auto& reader:readers)reader=std::thread([&]{for(unsigned n=0;n<100;++n){
+            MeshSceneMaterialReferences first{},second{}; MeshSceneToonTableReferences t{};
+            if(!captured->MaterialReferencesAt(0,0,first)||!captured->MaterialReferencesAt(0,1,second)||!captured->ToonTableReferencesAt(0,t)||
+               first.toonReference!=7||second.toonReference!=(pmx?0xfe:0xff)|| t.modelDirectory!=savedTable.modelDirectory||t.fileNames!=savedTable.fileNames) ++errors;
+        }});
+        for(auto& reader:readers)reader.join();CHECK(errors==0);
+    }
+}
 void NonfiniteMaterialPreservesMesh(const BoneTransformContext& context){
     currentCase="unavailable material does not reject existing mesh";
     for(bool pmx:{false,true}){
@@ -362,4 +449,4 @@ void NonfiniteMaterialPreservesMesh(const BoneTransformContext& context){
     }
 }
 }
-int main(){try{auto ctx=BoneTransformContext::Create();CHECK(bool(ctx));mesh_probe::Case(false,0,*ctx);for(unsigned u=0;u<=4;++u)mesh_probe::Case(true,u,*ctx);mesh_probe::EmptyAndLifetime();mesh_probe::SceneCapture(*ctx);mesh_probe::SceneMaterial(*ctx,true);mesh_probe::SceneMaterial(*ctx,false);mesh_probe::NonfiniteMaterialPreservesMesh(*ctx);std::printf("PASS %u checks: CPU oracle PMD and PMX UV 0-4 and coherent scene\n",checks);return 0;}catch(const std::exception& e){failAfter=-1;std::fprintf(stderr,"FAIL %s exception: %s\n",currentCase,e.what());return 1;}}
+int main(){try{auto ctx=BoneTransformContext::Create();CHECK(bool(ctx));mesh_probe::Case(false,0,*ctx);for(unsigned u=0;u<=4;++u)mesh_probe::Case(true,u,*ctx);mesh_probe::EmptyAndLifetime();mesh_probe::SceneCapture(*ctx);mesh_probe::SceneMaterial(*ctx,true);mesh_probe::SceneMaterial(*ctx,false);mesh_probe::MaterialReferences();mesh_probe::NonfiniteMaterialPreservesMesh(*ctx);std::printf("PASS %u checks: CPU oracle PMD and PMX UV 0-4 and coherent scene\n",checks);return 0;}catch(const std::exception& e){failAfter=-1;std::fprintf(stderr,"FAIL %s exception: %s\n",currentCase,e.what());return 1;}}

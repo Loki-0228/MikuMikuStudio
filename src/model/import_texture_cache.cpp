@@ -5,6 +5,7 @@
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/model_alpha_pass.hpp"
 #include "mikumikustudio/texture_lookup.hpp"
+#include "mikumikustudio/texture_prepare_cache.hpp"
 #include "../plugins/scene_resource_budget.hpp"
 #include <cstdlib>
 #include <cstring>
@@ -48,7 +49,7 @@ HRESULT LoadDefault(IDirect3DDevice9* device, const wchar_t* path, IDirect3DText
         if (!api.Load() || !api.fromFileExW) return HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
         HRESULT result;
         try {
-            result = api.fromFileExW(device, path, d3dxDefault, d3dxDefault, 1, usage,
+            result = texture_prepare_cache::Create(api.fromFileExW, device, path, d3dxDefault, d3dxDefault, 1, usage,
                 D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, d3dxDefault, d3dxDefault, 0, &info, nullptr, &next);
         } catch (...) { if (next) next->Release(); throw; }
         texture.reset(next); return result;

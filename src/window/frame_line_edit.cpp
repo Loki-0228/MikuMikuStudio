@@ -48,6 +48,7 @@
 #include <cstring>
 
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/model.hpp"
@@ -254,11 +255,7 @@ void RefreshFrameLineViews(MMDApp* app) {
     if (app->state.waveEnabled != 0) {
         TimelineDrawTicks(app->state.timelineStartFrame, app->SidebarWidth());
     }
-    RECT strip;
-    strip.left = 6;
-    strip.top = 95;
-    strip.right = app->SidebarWidth() - 3;
-    strip.bottom = 146;
+    RECT strip = TimelineRulerDamage(app);
     InvalidateRect(hwnd, &strip, FALSE);
 }
 

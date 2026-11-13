@@ -3,7 +3,12 @@
 #include <cmath>
 #include <cstdint>
 
+namespace mikumikustudio { class MMDApp; }
+
 namespace mikumikustudio::recording_state {
+
+bool CheckEffectReady(MMDApp* app);
+void RestoreFullscreenEditor(MMDApp* app);
 
 inline bool ValidFps(float fps) noexcept {
     return std::isfinite(fps) && fps >= .001f && fps <= 240.f;
@@ -20,7 +25,7 @@ inline std::uint64_t OutputFrameCount(std::int32_t first, std::int32_t last, flo
     return static_cast<std::uint64_t>(std::ceil(double(frames) * double(fps) / playbackFps));
 }
 
-enum class Operation { Finish, GraphTeardown, Start, GraphBuild };
+enum class Operation { Finish, GraphTeardown, Start, GraphBuild, VideoOptions };
 
 // UI-thread scopes, with no allocation or changes to the original recorder ABI.
 // A modal message loop may enter another application's cleanup, but cannot

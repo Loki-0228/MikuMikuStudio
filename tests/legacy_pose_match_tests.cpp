@@ -1,12 +1,14 @@
 // MAINTENANCE: regression-keep; unmatched legacy pose rows never become bone 0.
 // Both profiles exercise the real unbound VPD loader, paste command and native
-// undo/redo implementation. No window, renderer device or plugin runtime starts.
+// undo/redo implementation. Original reset checks create hidden native controls;
+// no renderer device or plugin runtime starts.
 #define NOMINMAX
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/undo_storage.hpp"
 #include "mikumikustudio/vpd_scale_io.hpp"
@@ -260,6 +262,103 @@ void ScaleMatching(){
     }
 }
 #endif
+#if MMD_ORIGINAL_PROFILE
+void OriginalReset() {
+    Fixture f;
+    HWND owner = CreateWindowW(L"STATIC", L"reset fixture", WS_OVERLAPPED, 0, 0, 300, 100,
+                               nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(owner != nullptr, "create reset owner");
+    f.app->Hwnd() = owner;
+    std::array<HWND, 6> edits{};
+    for (int i = 0; i < 6; ++i) {
+        edits[i] = CreateWindowW(L"EDIT", L"draft", WS_CHILD, 0, 0, 20, 20, owner,
+            reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kReadoutPosXEdit + i)), GetModuleHandleW(nullptr), nullptr);
+        Check(edits[i] != nullptr, "create reset draft field");
+        SendMessageW(edits[i], EM_SETMODIFY, TRUE, 0);
+    }
+    f.selected = {1, 1, 1, 0, 0};
+    f.bones[1].parent = -1;
+    f.bones[2].parent = 1;
+    bone_scale::Matrix scaled{}; scaled.v[0] = 2.0f; scaled.v[4] = 0.5f;
+    // The original provider deliberately owns no scale side tables. Verify
+    // this capability boundary instead of requiring full-profile scale state.
+    for (unsigned i : {0u, 2u}) {
+        Check(!bone_scale::SetPose(f.Raw(), int(i), scaled) && bone_scale::Identity(f.Get(i).scale),
+              "original profile rejects non-identity selected scale and retains identity");
+    }
+    std::array<unsigned char, sizeof(mdl::BoneKey) * boneCount> originalKeys{};
+    std::memcpy(originalKeys.data(), f.model->boneKeys, originalKeys.size());
+    std::array<bone_scale::Matrix, boneCount> originalScaleKeys{};
+    for (unsigned i = 0; i < boneCount; ++i) originalScaleKeys[i] = bone_scale::Key(f.Raw(), int(i));
+    const auto originalRows = f.boneRows;
+    bone_scale::SetKey(f.Raw(), 1, scaled);
+    Check(bone_scale::Key(f.Raw(), 1) == originalScaleKeys[1] && bone_scale::Identity(originalScaleKeys[1]),
+          "original profile does not publish non-identity scale keys");
+    const auto checkKeys = [&] {
+        Check(!std::memcmp(f.model->boneKeys, originalKeys.data(), originalKeys.size()) && f.boneRows == originalRows,
+              "reset and history preserve all five keyframe records and track indices");
+        for (unsigned i = 0; i < boneCount; ++i)
+            Check(bone_scale::Key(f.Raw(), int(i)) == originalScaleKeys[i],
+                  "reset and history preserve each original scale key");
+    };
+    checkKeys();
+    const auto before = f.Poses();
+    f.app->SceneModified() = 0;
+    CmdControl450(f.app.get(), owner, 495, 0);
+    Check(f.app->SceneModified() == 1, "reset marks project modified");
+    for (auto edit : edits) Check(!SendMessageW(edit, EM_GETMODIFY, 0, 0), "reset cancels edit draft");
+    for (unsigned i : {0u, 1u, 2u}) {
+        Check(f.Get(i).position == std::array<float,3>{0,0,0}, "selected bone positions reset");
+        Check(f.Get(i).rotation == std::array<float,4>{0,0,0,1}, "selected bone rotations reset");
+        Check(f.dirty[i] == 1 && bone_scale::Identity(f.Get(i).scale), "selected bone marked and original scale remains identity");
+    }
+    Check(f.Get(3) == before[3] && f.Get(4) == before[4], "unselected bones remain unchanged");
+    checkKeys();
+    f.Undo(); Check(f.Poses() == before, "native undo restores reset pose");
+    checkKeys();
+    f.Redo(); Check(f.Get(0).position == std::array<float,3>{0,0,0} &&
+        f.Get(1).rotation == std::array<float,4>{0,0,0,1} && bone_scale::Identity(f.Get(0).scale) &&
+        bone_scale::Identity(f.Get(2).scale), "native redo reapplies reset pose and preserves original identity scales");
+    checkKeys();
+    f.app->Hwnd() = nullptr;
+    DestroyWindow(owner);
+}
+void OriginalResetGuardsAndFloating() {
+    Fixture f;
+    HWND main = CreateWindowW(L"STATIC", L"main fixture", WS_OVERLAPPED, 0, 0, 100, 100,
+        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    HWND floating = CreateWindowW(L"STATIC", L"floating fixture", WS_OVERLAPPED, 0, 0, 100, 100,
+        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Check(main && floating, "create main and floating owners");
+    const auto makeEdit = [](HWND owner) { return CreateWindowW(L"EDIT", L"draft", WS_CHILD, 0, 0, 20, 20, owner,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(panel::kReadoutPosXEdit)), GetModuleHandleW(nullptr), nullptr); };
+    HWND mainEdit = makeEdit(main), floatingEdit = makeEdit(floating);
+    Check(mainEdit && floatingEdit, "create main and floating drafts");
+    f.app->MainWindow() = main; f.app->FloatingWindow() = floating;
+    SendMessageW(mainEdit, EM_SETMODIFY, TRUE, 0); SendMessageW(floatingEdit, EM_SETMODIFY, TRUE, 0);
+    f.selected = {1, 0, 0, 0, 0};
+    CmdControl450(f.app.get(), main, 495, 0);
+    Check(SendMessageW(mainEdit, EM_GETMODIFY, 0, 0) && !SendMessageW(floatingEdit, EM_GETMODIFY, 0, 0),
+        "reset clears floating owner draft without clearing main owner draft");
+    f.selected = {};
+    const auto before = f.Poses(); const auto cursor = f.model->undoState[0];
+    CmdControl450(f.app.get(), main, 495, 0);
+    Check(f.Poses() == before && f.model->undoState[0] == cursor, "empty selection preserves pose and undo cursor");
+    SendMessageW(floatingEdit, EM_SETMODIFY, TRUE, 0); f.app->SceneModified() = 0;
+    auto* bones = f.model->boneTable; auto* selection = f.model->boneSelection; auto* dirty = f.model->bonePhysicsState;
+    for (int missing = 0; missing < 3; ++missing) {
+        if (missing == 0) f.model->boneTable = nullptr;
+        if (missing == 1) f.model->boneSelection = nullptr;
+        if (missing == 2) f.model->bonePhysicsState = nullptr;
+        CmdControl450(f.app.get(), main, 495, 0);
+        Check(f.model->undoState[0] == cursor && f.app->SceneModified() == 0 && SendMessageW(floatingEdit, EM_GETMODIFY, 0, 0),
+            "missing bone array returns before undo or draft mutation");
+        f.model->boneTable = bones; f.model->boneSelection = selection; f.model->bonePhysicsState = dirty;
+    }
+    f.app->FloatingWindow() = nullptr; f.app->MainWindow() = nullptr;
+    DestroyWindow(floating); DestroyWindow(main);
+}
+#endif
 }
 int main(){std::setvbuf(stdout,nullptr,_IONBF,0);
     std::puts("legacy pose partial and duplicate paste");PasteMatches();
@@ -269,5 +368,8 @@ int main(){std::setvbuf(stdout,nullptr,_IONBF,0);
 #if !MMD_ORIGINAL_PROFILE
     std::puts("legacy pose scale matching");ScaleMatching();
     std::puts("legacy pose private preparation allocation failures");PreparationFailures();
+#endif
+#if MMD_ORIGINAL_PROFILE
+    std::puts("original reset and drafts"); OriginalReset(); OriginalResetGuardsAndFloating();
 #endif
     std::printf("PASS legacy pose match profile=%s checks=%u\n",MMD_ORIGINAL_PROFILE?"original":"full",checks);return 0;}

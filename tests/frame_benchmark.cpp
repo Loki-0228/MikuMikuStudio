@@ -18,11 +18,15 @@
 #include "mikumikustudio/gpu_model.hpp"
 #include "mikumikustudio/skinning_backend.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
 #include "mikumikustudio/adaptive_shadow.hpp"
 #include "mikumikustudio/shadow_filter.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/texture_prepare_cache.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/native_mesh.hpp"
 #include <algorithm>
@@ -47,6 +51,9 @@ unsigned skippedModels=0;
 bool benchmarkRendering=false;
 // True only while InitMainWindowAndD3D runs; see the hook below.
 bool initializingApp=false;
+bool cacheReopenProbe=false;
+bool confirmingReopenReset=false;
+bool reopenResetConfirmed=false;
 // Mirrors kExitInit in the anonymous namespace further down.
 constexpr int kBenchmarkExitInit = 3;
 BOOL CALLBACK PrintDialogText(HWND window, LPARAM) {
@@ -58,12 +65,23 @@ BOOL CALLBACK PrintDialogText(HWND window, LPARAM) {
     return TRUE;
 }
 LRESULT CALLBACK BenchmarkDialog(int code, WPARAM wp, LPARAM lp) {
+    if (cacheReopenProbe && code == HCBT_CREATEWND) {
+        auto* create=reinterpret_cast<CBT_CREATEWNDW*>(lp)->lpcs;
+        if (!(create->style & WS_CHILD)) create->dwExStyle |= WS_EX_NOACTIVATE;
+    }
     if (code == HCBT_ACTIVATE) {
         HWND window=reinterpret_cast<HWND>(wp);
         wchar_t cls[32]{}; GetClassNameW(window,cls,32);
         if (wcscmp(cls,L"#32770")==0) {
-            ++loadDialogs;
             wchar_t title[256]{}; GetWindowTextW(window,title,256);
+            if (confirmingReopenReset && GetWindowThreadProcessId(window,nullptr)==GetCurrentThreadId() &&
+                (wcscmp(title,L"New scene")==0 || wcscmp(title,L"新規作成")==0 || wcscmp(title,L"新建场景")==0) &&
+                GetDlgItem(window,IDOK) && GetDlgItem(window,IDCANCEL)) {
+                if (!reopenResetConfirmed)
+                    reopenResetConfirmed=PostMessageW(window,WM_COMMAND,IDOK,0)!=FALSE;
+                return 1;
+            }
+            ++loadDialogs;
             // An init-phase dialog (for example "CreateDevice Failed") is a
             // failure: hide it, report it, and fail with code 3 at once, or the
             // modal box blocks until the harness timeout.
@@ -90,6 +108,7 @@ LRESULT CALLBACK BenchmarkDialog(int code, WPARAM wp, LPARAM lp) {
             else if (GetDlgItem(window,IDOK)) PostMessageW(window,WM_COMMAND,IDOK,0);
         }
     }
+    if (cacheReopenProbe && code == HCBT_ACTIVATE) return 1;
     return CallNextHookEx(nullptr,code,wp,lp);
 }
 
@@ -119,6 +138,15 @@ constexpr int kExitSaveScene = 19;     // --save-scene could not write its PMM
 constexpr int kExitMmvRequired = 20;   // --require-mmv but MMV is not loaded
 constexpr int kExitMmvForbidden = 21;  // --forbid-mmv but MMV is loaded
 constexpr int kExitMmvUpdate = 22;     // a sampled MMV update failed or was skipped
+// Only MMS_NATIVE_AA_SURFACE_TRACE=1 can reach this code. 56 is outside the
+// historical driver contract and the shadow-cycle range.
+constexpr int kExitAaSurfaceTrace = 56;
+// Only MMS_SHADOW_TEMPORAL_TRACE=1 can reach this code. 57 is outside the
+// historical driver contract and the shadow-cycle range.
+constexpr int kExitShadowTemporalTrace = 57;
+// Only MMS_SORT_CYCLE_TRACE=1 can reach this code. 58 is outside the
+// historical driver contract and the shadow-cycle range.
+constexpr int kExitSortCycleTrace = 58;
 
 constexpr int kMaxCopies = 8;
 constexpr int kMaxSamples = 100000;
@@ -140,6 +168,7 @@ struct Options {
     bool unbuffered = false;
     bool loadSkipMissing = false;
     bool loadOnly = false;
+    bool cacheReopen = false;
     int copies = 1;
     bool copiesGiven = false;
     Layout layout = Layout::Overlap;
@@ -152,6 +181,7 @@ struct Options {
     bool viewportGiven = false;
     bool modelFile = false;
     bool cameraGiven = false;
+    bool cameraPanel = false;   // --camera-panel: apply --camera in camera edit mode
     bool noPreview = false;
     float camera[7]{}; // x,y,z,distance,yaw,pitch,roll; angles in degrees
     float orbitDegrees = 0;
@@ -161,6 +191,7 @@ struct Options {
     bool lightGiven = false;
     float light[3]{};
     int fineShadow = -1;
+    bool fixedModelShadows = true;
     int adaptiveShadow = -1;
     int dynamicPrecision = -1;
     int sortPrecision = -1;
@@ -244,6 +275,8 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
             options.loadSkipMissing = true; setMode();
         } else if (wcscmp(arg, L"--load-only") == 0) {
             options.loadOnly = true; setMode();
+        } else if (wcscmp(arg, L"--cache-reopen") == 0) {
+            options.cacheReopen = true; setMode();
         } else if (wcscmp(arg, L"--copies") == 0) {
             const wchar_t* text = value(arg);
             long copies = 0;
@@ -289,6 +322,11 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
             long mode = 0;
             if (!text || !ParseLong(text, mode) || mode < 0 || mode > 1) return kExitUsage;
             options.fineShadow = static_cast<int>(mode);
+        } else if (wcscmp(arg, L"--fixed-model-shadows") == 0) {
+            const wchar_t* text = value(arg);
+            long mode = 0;
+            if (!text || !ParseLong(text, mode) || mode < 0 || mode > 1) return kExitUsage;
+            options.fixedModelShadows = mode != 0;
         } else if (wcscmp(arg, L"--adaptive-shadow") == 0) {
             long mode = 0;
             const wchar_t* text = value(arg);
@@ -363,6 +401,10 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
                 if (options.light[0] == 0 && options.light[1] == 0 && options.light[2] == 0) return kExitUsage;
                 options.lightGiven = true;
             }
+        } else if (wcscmp(arg, L"--camera-panel") == 0) {
+            // Modifier like --self-shadow: it changes how an explicit --camera
+            // is applied, so it selects no driver mode of its own.
+            options.cameraPanel = true;
         } else if (wcscmp(arg, L"--json") == 0) {
             options.json = value(arg);
             if (options.json == nullptr) return kExitUsage;
@@ -412,6 +454,10 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
     options.modelFile =
         extension != nullptr &&
         (_wcsicmp(extension, L".pmx") == 0 || _wcsicmp(extension, L".pmd") == 0);
+    if (options.cacheReopen && (argc != 3 || !extension || _wcsicmp(extension,L".pmm") != 0)) {
+        std::fputs("--cache-reopen takes one isolated PMM and no other options\n", stderr);
+        return kExitUsage;
+    }
     if (options.copiesGiven && !options.modelFile) {
         std::fputs("--copies accepts a PMX or PMD model file, not a scene\n",
                    stderr);
@@ -420,6 +466,11 @@ int ParseOptions(int argc, wchar_t** argv, Options& options) {
     if (options.saveScene != nullptr && (!options.modelFile || !options.throughput ||
             options.native || options.skinOnly || (!options.copiesGiven && !options.layoutGiven))) {
         std::fputs("--save-scene requires --throughput, a model file and an explicit layout/copy count\n",
+                   stderr);
+        return kExitUsage;
+    }
+    if (options.playbackSeconds && options.verifyViewToggles) {
+        std::fputs("--verify-view-toggles cannot be combined with --playback-seconds\n",
                    stderr);
         return kExitUsage;
     }
@@ -800,9 +851,361 @@ static_assert(sizeof(kPhaseNames) / sizeof(kPhaseNames[0]) == perf::Count,
 
 }  // namespace
 
+namespace {
+
+// ---------------------------------------------------------------------------
+// Native AA surface trace. Diagnostic only: it runs for the fixed frame of
+// --verify-shadow-cycle when MMS_NATIVE_AA_SURFACE_TRACE is exactly "1". The
+// default path registers no observer, allocates no target and writes no file.
+// ---------------------------------------------------------------------------
+bool AaSurfaceTraceEnabled() {
+    wchar_t value[8]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"MMS_NATIVE_AA_SURFACE_TRACE", value, 8);
+    return length == 1 && value[0] == L'1';
+}
+
+// The restored-frame temporal diagnosis runs only for --verify-shadow-cycle
+// when MMS_SHADOW_TEMPORAL_TRACE is exactly "1". It is independent of the
+// surface trace; the default path renders no extra frame and writes no file.
+bool ShadowTemporalTraceEnabled() {
+    wchar_t value[8]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"MMS_SHADOW_TEMPORAL_TRACE", value, 8);
+    return length == 1 && value[0] == L'1';
+}
+
+// The transparent-sort cycle snapshots run only for --verify-view-toggles when
+// MMS_SORT_CYCLE_TRACE is exactly "1", an output path and an explicit viewport
+// are present. The default path renders nothing extra and writes no file.
+bool SortCycleTraceEnabled() {
+    wchar_t value[8]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"MMS_SORT_CYCLE_TRACE", value, 8);
+    return length == 1 && value[0] == L'1';
+}
+
+// Retains one COM reference to the first scene-object draw whose render target 0
+// is the AA FrameScope's private scene colour source (the renderer backbuffer
+// surface). Shadow maps, outlines and screen passes fail that identity. The
+// callback draws nothing, reads nothing back, changes no device state and never
+// lets an exception escape.
+struct AaSurfaceTraceObserver final : deformed_mesh_capture::DrawObserver {
+    MMDApp* app = nullptr;
+    IDirect3DSurface9* source = nullptr;
+    unsigned objectDraws = 0;
+    unsigned targetFailures = 0;
+    unsigned identityMismatches = 0;
+    unsigned missingBoundTarget = 0;
+    unsigned matchedDraws = 0;
+    unsigned sourceChanges = 0;
+    HRESULT lastTargetHr = S_OK;
+
+    ~AaSurfaceTraceObserver() override {
+        if (source != nullptr) source->Release();
+    }
+
+    void Indexed(IDirect3DDevice9* device, D3DPRIMITIVETYPE, INT, UINT, UINT,
+                 UINT, UINT, const void* object, unsigned) noexcept override {
+        // MaterialScope marks native body/accessory material draws only, so a
+        // null object is a shadow/outline/screen pass.
+        if (device == nullptr || object == nullptr) return;
+        ++objectDraws;
+        IDirect3DSurface9* current = nullptr;
+        lastTargetHr = device->GetRenderTarget(0, &current);
+        if (FAILED(lastTargetHr) || current == nullptr) {
+            ++targetFailures;
+            if (current != nullptr) current->Release();
+            return;
+        }
+        IDirect3DSurface9* bound =
+            app != nullptr && app->Renderer() != nullptr
+                ? app->Renderer()->backbufferSurface : nullptr;
+        if (bound == nullptr) {
+            ++missingBoundTarget;
+            current->Release();
+            return;
+        }
+        if (current != bound) {
+            ++identityMismatches;
+            current->Release();
+            return;
+        }
+        ++matchedDraws;
+        if (source == nullptr) {
+            source = current; // The one retained scene-colour reference.
+            return;
+        }
+        if (current != source) ++sourceChanges;
+        current->Release();
+    }
+
+    void Unsupported(IDirect3DDevice9*, D3DPRIMITIVETYPE, UINT) noexcept override {}
+};
+
+class AaSurfaceTraceScope {
+public:
+    AaSurfaceTraceScope(MMDApp* app, bool enabled)
+        : enabled_(enabled && app != nullptr) {
+        if (!enabled_) return;
+        observer_.app = app;
+        std::string error;
+        observed_ = deformed_mesh_capture::Observe(*app, &observer_, error);
+        active_ = observed_;
+        if (!observed_) registrationError_ = error;
+    }
+    ~AaSurfaceTraceScope() { Stop(); }
+    AaSurfaceTraceScope(const AaSurfaceTraceScope&) = delete;
+    AaSurfaceTraceScope& operator=(const AaSurfaceTraceScope&) = delete;
+    void Stop() {
+        if (!active_) return;
+        deformed_mesh_capture::StopObserving(&observer_);
+        active_ = false;
+    }
+    bool Enabled() const { return enabled_; }
+    // Registration success survives Stop(); active_ tracks only the live
+    // registration, so the log can still prove the observer was installed.
+    bool Observed() const { return observed_; }
+    bool Active() const { return active_; }
+    const std::string& RegistrationError() const { return registrationError_; }
+    AaSurfaceTraceObserver& Observer() { return observer_; }
+private:
+    bool enabled_ = false;
+    bool observed_ = false;
+    bool active_ = false;
+    std::string registrationError_;
+    AaSurfaceTraceObserver observer_;
+};
+
+// Saves one complete original surface. A multisampled surface is resolved on the
+// GPU into a new, unbound render target; the caller's target, depth and viewport
+// are never touched.
+bool SaveAaSurfaceTraceSurface(IDirect3DDevice9* device, const wchar_t* path,
+                               IDirect3DSurface9* surface, const char* role) {
+    if (device == nullptr || surface == nullptr) {
+        std::printf("aa_surface_trace surface=%s missing=1\n", role);
+        return false;
+    }
+    D3DSURFACE_DESC desc{};
+    const HRESULT descHr = surface->GetDesc(&desc);
+    IDirect3DSurface9* sampled = surface;
+    IDirect3DSurface9* resolved = nullptr;
+    HRESULT resolveHr = S_OK;
+    const bool resolveRequired =
+        SUCCEEDED(descHr) && desc.MultiSampleType != D3DMULTISAMPLE_NONE;
+    bool resolveOk = !resolveRequired;
+    if (resolveRequired) {
+        resolveHr = device->CreateRenderTarget(desc.Width, desc.Height, desc.Format,
+            D3DMULTISAMPLE_NONE, 0, FALSE, &resolved, nullptr);
+        if (SUCCEEDED(resolveHr) && resolved != nullptr)
+            resolveHr = device->StretchRect(surface, nullptr, resolved, nullptr,
+                                            D3DTEXF_NONE);
+        resolveOk = SUCCEEDED(resolveHr) && resolved != nullptr;
+        if (resolveOk) sampled = resolved;
+        else if (resolved != nullptr) { resolved->Release(); resolved = nullptr; }
+    }
+    // A required resolve never falls back to the multisampled surface: that
+    // would report a broken read as a successful capture.
+    HRESULT saveHr = E_FAIL;
+    if (SUCCEEDED(descHr) && resolveOk && d3dx::Get().Load())
+        saveHr = d3dx::Get().saveSurfaceToFileW(path, 3, sampled, nullptr, nullptr);
+    if (resolved != nullptr) resolved->Release();
+    std::printf("aa_surface_trace surface=%s width=%u height=%u format=%d "
+                "msaa_type=%u msaa_quality=%u desc_hr=0x%08lX resolve=%u "
+                "resolve_hr=0x%08lX save_hr=0x%08lX\n",
+        role, desc.Width, desc.Height, int(desc.Format),
+        unsigned(desc.MultiSampleType), unsigned(desc.MultiSampleQuality),
+        static_cast<unsigned long>(descHr), resolveRequired ? 1u : 0u,
+        static_cast<unsigned long>(resolveHr),
+        static_cast<unsigned long>(saveHr));
+    return SUCCEEDED(descHr) && resolveOk && SUCCEEDED(saveHr);
+}
+
+bool SaveAaSurfaceTrace(MMDApp* app, IDirect3DDevice9* device,
+                        AaSurfaceTraceScope& trace, const wchar_t* output) {
+    if (app == nullptr || device == nullptr || output == nullptr) return false;
+    const auto& settings = app->antialiasing;
+    std::printf("aa_surface_trace aa enabled=%u algorithm=%u "
+                "accumulated_samples=%u required_samples=%u\n",
+        settings.enabled ? 1u : 0u, unsigned(settings.algorithm),
+        antialias::AccumulatedSamples(app), antialias::RequiredSamples(app));
+    auto& observer = trace.Observer();
+    IDirect3DSurface9* target = nullptr;
+    IDirect3DSurface9* backbuffer = nullptr;
+    const HRESULT targetHr = device->GetRenderTarget(0, &target);
+    const HRESULT backbufferHr = device->GetBackBuffer(
+        0, 0, D3DBACKBUFFER_TYPE_MONO, &backbuffer);
+    std::printf("aa_surface_trace observer observed=%u active=%u "
+                "source_retained=%u object_draws=%u matched_draws=%u "
+                "identity_mismatches=%u target_failures=%u "
+                "missing_bound_target=%u source_changes=%u "
+                "last_target_hr=0x%08lX\n",
+        trace.Observed() ? 1u : 0u, trace.Active() ? 1u : 0u,
+        observer.source != nullptr ? 1u : 0u,
+        observer.objectDraws, observer.matchedDraws, observer.identityMismatches,
+        observer.targetFailures, observer.missingBoundTarget,
+        observer.sourceChanges, static_cast<unsigned long>(observer.lastTargetHr));
+    if (!trace.Observed() && !trace.RegistrationError().empty())
+        std::printf("aa_surface_trace observer_error=\"%s\"\n",
+                    trace.RegistrationError().c_str());
+    std::printf("aa_surface_trace identity source_equals_target=%u "
+                "source_equals_backbuffer=%u target_equals_backbuffer=%u "
+                "target_hr=0x%08lX backbuffer_hr=0x%08lX\n",
+        observer.source != nullptr && observer.source == target ? 1u : 0u,
+        observer.source != nullptr && observer.source == backbuffer ? 1u : 0u,
+        target != nullptr && target == backbuffer ? 1u : 0u,
+        static_cast<unsigned long>(targetHr),
+        static_cast<unsigned long>(backbufferHr));
+    // Shadow passes legitimately draw elsewhere, so identity_mismatches alone is
+    // not an error. A changed retained source, a failed render-target query or a
+    // missing bound target on a scene draw is a real observation failure.
+    bool ok = trace.Observed() && observer.source != nullptr &&
+        observer.matchedDraws != 0 && observer.sourceChanges == 0 &&
+        observer.targetFailures == 0 && observer.missingBoundTarget == 0 &&
+        SUCCEEDED(targetHr) && target != nullptr &&
+        SUCCEEDED(backbufferHr) && backbuffer != nullptr;
+    const std::wstring base(output);
+    if (!SaveAaSurfaceTraceSurface(device, (base + L".aa-source.png").c_str(),
+                                   observer.source, "source"))
+        ok = false;
+    if (!SaveAaSurfaceTraceSurface(device, (base + L".aa-target.png").c_str(),
+                                   target, "target"))
+        ok = false;
+    if (!SaveAaSurfaceTraceSurface(device, (base + L".aa-backbuffer.png").c_str(),
+                                   backbuffer, "backbuffer"))
+        ok = false;
+    if (target != nullptr) target->Release();
+    if (backbuffer != nullptr) backbuffer->Release();
+    return ok;
+}
+
+}  // namespace
+
 // Same driver for before/after builds.  No scene saves, message-loop FPS cap,
 // heap scans. The separate MME target uses the same driver. Measures forced editor frames, not animation playback
 // FPS.  See docs/development/benchmarks.md for the CLI contract and JSON schema.
+namespace {
+
+bool HashLoadedModels(MMDApp* app, FILE* dump, std::uint64_t& hash) {
+    const auto bytes = [&](const void* data, size_t count) {
+        if (dump && count) fwrite(data,1,count,dump);
+        const auto* p = static_cast<const unsigned char*>(data);
+        for (size_t i=0; i<count; ++i) {
+            hash ^= p[i];
+            hash *= 1099511628211ull;
+        }
+    };
+    float world[16]{};
+    world[0] = world[5] = world[10] = world[15] = 1;
+    for (int i=0; i<kModelSlotCount; ++i) if (auto* model=app->ModelSlot(i)) {
+        GpuModelInput input;
+        if (!PrepareGpuModelInput(app,model,world,input)) return false;
+        bytes(input.vertices.data(),input.vertices.size()*sizeof(gpu::Vertex));
+        bytes(input.bones.data(),input.bones.size()*sizeof(gpu::Bone));
+        bytes(input.materials.data(),input.materials.size()*sizeof(gpu::Material));
+        const auto& record=*mdl::Mdl(model);
+        for (unsigned j=0; j<record.indexCount; ++j) {
+            const unsigned index=record.physicsMode==2?mdl::PmxIndices(model)[j]:mdl::Indices(model)[2*j];
+            bytes(&index,sizeof index);
+        }
+    }
+    return true;
+}
+
+int BenchmarkCacheReopen(MMDApp* app, const wchar_t* project) {
+    const auto window=app->MainWindow();
+    constexpr std::uint64_t basis=14695981039346656037ull;
+    const auto pluginsAbsent=[] {
+        return !GetModuleHandleW(L"MMEffect.dll") && !GetModuleHandleW(L"MMV4MMS.dll");
+    };
+    if (!pluginsAbsent() || !window || IsWindowVisible(window)) return kExitInit;
+    auto* device=app->Renderer()->device;
+    D3DDEVICE_CREATION_PARAMETERS creation{};
+    IDirect3D9* d3d=nullptr;
+    if (!device || FAILED(device->GetCreationParameters(&creation)) ||
+        FAILED(device->GetDirect3D(&d3d)) || !d3d) return kExitInit;
+    D3DADAPTER_IDENTIFIER9 adapter{};
+    const HRESULT identified=d3d->GetAdapterIdentifier(creation.AdapterOrdinal,0,&adapter);
+    d3d->Release();
+    if (FAILED(identified)) return kExitInit;
+    std::printf("CACHE_REOPEN adapter=%u vendor=%04lx device=%04lx driver=%016llx gpu=%s\n",
+        creation.AdapterOrdinal,adapter.VendorId,adapter.DeviceId,
+        static_cast<unsigned long long>(adapter.DriverVersion.QuadPart),adapter.Description);
+    std::uint64_t firstModels=0,firstAccessories=0;
+    for (unsigned iteration : {1u,2u}) {
+        const auto before=texture_prepare_cache::GetStatistics();
+        const auto parallelBefore=texture_prepare_cache::GetParallelStatistics();
+        const auto generation=app->SceneGeneration();
+        const auto start=std::chrono::steady_clock::now();
+        const bool loaded=LoadSceneFile(project);
+        const auto elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+        const auto after=texture_prepare_cache::GetStatistics();
+        const auto parallelAfter=texture_prepare_cache::GetParallelStatistics();
+        if (!loaded || app->SceneGeneration()==generation || app->SceneModified() ||
+            wcscmp(app->EnvFileName(),project)!=0 || loadDialogs || !pluginsAbsent() ||
+            IsWindowVisible(window) || GetForegroundWindow()==window ||
+            app->Renderer()->device!=device) return kExitScene;
+        unsigned models=0,vertices=0,accessories=0;
+        for (int slot=0; slot<kModelSlotCount; ++slot) if (auto* model=app->ModelSlot(slot)) {
+            const auto& record=*mdl::Mdl(model);
+            if (!record.loadComplete || !record.vertexCount) return kExitScene;
+            ++models;
+            vertices+=record.vertexCount;
+        }
+        std::uint64_t modelDigest=basis,accessoryDigest=basis;
+        if (!HashLoadedModels(app,nullptr,modelDigest)) return kExitDigest;
+        const auto mix=[&](const void* data,size_t count) {
+            const auto* bytes=static_cast<const unsigned char*>(data);
+            for (size_t i=0; i<count; ++i) {
+                accessoryDigest^=bytes[i];
+                accessoryDigest*=1099511628211ull;
+            }
+        };
+        for (int slot=0; slot<255; ++slot) if (const auto* object=app->AccessorySlot(slot)) {
+            if (!object->mesh || !object->sourcePath[0]) return kExitScene;
+            ++accessories;
+            mix(&slot,sizeof slot);
+            mix(object->sourcePath,wcslen(object->sourcePath)*sizeof(wchar_t));
+            mix(&object->materialCount,sizeof object->materialCount);
+            mix(&object->parentModel,sizeof object->parentModel);
+            mix(&object->parentBone,sizeof object->parentBone);
+            mix(object->position,sizeof object->position);
+            mix(object->rotation,sizeof object->rotation);
+            mix(&object->scale,sizeof object->scale);
+            mix(&object->opacity,sizeof object->opacity);
+            mix(&object->visible,sizeof object->visible);
+        }
+        std::printf("CACHE_REOPEN load=%u ms=%.3f models=%u vertices=%u accessories=%u model_digest=%016llx "
+            "accessory_digest=%016llx hits=%llu native=%llu stores=%llu disk_ready=%llu decoded=%llu failures=%llu\n",
+            iteration,elapsed,models,vertices,accessories,modelDigest,accessoryDigest,after.hits-before.hits,
+            after.nativeCalls-before.nativeCalls,after.stores-before.stores,parallelAfter.diskReady-parallelBefore.diskReady,
+            parallelAfter.decoded-parallelBefore.decoded,parallelAfter.failures-parallelBefore.failures);
+        if (!models) return kExitScene;
+        if (iteration==2)
+            return modelDigest==firstModels && accessoryDigest==firstAccessories ? 0 : kExitDigest;
+        firstModels=modelDigest;
+        firstAccessories=accessoryDigest;
+
+        const auto loadedGeneration=app->SceneGeneration();
+        const auto resetStart=std::chrono::steady_clock::now();
+        reopenResetConfirmed=false;
+        confirmingReopenReset=true;
+        SendMessageW(window,WM_COMMAND,204,0);
+        confirmingReopenReset=false;
+        const auto resetMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-resetStart).count();
+        if (!reopenResetConfirmed || loadDialogs || app->SceneGeneration()==loadedGeneration ||
+            app->EnvFileName()[0] || app->SceneModified() || app->sceneRecoveryPending ||
+            app->Renderer()->device!=device || IsWindowVisible(window) || GetForegroundWindow()==window)
+            return kExitScene;
+        for (int slot=0; slot<kModelSlotCount; ++slot) if (app->ModelSlot(slot)) return kExitScene;
+        for (int slot=0; slot<255; ++slot) if (app->AccessorySlot(slot)) return kExitScene;
+        std::printf("CACHE_REOPEN reset_ms=%.3f empty=1 confirmed=1 mme=0 mmv=0 pid=%lu\n",resetMs,GetCurrentProcessId());
+    }
+    return kExitScene;
+}
+
+} // namespace
+
 int wmain(int argc, wchar_t** argv) {
     if (argc < 2) return kExitUsage;
     Options options;
@@ -822,7 +1225,9 @@ int wmain(int argc, wchar_t** argv) {
     app->state = MMDAppState{};
     app->InitDefaults();
     std::puts("initialize");
+    cacheReopenProbe=options.cacheReopen;
     HHOOK hook=SetWindowsHookExW(WH_CBT,BenchmarkDialog,nullptr,GetCurrentThreadId());
+    if (cacheReopenProbe && !hook) return kExitInit;
     // Marked so the hook turns an init-phase dialog into exit code 3.
     initializingApp=true;
     const bool initOk=InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE);
@@ -836,6 +1241,14 @@ int wmain(int argc, wchar_t** argv) {
     if (GetModuleHandleW(L"MMEffect.dll")) return kExitMme;
 #endif
     std::printf("scene_plugin MMV4MMS_loaded=%u\n", GetModuleHandleW(L"MMV4MMS.dll") ? 1u : 0u);
+    if (options.cacheReopen) {
+        const int result=BenchmarkCacheReopen(app,options.target);
+        ShutdownCleanup(app);
+        delete app;
+        g_Block=nullptr;
+        UnhookWindowsHookEx(hook);
+        return result;
+    }
 
     constexpr UINT sortingMenuId = 303;
     HWND quality = GetDlgItem(app->MainWindow(), panel::kSelfShadowCheckbox);
@@ -863,8 +1276,8 @@ int wmain(int argc, wchar_t** argv) {
                 if (count != 1 || wcscmp(caption, expected) != 0 || (GetMenuState(view, sortingMenuId, MF_BYCOMMAND) & MF_CHECKED)) return 41;
             } else {
                 GetMenuStringW(view, 32004, caption, 128, MF_BYCOMMAND);
-                const wchar_t* limitTitle = language == 2 ? L"透明排序上限" : language == 1 ? L"Transparent sort limit" : L"透明ソート上限";
-                if (count != 0 || wcscmp(caption, limitTitle) != 0 ||
+                const wchar_t* sortPopupTitle = language == 2 ? L"透明排序" : language == 1 ? L"Transparent sorting" : L"透明ソート";
+                if (count != 0 || wcscmp(caption, sortPopupTitle) != 0 ||
                     !(GetMenuState(view, 308, MF_BYCOMMAND) & MF_CHECKED)) return 41;
             }
         }
@@ -878,6 +1291,7 @@ int wmain(int argc, wchar_t** argv) {
         if (app->Renderer()->renderTargetWidth != 4096) return 43;
     }
     if (options.fineShadow >= 0) setQuality(options.fineShadow != 0);
+    shadow_filter::SetModelShadowsEnabledForTests(options.fixedModelShadows);
     if (options.adaptiveShadow >= 0) {
         HWND adaptive = GetDlgItem(app->MainWindow(), panel::kAdaptiveShadowCheckbox);
         SendMessageW(adaptive, BM_SETCHECK, options.adaptiveShadow ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -1006,16 +1420,10 @@ int wmain(int argc, wchar_t** argv) {
     if(options.loadOnly){
         FILE* dump=nullptr;if(options.output&&(_wfopen_s(&dump,options.output,L"wb")||!dump))return kExitDigestOpen;
         std::uint64_t hash=14695981039346656037ull;
-        const auto bytes=[&](const void* data,size_t count){if(dump&&count)fwrite(data,1,count,dump);auto* p=static_cast<const unsigned char*>(data);for(size_t i=0;i<count;++i){hash^=p[i];hash*=1099511628211ull;}};
-        float world[16]{};world[0]=world[5]=world[10]=world[15]=1;
-        for(int i=0;i<kModelSlotCount;++i)if(auto* m=app->ModelSlot(i)){
-            GpuModelInput input;
-            if(!PrepareGpuModelInput(app,m,world,input)){std::puts("model digest unsupported");return kExitDigest;}
-            bytes(input.vertices.data(),input.vertices.size()*sizeof(gpu::Vertex));
-            bytes(input.bones.data(),input.bones.size()*sizeof(gpu::Bone));
-            bytes(input.materials.data(),input.materials.size()*sizeof(gpu::Material));
-            const auto& record=*mdl::Mdl(m);
-            for(unsigned j=0;j<record.indexCount;++j){unsigned index=record.physicsMode==2?mdl::PmxIndices(m)[j]:mdl::Indices(m)[2*j];bytes(&index,sizeof index);}
+        if (!HashLoadedModels(app,dump,hash)) {
+            if (dump) fclose(dump);
+            std::puts("model digest unsupported");
+            return kExitDigest;
         }
         const auto& stats=fileio::readStatistics;
         std::printf("buffered=%u read_requests=%llu system_reads=%llu bytes=%llu model_digest=%016llx\n",!options.unbuffered,stats.requests,stats.systemReads,stats.bytes,hash);
@@ -1115,11 +1523,28 @@ int wmain(int argc, wchar_t** argv) {
         app->SelfShadowCompositionEnabled() = 0;
     }
     if (options.cameraGiven) {
+        // --camera-panel mirrors the main application's camera edit mode for
+        // paired captures: the panel drives the camera and owns the view
+        // offset, so an explicit camera is written to the camera itself with
+        // a zero offset.  The scene reads the optflag[0] behind CameraMode for
+        // the selected-bone handles, so EditMode alone still draws model
+        // handles; the panel sets both.  The flag only changes how --camera is
+        // applied; with no --camera it has no effect.  The historical
+        // behaviour, offset initialised from the position, is the default
+        // below.
+        if (options.cameraPanel) {
+            app->EditMode() = ViewportEditMode::Camera;
+            app->CameraMode() = 1;
+            app->ViewOffsetX() = 0.0f;
+            app->ViewOffsetY() = 0.0f;
+        }
         app->CameraPositionX() = options.camera[0];
         app->CameraPositionY() = options.camera[1];
         app->CameraPositionZ() = options.camera[2];
-        app->ViewOffsetX() = options.camera[0];
-        app->ViewOffsetY() = options.camera[1];
+        if (!options.cameraPanel) {
+            app->ViewOffsetX() = options.camera[0];
+            app->ViewOffsetY() = options.camera[1];
+        }
         app->CameraDistance() = options.camera[3];
         constexpr float radians = 3.14159265358979323846f / 180.0f;
         app->CameraYaw() = options.camera[4] * radians;
@@ -1157,6 +1582,39 @@ int wmain(int argc, wchar_t** argv) {
         requested.MaxZ = 1.0f;
         device->SetViewport(&requested);
     };
+    // The shadow cycle samples a device viewport at (0,0), outside the
+    // docked editor layout. Use the same private-output admission as capture.
+    bool reportedShadowViewport = false;
+    const auto renderBenchmarkFrame = [&](void (*render)(MMDApp*)) {
+        if (!options.verifyShadowCycle) { render(app); return true; }
+        D3DVIEWPORT9 viewport{};
+        if (FAILED(device->GetViewport(&viewport)) || viewport.X || viewport.Y ||
+            viewport.Width != DWORD(requestedWidth) || viewport.Height != DWORD(requestedHeight)) {
+            std::printf("shadow_output unexpected device viewport %lu,%lu %lux%lu (expected 0,0 %dx%d)\n",
+                viewport.X, viewport.Y, viewport.Width, viewport.Height, requestedWidth, requestedHeight);
+            return false;
+        }
+        if (!reportedShadowViewport)
+            std::printf("shadow_output editor_admitted_before_scope=%d\n", int(FrameViewportRenderable(app)));
+        FrameSceneOutputScope output(app);
+        const bool admitted = output.Ready() && FrameSceneRenderable(app);
+        if (!reportedShadowViewport || !admitted) {
+            const auto rect = app->ViewportRect();
+            std::printf("shadow_output scene_admitted=%d scope_ready=%d rect=%ld,%ld,%ld,%ld\n",
+                int(admitted), int(output.Ready()), rect.left, rect.top, rect.right, rect.bottom);
+            reportedShadowViewport = true;
+        }
+        if (!admitted) return false;
+        render(app);
+        if (render == RenderFrameScene &&
+            ((!build_profile::original && !app->frameRate.ready) || !app->Renderer()->shadowSurface)) {
+            std::printf("shadow_output capture failed: scene_ready=%d effect=%d shadow_surface=%d mode=%d\n",
+                int(app->frameRate.ready), int(app->Renderer()->effect != nullptr),
+                int(app->Renderer()->shadowSurface != nullptr), int(app->SelfShadowMode()));
+            return false;
+        }
+        return true;
+    };
     const auto runFrame = [&]() -> double {
         // Service the hidden window as the editor's main loop does. A paint
         // handler calls FrameDriver itself, so validate paints without dispatch
@@ -1185,7 +1643,7 @@ int wmain(int argc, wchar_t** argv) {
         if (options.skinOnly) {
             for (int slot=0; slot<kModelSlotCount; ++slot)
                 if (auto* m=app->ModelSlot(slot)) UpdateModelVertexBuffers(app,m,skinWorld);
-        } else FrameDriver(app);
+        } else if (!renderBenchmarkFrame(FrameDriver)) return -1.0;
         // Read the viewport back after the model pass ran: anything the frame
         // changes without restoring would show up here.
         if (requestedWidth != 0) {
@@ -1293,45 +1751,6 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     bool viewTogglesVerified = false;
-    if (options.verifyViewToggles) {
-        if (runFrame() < 0.0 || !flush()) return kExitFlush;
-        const auto indexDifferences = [&]() -> long long {
-            long long different = 0;
-            for (const auto& copy : copyRecords) {
-                auto* m = copy.model;
-                auto& state = *mdl::Mdl(m);
-                auto* buffer = mdl::ResourceAs<IDirect3DIndexBuffer9>(state.indexBuffer);
-                D3DINDEXBUFFER_DESC desc{};
-                void* data = nullptr;
-                if (!buffer || FAILED(buffer->GetDesc(&desc)) || FAILED(buffer->Lock(0, 0, &data, D3DLOCK_READONLY))) return -1;
-                for (unsigned j = 0; j < state.indexCount; ++j) {
-                    const unsigned expected = state.physicsMode == 2 ? mdl::PmxIndices(m)[j] : mdl::Indices(m)[2*j];
-                    const unsigned actual = desc.Format == D3DFMT_INDEX32 ? static_cast<unsigned*>(data)[j] : static_cast<unsigned short*>(data)[j];
-                    different += actual != expected;
-                }
-                buffer->Unlock();
-            }
-            return different;
-        };
-        const auto savedSortPrecision = app->TransparentMaterialSortPrecision();
-        const long long sortedDifferences = indexDifferences();
-        CommandDispatch(nullptr, MAKEWPARAM(sortingMenuId, 0));
-        RefreshMenuLanguage(app);
-        if (app->AutoTransparentMaterialSortingEnabled()) return 44;
-        if (runFrame() < 0.0 || !flush()) return kExitFlush;
-        const long long restoredDifferences = indexDifferences();
-        if (restoredDifferences != 0) return 45;
-        CommandDispatch(nullptr, MAKEWPARAM(sortingMenuId, 0));
-        CommandDispatch(nullptr, MAKEWPARAM(304 + static_cast<int>(savedSortPrecision), 0));
-        if (!app->AutoTransparentMaterialSortingEnabled() || app->TransparentMaterialSortPrecision() != savedSortPrecision) return 46;
-        if (runFrame() < 0.0 || !flush()) return kExitFlush;
-        const long long resortedDifferences = indexDifferences();
-        // Global sorting uses private geometry, so the original index buffer
-        // can remain unchanged while sorting is enabled. Pixel tests verify order.
-        if (sortedDifferences < 0 || resortedDifferences < 0) return 47;
-        std::printf("view_toggle_verified sorted=%lld restored=%lld resorted=%lld\n", sortedDifferences, restoredDifferences, resortedDifferences);
-        viewTogglesVerified = true;
-    }
 
     // Preserve the historical JSON fields for comparison tools. This build
     // has no MMV runtime or MMV timing samples.
@@ -1541,6 +1960,130 @@ int wmain(int argc, wchar_t** argv) {
         return kExitViewport;
     }
 
+    if (options.verifyViewToggles) {
+        // Runs after the measured frames, when the scene is fully prepared:
+        // these three renders and command dispatches are checks, not
+        // warmup, so they stay out of the timing samples.
+        // Diagnostic only: MMS_SORT_CYCLE_TRACE=1 with an output path and an
+        // explicit viewport saves the current render target after each of the
+        // three existing renders below. It renders nothing, resets no AA
+        // history and leaves the sort settings and the command order alone.
+        const bool sortCycleTrace = SortCycleTraceEnabled() &&
+            options.output != nullptr && options.viewportGiven;
+        const auto saveSortCycleSnapshot = [&](const wchar_t* suffix,
+                                                const char* phase,
+                                                long long differences) -> HRESULT {
+            const std::wstring path = std::wstring(options.output) + suffix;
+            IDirect3DSurface9* target = nullptr;
+            IDirect3DSurface9* resolved = nullptr;
+            const HRESULT targetHr = device->GetRenderTarget(0, &target);
+            const bool targetOk = SUCCEEDED(targetHr) && target != nullptr;
+            D3DSURFACE_DESC desc{};
+            const HRESULT descHr = targetOk ? target->GetDesc(&desc) : E_FAIL;
+            IDirect3DSurface9* source = SUCCEEDED(descHr) ? target : nullptr;
+            HRESULT resolveHr = S_OK;
+            if (source != nullptr && desc.MultiSampleType != D3DMULTISAMPLE_NONE) {
+                // Read-only resolve into a new unbound target; the multisampled
+                // render target and the device state are not changed.
+                resolveHr = device->CreateRenderTarget(desc.Width, desc.Height,
+                    desc.Format, D3DMULTISAMPLE_NONE, 0, FALSE, &resolved, nullptr);
+                if (SUCCEEDED(resolveHr) && resolved != nullptr)
+                    resolveHr = device->StretchRect(target, nullptr, resolved,
+                                                    nullptr, D3DTEXF_NONE);
+                if (SUCCEEDED(resolveHr) && resolved != nullptr) {
+                    source = resolved;
+                } else {
+                    if (resolved != nullptr) { resolved->Release(); resolved = nullptr; }
+                    source = nullptr;
+                }
+            }
+            HRESULT saveHr = E_FAIL;
+            if (source != nullptr && d3dx::Get().Load() &&
+                d3dx::Get().saveSurfaceToFileW != nullptr) {
+                // The same full requested rectangle the shadow captures use.
+                const RECT area{0, 0, requestedWidth, requestedHeight};
+                saveHr = d3dx::Get().saveSurfaceToFileW(path.c_str(), 3, source,
+                                                        nullptr, &area);
+            }
+            if (resolved != nullptr) resolved->Release();
+            if (target != nullptr) target->Release();
+            HRESULT result = saveHr;
+            if (!targetOk) result = FAILED(targetHr) ? targetHr : E_FAIL;
+            else if (FAILED(descHr)) result = descHr;
+            else if (FAILED(resolveHr)) result = resolveHr;
+            std::printf("sort_cycle_trace phase=%s frame=%d precision=%d "
+                        "enabled=%u aa_algorithm=%u aa_enabled=%u aa_samples=%u "
+                        "cpu_index_differences=%lld save_hr=0x%08lX\n",
+                phase, static_cast<int>(app->CurrentFrame()),
+                static_cast<int>(app->TransparentMaterialSortPrecision()),
+                app->AutoTransparentMaterialSortingEnabled() ? 1u : 0u,
+                unsigned(app->antialiasing.algorithm),
+                app->antialiasing.enabled ? 1u : 0u,
+                antialias::AccumulatedSamples(app), differences,
+                static_cast<unsigned long>(saveHr));
+            if (FAILED(result))
+                std::printf("sort_cycle_trace failure phase=%s target_hr=0x%08lX "
+                            "desc_hr=0x%08lX resolve_hr=0x%08lX save_hr=0x%08lX\n",
+                    phase, static_cast<unsigned long>(targetHr),
+                    static_cast<unsigned long>(descHr),
+                    static_cast<unsigned long>(resolveHr),
+                    static_cast<unsigned long>(saveHr));
+            return result;
+        };
+        if (runFrame() < 0.0 || !flush()) return kExitFlush;
+        const auto indexDifferences = [&]() -> long long {
+            long long different = 0;
+            for (const auto& copy : copyRecords) {
+                auto* m = copy.model;
+                auto& state = *mdl::Mdl(m);
+                auto* buffer = mdl::ResourceAs<IDirect3DIndexBuffer9>(state.indexBuffer);
+                D3DINDEXBUFFER_DESC desc{};
+                void* data = nullptr;
+                if (!buffer || FAILED(buffer->GetDesc(&desc)) || FAILED(buffer->Lock(0, 0, &data, D3DLOCK_READONLY))) return -1;
+                for (unsigned j = 0; j < state.indexCount; ++j) {
+                    const unsigned expected = state.physicsMode == 2 ? mdl::PmxIndices(m)[j] : mdl::Indices(m)[2*j];
+                    const unsigned actual = desc.Format == D3DFMT_INDEX32 ? static_cast<unsigned*>(data)[j] : static_cast<unsigned short*>(data)[j];
+                    different += actual != expected;
+                }
+                buffer->Unlock();
+            }
+            return different;
+        };
+        const auto savedSortPrecision = app->TransparentMaterialSortPrecision();
+        const long long sortedDifferences = indexDifferences();
+        if (sortCycleTrace) {
+            const HRESULT traceHr = saveSortCycleSnapshot(
+                L".sort-enabled.png", "enabled", sortedDifferences);
+            if (FAILED(traceHr)) return kExitSortCycleTrace;
+        }
+        CommandDispatch(nullptr, MAKEWPARAM(sortingMenuId, 0));
+        RefreshMenuLanguage(app);
+        if (app->AutoTransparentMaterialSortingEnabled()) return 44;
+        if (runFrame() < 0.0 || !flush()) return kExitFlush;
+        const long long restoredDifferences = indexDifferences();
+        if (sortCycleTrace) {
+            const HRESULT traceHr = saveSortCycleSnapshot(
+                L".sort-off.png", "off", restoredDifferences);
+            if (FAILED(traceHr)) return kExitSortCycleTrace;
+        }
+        if (restoredDifferences != 0) return 45;
+        CommandDispatch(nullptr, MAKEWPARAM(sortingMenuId, 0));
+        CommandDispatch(nullptr, MAKEWPARAM(304 + static_cast<int>(savedSortPrecision), 0));
+        if (!app->AutoTransparentMaterialSortingEnabled() || app->TransparentMaterialSortPrecision() != savedSortPrecision) return 46;
+        if (runFrame() < 0.0 || !flush()) return kExitFlush;
+        const long long resortedDifferences = indexDifferences();
+        if (sortCycleTrace) {
+            const HRESULT traceHr = saveSortCycleSnapshot(
+                L".sort-restored.png", "restored", resortedDifferences);
+            if (FAILED(traceHr)) return kExitSortCycleTrace;
+        }
+        // Global sorting uses private geometry, so the original index buffer
+        // can remain unchanged while sorting is enabled. Pixel tests verify order.
+        if (sortedDifferences < 0 || resortedDifferences < 0) return 47;
+        std::printf("view_toggle_verified sorted=%lld restored=%lld resorted=%lld\n", sortedDifferences, restoredDifferences, resortedDifferences);
+        viewTogglesVerified = true;
+    }
+
     if (options.verifyShadowZoom) {
         if (!throughput || native || !options.output || !UseEffectModelRenderer(app)) return 50;
         const float savedDistance = app->CameraDistance(), savedRange = app->ShadowDistance();
@@ -1606,13 +2149,168 @@ int wmain(int argc, wchar_t** argv) {
             !options.viewportGiven || !UseEffectModelRenderer(app)) return 47;
         std::vector<std::vector<DWORD>> shadowMaps;
         std::vector<unsigned> shadowWidths;
-        const auto capture = [&](const wchar_t* suffix) {
+        const bool aaSurfaceTraceRequested = AaSurfaceTraceEnabled();
+        bool aaSurfaceTraceFailed = false;
+        // Actual sampling density is the acceptance evidence here, not texture
+        // width. Each capture records the projection and the texture the
+        // receiver samples after the render. The singular values of the
+        // world-to-texel Jacobian give the minimum and maximum texels per world
+        // unit, so a coarser slider setting can legitimately allocate a smaller
+        // map while still matching its own (lower) reference density.
+        struct ShadowDensitySample {
+            const char* phase = "";
+            int index = 0;
+            unsigned rawWidth = 0, rawHeight = 0;
+            unsigned sampleWidth = 0, sampleHeight = 0;
+            int slider = 0;
+            float range = 0, reference = 0;
+            float densityMin = 0, densityMax = 0;
+            bool valid = false;
+            float projection[16]{};
+        };
+        std::vector<ShadowDensitySample> densitySamples;
+        const auto recordDensity = [&](const char* phase, int index) {
+            ShadowDensitySample sample;
+            sample.phase = phase;
+            sample.index = index;
+            sample.slider = ShadowSliderPosition(app);
+            sample.range = app->ShadowDistance();
+            // The reference is the density the slider, mode and resolution
+            // limit ask for at this instant. It comes from the shared density
+            // function, never from the production allocation under test.
+            sample.reference = NativeShadowSamplingDensity(
+                app->LightDirection(), sample.range, app->ShadowMode(),
+                app->ShadowResolutionLimit());
+            const auto& projection = app->LightViewProjection();
+            std::copy_n(reinterpret_cast<const float*>(&projection), 16, sample.projection);
+            bool valid = true;
+            D3DSURFACE_DESC raw{};
+            auto* renderer = app->Renderer();
+            if (!renderer || !renderer->shadowSurface ||
+                FAILED(renderer->shadowSurface->GetDesc(&raw))) {
+                valid = false;
+            } else {
+                sample.rawWidth = raw.Width;
+                sample.rawHeight = raw.Height;
+                if (!raw.Width || !raw.Height) valid = false;
+            }
+            // Borrowed texture: read its description but never Release it.
+            const auto sampling = shadow_filter::ReadNativeSamplingState(app);
+            D3DSURFACE_DESC level{};
+            if (!sampling.texture || FAILED(sampling.texture->GetLevelDesc(0, &level))) {
+                valid = false;
+            } else {
+                sample.sampleWidth = level.Width;
+                sample.sampleHeight = level.Height;
+                if (!level.Width || !level.Height) valid = false;
+            }
+            bool finite = true;
+            for (int i = 0; i < 16; ++i)
+                finite = finite && std::isfinite(sample.projection[i]);
+            if (!finite) valid = false;
+            // Row-vector convention: output w is v.x*m[3] + v.y*m[7] +
+            // v.z*m[11] + m[15]. An affine shadow transform keeps that column
+            // zero, so w is the constant m[15].
+            if (sample.projection[3] != 0.f || sample.projection[7] != 0.f ||
+                sample.projection[11] != 0.f) valid = false;
+            if (sample.projection[15] == 0.f || !std::isfinite(sample.projection[15]))
+                valid = false;
+            if (!(std::isfinite(sample.reference) && sample.reference > 0.f))
+                valid = false;
+            if (sample.sampleWidth && sample.sampleHeight && finite &&
+                sample.projection[15] != 0.f) {
+                // Texture-space derivative along each world axis. Width and
+                // height of the sampled texture, not the surface descriptor.
+                const double scaleX = double(sample.sampleWidth) /
+                    (2.0 * double(sample.projection[15]));
+                const double scaleY = double(sample.sampleHeight) /
+                    (2.0 * double(sample.projection[15]));
+                double xx = 0.0, yy = 0.0, xy = 0.0;
+                for (int row = 0; row < 3; ++row) {
+                    const double x = double(sample.projection[row * 4 + 0]) * scaleX;
+                    const double y = double(sample.projection[row * 4 + 1]) * scaleY;
+                    xx += x * x;
+                    yy += y * y;
+                    xy += x * y;
+                }
+                // Eigenvalues of the 2x2 Gram matrix are the squared singular
+                // values of the world-to-texel Jacobian.
+                const double trace = xx + yy;
+                const double spread = std::sqrt((xx - yy) * (xx - yy) + 4.0 * xy * xy);
+                const double high = std::sqrt(std::max(0.0, .5 * (trace + spread)));
+                const double low = std::sqrt(std::max(0.0, .5 * (trace - spread)));
+                if (!(std::isfinite(high) && std::isfinite(low) && high > 0.0 && low > 0.0))
+                    valid = false;
+                sample.densityMin = float(low);
+                sample.densityMax = float(high);
+                // A finite positive double can still overflow or underflow in
+                // float, so validate the values the evidence actually stores.
+                if (!(std::isfinite(sample.densityMin) && sample.densityMin > 0.f &&
+                      std::isfinite(sample.densityMax) && sample.densityMax > 0.f))
+                    valid = false;
+            } else {
+                valid = false;
+            }
+            sample.valid = valid;
+            densitySamples.push_back(sample);
+            std::printf("shadow_density phase=%s index=%d raw_width=%u raw_height=%u "
+                        "sample_width=%u sample_height=%u slider=%d range=%.9g "
+                        "reference=%.9g density_min=%.9g density_max=%.9g valid=%u projection=",
+                sample.phase, sample.index, sample.rawWidth, sample.rawHeight,
+                sample.sampleWidth, sample.sampleHeight, sample.slider,
+                double(sample.range), double(sample.reference),
+                double(sample.densityMin), double(sample.densityMax),
+                sample.valid ? 1u : 0u);
+            for (int i = 0; i < 16; ++i)
+                std::printf("%s%.9g", i ? "," : "", double(sample.projection[i]));
+            std::printf("\n");
+        };
+        const auto capture = [&](const wchar_t* suffix, const char* phase) {
             installViewport();
             app->state.messageSeen = 10;
-            RenderFrameScene(app);
+            std::vector<DWORD> pixels;
+            // The AA surface diagnosis is scoped to the fixed frame. The
+            // scope unregisters the observer and frees the retained reference
+            // on every early return.
+            AaSurfaceTraceScope surfaceTrace(app, aaSurfaceTraceRequested &&
+                std::strcmp(phase, "fixed") == 0);
+            if (!renderBenchmarkFrame(RenderFrameScene)) {
+                if (surfaceTrace.Enabled())
+                    std::printf("aa_surface_trace unavailable: the fixed scene render failed\n");
+                return pixels;
+            }
+            surfaceTrace.Stop();
+            if (options.cameraGiven && options.cameraPanel) {
+                // The scene reads the CameraMode optflag for the selected-bone
+                // handles, so EditMode alone still leaves model handles in the
+                // frame.  Report the state the render actually left and end
+                // this capture through the existing empty-pixels failure exit
+                // if the camera panel did not take over.  Angles are post-frame
+                // radians; orbit may change them legitimately.
+                const bool cameraState = app->CameraMode() == 1 &&
+                    app->ViewOffsetX() == 0.0f && app->ViewOffsetY() == 0.0f;
+                std::printf("shadow_camera_state camera_mode=%u edit_mode=%d "
+                            "offset_x=%.9g offset_y=%.9g pos_x=%.9g pos_y=%.9g "
+                            "pos_z=%.9g distance=%.9g yaw=%.9g pitch=%.9g "
+                            "roll=%.9g valid=%u\n",
+                    unsigned(app->CameraMode()), static_cast<int>(app->EditMode()),
+                    double(app->ViewOffsetX()), double(app->ViewOffsetY()),
+                    double(app->CameraPositionX()), double(app->CameraPositionY()),
+                    double(app->CameraPositionZ()), double(app->CameraDistance()),
+                    double(app->CameraYaw()), double(app->CameraPitch()),
+                    double(app->CameraRoll()), cameraState ? 1u : 0u);
+                if (!cameraState) return pixels;
+            }
+            // The rendered frame is what the receiver actually samples; record
+            // it before the readback and DDS capture copy anything.
+            recordDensity(phase, static_cast<int>(densitySamples.size()));
+            // Saved after the observer stopped: the retained scene source, the
+            // current render target and the swapchain back buffer, all complete.
+            if (surfaceTrace.Enabled() &&
+                !SaveAaSurfaceTrace(app, device, surfaceTrace, options.output))
+                aaSurfaceTraceFailed = true;
             IDirect3DSurface9* source = nullptr;
             IDirect3DSurface9* readback = nullptr;
-            std::vector<DWORD> pixels;
             if (FAILED(device->GetRenderTarget(0, &source))) return pixels;
             D3DSURFACE_DESC desc{}; source->GetDesc(&desc);
             const std::wstring path = std::wstring(options.output) + suffix;
@@ -1677,7 +2375,11 @@ int wmain(int argc, wchar_t** argv) {
         toggle(false);
         const float fixedRange = app->ShadowDistance();
         const int fixedPosition = ShadowSliderPosition(app);
-        const auto fixed = capture(L".fixed.png");
+        const auto fixed = capture(L".fixed.png", "fixed");
+        if (aaSurfaceTraceFailed) {
+            std::printf("aa_surface_trace failed: the fixed-frame AA surface diagnosis is incomplete\n");
+            return kExitAaSurfaceTrace;
+        }
         const auto fixedProjection = app->LightViewProjection();
         struct Caster { mdl::ModelMaterialRecord* material; unsigned flags; };
         std::vector<Caster> casters;
@@ -1690,7 +2392,7 @@ int wmain(int argc, wchar_t** argv) {
                 materials[i].flags &= ~4u;
             }
         }
-        const auto unoccluded = capture(L".unoccluded.png");
+        const auto unoccluded = capture(L".unoccluded.png", "unoccluded");
         for (auto caster : casters) caster.material->flags = caster.flags;
         toggle(true);
         HWND slider = GetDlgItem(app->MainWindow(), panel::kSelfShadowRangeSlider);
@@ -1698,15 +2400,15 @@ int wmain(int argc, wchar_t** argv) {
             SendMessageW(slider, TBM_SETPOS, TRUE, value);
             SendMessageW(app->MainWindow(), WM_HSCROLL, TB_THUMBPOSITION, reinterpret_cast<LPARAM>(slider));
         };
-        capture(L".dynamic.png");
+        capture(L".dynamic.png", "dynamic");
         const bool sharedCoverage = app->ShadowDistance() == fixedRange &&
             std::memcmp(&fixedProjection, &app->LightViewProjection(), sizeof(fixedProjection)) == 0;
         precision(9500);
-        capture(L".wide.png");
+        capture(L".wide.png", "precision9500");
         const bool wideCoverage = std::abs(app->ShadowDistance() - .005f) < 1e-7f;
         precision(fixedPosition);
         toggle(false);
-        const auto restored = capture(L".restored.png");
+        const auto restored = capture(L".restored.png", "restored");
         std::size_t occludedPixels = 0, changedPixels = 0;
         if (fixed.empty() || fixed.size() != unoccluded.size() || fixed.size() != restored.size()) return 48;
         for (std::size_t i = 0; i < fixed.size(); ++i) {
@@ -1719,15 +2421,165 @@ int wmain(int argc, wchar_t** argv) {
             changedPixels += change > 2;
         }
         const bool sameMap = shadowMaps.size() == 5 && !shadowMaps[0].empty() && shadowMaps[0] == shadowMaps[4];
+        // Legacy diagnostic only: texture width follows the reference density
+        // of the slider setting, and raising the slider legitimately lowers that
+        // reference, so the map may shrink without losing sampling accuracy.
         const bool resolutionOrder = shadowWidths.size() == 5 && shadowWidths[3] >= shadowWidths[2];
-        std::printf("shadow_cycle occluded_pixels=%zu restored_changed_pixels=%zu range_preserved=%u map_identical=%u shared_coverage=%u wide_coverage=%u resolution_order=%u dynamic_width=%u wide_width=%u\n",
+        const auto withinReference = [](const ShadowDensitySample& sample) {
+            if (!(std::isfinite(sample.reference) && sample.reference > 0.f)) return false;
+            return double(sample.densityMax) <=
+                double(sample.reference) * (1.0 + 1e-4) + 1e-7;
+        };
+        bool densityValid = densitySamples.size() == 5;
+        for (const auto& sample : densitySamples)
+            if (!sample.valid || !withinReference(sample)) densityValid = false;
+        // Raising the slider must not raise density; lowering it must not lower
+        // density. Equality is allowed because a hardware cap can hold both
+        // settings at the same allocation.
+        const auto notHigher = [](const ShadowDensitySample& sample,
+                                  const ShadowDensitySample& reference) {
+            return double(sample.densityMin) <=
+                       double(reference.densityMin) * (1.0 + 1e-4) + 1e-7 &&
+                   double(sample.densityMax) <=
+                       double(reference.densityMax) * (1.0 + 1e-4) + 1e-7;
+        };
+        bool densityOrder = densitySamples.size() == 5 &&
+            densitySamples[2].valid && densitySamples[3].valid;
+        if (densityOrder) {
+            const auto& dynamicSample = densitySamples[2];
+            const auto& raisedSample = densitySamples[3];
+            if (raisedSample.slider > dynamicSample.slider)
+                densityOrder = notHigher(raisedSample, dynamicSample);
+            else if (raisedSample.slider < dynamicSample.slider)
+                densityOrder = notHigher(dynamicSample, raisedSample);
+            else
+                densityOrder = notHigher(raisedSample, dynamicSample) &&
+                    notHigher(dynamicSample, raisedSample);
+        }
+        const bool samplingRestored = densitySamples.size() == 5 &&
+            densitySamples[0].valid && densitySamples[4].valid &&
+            densitySamples[0].sampleWidth == densitySamples[4].sampleWidth &&
+            densitySamples[0].sampleHeight == densitySamples[4].sampleHeight &&
+            std::memcmp(densitySamples[0].projection, densitySamples[4].projection,
+                        sizeof densitySamples[0].projection) == 0;
+        std::printf("shadow_cycle occluded_pixels=%zu restored_changed_pixels=%zu range_preserved=%u map_identical=%u shared_coverage=%u wide_coverage=%u resolution_order=%u dynamic_width=%u wide_width=%u density_valid=%u density_order=%u sampling_restored=%u\n",
             occludedPixels, changedPixels, fixedRange == app->ShadowDistance(), sameMap, sharedCoverage, wideCoverage, resolutionOrder,
-            shadowWidths.size() == 5 ? shadowWidths[2] : 0, shadowWidths.size() == 5 ? shadowWidths[3] : 0);
+            shadowWidths.size() == 5 ? shadowWidths[2] : 0, shadowWidths.size() == 5 ? shadowWidths[3] : 0,
+            densityValid ? 1u : 0u, densityOrder ? 1u : 0u, samplingRestored ? 1u : 0u);
         // MSAA/transparent surface ties can vary at a few triangle-edge pixels.
         // Require the restored shadow depths to be bit-exact, and reject any
         // visible region changing after precision changes (more than 0.1% of the frame).
-        if (occludedPixels < 32 || changedPixels > fixed.size() / 1000 || !sameMap ||
-            !sharedCoverage || !wideCoverage || !resolutionOrder || fixedRange != app->ShadowDistance()) return 49;
+        // Save the complete original cycle judgment before the temporal probe.
+        const bool shadowCycleOk = occludedPixels >= 32 &&
+            changedPixels <= fixed.size() / 1000 && sameMap && sharedCoverage &&
+            wideCoverage && fixedRange == app->ShadowDistance() &&
+            densityValid && densityOrder && samplingRestored;
+        // Optional controlled probe: it never feeds the thresholds above and
+        // never changes the original cycle's pass/fail decision. It only renders
+        // and saves frames after the restored capture; with the variable unset no
+        // extra frame is rendered and no file is written.
+        bool temporalTraceFailed = false;
+        if (ShadowTemporalTraceEnabled()) {
+            constexpr int kTemporalTraceFrames = 32;
+            // The restored-cycle projection is the static target every probe
+            // frame is compared against; the model, camera, frame and shadow
+            // settings are left untouched.
+            const auto restoredProjection = app->LightViewProjection();
+            const auto saveTemporalFrame = [&](const wchar_t* phase,
+                                               int index) -> HRESULT {
+                IDirect3DSurface9* target = nullptr;
+                const HRESULT targetHr = device->GetRenderTarget(0, &target);
+                if (FAILED(targetHr) || target == nullptr) {
+                    if (target != nullptr) target->Release();
+                    return FAILED(targetHr) ? targetHr : E_FAIL;
+                }
+                IDirect3DSurface9* source = target;
+                IDirect3DSurface9* resolved = nullptr;
+                D3DSURFACE_DESC desc{};
+                if (SUCCEEDED(target->GetDesc(&desc)) &&
+                    desc.MultiSampleType != D3DMULTISAMPLE_NONE) {
+                    const HRESULT resolveHr =
+                        SUCCEEDED(device->CreateRenderTarget(
+                            desc.Width, desc.Height, desc.Format,
+                            D3DMULTISAMPLE_NONE, 0, FALSE, &resolved, nullptr)) &&
+                        resolved != nullptr
+                            ? device->StretchRect(target, nullptr, resolved,
+                                                  nullptr, D3DTEXF_NONE)
+                            : E_FAIL;
+                    if (SUCCEEDED(resolveHr) && resolved != nullptr) {
+                        source = resolved;
+                    } else {
+                        if (resolved != nullptr) {
+                            resolved->Release();
+                            resolved = nullptr;
+                        }
+                        source = nullptr;
+                    }
+                }
+                HRESULT saveHr = E_FAIL;
+                if (source != nullptr && d3dx::Get().Load() &&
+                    d3dx::Get().saveSurfaceToFileW != nullptr) {
+                    wchar_t suffix[96]{};
+                    swprintf_s(suffix, L".temporal-%ls-%02d.png", phase, index);
+                    const std::wstring path = std::wstring(options.output) + suffix;
+                    RECT area{0, 0, requestedWidth, requestedHeight};
+                    saveHr = d3dx::Get().saveSurfaceToFileW(
+                        path.c_str(), 3, source, nullptr, &area);
+                }
+                if (resolved != nullptr) resolved->Release();
+                target->Release();
+                return saveHr;
+            };
+            const auto runTemporalTrace = [&](const wchar_t* phase,
+                                              const char* logPhase) {
+                for (int index = 1; index <= kTemporalTraceFrames; ++index) {
+                    installViewport();
+                    app->state.messageSeen = 10;
+                    const unsigned before = antialias::AccumulatedSamples(app);
+                    const bool rendered = renderBenchmarkFrame(RenderFrameScene);
+                    const unsigned after = antialias::AccumulatedSamples(app);
+                    const unsigned required = antialias::RequiredSamples(app);
+                    const bool projectionEqual =
+                        std::memcmp(&restoredProjection, &app->LightViewProjection(),
+                                    sizeof restoredProjection) == 0;
+                    HRESULT saveHr = E_FAIL;
+                    if (rendered) saveHr = saveTemporalFrame(phase, index);
+                    std::printf("shadow_temporal_trace phase=%s index=%d frame=%d "
+                                "before_samples=%u after_samples=%u required_samples=%u "
+                                "projection_equal=%u save_hr=0x%08lX\n",
+                        logPhase, index, static_cast<int>(app->CurrentFrame()),
+                        before, after, required, projectionEqual ? 1u : 0u,
+                        static_cast<unsigned long>(saveHr));
+                    if (!rendered) {
+                        std::printf("shadow_temporal_trace failed: phase=%s index=%d "
+                                    "reason=render_frame\n", logPhase, index);
+                        return false;
+                    }
+                    if (FAILED(saveHr)) {
+                        std::printf("shadow_temporal_trace failed: phase=%s index=%d "
+                                    "reason=save_surface\n", logPhase, index);
+                        return false;
+                    }
+                }
+                return true;
+            };
+            temporalTraceFailed = !runTemporalTrace(L"retained", "retained");
+            if (!temporalTraceFailed) {
+                const unsigned resetBefore = antialias::AccumulatedSamples(app);
+                antialias::ResetHistory(app);
+                const unsigned resetAfter = antialias::AccumulatedSamples(app);
+                std::printf("shadow_temporal_trace reset_history=1 before_samples=%u "
+                            "after_samples=%u required_samples=%u\n",
+                    resetBefore, resetAfter, antialias::RequiredSamples(app));
+                temporalTraceFailed = !runTemporalTrace(L"clean", "clean");
+            }
+            if (temporalTraceFailed) {
+                std::printf("shadow_temporal_trace failed: the restored-frame "
+                            "temporal diagnosis is incomplete\n");
+            }
+        }
+        if (!shadowCycleOk) return 49;
+        if (temporalTraceFailed) return kExitShadowTemporalTrace;
     }
 
     // ---- optional outputs (historical contract) --------------------------
@@ -1747,7 +2599,7 @@ int wmain(int argc, wchar_t** argv) {
         installViewport();
         installSelfShadow();
         app->state.messageSeen=10;
-        RenderFrameScene(app);
+        if (!renderBenchmarkFrame(RenderFrameScene)) return kExitSurface;
         IDirect3DSurface9* surface=nullptr;
         if(FAILED(device->GetRenderTarget(0,&surface)))return kExitSurface;
         D3DSURFACE_DESC outlineTarget{};
@@ -1930,6 +2782,8 @@ int wmain(int argc, wchar_t** argv) {
         json.End();
         json.Object("self_shadow");
         json.Bool("adaptive_resolution", app->AdaptiveShadowResolution());
+        json.Bool("filter_enhanced", app->ShadowFilterEnhanced());
+        json.Bool("mme_loaded", GetModuleHandleW(L"MMEffect.dll") != nullptr);
         json.Integer("shadow_slider", ShadowSliderPosition(app));
         json.Array("light_projection");
         const auto* shadowMatrix = reinterpret_cast<const float*>(&app->LightViewProjection());
@@ -1952,6 +2806,34 @@ int wmain(int argc, wchar_t** argv) {
             json.Number("detail_coverage_width", 2.f / scale);
             json.Number("detail_texels_per_world_unit", detailShadow.size * scale * .5f);
         }
+        json.Array("fixed_model_shadows");
+        for (int slot = 0; slot < kModelSlotCount; ++slot) {
+            auto* model = native_mesh::RenderModel(app->ModelSlot(slot));
+            if (!model) continue;
+            const auto info = shadow_filter::ReadModelInfo(app, model);
+            json.Item();
+            json.Integer("slot", slot);
+            json.Bool("valid", info.valid);
+            json.Integer("resolution", info.size);
+            double scaleSquared = 0.0;
+            for (int row = 0; row < 3; ++row) {
+                const double scale = info.projection[row * 4];
+                scaleSquared += scale * scale;
+            }
+            json.Number("density", std::sqrt(scaleSquared) * info.size * 0.5);
+            json.Number("requested_density", info.densityFloor);
+            json.Array("projection");
+            const char* keys[] = {"x", "y", "z", "w"};
+            for (int row = 0; row < 4; ++row) {
+                json.Item();
+                for (int column = 0; column < 4; ++column)
+                    json.Number(keys[column], info.projection[row * 4 + column]);
+                json.End();
+            }
+            json.End();
+            json.End();
+        }
+        json.End();
         D3DSURFACE_DESC actualShadow{};
         if (app->Renderer()->shadowSurface && SUCCEEDED(app->Renderer()->shadowSurface->GetDesc(&actualShadow))) {
             json.Integer("surface_width", actualShadow.Width);

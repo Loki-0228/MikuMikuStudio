@@ -2,10 +2,12 @@
 
 #include "mikumikustudio/d3d_wrapper.hpp"
 #include <atomic>
+#include <cstdlib>
 #include <deque>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 namespace mikumikustudio {
 namespace texture_lookup_detail {
@@ -25,6 +27,15 @@ inline thread_local Index index;
 // Resource access itself remains on the renderer's owning thread.
 inline void InvalidateTextureLookup() {
     texture_lookup_detail::generation.fetch_add(1, std::memory_order_relaxed);
+}
+
+inline void ReleaseTexturePool(D3DRenderer& renderer) {
+    for (auto& slot : renderer.resourcePool) {
+        auto retired = std::exchange(slot, ResourcePoolEntry{});
+        std::free(retired.heapBuffer);
+        if (retired.comObject) retired.comObject->Release();
+    }
+    InvalidateTextureLookup();
 }
 
 inline ResourcePoolEntry* FindTextureResource(D3DRenderer* renderer, const wchar_t* name) {

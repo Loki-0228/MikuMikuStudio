@@ -34,6 +34,7 @@
 #include <cmath>
 #include <cerrno>
 #include <cctype>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <new>
@@ -133,6 +134,12 @@ void ReleaseCom(void* object) {
         return;
     reinterpret_cast<IUnknown*>(object)->Release();  // vtable slot 2
 }
+
+struct OwnedCom {
+    void* value = nullptr;
+    ~OwnedCom() { Reset(); }
+    void Reset() { ReleaseCom(std::exchange(value, nullptr)); }
+};
 
 // Porting-era trace under MIKUMIKUSTUDIO_PMM_TRACE_DIR (CMake option
 // MIKUMIKUSTUDIO_DIAG, default OFF); the OFF stub keeps the call sites
@@ -595,8 +602,8 @@ void WideToAnsi(const wchar_t* source, char* destination, int count) {
     text_encoding::EncodeDisplay(destination, count, source);
 }
 
-bool LoadOneTexture(D3DRenderer* sub, void* accessory, DWORD material,
-                    const char* name, int pathOffset) {
+bool LoadOneTexture(D3DRenderer* sub, void* accessory, const wchar_t* meshPath,
+                    DWORD material, const char* name, int pathOffset) {
     wchar_t converted[256] = {};
     wchar_t* directory = mdl::Accessory(accessory)->directory;
     auto* wrapperBytes = reinterpret_cast<unsigned char*>(sub);
@@ -609,8 +616,7 @@ bool LoadOneTexture(D3DRenderer* sub, void* accessory, DWORD material,
     if (LoadTextureShared(wrapperBytes, destination))
         return true;
     char fallback[256] = {};
-    const wchar_t* xFile = mdl::Accessory(accessory)->sourcePath;
-    if (!ExtractXTexture(xFile, static_cast<int>(material), fallback))
+    if (!ExtractXTexture(meshPath, static_cast<int>(material), fallback))
         return false;
     ConvertMaterialName(wrapperBytes, fallback, converted,
                         0x100, directory);
@@ -676,17 +682,23 @@ void DisposeAccessory(void* accessory) {
     record.texturePaths = nullptr;
 }
 
-bool LoadAccessoryObject(MMDApp* app, void* accessory, const wchar_t* path) {    auto* sub = app->Renderer();
+bool accessory_import::LoadObject(MMDApp* app, void* accessory, const wchar_t* path,
+                                  MissingFileNotice notice) {
+    auto* sub = app->Renderer();
     if (!original_import::Reference(path, app->Hwnd(), app->EnglishUI())) return false;
     TraceAccessoryLoadStage("entry", accessory);
     PathResolutionWorkspace& paths = app->PathWorkspace();
-    const wchar_t* resolved = ResolveUserFilePath(paths, path);
+    // The picker and PMM reader supply concrete paths. Looking up their
+    // UserFile suffix again can replace the chosen file with a namesake.
+    std::filesystem::path literal(path);
+    const wchar_t* resolved = literal.is_absolute()
+        ? literal.make_preferred().c_str() : ResolveUserFilePath(paths, path);
     if (!original_import::Reference(resolved, app->Hwnd(), app->EnglishUI())) return false;
     const wchar_t* importedName = wcsrchr(resolved, L'\\');
     if (!original_import::Reference(importedName ? importedName + 1 : resolved,
             app->Hwnd(), app->EnglishUI(), 99)) return false;
     if (resolved[0] == L'\0') {
-        ShowCannotFindXfile(app);  // x64 sub_7FF7CB4FC5CC path
+        if (notice == MissingFileNotice::Show) ShowCannotFindXfile(app);
         return false;
     }
 
@@ -694,7 +706,7 @@ bool LoadAccessoryObject(MMDApp* app, void* accessory, const wchar_t* path) {   
     wcscpy_s(source, resolved);
     wchar_t* tail = wcsrchr(source, L'\\');
     if (tail == nullptr) {
-        ShowCannotFindXfile(app);  // x64 sub_7FF7CB4FC768 path
+        if (notice == MissingFileNotice::Show) ShowCannotFindXfile(app);
         return false;
     }
     mdl::AccessoryRecord& record = *mdl::Accessory(accessory);
@@ -708,14 +720,15 @@ bool LoadAccessoryObject(MMDApp* app, void* accessory, const wchar_t* path) {   
     // open is the third "Cannot find xfile!!" path (x64 sub_7FF7CB4FC71F).
     FILE* probe = nullptr;
     if (_wfopen_s(&probe, resolved, L"r") != 0 || probe == nullptr) {
-        ShowCannotFindXfile(app);
+        if (notice == MissingFileNotice::Show) ShowCannotFindXfile(app);
         return false;
     }
     fclose(probe);
 
     wchar_t meshPath[256];
     wcscpy_s(meshPath, resolved);
-    if (wcsstr(meshPath, L".vac") != nullptr) {
+    const auto extension = std::filesystem::path(resolved).extension();
+    if (_wcsicmp(extension.c_str(), L".vac") == 0) {
         FILE* vac = nullptr;
         if (_wfopen_s(&vac, resolved, L"r") != 0 || vac == nullptr)
             return false;
@@ -731,21 +744,18 @@ bool LoadAccessoryObject(MMDApp* app, void* accessory, const wchar_t* path) {   
             return false;
         }
 #endif
-        if (!ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(sub),
-                                 line, meshPath, 0x100,
-                                 paths)) {
+        if (!ResolveVacMeshPath(line, record.directory, meshPath, std::size(meshPath), paths)) {
             fclose(vac);
             return false;
         }
         const wchar_t* meshName = wcsrchr(meshPath, L'\\');
-        if (!original_import::Reference(meshPath, app->Hwnd(), app->EnglishUI()) ||
-            !original_import::Reference(meshName ? meshName + 1 : meshPath,
-                app->Hwnd(), app->EnglishUI(), 99)) {
+        if (!meshName || !original_import::Reference(meshPath, app->Hwnd(), app->EnglishUI()) ||
+            !original_import::Reference(meshName + 1, app->Hwnd(), app->EnglishUI(), 99)) {
             fclose(vac);
             return false;
         }
-        WideToAnsi(meshName != nullptr ? meshName + 1 : meshPath,
-                   record.name, static_cast<unsigned>(sizeof record.name));
+        WideToAnsi(meshName + 1, record.name, static_cast<unsigned>(sizeof record.name));
+        wcsncpy_s(record.directory, std::size(record.directory), meshPath, meshName + 1 - meshPath);
         fscanf_s(vac, "%f", &record.scale);
         fscanf_s(vac, "%f,%f,%f", &record.position[0],
                  &record.position[1], &record.position[2]);
@@ -762,13 +772,13 @@ bool LoadAccessoryObject(MMDApp* app, void* accessory, const wchar_t* path) {   
     auto& api = d3dx::Get();
     if (!api.Load())
         return false;
-    void* materialBuffer = nullptr;
+    OwnedCom materialBuffer;
     DWORD materialCount = 0;
     // MME associates the truncated object ID with the native address of
     // this output slot. Keep it in the accessory record, not on the stack.
     void*& mesh = record.mesh;
     if (FAILED(api.loadMeshFromXW(meshPath, 544,
-            sub->device, nullptr, &materialBuffer,
+            sub->device, nullptr, &materialBuffer.value,
             nullptr, &materialCount, &mesh)))
         return false;
     TraceAccessoryLoadStage("mesh-loaded", mesh);
@@ -781,13 +791,13 @@ bool LoadAccessoryObject(MMDApp* app, void* accessory, const wchar_t* path) {   
     std::memset(record.texturePaths, 0, 2048 * materialCount);
     std::memset(record.textureTypes, 0, materialCount);
 
-    if (materialBuffer != nullptr) {
-        TraceAccessoryLoadStage("material-buffer", materialBuffer);
+    if (materialBuffer.value != nullptr) {
+        TraceAccessoryLoadStage("material-buffer", materialBuffer.value);
         using GetPointer = void*(__stdcall*)(void*);
         auto* sourceMaterials = static_cast<D3dxMaterialRecord*>(
             reinterpret_cast<GetPointer>(
-                (*reinterpret_cast<void***>(materialBuffer))[3])(
-                    materialBuffer));
+                (*reinterpret_cast<void***>(materialBuffer.value))[3])(
+                    materialBuffer.value));
         for (DWORD i = 0; i < materialCount; ++i) {
             auto* destination = static_cast<D3DMATERIAL9*>(
                 mdl::Accessory(accessory)->materials) + i;
@@ -799,7 +809,7 @@ bool LoadAccessoryObject(MMDApp* app, void* accessory, const wchar_t* path) {   
 #if MMD_ORIGINAL_PROFILE
             std::string encoded;
             if (!original_file_encoding::Name(texture, strlen(texture), nullptr, 2047, encoded)) {
-                ReleaseCom(materialBuffer);
+                materialBuffer.Reset();
                 original_import::Refuse(app->Hwnd(), app->EnglishUI());
                 return false;
             }
@@ -807,20 +817,20 @@ bool LoadAccessoryObject(MMDApp* app, void* accessory, const wchar_t* path) {   
             auto* types = mdl::Accessory(accessory)->textureTypes;
             if (char* star = strchr(texture, '*')) {
                 *star = '\0';
-                LoadOneTexture(sub, accessory, i, texture, 0);
+                LoadOneTexture(sub, accessory, meshPath, i, texture, 0);
                 const char* sphere = star + 1;
                 types[i] = strstr(sphere, ".sph") != nullptr ? 4
                     : strstr(sphere, ".spa") != nullptr ? 5 : 0;
-                LoadOneTexture(sub, accessory, i, sphere, 1024);
+                LoadOneTexture(sub, accessory, meshPath, i, sphere, 1024);
             } else {
                 types[i] = strstr(texture, "screen.bmp") != nullptr ? 3
                     : strstr(texture, ".sph") != nullptr ? 1
                     : strstr(texture, ".spa") != nullptr ? 2 : 0;
                 if (types[i] != 3)
-                    LoadOneTexture(sub, accessory, i, texture, 0);
+                    LoadOneTexture(sub, accessory, meshPath, i, texture, 0);
             }
         }
-        ReleaseCom(materialBuffer);
+        materialBuffer.Reset();
     }
 
     TraceAccessoryLoadStage("materials-complete", mesh);
@@ -841,6 +851,10 @@ bool LoadAccessoryObject(MMDApp* app, void* accessory, const wchar_t* path) {   
     }
     TraceAccessoryLoadStage("complete", meshSlot);
     return true;
+}
+
+bool LoadAccessoryObject(MMDApp* app, void* accessory, const wchar_t* path) {
+    return accessory_import::LoadObject(app, accessory, path, accessory_import::MissingFileNotice::Show);
 }
 
 // 0x4C5F40 tail: the loader normalises the accessory mesh to the FVF the
@@ -990,10 +1004,6 @@ void LoadAccessoryFile(const wchar_t* path) {                   // 0x460B30
 namespace accessory_import {
 namespace {
 thread_local const testing::MeshApi* privateMeshApi = nullptr;
-struct OwnedCom {
-    void* value = nullptr;
-    ~OwnedCom() { ReleaseCom(value); }
-};
 using File = std::unique_ptr<FILE, decltype(&fclose)>;
 
 bool AbsolutePath(const wchar_t* path) noexcept {
@@ -1492,8 +1502,7 @@ void RenderAccessoriesEffectRange(MMDApp* app, int firstOrder,
     if (device == nullptr || effect == nullptr || !d3dx::Get().Load())
         return;
 #if !MMD_ORIGINAL_PROFILE
-    // Accessory techniques apply their own local transform to the coverage
-    // matrix. Do not inherit a model material's detail receiver state.
+    // Reset between render paths; enable shared layers for each shadow receiver.
     shadow_filter::ConfigureDetailReceiver(app, effect, false);
 #endif
     const float* light = reinterpret_cast<const float*>(&app->SceneLight());
@@ -1514,6 +1523,9 @@ void RenderAccessoriesEffectRange(MMDApp* app, int firstOrder,
             continue;
         app->ActiveRenderObject() = accessory;
         if (mdl::Accessory(accessory)->shadowEnabled == 0) {
+#if !MMD_ORIGINAL_PROFILE
+            shadow_filter::ConfigureDetailReceiver(app, effect, false);
+#endif
             app->ActiveRenderPass() =
                 AccessoryRenderPass::FixedFunction;
             RenderAccessoryFixedOne(app, accessory, false);
@@ -1524,6 +1536,10 @@ void RenderAccessoriesEffectRange(MMDApp* app, int firstOrder,
             mdl::Accessory(accessory)->order,
             static_cast<void*>(sub->hdrTexture));
         app->ActiveRenderPass() = AccessoryRenderPass::Effect;
+#if !MMD_ORIGINAL_PROFILE
+        // local*world*coverage is already in the same coverage space as models.
+        shadow_filter::ConfigureDetailReceiver(app, effect, true);
+#endif
         device->SetTexture(0, shadow_filter::VisibleTexture(app));
         device->SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 1);
         Matrix world;

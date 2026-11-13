@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/native_media.hpp"
+#include "mikumikustudio/cache_files.hpp"
 #include "mikumikustudio/wave_audio_context.hpp"
 #include "mikumikustudio/mf_h264_recorder.hpp"
 #include "mikumikustudio/wic_mov_recorder.hpp"
@@ -43,6 +44,10 @@ bool OpenVideo(MMDApp*, const wchar_t*, int& width, int& height, double& duratio
     return false;
 }
 bool HasVideo(MMDApp*) { return false; }
+bool OpenVideoFromSource(MMDApp*, cache_files::RawSourceLease, int&, int&, double&, std::wstring& error, int) {
+    error = kUnavailable;
+    return false;
+}
 BITMAPINFOHEADER* VideoFrame(MMDApp*, double, std::wstring& error, bool) { error = kUnavailable; return nullptr; }
 unsigned long long VideoFrameRevision(MMDApp*) { return 0; }
 void ReleaseVideo(MMDApp*) {}
@@ -54,10 +59,18 @@ std::vector<std::wstring> EnumerateH264Encoders() { return {}; }
 void ResetH264HardwareEncoderState() {}
 bool ShowH264EncoderSettingsDialog(void*, bool, std::uint32_t&, int, int, float, unsigned char, void*) { return false; }
 bool StartBuiltInH264Recording(DShowRecorder*, const wchar_t*, std::int32_t, std::int32_t,
-    float, const WaveAudioContext*, bool, std::uint32_t, void*, unsigned char) { return false; }
+    float, const WaveAudioContext*, bool, std::uint32_t, void*, unsigned char,
+    const recording_output_path::Selection*, bool* destinationChanged) {
+    if (destinationChanged) *destinationChanged = false;
+    return false;
+}
 bool IsBuiltInH264Recording(const DShowRecorder*) { return false; }
 bool WriteBuiltInH264Frame(DShowRecorder*, const void*, std::size_t) { return false; }
-bool FinishBuiltInH264Recording(DShowRecorder*, std::uint64_t) { return false; }
+bool FinishBuiltInH264Recording(DShowRecorder*, std::uint64_t, std::int32_t* failure, std::wstring* retainedPrevious) {
+    if (retainedPrevious) retainedPrevious->clear();
+    if (failure) *failure = 0;
+    return false;
+}
 bool StartPngMovRecording(DShowRecorder*, const wchar_t*, int, int, float, std::wstring& error) {
     error = kUnavailable;
     return false;

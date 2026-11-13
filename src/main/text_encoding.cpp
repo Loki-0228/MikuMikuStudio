@@ -150,6 +150,31 @@ void EncodePmxMirror(char* destination, std::size_t capacity, const wchar_t* tex
 }
 
 namespace {
+bool PmxSjis(const wchar_t* text, std::string& bytes) {
+    const int count=WideCharToMultiByte(932,0,text,-1,nullptr,0,nullptr,nullptr);
+    if(!count)return false;
+    bytes.resize(count); BOOL replaced=FALSE;
+    if(!WideCharToMultiByte(932,0,text,-1,bytes.data(),count,nullptr,&replaced)||replaced)return false;
+    bytes.resize(count-1);return true;
+}
+}
+void EncodePmxName(char* dst, std::size_t capacity, const wchar_t* text) {
+    if(!dst||!capacity)return;
+    dst[0]=0;if(!text||!*text)return;
+    std::string bytes;
+    if(!PmxSjis(text,bytes) && !EncodeExact(text,CP_ACP,bytes) && !EncodeExact(text,CP_UTF8,bytes))return;
+    strncpy_s(dst,capacity,bytes.c_str(),_TRUNCATE);
+}
+bool MatchesOldPmxName(const char* saved, const wchar_t* text, std::size_t capacity) {
+    if(!saved||!text||!*text||!capacity)return false;
+    std::vector<char> old(capacity,0);
+    EncodePmxMirror(old.data(),capacity,text);
+    const auto length=strnlen_s(saved,capacity);
+    return length<capacity && length==strnlen_s(old.data(),capacity) &&
+        std::memcmp(saved,old.data(),length)==0;
+}
+
+namespace {
 bool Store(char* dst, std::size_t capacity, const std::string& value) {
     if (!dst || !capacity) return false;
     std::memset(dst, 0, capacity);
@@ -164,12 +189,50 @@ bool StoreUtf8(char* dst, std::size_t capacity, const wchar_t* text) {
 }
 }
 
-bool EncodePath(char* dst, std::size_t capacity, const wchar_t* path) {
+std::array<unsigned int, 6> PathDecodingOrder() {
+    return {GetACP(), 932u, 936u, 950u, 949u, CP_UTF8};
+}
+
+namespace {
+bool EncodePathImpl(char* dst, std::size_t capacity, const wchar_t* path, bool checkProjectCollision) {
+    if (!path) path = L"";
+    const auto resolvesToSource = [&](const std::string& encoded) {
+        if (HasUtf8Bom(encoded.c_str())) return false;
+        std::wstring decoded;
+        for (const auto codePage : PathDecodingOrder()) {
+            if (!Decode(encoded.c_str(), codePage, decoded)) continue;
+            if (decoded == path) return true;
+            const DWORD attributes = GetFileAttributesW(decoded.c_str());
+            if (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY))
+                return false;
+        }
+        return false;
+    };
     std::string encoded;
-    for (UINT cp : {932u, GetACP(), 936u, 950u, 949u})
-        if (EncodeExact(path, cp, encoded) && encoded.size() < capacity)
-            return Store(dst, capacity, encoded);
-    return StoreUtf8(dst, capacity, path);
+    bool triedUtf8 = false;
+    for (UINT cp : {932u, GetACP(), 936u, 950u, 949u}) {
+        if (!EncodeExact(path, cp, encoded) || encoded.size() >= capacity) continue;
+        if (!checkProjectCollision || resolvesToSource(encoded)) return Store(dst, capacity, encoded);
+        // A marker keeps the known collision unambiguous on other locales too.
+        // A path near the fixed field limit can still try another safe spelling.
+        if (!triedUtf8 && StoreUtf8(dst, capacity, path)) return true;
+        triedUtf8 = true;
+    }
+    return !triedUtf8 && StoreUtf8(dst, capacity, path);
+}
+}
+
+bool EncodePath(char* dst, std::size_t capacity, const wchar_t* path) {
+    return EncodePathImpl(dst, capacity, path, false);
+}
+
+bool EncodeProjectPath(char* dst, std::size_t capacity, const wchar_t* path) {
+    return EncodePathImpl(dst, capacity, path, true);
+}
+
+bool IsLegacyPathEncoding(const char* encoded, const wchar_t* path) {
+    std::wstring decoded;
+    return !HasUtf8Bom(encoded) && Decode(encoded, 932, decoded) && decoded == (path ? path : L"");
 }
 
 bool EncodeDisplay(char* dst, std::size_t capacity, const wchar_t* text) {
@@ -193,7 +256,7 @@ std::wstring LegacyFilename(const char* text, const wchar_t* resolvedPath) {
     std::wstring decoded;
     // Existence-resolved Unicode path disambiguates untagged Chinese/Japanese
     // filenames. Preserve custom labels rather than replacing them with a path.
-    for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u})
+    for (const auto cp : PathDecodingOrder())
         if (Decode(text, cp, decoded) && _wcsicmp(decoded.c_str(), tail) == 0)
             return decoded;
     return Display(text);

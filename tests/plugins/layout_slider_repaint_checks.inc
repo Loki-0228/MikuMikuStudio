@@ -292,7 +292,7 @@ struct Session {
     ~Session(){Cancel();RestoreCues();}
     void CheckRestored() const {
         trace::Require(app.bottomPanelSizing.relayout==saved.relayout &&
-            !std::memcmp(app.bottomPanelSizing.extra,saved.extra,sizeof(saved.extra)) &&
+            app.bottomPanelSizing.extra==saved.extra &&
             app.bottomPanelSizing.dragging==saved.dragging && app.bottomPanelSizing.startX==saved.startX &&
             app.bottomPanelSizing.startExtra==saved.startExtra && app.WindowLayoutReady()==ready &&
             GetFocus()==focus && !GetCapture(),"restore exact original bottom sizing, layout readiness, focus and capture");

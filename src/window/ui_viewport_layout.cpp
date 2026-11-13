@@ -142,7 +142,7 @@ void LayoutViewportPanels(MMDApp* app) {  // was Sub40CAC0, VA 0x0040CAC0
         if (!control) return;
         HFONT font = id == 570 ? ScaleLabelBoldFont(app) : UiFontForControl(app, control, id);
         if (!font) return;
-        if (scale < 1.0f) {
+        if (scale != 1.0f) {
             LOGFONTW definition{};
             if (GetObjectW(font, sizeof(definition), &definition)) {
                 const int height = (definition.lfHeight < 0 ? -1 : 1) *

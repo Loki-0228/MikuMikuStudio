@@ -5,11 +5,14 @@
 #include "mikumikustudio/original_file_encoding.hpp"
 #include "mikumikustudio/owned_text.hpp"
 #include "mikumikustudio/runtime_log.hpp"
+#include "cache_files_crypto.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
+#include <numeric>
+#include <set>
 #include <stdexcept>
 
 namespace mikumikustudio::extended_names {
@@ -18,6 +21,12 @@ struct Writer {
     std::vector<std::uint8_t> data;
     void u32(std::uint32_t v) { for(int i=0;i<4;++i)data.push_back(std::uint8_t(v>>(i*8))); }
     void u64(std::uint64_t v) { u32(std::uint32_t(v));u32(std::uint32_t(v>>32)); }
+    void f32(float value) {
+        if (value == 0) value = 0;
+        std::uint32_t bits;
+        std::memcpy(&bits, &value, sizeof(bits));
+        u32(bits);
+    }
     void text(const std::wstring& value) {
         std::string bytes;
         if (!text_encoding::EncodeExact(value.c_str(), CP_UTF8, bytes) || bytes.size() > UINT32_MAX)
@@ -260,14 +269,233 @@ void LoadPmm(MMDApp& app,const pmm_extension::Document& doc,
         for(const auto& flag:slot.flags)flag.first->flags=flag.second;
     }
 }
+namespace {
+using RigDigest = std::array<std::uint8_t, 32>;
+bool HashWeightBindings(cache_files::crypto::Sha256& hash, const mdl::ModelRecord& model) {
+    if (model.vertexCount == 0) return true;
+    // Coincident bones can share names and definitions but deform different
+    // vertices. Hash the stable bindings, excluding live morphed positions.
+    if (model.physicsMode == 2) {
+        if (!model.pmxVertices) return false;
+        for (unsigned i = 0; i < model.vertexCount; ++i) {
+            const auto& vertex = model.pmxVertices[i];
+            unsigned bones = 1, weights = 0;
+            switch (vertex.weightType) {
+            case mdl::PmxWeightType::bdef2:
+            case mdl::PmxWeightType::sdef: bones = 2; weights = 1; break;
+            case mdl::PmxWeightType::bdef4: bones = weights = 4; break;
+            default: break;
+            }
+            if (!hash.Update(&vertex.weightType, sizeof(vertex.weightType)) ||
+                !hash.Update(vertex.bone, bones * sizeof(vertex.bone[0])) ||
+                !hash.Update(vertex.weight, weights * sizeof(vertex.weight[0]))) return false;
+            if (vertex.weightType == mdl::PmxWeightType::sdef &&
+                !hash.Update(&vertex.sdef, sizeof(vertex.sdef))) return false;
+        }
+    } else {
+        if (!model.rawVertices) return false;
+        for (unsigned i = 0; i < model.vertexCount; ++i) {
+            const auto& vertex = model.rawVertices[i];
+            if (!hash.Update(vertex.bone, sizeof(vertex.bone)) ||
+                !hash.Update(&vertex.weightPercent, sizeof(vertex.weightPercent))) return false;
+        }
+    }
+    return true;
+}
+
+RigDigest FingerprintBoneRig(const mdl::ModelRecord& model, const std::vector<std::wstring>& names) {
+    Writer rig;
+    rig.u32(model.physicsMode);
+    rig.u32(model.vertexCount);
+    rig.u32(model.indexCount);
+    rig.names(names);
+    for (unsigned i = 0; i < model.boneCount; ++i) {
+        const auto& bone = model.boneTable[i];
+        rig.text(text_encoding::BoneName(bone, true));
+        rig.u32(bone.parent);
+        rig.u32(static_cast<std::uint32_t>(bone.type));
+        rig.u32(bone.flags);
+        rig.u32(bone.layer);
+        rig.u32(bone.tailBone);
+        rig.u32(bone.tailIdx);
+        for (float value : bone.position) rig.f32(value);
+        for (float value : bone.tailOffset) rig.f32(value);
+        rig.f32(bone.inheritRatio);
+        for (float value : bone.axis) rig.f32(value);
+        for (float value : bone.localAxes) rig.f32(value);
+        rig.u32(bone.extParent);
+        if (model.physicsMode != 2 || !(bone.flags & 0x20)) continue;
+        if (bone.ikLinkCount < 0 || (bone.ikLinkCount && !bone.ikLinks))
+            throw std::runtime_error("Invalid PMX IK definition in motion rig");
+        rig.u32(bone.ikTarget);
+        rig.u32(bone.ikLoop);
+        rig.f32(bone.ikAngle);
+        rig.u32(bone.ikLinkCount);
+        for (int j = 0; j < bone.ikLinkCount; ++j) {
+            const auto& link = bone.ikLinks[j];
+            rig.u32(link.boneIndex);
+            rig.u32(link.hasLimits != 0);
+            if (!link.hasLimits) continue;
+            for (float value : link.minimum) rig.f32(value);
+            for (float value : link.maximum) rig.f32(value);
+        }
+    }
+    rig.u32(model.ikChainCount);
+    if (model.ikChainCount && !model.ikChains)
+        throw std::runtime_error("Missing IK chains in motion rig");
+    for (unsigned i = 0; i < model.ikChainCount; ++i) {
+        const auto& chain = model.ikChains[i];
+        if (chain.linkCount && !chain.links)
+            throw std::runtime_error("Missing IK links in motion rig");
+        rig.u32(chain.boneIndex);
+        rig.u32(chain.targetBone);
+        rig.u32(chain.iterations);
+        rig.f32(chain.maxAngle);
+        rig.u32(chain.linkCount);
+        for (unsigned j = 0; j < chain.linkCount; ++j) rig.u32(chain.links[j]);
+    }
+    cache_files::crypto::Sha256 hash;
+    RigDigest digest{};
+    if (!hash.Start() || !hash.Update(rig.data.data(), rig.data.size()) ||
+        !HashWeightBindings(hash, model) || !hash.Finish(digest))
+        throw std::runtime_error("Cannot fingerprint the motion rig");
+    return digest;
+}
+
+template<class Entry>
+bool HashMorphEntries(cache_files::crypto::Sha256& hash, std::int32_t count, const Entry* entries) {
+    if (count < 0 || std::size_t(count) > SIZE_MAX / sizeof(Entry) || (count && !entries)) return false;
+    return hash.Update(&count, sizeof(count)) &&
+        (count == 0 || hash.Update(entries, std::size_t(count) * sizeof(Entry)));
+}
+
+bool HashMorphDefinition(cache_files::crypto::Sha256& hash, bool pmx, const mdl::MorphRecord& morph) {
+    if (!pmx) return HashMorphEntries(hash, morph.offsetCount, morph.vertexEntries);
+    switch (morph.type) {
+        case 0: return HashMorphEntries(hash, morph.groupCount, morph.groupEntries);
+        case 1: return HashMorphEntries(hash, morph.offsetCount, morph.vertexEntries);
+        case 2: return HashMorphEntries(hash, morph.boneCount, morph.boneEntries);
+        case 3: case 4: case 5: case 6: case 7: {
+            const auto family = morph.type - 3;
+            return HashMorphEntries(hash, morph.uvCounts[family], morph.uvEntries[family]);
+        }
+        // Material entries use the fixed, zero-initialized loader layout.
+        case 8: return HashMorphEntries(hash, morph.materialCount, morph.materialEntries);
+        default: return morph.offsetCount == 0;
+    }
+}
+
+RigDigest FingerprintMorphTable(const mdl::ModelRecord& model, const std::vector<std::wstring>& names) {
+    const bool pmx = model.physicsMode == 2;
+    Writer metadata;
+    metadata.u32(pmx);
+    metadata.u32(model.vertexCount);
+    metadata.u32(model.boneCount);
+    metadata.u32(model.materialCount);
+    metadata.names(names);
+    for (unsigned i = 0; i < model.morphCount; ++i) {
+        const auto& morph = model.morphs[i];
+        metadata.text(text_encoding::MorphName(morph, true));
+        metadata.u32(static_cast<std::uint8_t>(morph.panel));
+        metadata.u32(morph.type);
+    }
+    cache_files::crypto::Sha256 hash;
+    if (!hash.Start() || !hash.Update(metadata.data.data(), metadata.data.size()))
+        throw std::runtime_error("Cannot fingerprint the motion morph table");
+    for (unsigned i = 0; i < model.morphCount; ++i) {
+        if (!HashMorphDefinition(hash, pmx, model.morphs[i]))
+            throw std::runtime_error("Invalid motion morph definition");
+    }
+    RigDigest digest{};
+    if (!hash.Finish(digest)) throw std::runtime_error("Cannot fingerprint the motion morph table");
+    return digest;
+}
+
+bool HasDuplicateNames(const std::vector<std::wstring>& names) {
+    return std::set<std::wstring>(names.begin(), names.end()).size() != names.size();
+}
+
+std::vector<int> MatchNames(const std::vector<std::wstring>& source, const std::vector<std::wstring>& target) {
+    std::map<std::wstring, int> indices;
+    for (std::size_t i = 0; i < target.size(); ++i) {
+        auto [it, inserted] = indices.emplace(target[i], static_cast<int>(i));
+        if (!inserted) it->second = -1;
+    }
+    std::map<std::wstring, std::size_t> occurrences;
+    for (const auto& name : source) ++occurrences[name];
+    std::vector<int> out;
+    out.reserve(source.size());
+    for (const auto& name : source) {
+        const auto it = indices.find(name);
+        out.push_back(it == indices.end() || occurrences.at(name) != 1 ? -1 : it->second);
+    }
+    return out;
+}
+}
+
+bool PrepareMotionNames(const mdl::ModelRecord& model, bool hasMorphKeys, MotionNames& out) {
+    MotionNames names;
+    names.bones.reserve(model.boneCount);
+    for (unsigned i = 0; i < model.boneCount; ++i)
+        names.bones.push_back(text_encoding::BoneName(model.boneTable[i], false));
+    names.morphs.reserve(model.morphCount);
+    for (unsigned i = 0; i < model.morphCount; ++i)
+        names.morphs.push_back(text_encoding::MorphName(model.morphs[i], false));
+    const bool duplicateBones = HasDuplicateNames(names.bones);
+    const bool duplicateMorphs = hasMorphKeys && HasDuplicateNames(names.morphs);
+    if (!duplicateBones && !duplicateMorphs && LegacyNamesFit(model, true)) return false;
+    names.model = text_encoding::ModelName(model, false);
+    if (duplicateBones) names.boneRig = FingerprintBoneRig(model, names.bones);
+    if (duplicateMorphs) names.morphTable = FingerprintMorphTable(model, names.morphs);
+    out = std::move(names);
+    return true;
+}
+
+MotionTargets ResolveMotionTargets(const MotionNames& source, const mdl::ModelRecord& model) {
+    MotionTargets targets;
+    std::vector<std::wstring> names;
+    names.reserve(model.boneCount);
+    for (unsigned i = 0; i < model.boneCount; ++i)
+        names.push_back(text_encoding::BoneName(model.boneTable[i], false));
+    if (source.boneRig && source.bones == names && *source.boneRig == FingerprintBoneRig(model, names)) {
+        targets.bones.resize(names.size());
+        std::iota(targets.bones.begin(), targets.bones.end(), 0);
+    } else {
+        targets.bones = MatchNames(source.bones, names);
+    }
+    names.clear();
+    names.reserve(model.morphCount);
+    for (unsigned i = 0; i < model.morphCount; ++i)
+        names.push_back(text_encoding::MorphName(model.morphs[i], false));
+    if (source.morphTable && source.morphs == names && *source.morphTable == FingerprintMorphTable(model, names)) {
+        targets.morphs.resize(names.size());
+        std::iota(targets.morphs.begin(), targets.morphs.end(), 0);
+    } else {
+        targets.morphs = MatchNames(source.morphs, names);
+    }
+    return targets;
+}
+
 std::vector<std::uint8_t> EncodeMotion(const MotionNames& names,std::uint64_t prefixSize,std::uint32_t prefixCrc) {
     Writer w;w.text(names.model);w.names(names.bones);w.names(names.morphs);w.indices(names.boneOwners);w.indices(names.morphOwners);w.indices(names.ikOwners);
-    Writer out;const char magic[]="MMSNAME1";out.data.insert(out.data.end(),magic,magic+8);
+    const char* magic = "MMSNAME1";
+    if (names.morphTable) {
+        magic = "MMSNAME3";
+        w.u32(names.boneRig.has_value());
+    } else if (names.boneRig) {
+        magic = "MMSNAME2";
+    }
+    if (names.boneRig) w.data.insert(w.data.end(), names.boneRig->begin(), names.boneRig->end());
+    if (names.morphTable) w.data.insert(w.data.end(), names.morphTable->begin(), names.morphTable->end());
+    Writer out;out.data.insert(out.data.end(),magic,magic+8);
     out.u64(w.data.size());out.u64(prefixSize);out.u32(prefixCrc);out.u32(Crc(w.data.data(),w.data.size()));
     out.data.insert(out.data.end(),w.data.begin(),w.data.end());return out.data;
 }
 std::size_t DecodeMotion(const std::uint8_t* file,std::size_t size,std::size_t offset,MotionNames& out) {
-    if(offset>size||size-offset<8||std::memcmp(file+offset,"MMSNAME1",8))return 0;
+    if(offset>size||size-offset<8)return 0;
+    const bool withMorphTable = std::memcmp(file + offset, "MMSNAME3", 8) == 0;
+    bool withRig = std::memcmp(file + offset, "MMSNAME2", 8) == 0;
+    if(!withMorphTable&&!withRig&&std::memcmp(file+offset,"MMSNAME1",8))return 0;
     Reader h{file+offset,size-offset};h.at=8;const auto n=h.u64(),prefix=h.u64();const auto crc=h.u32(),payload=h.u32();
     if(prefix!=offset||n>h.size-h.at||Crc(file,offset)!=crc||Crc(h.data+h.at,static_cast<std::size_t>(n))!=payload)throw std::runtime_error("Unicode motion checksum mismatch");
     Reader r{h.data+h.at,static_cast<std::size_t>(n)};MotionNames result;
@@ -275,10 +503,18 @@ std::size_t DecodeMotion(const std::uint8_t* file,std::size_t size,std::size_t o
     for(auto i:result.boneOwners)if(i>=result.bones.size())throw std::runtime_error("Invalid Unicode bone identity");
     for(auto i:result.morphOwners)if(i>=result.morphs.size())throw std::runtime_error("Invalid Unicode morph identity");
     for(auto i:result.ikOwners)if(i!=UINT32_MAX&&i>=result.bones.size())throw std::runtime_error("Invalid Unicode IK identity");
+    if (withMorphTable) {
+        const auto hasBoneRig = r.u32();
+        if (hasBoneRig > 1) throw std::runtime_error("Invalid motion bone fingerprint flag");
+        withRig = hasBoneRig != 0;
+    }
+    const auto readDigest = [&r](RigDigest& digest) {
+        r.need(digest.size());
+        std::memcpy(digest.data(), r.data + r.at, digest.size());
+        r.at += digest.size();
+    };
+    if (withRig) readDigest(result.boneRig.emplace());
+    if (withMorphTable) readDigest(result.morphTable.emplace());
     if(r.at!=r.size)throw std::runtime_error("Unexpected Unicode motion bytes");out=std::move(result);return h.at+static_cast<std::size_t>(n);
-}
-std::vector<int> MatchNames(const std::vector<std::wstring>& source,const std::vector<std::wstring>& target) {
-    std::map<std::wstring,int> indices;for(std::size_t i=0;i<target.size();++i){auto [it,inserted]=indices.emplace(target[i],static_cast<int>(i));if(!inserted)it->second=-1;}
-    std::vector<int> out;out.reserve(source.size());for(const auto& name:source){const auto it=indices.find(name);out.push_back(it==indices.end()?-1:it->second);}return out;
 }
 }

@@ -36,6 +36,37 @@ struct VmdDecodeFile {
 void NativeVmdDecodeChecks(){
     using plugins::DecodeGlobalVmdSource;using plugins::GlobalVmdSource;
     std::puts("  VMD decode: immutable Unicode source and two record versions");std::fflush(stdout);
+    {
+        constexpr unsigned keyCount = 16384;
+        VmdDecodeMotion motion;
+        constexpr std::size_t cameraCountOffset = 54 + 111 + 4 + 23;
+        constexpr std::size_t cameraStride = 61;
+        const auto cameraStart = cameraCountOffset + 4;
+        const VmdDecodeBytes camera(motion.bytes.begin() + cameraStart,
+                                    motion.bytes.begin() + cameraStart + cameraStride);
+        VmdDecodeBytes bytes(motion.bytes.begin(), motion.bytes.begin() + cameraCountOffset);
+        VmdDecodePut(bytes, keyCount);
+        for (unsigned i = 0; i < keyCount; ++i) {
+            const auto at = bytes.size();
+            bytes.insert(bytes.end(), camera.begin(), camera.end());
+            VmdDecodeSet(bytes, at, keyCount - i);
+        }
+        bytes.insert(bytes.end(), motion.bytes.begin() + cameraStart + cameraStride, motion.bytes.end());
+
+        VmdDecodeFile file;
+        file.Write(bytes);
+        GlobalVmdSource out;
+        Check(DecodeGlobalVmdSource(nullptr, file.path.c_str(), 0, out) == MMS_OK &&
+              out.source.cameras.size() == keyCount, "large camera section decodes into owned records");
+        for (unsigned i = 0; i < keyCount; ++i)
+            Check(out.source.cameras[i].frame == keyCount - i && out.source.cameras[i].fov == 60,
+                  "parallel camera decode preserves source order and payload");
+        bytes[motion.cameraCurve] = 255; // First partition, normally on a worker.
+        file.Write(bytes);
+        out.version = 99;
+        Check(DecodeGlobalVmdSource(nullptr, file.path.c_str(), 0, out) == MMS_E_ARGUMENT &&
+              out.version == 99, "worker validation failures preserve caller output");
+    }
     for(int version:{1,2}){
         VmdDecodeMotion motion(version);VmdDecodeFile file;file.Write(motion.bytes);GlobalVmdSource out;
         Check(DecodeGlobalVmdSource(nullptr,file.path.c_str(),100,out)==MMS_OK&&out.version==version&&out.source.frameOffset==100,"decode VMD snapshot with preserved frame offset");

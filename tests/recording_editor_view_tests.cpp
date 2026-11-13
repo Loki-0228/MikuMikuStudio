@@ -1,17 +1,19 @@
-// MAINTENANCE: regression-keep. Independent view oracle; hidden owned lifecycle only.
+// MAINTENANCE: regression-keep. Independent view oracle; native exclusive is explicit opt-in.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <d3d9.h>
+#include <vfw.h>
 #include <MinHook.h>
 #include <array>
+#include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <cwchar>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <new>
 #include <string>
@@ -27,13 +29,25 @@
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
 #include "mikumikustudio/recording_state.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
 #include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/dshow_recorder.hpp"
+#include "mikumikustudio/default_effect.hpp"
+#include "mikumikustudio/frame_sampling.hpp"
+#include "mikumikustudio/recording_output_path.hpp"
+#include "mikumikustudio/ui_translation.hpp"
+#include "export_save_workflow_checks.hpp"
 #include "../src/app/device_lost_wait.hpp"
 
 namespace mikumikustudio {
 void RefreshAfterFrameApply(MMDApp*);
+int FillCodecCombo(DShowRecorder*, HWND, char);
+void RebindCodecOnComboChange(DShowRecorder*, int, HWND, char);
 bool BuildRecordingGraph(DShowRecorder*,HWND,unsigned char,void*,void*,float,std::uint32_t,
-    std::uint32_t,const wchar_t*,float,const WaveAudioContext*,unsigned char);
+    std::uint32_t,std::uint64_t,std::uint64_t,const WaveAudioContext*,unsigned char,
+    const recording_output_path::Selection*);
+HRESULT ChooseStillImagePath(MMDApp*, HWND, wchar_t*, std::size_t,
+    std::optional<image_sequence::StillFileIdentity>&);
 }
 
 using namespace mikumikustudio;
@@ -43,6 +57,16 @@ namespace {
 unsigned checks=0;
 DWORD hostThread=0;
 fs::path output,installation;
+HWND exclusiveWindow=nullptr;
+HWND lockedOutputOwner=nullptr;
+fs::path lockedOutputPath;
+unsigned lockedOutputWarnings=0;
+HWND pendingEffectOwner=nullptr;
+unsigned pendingEffectWarnings=0;
+bool expectingMissingCompressor=false;
+unsigned missingCompressorWarnings=0;
+HWND captureTargetErrorOwner=nullptr;
+unsigned captureTargetErrors=0;
 void Check(bool value,const char* label) {
     ++checks;
     if(!value) { std::fprintf(stderr,"FAIL recording-view checks=%u: %s\n",checks,label); std::exit(1); }
@@ -50,6 +74,9 @@ void Check(bool value,const char* label) {
 bool Owned(HWND window) {
     DWORD process=0; const auto thread=GetWindowThreadProcessId(window,&process);
     return window&&process==GetCurrentProcessId()&&thread==hostThread;
+}
+bool ExclusiveWindowOrChild(HWND window) {
+    return exclusiveWindow&&(window==exclusiveWindow||IsChild(exclusiveWindow,window));
 }
 void HiddenWindows() {
     Check(!GetFocus()&&!GetActiveWindow()&&!GetCapture(),"no test focus, activation or capture");
@@ -169,6 +196,16 @@ decltype(&SetActiveWindow) realActive=nullptr;
 decltype(&SetForegroundWindow) realForeground=nullptr;
 decltype(&MessageBoxW) realMessageW=nullptr;
 decltype(&MessageBoxA) realMessageA=nullptr;
+struct AviSaveRetryProbe {
+    MMDApp* app = nullptr;
+    fs::path video;
+    DLGPROC settingsProc = nullptr;
+    WNDPROC windowProc = nullptr;
+    bool allowSettingsWindow = false;
+    unsigned pickerCalls = 0, settingsWindows = 0, readbacks = 0, closePosts = 0, closeDeliveries = 0;
+};
+AviSaveRetryProbe aviSaveRetry;
+export_save_workflow::SaveRetry aviProjectSave;
 MMDApp* earlyWindowApp=nullptr;
 unsigned rejectedRecordWindows=0,expectedWindowErrors=0,earlyStopCalls=0,earlyApplyCalls=0;
 decltype(&CreateWindowExA) realCreateA=nullptr;
@@ -196,20 +233,48 @@ BOOL WINAPI HiddenShow(HWND w,int command){
             "finish side effects occur only after the graph-build guard exits");
         ++deferredFinishShows;
     }
-    return realShow(w,GetCurrentThreadId()==hostThread&&Owned(w)?SW_HIDE:command);
+    return realShow(w,GetCurrentThreadId()==hostThread&&Owned(w)&&!ExclusiveWindowOrChild(w)?SW_HIDE:command);
 }
 BOOL WINAPI HiddenPosition(HWND w,HWND after,int x,int y,int width,int height,UINT flags){
-    if(GetCurrentThreadId()==hostThread&&Owned(w))flags=(flags&~SWP_SHOWWINDOW)|SWP_NOACTIVATE;
+    if(GetCurrentThreadId()==hostThread&&Owned(w)&&!ExclusiveWindowOrChild(w))
+        flags=(flags&~SWP_SHOWWINDOW)|SWP_NOACTIVATE;
     return realPosition(w,after,x,y,width,height,flags);
 }
 BOOL WINAPI HiddenPlacement(HWND w,const WINDOWPLACEMENT* p){
-    if(GetCurrentThreadId()==hostThread&&Owned(w)&&p){auto v=*p;v.showCmd=SW_HIDE;return realPlacement(w,&v);}
+    if(GetCurrentThreadId()==hostThread&&Owned(w)&&p&&!ExclusiveWindowOrChild(w)){auto v=*p;v.showCmd=SW_HIDE;return realPlacement(w,&v);}
     return realPlacement(w,p);
 }
-HWND WINAPI NoFocus(HWND w){return GetCurrentThreadId()==hostThread&&(!w||Owned(w))?GetFocus():realFocus(w);}
-HWND WINAPI NoActive(HWND w){return GetCurrentThreadId()==hostThread&&(!w||Owned(w))?GetActiveWindow():realActive(w);}
-BOOL WINAPI NoForeground(HWND w){return GetCurrentThreadId()==hostThread&&Owned(w)?FALSE:realForeground(w);}
+HWND WINAPI NoFocus(HWND w){return GetCurrentThreadId()==hostThread&&(!w||Owned(w))&&!ExclusiveWindowOrChild(w)?GetFocus():realFocus(w);}
+HWND WINAPI NoActive(HWND w){return GetCurrentThreadId()==hostThread&&(!w||Owned(w))&&!ExclusiveWindowOrChild(w)?GetActiveWindow():realActive(w);}
+BOOL WINAPI NoForeground(HWND w){return GetCurrentThreadId()==hostThread&&Owned(w)&&!ExclusiveWindowOrChild(w)?FALSE:realForeground(w);}
 int WINAPI RejectMessageW(HWND w,LPCWSTR text,LPCWSTR caption,UINT flags){
+    if(aviProjectSave.AcceptFailure(w,text,caption,flags))return IDOK;
+    if (captureTargetErrorOwner && w == captureTargetErrorOwner &&
+        GetCurrentThreadId() == hostThread && flags == (MB_OK | MB_ICONERROR) &&
+        text && caption && !wcscmp(caption, L"MMS") &&
+        !wcscmp(text, L"Could not prepare the export render target. Export was canceled.")) {
+        ++captureTargetErrors;
+        return IDOK;
+    }
+    if(GetCurrentThreadId()==hostThread&&expectingMissingCompressor&&Owned(w)&&
+        text&&caption&&flags==(MB_OK|MB_ICONERROR)&&!wcscmp(caption,L"DirectShow")&&
+        !wcscmp(text,L"The selected AVI compressor is unavailable. Select another codec and retry.")){
+        ++missingCompressorWarnings;
+        return IDOK;
+    }
+    if(GetCurrentThreadId()==hostThread&&pendingEffectOwner&&w==pendingEffectOwner&&
+        text&&caption&&flags==(MB_OK|MB_ICONINFORMATION)&&!wcscmp(caption,L"MMS")&&
+        !wcscmp(text,L"The self-shadow shader is compiling. Please try exporting again shortly.")){
+        ++pendingEffectWarnings;
+        return IDOK;
+    }
+    if(GetCurrentThreadId()==hostThread&&lockedOutputOwner&&w==lockedOutputOwner&&
+        text&&caption&&flags==(MB_OK|MB_ICONERROR)&&
+        !wcscmp(caption,recording_output_path::FailureCaption(1))&&
+        wcsstr(text,lockedOutputPath.c_str())&&wcsstr(text,L"Win32 32:")){
+        ++lockedOutputWarnings;
+        return IDOK;
+    }
     if(GetCurrentThreadId()==hostThread&&(!w||Owned(w))){
         std::fwprintf(stderr,L"Unexpected owned dialog: %ls / %ls\n",caption?caption:L"",text?text:L"");
         Check(false,"unexpected dialog is refused, never automatically answered");
@@ -230,9 +295,15 @@ LRESULT CALLBACK HiddenCreate(int code,WPARAM wp,LPARAM lp){
     if(code==HCBT_CREATEWND){
         auto* c=reinterpret_cast<CBT_CREATEWND*>(lp);c->lpcs->style&=~WS_VISIBLE;c->lpcs->dwExStyle|=WS_EX_NOACTIVATE;
         wchar_t cls[64]{};GetClassNameW(reinterpret_cast<HWND>(wp),cls,64);
-        Check(wcscmp(cls,L"#32770")!=0,"no unexpected modal dialog may be created");
+        if(wcscmp(cls,L"#32770")==0){
+            Check(aviSaveRetry.allowSettingsWindow&&aviSaveRetry.app&&
+                  c->lpcs->hwndParent==aviSaveRetry.app->MainWindow()&&aviSaveRetry.settingsWindows==0,
+                  "no unexpected modal dialog may be created");
+            ++aviSaveRetry.settingsWindows;
+        }
     }
-    if(code==HCBT_ACTIVATE||code==HCBT_SETFOCUS)return 1;
+    if((code==HCBT_ACTIVATE||code==HCBT_SETFOCUS)&&
+        !ExclusiveWindowOrChild(reinterpret_cast<HWND>(wp)))return 1;
     return CallNextHookEx(nullptr,code,wp,lp);
 }
 struct Hooks {
@@ -283,9 +354,19 @@ fs::path ModelFixture(){
     u16(0);u16(0);u8(0);u8(0);u32(0);u8(0);text("",1000);u32(0);u32(0);
     const auto path=output/L"fixture.pmd";OwnBytes(path,b);return path;
 }
+void WaitForEffect(MMDApp* app){
+    if(DefaultEffectReadyForCapture(app))return;
+    std::puts("WAIT for background shader compilation");
+    const auto deadline=GetTickCount64()+900000;
+    while(!DefaultEffectReadyForCapture(app)){
+        Check(GetTickCount64()<deadline,"source compiler finishes within the test watchdog");
+        Sleep(100);
+    }
+    std::puts("READY background shader compilation");
+}
 struct Host {
     std::unique_ptr<MMDApp> app=PlainApp();MMDApp* previous=g_Block;bool initialized=false;
-    Host(){
+    explicit Host(bool prepareEffect=true){
         g_Block=app.get();processor::Configuration config;config.vertices.mode=processor::Mode::Cpu;config.mmv.mode=processor::Mode::Cpu;
         std::wstring error;Check(processor::SaveRequested(config,error)&&processor::Initialize(error),"explicit CPU preference before production startup");
         app->EnglishUI()=1;
@@ -302,10 +383,479 @@ struct Host {
         app->antialiasing.enabled=false;
         const auto model=ModelFixture();LoadModelFile(app.get(),model.c_str(),false);
         Check(app->SelectedModel()!=nullptr,"load self-generated original PMD model");HiddenWindows();
+        if(prepareEffect)WaitForEffect(app.get());
     }
     ~Host(){if(initialized){device_lost_wait::Forget(app.get());ShutdownCleanup(app.get());}g_Block=previous;}
 };
-void Frame(MMDApp* app){app->DeltaTime()=1.f/30;app->state.messageSeen=1;FrameDriver(app);HiddenWindows();}
+void Frame(MMDApp* app){
+    app->DeltaTime()=1.f/30;app->state.messageSeen=1;FrameDriver(app);
+    if(!exclusiveWindow)HiddenWindows();
+}
+
+using EffectCompiler=HRESULT(WINAPI*)(LPCVOID,UINT,const void*,const void*,DWORD,void**,void**);
+EffectCompiler realCompiler=nullptr;
+HANDLE compilerEntered=nullptr,allowCompilation=nullptr;
+HRESULT WINAPI HoldCompiler(LPCVOID source,UINT size,const void* defines,const void* include,
+    DWORD flags,void** compiler,void** errors){
+    if(GetCurrentThreadId()==hostThread)return E_UNEXPECTED;
+    SetEvent(compilerEntered);
+    if(WaitForSingleObject(allowCompilation,15000)!=WAIT_OBJECT_0)return E_ABORT;
+    return realCompiler(source,size,defines,include,flags,compiler,errors);
+}
+decltype(&RecordingReadbackPass) realAviReadback=nullptr;
+unsigned shadedReadbacks=0;
+bool ObserveShadedReadback(MMDApp* app){
+    Check(app->Renderer()->effect&&app->SelfShadowMode()>0,
+        "the exported frame uses the attached effect with self-shadow enabled");
+    ++shadedReadbacks;
+    return realAviReadback(app);
+}
+
+constexpr int kStereoEyeWidth=160, kStereoEyeHeight=120;
+using StereoReset=HRESULT(WINAPI*)(IDirect3DDevice9*,D3DPRESENT_PARAMETERS*);
+using StereoStretch=HRESULT(WINAPI*)(IDirect3DDevice9*,IDirect3DSurface9*,const RECT*,
+    IDirect3DSurface9*,const RECT*,D3DTEXTUREFILTERTYPE);
+StereoReset realStereoReset=nullptr;
+StereoStretch realStereoStretch=nullptr;
+unsigned exclusiveRequests=0,stereoStages=0;
+enum class StereoScenario { Off, Pack, RightCopyFailure, DpiRequest, NativeExclusive };
+StereoScenario stereoScenario=StereoScenario::Off;
+unsigned failedRightCopies=0;
+bool exclusiveUsesDisplayPixels=false;
+
+D3DPRESENT_PARAMETERS ActualPresentation(IDirect3DDevice9* device) {
+    IDirect3DSwapChain9* chain=nullptr;
+    Check(SUCCEEDED(device->GetSwapChain(0,&chain))&&chain,"read the real implicit swap chain");
+    D3DPRESENT_PARAMETERS actual{};
+    const auto hr=chain->GetPresentParameters(&actual);
+    chain->Release();
+    Check(SUCCEEDED(hr),"read the real swap-chain presentation");
+    return actual;
+}
+
+HRESULT WINAPI ObserveStereoReset(IDirect3DDevice9* device,D3DPRESENT_PARAMETERS* parameters){
+    if(parameters->Windowed)return realStereoReset(device,parameters);
+    ++exclusiveRequests;
+    if(stereoScenario==StereoScenario::DpiRequest){
+        D3DDISPLAYMODE display{};
+        Check(SUCCEEDED(device->GetDisplayMode(0,&display)),"query the device's physical display mode");
+        RECT client{};
+        Check(GetClientRect(g_Block->MainWindow(),&client)!=FALSE,"read the virtualized fullscreen client");
+        exclusiveUsesDisplayPixels=parameters->BackBufferWidth==display.Width&&parameters->BackBufferHeight==display.Height;
+        std::printf("EXCLUSIVE request=%ux%u display=%ux%u client=%ldx%ld\n",
+            parameters->BackBufferWidth,parameters->BackBufferHeight,display.Width,display.Height,client.right,client.bottom);
+        Check(UINT(client.right)!=display.Width||UINT(client.bottom)!=display.Height,
+            "the DPI fixture has different logical and physical dimensions");
+    }
+    if(stereoScenario==StereoScenario::NativeExclusive){
+        D3DDISPLAYMODE display{};
+        Check(SUCCEEDED(device->GetDisplayMode(0,&display)),"read native display mode before exclusive entry");
+        std::printf("EXCLUSIVE native request=%ux%u format=%u samples=%u display=%ux%u refresh=%u\n",
+            parameters->BackBufferWidth,parameters->BackBufferHeight,unsigned(parameters->BackBufferFormat),
+            unsigned(parameters->MultiSampleType),display.Width,display.Height,display.RefreshRate);
+        Check(GetForegroundWindow()==exclusiveWindow,"own the foreground at native exclusive reset");
+        Check(parameters->BackBufferWidth==display.Width&&parameters->BackBufferHeight==display.Height,
+            "exclusive fixture requests the current physical resolution");
+        const auto hr=realStereoReset(device,parameters);
+        std::printf("EXCLUSIVE native Reset=0x%08lx\n",static_cast<unsigned long>(hr));
+        return hr;
+    }
+    auto windowed=*parameters;
+    windowed.Windowed=TRUE;
+    windowed.FullScreen_RefreshRateInHz=0;
+    return realStereoReset(device,&windowed);
+}
+HRESULT WINAPI SupplyStereoEyes(IDirect3DDevice9* device,IDirect3DSurface9* src,const RECT* srcRect,
+    IDirect3DSurface9* dst,const RECT* dstRect,D3DTEXTUREFILTERTYPE filter){
+    D3DSURFACE_DESC from{},to{};
+    const bool described=src&&dst&&SUCCEEDED(src->GetDesc(&from))&&SUCCEEDED(dst->GetDesc(&to));
+    if(stereoScenario==StereoScenario::RightCopyFailure&&described&&to.Width==2*kStereoEyeWidth&&
+        to.Height==kStereoEyeHeight&&dstRect&&dstRect->left==kStereoEyeWidth){
+        ++failedRightCopies;
+        return E_FAIL;
+    }
+    const auto result=realStereoStretch(device,src,srcRect,dst,dstRect,filter);
+    if(SUCCEEDED(result)&&described&&
+        to.Width==2*from.Width&&to.Height==from.Height&&from.Width>=kStereoEyeWidth&&from.Height>=kStereoEyeHeight){
+        const RECT left{0,0,LONG(from.Width),LONG(from.Height)};
+        const RECT right{left.right,0,LONG(to.Width),left.bottom};
+        Check(SUCCEEDED(device->ColorFill(dst,&left,0xffff0000))&&
+            SUCCEEDED(device->ColorFill(dst,&right,0xff0000ff)),"supply distinct synthetic eyes in the real staging surface");
+        ++stereoStages;
+    }
+    return result;
+}
+
+void CheckFinishedAvi(const fs::path& path,bool stereo,unsigned expectedFrames) {
+    std::ifstream file(path,std::ios::binary);
+    Check(static_cast<bool>(file),"open the AVI output");
+    const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(file),{}};
+    if(expectedFrames==0&&bytes.empty())return; // The mux may leave a zero-byte output.
+    const auto tag=[&](size_t offset,const char* value){
+        return offset<=bytes.size()&&bytes.size()-offset>=4&&!std::memcmp(bytes.data()+offset,value,4);
+    };
+    const auto number=[&](size_t offset){
+        Check(offset<=bytes.size()&&bytes.size()-offset>=4,"AVI field fits inside the completed file");
+        const auto* value=bytes.data()+offset;
+        return std::uint32_t(value[0])|(std::uint32_t(value[1])<<8)|
+            (std::uint32_t(value[2])<<16)|(std::uint32_t(value[3])<<24);
+    };
+    Check(tag(0,"RIFF")&&tag(8,"AVI "),"retry replaces the sentinel with a real AVI file");
+    const size_t end=8ull+number(4);
+    Check(end>=12&&end<=bytes.size(),"AVI RIFF size was finalized");
+    unsigned frames=0,videoChunks=0;
+    for(size_t chunk=12;end-chunk>=8;){
+        const size_t payload=chunk+8,size=number(chunk+4);
+        Check(size+(size&1)<=end-payload,"AVI chunk fits inside RIFF");
+        if(tag(chunk,"LIST")&&size>=4&&tag(payload,"hdrl")){
+            Check(size>=36&&tag(payload+4,"avih")&&number(payload+8)>=24,"AVI has a main video header");
+            frames=number(payload+28);
+            if(stereo)Check(size>=52&&number(payload+44)==2*kStereoEyeWidth&&number(payload+48)==kStereoEyeHeight,
+                "AVI main header contains the two-eye dimensions");
+        }
+        if(tag(chunk,"LIST")&&size>=4&&tag(payload,"movi")){
+            const size_t listEnd=payload+size;
+            for(size_t video=payload+4;listEnd-video>=8;){
+                const size_t length=number(video+4);
+                Check(length+(length&1)<=listEnd-video-8,"video payload fits inside movi");
+                if(length&&bytes[video+2]=='d'&&(bytes[video+3]=='b'||bytes[video+3]=='c')){
+                    ++videoChunks;
+                    if(stereo){
+                        Check(length==2*kStereoEyeWidth*kStereoEyeHeight*4,"AVI holds a complete RGB32 stereo sample");
+                        const size_t row=video+8+2*kStereoEyeWidth*4*(kStereoEyeHeight/2);
+                        const auto rgb=[&](int x){return number(row+4*x)&0xffffff;};
+                        std::printf("STEREO frame=%u eyes=%06x/%06x\n",videoChunks,rgb(kStereoEyeWidth-1),rgb(kStereoEyeWidth));
+                        Check(rgb(0)==0xff0000&&rgb(kStereoEyeWidth-1)==0xff0000&&
+                            rgb(kStereoEyeWidth)==0x0000ff&&rgb(2*kStereoEyeWidth-1)==0x0000ff,
+                            "encoded sample contains both eyes with the seam at one eye width");
+                    }
+                }
+                video+=8+length+(length&1);
+            }
+        }
+        chunk=payload+size+(size&1);
+    }
+    std::printf("AVI bytes=%zu declared_frames=%u video_chunks=%u\n",bytes.size(),frames,videoChunks);
+    Check(frames==expectedFrames&&videoChunks==frames,"AVI contains exactly the expected complete frames");
+}
+
+constexpr std::array<D3DCOLOR,3> kCompressedFrameColors{0xffee2244,0xff22dd44,0xff2233ee};
+StereoStretch realCodecStretch=nullptr;
+unsigned codecCaptures=0;
+HRESULT WINAPI SupplyCodecFrame(IDirect3DDevice9* device,IDirect3DSurface9* src,const RECT* srcRect,
+    IDirect3DSurface9* dst,const RECT* dstRect,D3DTEXTUREFILTERTYPE filter){
+    const auto result=realCodecStretch(device,src,srcRect,dst,dstRect,filter);
+    if(SUCCEEDED(result)&&g_Block&&dst&&dst==g_Block->CaptureRenderTarget()&&g_Block->RecordingWindow()){
+        Check(codecCaptures<kCompressedFrameColors.size(),"one capture for each requested sample");
+        Check(SUCCEEDED(device->ColorFill(dst,nullptr,kCompressedFrameColors[codecCaptures])),
+            "write a distinct test color to the real recording capture surface");
+        const RECT bottom{0,kStereoEyeHeight/2,kStereoEyeWidth,kStereoEyeHeight};
+        Check(SUCCEEDED(device->ColorFill(dst,&bottom,0xff335577)),"mark the bottom half of the captured image");
+        ++codecCaptures;
+    }
+    return result;
+}
+
+LRESULT FindUtVideoRgb(HWND combo) {
+    const auto count=SendMessageW(combo,CB_GETCOUNT,0,0);
+    for(LRESULT row=0;row<count;++row){
+        const auto length=SendMessageW(combo,CB_GETLBTEXTLEN,row,0);
+        if(length<=0)continue;
+        std::wstring label(static_cast<size_t>(length)+1,L'\0');
+        SendMessageW(combo,CB_GETLBTEXT,row,reinterpret_cast<LPARAM>(label.data()));
+        const auto selection=SendMessageW(combo,CB_GETITEMDATA,row,0);
+        if(selection>=0&&wcsstr(label.c_str(),L"UtVideo RGB")&&!wcsstr(label.c_str(),L"RGBA")){
+            std::printf("CODEC %ls index=%lld\n",label.c_str(),static_cast<long long>(selection));
+            return row;
+        }
+    }
+    Check(false,"production codec enumeration includes installed UtVideo RGB");
+    return CB_ERR;
+}
+
+void SelectUtVideoRgb(MMDApp* app) {
+    const auto instance=GetModuleHandleW(nullptr);
+    const auto combo=CreateWindowExW(0,L"COMBOBOX",L"",WS_CHILD|CBS_DROPDOWNLIST,0,0,200,100,
+        app->MainWindow(),nullptr,instance,nullptr);
+    const auto button=CreateWindowExW(0,L"BUTTON",L"",WS_CHILD,0,0,80,25,app->MainWindow(),nullptr,instance,nullptr);
+    Check(combo&&button,"create owned codec selector controls");
+    FillCodecCombo(app->Recorder(),combo,1);
+    const auto codec=static_cast<int>(SendMessageW(combo,CB_GETITEMDATA,FindUtVideoRgb(combo),0));
+    RebindCodecOnComboChange(app->Recorder(),codec,button,1);
+    Check(app->Recorder()->compressor&&app->Recorder()->selectedCodec==codec,
+        "production codec selection binds the real compressor");
+    DestroyWindow(button);
+    DestroyWindow(combo);
+}
+
+void CheckCompressedAvi(const fs::path& path) {
+    AVIFileInit();
+    PAVIFILE file=nullptr;
+    Check(AVIFileOpenW(&file,path.c_str(),OF_READ|OF_SHARE_DENY_WRITE,nullptr)==AVIERR_OK,"reopen the encoded AVI");
+    PAVISTREAM stream=nullptr;
+    Check(AVIFileGetStream(file,&stream,streamtypeVIDEO,0)==AVIERR_OK,"find the real AVI video stream");
+    AVISTREAMINFOW info{};
+    Check(AVIStreamInfoW(stream,&info,sizeof info)==AVIERR_OK,"read compressed stream metadata");
+    std::printf("AVI compressor=%c%c%c%c frames=%lu rate=%lu/%lu\n",
+        char(info.fccHandler),char(info.fccHandler>>8),char(info.fccHandler>>16),char(info.fccHandler>>24),
+        info.dwLength,info.dwRate,info.dwScale);
+    // DirectShow carries the frame period in 100 ns ticks, so 30 FPS is
+    // 10^7/30 = 333333.33 ticks: the graph stores 10000000/333333 rather than
+    // the exact 30/1. Both mean 333333 whole ticks, so compare the period in
+    // ticks within one rounding tick; 29 or 31 FPS are thousands of ticks away.
+    const long long nominalTick=10000000LL/30;
+    const long long frameTick=(info.dwScale!=0&&info.dwRate!=0)
+        ?static_cast<long long>(info.dwScale)*10000000LL/static_cast<long long>(info.dwRate)
+        :-1LL;
+    Check(info.fccHandler==mmioFOURCC('U','L','R','G')&&info.dwLength==3&&
+        info.dwScale!=0&&info.dwRate!=0&&
+        frameTick>=nominalTick-1&&frameTick<=nominalTick+1,
+        "AVI records UtVideo RGB, three frames and 30 FPS");
+    const auto first=AVIStreamStart(stream);
+    PGETFRAME decoder=AVIStreamGetFrameOpen(stream,nullptr);
+    Check(decoder!=nullptr&&first>=0,"open a real VfW decoder for the encoded video");
+    for(size_t i=0;i<kCompressedFrameColors.size();++i){
+        const auto* dib=static_cast<const BITMAPINFOHEADER*>(AVIStreamGetFrame(decoder,first+static_cast<LONG>(i)));
+        Check(dib&&dib->biSize>=sizeof(*dib)&&dib->biWidth==kStereoEyeWidth&&
+            (dib->biHeight==kStereoEyeHeight||dib->biHeight==-kStereoEyeHeight)&&
+            (dib->biBitCount==24||dib->biBitCount==32)&&dib->biCompression==BI_RGB,
+            "decode each compressed frame to the requested RGB dimensions");
+        const auto* bits=reinterpret_cast<const unsigned char*>(dib)+dib->biSize;
+        const unsigned stride=((kStereoEyeWidth*dib->biBitCount+31)/32)*4;
+        const auto pixel=[&](int y){
+            const unsigned row=dib->biHeight>0?kStereoEyeHeight-1-y:y;
+            const auto* p=bits+row*stride+(kStereoEyeWidth/2)*(dib->biBitCount/8);
+            return unsigned(p[0])|(unsigned(p[1])<<8)|(unsigned(p[2])<<16);
+        };
+        std::printf("DECODE frame=%zu top=%06x bottom=%06x\n",i,pixel(20),pixel(100));
+        Check(pixel(20)==(kCompressedFrameColors[i]&0xffffff)&&pixel(100)==0x335577,
+            "decoded frames preserve the distinct colors, order and orientation");
+    }
+    AVIStreamGetFrameClose(decoder);
+    AVIStreamRelease(stream);
+    AVIFileRelease(file);
+    AVIFileExit();
+}
+
+void OutputRecording(bool lockFirst,bool waitForPendingEffect,StereoScenario scenario,bool compressed=false){
+    stereoScenario=scenario;
+    const bool stereo=scenario!=StereoScenario::Off;
+    const bool failRightEye=scenario==StereoScenario::RightCopyFailure;
+    const bool nativeExclusive=scenario==StereoScenario::NativeExclusive;
+    Hooks hooks;
+    Host host(!waitForPendingEffect);
+    auto* app=host.app.get();
+    const auto main=app->MainWindow();
+    if(nativeExclusive){
+        exclusiveWindow=main;
+        SetWindowLongPtrW(main,GWL_EXSTYLE,GetWindowLongPtrW(main,GWL_EXSTYLE)&~WS_EX_NOACTIVATE);
+        ShowWindow(main,SW_SHOWNORMAL);
+        SetForegroundWindow(main);
+        Check(IsWindowVisible(main)&&GetForegroundWindow()==main,
+            "native exclusive test could not activate its isolated window");
+    }
+    app->EnglishUI()=1; // Startup has already loaded the installation language.
+    app->CurrentFrame()=waitForPendingEffect?5:0;
+    if(waitForPendingEffect){
+        Check(app->state.selfShadowEnabled&&app->ShadowKeys(),"self-shadow enabled with an editable track");
+        app->SelfShadowMode()=0;
+        app->ShadowKeys()[0].mode=1;
+    }
+    app->CameraMode()=0;
+    app->state.followCameraEnabled=0;
+    Write(*app,Seed(0,0,true));
+    RefreshMainWindowViewport(app);
+    const auto view=Read(*app);
+    const int width=app->RenderWidth(),height=app->RenderHeight();
+    const auto revision=app->SceneRevision(),generation=app->SceneGeneration();
+    const auto dirty=app->SceneModified();
+    auto* recorder=app->Recorder();
+    Check(recorder&&!recorder->graph,"recording graph is initially idle");
+    recorder->selectedCodec=-1;
+    app->AviOutputWidth()=kStereoEyeWidth;app->AviOutputHeight()=kStereoEyeHeight;
+    app->AviRecordStartFrame()=0;app->AviRecordEndFrame()=2;app->AviRecordFps()=30;
+    app->AviIncludeWave()=0;app->AviCloseAfterExport()=0;app->AviStereoOutput()=0;
+    lockedOutputPath=output/L"locked-retry.avi";
+    Check(wcscpy_s(app->AviOutputPath(),256,lockedOutputPath.c_str())==0,"test path fits recording settings");
+    const std::vector<unsigned char> sentinel{'e','x','i','s','t','i','n','g'};
+    OwnBytes(lockedOutputPath,sentinel);
+    const auto idle=[&]{
+        return !app->FullscreenMode()&&!app->RecordingWindow()&&!app->AviRenderResolutionOverridden()&&
+            !app->RecordingStartGeneration()&&!app->FrameStepPlayback()&&!app->state.recordPlaybackStartPending&&
+            !app->CaptureRenderTarget()&&!app->CaptureSystemSurface()&&!app->CaptureReadbackPixels()&&
+            !recorder->graph&&app->RenderWidth()==width&&app->RenderHeight()==height&&
+            app->SceneRevision()==revision&&app->SceneGeneration()==generation&&app->SceneModified()==dirty&&
+            Same(Read(*app),view);
+    };
+    if(waitForPendingEffect){
+        const auto d3dx=GetModuleHandleW(L"d3dx9_43.dll");
+        const auto compiler=d3dx?GetProcAddress(d3dx,"D3DXCreateEffectCompiler"):nullptr;
+        Check(compiler&&!app->Renderer()->effect,"start with a deferred source effect");
+        compilerEntered=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+        allowCompilation=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+        Check(compilerEntered&&allowCompilation,"create process-local compiler gate");
+        hooks.Add(reinterpret_cast<EffectCompiler>(compiler),&HoldCompiler,realCompiler);
+        pendingEffectOwner=app->MainWindow();
+        StartAviRecordWindow(app);
+        Check(pendingEffectWarnings==1&&idle()&&app->CurrentFrame()==5&&app->SelfShadowMode()==0,
+            "a shadowed export range is deferred even when the editor frame has mode zero");
+        Check(WaitForSingleObject(compilerEntered,3000)==WAIT_OBJECT_0,"export scheduled the background compiler");
+        const auto newPath=output/L"not-created.avi";
+        Check(wcscpy_s(app->AviOutputPath(),256,newPath.c_str())==0,"set a fresh output path");
+        app->AviStereoOutput()=1;
+        StartAviRecordFullscreen(app);
+        Check(pendingEffectWarnings==2&&idle()&&!fs::exists(newPath),
+            "fullscreen also defers before creating a new output or changing display state");
+        app->AviStereoOutput()=0;
+        Check(wcscpy_s(app->AviOutputPath(),256,lockedOutputPath.c_str())==0,"retry the original path");
+        {
+            std::ifstream previous(lockedOutputPath,std::ios::binary);
+            const std::vector<unsigned char> existing{std::istreambuf_iterator<char>(previous),{}};
+            Check(existing==sentinel,"shader preparation leaves the previous output byte-identical");
+        }
+        HiddenWindows();
+        Check(SetEvent(allowCompilation),"release the real compiler");
+        pendingEffectOwner=nullptr;
+        WaitForEffect(app);
+        Check(CloseHandle(allowCompilation)&&CloseHandle(compilerEntered),"close finished compiler gate handles");
+        hooks.Add(&RecordingReadbackPass,&ObserveShadedReadback,realAviReadback);
+    }
+    if(lockFirst||scenario==StereoScenario::DpiRequest){
+        const HANDLE lock=CreateFileW(lockedOutputPath.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+        Check(lock!=INVALID_HANDLE_VALUE,"hold a real exclusive handle to the existing output");
+        lockedOutputOwner=app->MainWindow();
+        std::puts("START locked windowed request");
+        StartAviRecordWindow(app);
+        Check(lockedOutputWarnings==1&&idle(),"windowed path rejects sharing denial and leaves the editor ready");
+        app->AviStereoOutput()=1;
+        if(scenario==StereoScenario::DpiRequest){
+            D3DDISPLAYMODE display{};
+            Check(SUCCEEDED(app->Renderer()->device->GetDisplayMode(0,&display)),
+                "query the physical display for the output-size challenge");
+            const int logicalWidth=GetSystemMetrics(SM_CXSCREEN);
+            Check(logicalWidth>0&&static_cast<UINT>(logicalWidth)<display.Width,
+                "the physical display admits an output wider than the virtual screen");
+            app->AviOutputWidth()=logicalWidth+1;
+            std::printf("EXCLUSIVE output_size_check=%d logical_width=%d physical_width=%u\n",
+                app->AviOutputWidth(),logicalWidth,display.Width);
+        }
+        std::puts("START locked fullscreen request");
+        StartAviRecordFullscreen(app);
+        Check(lockedOutputWarnings==2&&idle(),"fullscreen path rejects sharing denial before entering fullscreen");
+        app->AviOutputWidth()=kStereoEyeWidth;
+        lockedOutputOwner=nullptr;
+        std::vector<unsigned char> existing(sentinel.size()+1);
+        DWORD read=0;
+        Check(ReadFile(lock,existing.data(),static_cast<DWORD>(existing.size()),&read,nullptr)&&
+            read==sentinel.size()&&!std::memcmp(existing.data(),sentinel.data(),sentinel.size()),
+            "both refusals preserve every byte of the existing file");
+        Check(CloseHandle(lock)!=FALSE,"release the exclusive handle before retry");
+        app->AviStereoOutput()=0;
+    }
+    const auto mainStyle=GetWindowLongPtrW(main,GWL_STYLE);
+    const auto mainMenu=GetMenu(main);
+    RECT editorRect{};
+    D3DPRESENT_PARAMETERS editorPresentation{};
+    if(nativeExclusive){
+        Check(GetWindowRect(main,&editorRect)!=FALSE,"capture the editor window placement");
+        editorPresentation=ActualPresentation(app->Renderer()->device);
+        Check(editorPresentation.Windowed,"the editor starts with a native windowed swap chain");
+    }
+    if(compressed){
+        recorder->selectedCodec=(std::numeric_limits<int>::max)();
+        expectingMissingCompressor=true;
+        std::puts("START with an unavailable compressor");
+        StartAviRecordWindow(app);
+        expectingMissingCompressor=false;
+        Check(missingCompressorWarnings==1&&idle(),"an unavailable compressor does not start raw AVI");
+        {
+            std::ifstream previous(lockedOutputPath,std::ios::binary);
+            const std::vector<unsigned char> existing{std::istreambuf_iterator<char>(previous),{}};
+            Check(existing==sentinel,"unavailable compressor preserves the previous destination");
+        }
+        SelectUtVideoRgb(app);
+        auto** table=*reinterpret_cast<void***>(app->Renderer()->device);
+        hooks.Add(reinterpret_cast<StereoStretch>(table[34]),&SupplyCodecFrame,realCodecStretch);
+    }
+    if(stereo){
+        auto** table=*reinterpret_cast<void***>(app->Renderer()->device);
+        hooks.Add(reinterpret_cast<StereoReset>(table[16]),&ObserveStereoReset,realStereoReset);
+        hooks.Add(reinterpret_cast<StereoStretch>(table[34]),&SupplyStereoEyes,realStereoStretch);
+        app->AviStereoOutput()=1;
+        app->AviStereoWidthMultiplier()=2;
+        std::puts(nativeExclusive?"START stereo recording with native exclusive presentation":
+            "START stereo recording with a hidden windowed device");
+        StartAviRecordFullscreen(app);
+        Check(exclusiveRequests==1&&app->FullscreenMode()&&app->RecordingWindow()==main,
+            "production recording enters its fullscreen path and requests one exclusive reset");
+        if(scenario==StereoScenario::DpiRequest)
+            Check(exclusiveUsesDisplayPixels,"exclusive reset requests the physical adapter display dimensions");
+        if(nativeExclusive){
+            const auto actual=ActualPresentation(app->Renderer()->device);
+            Check(!actual.Windowed,"native swap chain entered exclusive presentation");
+            std::printf("EXCLUSIVE actual=%ux%u Windowed=%d\n",
+                actual.BackBufferWidth,actual.BackBufferHeight,actual.Windowed);
+        }
+    }else{
+        std::puts(lockFirst?"START windowed retry after releasing the file":"START unlocked windowed control");
+        StartAviRecordWindow(app);
+    }
+    Check(app->RecordingWindow()&&recorder->graph&&app->RecordingPlaybackEntered(),
+        "retry on the same path starts actual AVI recording");
+    if(compressed)Check(recorder->compressor&&recorder->compressorOutput,"recording graph includes the bound compressor");
+    std::puts("START driving actual video frames");
+    for(unsigned i=0;i<120&&app->RecordingWindow();++i){
+        if(nativeExclusive&&GetForegroundWindow()!=main){
+            FinishAviRecord(app);
+            Check(false,"native exclusive test lost the foreground during export");
+        }
+        std::printf("FRAME %u before recorded=%d\n",i,app->state.recordedFrameCount);
+        Frame(app);
+        std::printf("FRAME %u after recorded=%d\n",i,app->state.recordedFrameCount);
+    }
+    if(!idle()){
+        std::fprintf(stderr,"FINISH fullscreen=%u window=%d override=%d entered=%d step=%u pending=%u graph=%d "
+            "size=%dx%d/%dx%d revision=%d generation=%d dirty=%d view=%d\n",
+            unsigned(app->FullscreenMode()),app->RecordingWindow()!=nullptr,app->AviRenderResolutionOverridden(),
+            app->RecordingPlaybackEntered(),unsigned(app->FrameStepPlayback()),unsigned(app->state.recordPlaybackStartPending),
+            recorder->graph!=nullptr,app->RenderWidth(),app->RenderHeight(),width,height,
+            app->SceneRevision()==revision,app->SceneGeneration()==generation,app->SceneModified()==dirty,Same(Read(*app),view));
+    }
+    Check(idle(),"natural AVI completion restores the editing state");
+    if(failRightEye)Check(failedRightCopies==2&&app->state.recordedFrameCount==0,
+        "right-eye copy failure and its unfiltered retry abort before advancing the recording");
+    if(nativeExclusive){
+        const auto actual=ActualPresentation(app->Renderer()->device);
+        RECT restoredRect{};
+        Check(GetWindowRect(main,&restoredRect)!=FALSE,"read the restored editor window bounds");
+        std::printf("EXCLUSIVE finish stages=%u style=%08lx/%08lx menu=%d actual=%ux%u Windowed=%d editor=%ux%u rect=%ld,%ld,%ld,%ld/%ld,%ld,%ld,%ld\n",
+            stereoStages,static_cast<unsigned long>(GetWindowLongPtrW(main,GWL_STYLE)),
+            static_cast<unsigned long>(mainStyle),GetMenu(main)==mainMenu,actual.BackBufferWidth,
+            actual.BackBufferHeight,actual.Windowed,editorPresentation.BackBufferWidth,
+            editorPresentation.BackBufferHeight,restoredRect.left,restoredRect.top,restoredRect.right,
+            restoredRect.bottom,editorRect.left,editorRect.top,editorRect.right,editorRect.bottom);
+        Check(EqualRect(&editorRect,&restoredRect),"exclusive recording restores the editor window bounds");
+        Check(actual.Windowed&&actual.BackBufferWidth==editorPresentation.BackBufferWidth&&
+            actual.BackBufferHeight==editorPresentation.BackBufferHeight,
+            "exclusive recording restores the actual windowed back buffer");
+        std::printf("EXCLUSIVE restored=%ux%u Windowed=%d\n",
+            actual.BackBufferWidth,actual.BackBufferHeight,actual.Windowed);
+    }
+    if(stereo){
+        Check(stereoStages==(failRightEye?1u:3u),"stereo recording stages the expected eye pairs");
+        Check(IsWindow(main)&&GetMenu(main)==mainMenu,"stereo recording restores the editor menu");
+        Check(GetWindowLongPtrW(main,GWL_STYLE)==mainStyle,"stereo recording restores the editor window style");
+        Check(app->Renderer()->presentParameters.Windowed,"stereo recording restores windowed presentation parameters");
+    }
+    CheckFinishedAvi(lockedOutputPath,stereo,failRightEye?0:3);
+    if(compressed){
+        Check(codecCaptures==3,"send all three real captures through the encoder");
+        CheckCompressedAvi(lockedOutputPath);
+    }
+    if(waitForPendingEffect)Check(shadedReadbacks==3,"all three frames use the completed self-shadow effect");
+    if(!nativeExclusive)HiddenWindows();
+}
+
 void PrepareSequence(MMDApp* app,const std::wstring& prefix,int end){
     seq::Options options;options.directory=output.wstring();options.prefix=prefix;options.format=0;
     options.width=160;options.height=120;
@@ -325,6 +875,198 @@ unsigned CountImages(const std::wstring& prefix){
             Check(fs::file_size(p.path())>54,"image is more than an empty bitmap header");++count;
         }return count;
 }
+
+using CreateTarget = HRESULT(WINAPI*)(IDirect3DDevice9*, UINT, UINT, D3DFORMAT,
+    D3DMULTISAMPLE_TYPE, DWORD, BOOL, IDirect3DSurface9**, HANDLE*);
+using BindTarget = HRESULT(WINAPI*)(IDirect3DDevice9*, DWORD, IDirect3DSurface9*);
+CreateTarget realCreateTarget = nullptr;
+BindTarget realBindTarget = nullptr;
+struct CaptureTargetFault {
+    IDirect3DDevice9* device;
+    IDirect3DSurface9* target = nullptr;
+    bool failAllocation = false;
+    unsigned failures = 0;
+    UINT width = 160;
+    UINT height = 120;
+};
+CaptureTargetFault* captureFault = nullptr;
+decltype(&ChooseStillImagePath) realChooseStillPath = nullptr;
+fs::path captureStillPath;
+
+HRESULT CaptureFixtureStillPath(MMDApp* app, HWND owner, wchar_t* destination, std::size_t capacity,
+                               std::optional<seq::StillFileIdentity>& overwrite) {
+    if (captureStillPath.empty() || owner != captureTargetErrorOwner || GetCurrentThreadId() != hostThread)
+        return realChooseStillPath(app, owner, destination, capacity, overwrite);
+    overwrite = seq::ReadStillFileIdentity(captureStillPath.c_str());
+    Check(wcscpy_s(destination, capacity, captureStillPath.c_str()) == 0, "accept the isolated still destination");
+    return S_OK;
+}
+
+HRESULT WINAPI ObserveCreateTarget(IDirect3DDevice9* device, UINT width, UINT height,
+    D3DFORMAT format, D3DMULTISAMPLE_TYPE samples, DWORD quality, BOOL lockable,
+    IDirect3DSurface9** target, HANDLE* shared) {
+    auto* fault = captureFault;
+    const bool selected = fault && device == fault->device && width == fault->width &&
+        height == fault->height && samples == D3DMULTISAMPLE_NONE && lockable;
+    if (selected && fault->failAllocation) {
+        ++fault->failures;
+        *target = nullptr;
+        return D3DERR_OUTOFVIDEOMEMORY;
+    }
+    const auto result = realCreateTarget(device, width, height, format, samples, quality,
+        lockable, target, shared);
+    if (selected && SUCCEEDED(result))
+        fault->target = *target;
+    return result;
+}
+
+HRESULT WINAPI ObserveBindTarget(IDirect3DDevice9* device, DWORD index, IDirect3DSurface9* target) {
+    auto* fault = captureFault;
+    if (fault && device == fault->device && index == 0 && target && target == fault->target) {
+        ++fault->failures;
+        return D3DERR_INVALIDCALL;
+    }
+    return realBindTarget(device, index, target);
+}
+
+void CaptureTargetFailures() {
+    Hooks hooks;
+    Host host;
+    auto* app = host.app.get();
+    app->EnglishUI() = 1;
+    auto* renderer = app->Renderer();
+    renderer->presentParameters.MultiSampleType = D3DMULTISAMPLE_NONE;
+    renderer->presentParameters.MultiSampleQuality = 0;
+    renderer->multisampleAvailable = 0;
+    Check(PostDeviceReset(app), "reset to a real no-MSAA device and matching depth buffer");
+    const auto vtable = *reinterpret_cast<void***>(renderer->device);
+    hooks.Add(reinterpret_cast<CreateTarget>(vtable[28]), &ObserveCreateTarget, realCreateTarget);
+    hooks.Add(reinterpret_cast<BindTarget>(vtable[37]), &ObserveBindTarget, realBindTarget);
+    const int previewWidth = renderer->screenWidth, previewHeight = renderer->screenHeight;
+    const int editorWidth = app->RenderWidth(), editorHeight = app->RenderHeight();
+    const auto editorView = Read(*app);
+    const auto scene = app->SceneRevision();
+    const auto dirty = app->SceneModified();
+    captureTargetErrorOwner = app->MainWindow();
+
+    enum class Scenario { NewBind, Allocation, CachedBind, ResetBind };
+    for (const auto scenario : {Scenario::NewBind, Scenario::Allocation, Scenario::CachedBind, Scenario::ResetBind}) {
+        const auto prefix = L"capture_" + std::to_wstring(static_cast<int>(scenario)) + L"_";
+        CaptureTargetFault fault{renderer->device};
+        fault.failAllocation = scenario == Scenario::Allocation;
+        PrepareSequence(app, prefix, 2);
+        if (scenario == Scenario::CachedBind) {
+            // Keep the pre-existing target through startup, as happens when the output
+            // and preview sizes already match.
+            renderer->screenWidth = renderer->presentParameters.BackBufferWidth = 160;
+            renderer->screenHeight = renderer->presentParameters.BackBufferHeight = 120;
+            Check(PostDeviceReset(app) && !renderer->captureSurface, "prepare an already matching output size");
+            Check(SUCCEEDED(renderer->device->CreateRenderTarget(160, 120, renderer->backbufferFormat,
+                D3DMULTISAMPLE_NONE, 0, TRUE, &renderer->captureSurface, nullptr)),
+                "seed a valid cached target without binding it");
+            fault.target = renderer->captureSurface;
+        }
+        if (scenario == Scenario::ResetBind) {
+            StartAviRecordWindow(app);
+            Check(app->RecordingWindow() && PostDeviceReset(app) && !renderer->captureSurface,
+                "force capture target recreation after recording has started");
+        }
+        const auto errors = captureTargetErrors;
+        captureFault = &fault;
+        if (scenario == Scenario::ResetBind)
+            Frame(app);
+        else
+            StartAviRecordWindow(app);
+        captureFault = nullptr;
+        std::printf("CAPTURE scenario=%d injected=%u notices=%u active=%d no-msaa=%d\n",
+            static_cast<int>(scenario), fault.failures, captureTargetErrors - errors,
+            int(app->RecordingWindow() != nullptr), int(renderer->multisampleAvailable == 0));
+        Check(fault.failures == 1, "exactly one allocation or binding call reached the fault");
+        Check(captureTargetErrors == errors + 1 && !app->RecordingWindow() &&
+            !seq::Active(app) && !app->FrameStepPlayback() && !app->AviRenderResolutionOverridden(),
+            "render-target failure cancels export with one notice and clears recording state");
+        Check(!CountImages(prefix) && renderer->multisampleAvailable == 0,
+            "failed export leaves no output and preserves the no-MSAA retry path");
+        Check(app->RenderWidth() == editorWidth && app->RenderHeight() == editorHeight &&
+            Same(Read(*app), editorView) && app->SceneRevision() == scene && app->SceneModified() == dirty,
+            "failed export restores editor resolution and view without editing the project");
+        if (scenario != Scenario::CachedBind)
+            Check(renderer->screenWidth == previewWidth && renderer->screenHeight == previewHeight,
+                "failed export restores preview backbuffer dimensions");
+
+        StartSequence(app, prefix, 2);
+        IDirect3DSurface9* bound = nullptr;
+        Check(SUCCEEDED(renderer->device->GetRenderTarget(0, &bound)) && bound == renderer->captureSurface,
+            "retry binds the actual no-MSAA capture surface");
+        bound->Release();
+        for (unsigned step = 0; seq::Active(app) && step < 30; ++step) Frame(app);
+        Check(!seq::Active(app) && !app->RecordingWindow() && CountImages(prefix) == 3,
+            "retry produces the full three-image sequence at the same destination");
+        if (scenario == Scenario::CachedBind) {
+            renderer->screenWidth = renderer->presentParameters.BackBufferWidth = previewWidth;
+            renderer->screenHeight = renderer->presentParameters.BackBufferHeight = previewHeight;
+            Check(PostDeviceReset(app), "restore original test backbuffer after matching-size case");
+        }
+    }
+    hooks.Add(&ChooseStillImagePath, &CaptureFixtureStillPath, realChooseStillPath);
+    captureStillPath = output / L"still-retry.bmp";
+    const std::vector<unsigned char> original{'p','r','e','v','i','o','u','s'};
+    OwnBytes(captureStillPath, original);
+    CaptureTargetFault stillFault{renderer->device};
+    const bool resizeStill = editorWidth > previewWidth || editorHeight > previewHeight;
+    stillFault.width = resizeStill ? editorWidth : previewWidth;
+    stillFault.height = resizeStill ? editorHeight : previewHeight;
+    const auto notices = captureTargetErrors;
+    captureFault = &stillFault;
+    SendMessageW(app->MainWindow(), WM_COMMAND, 276, 0);
+    captureFault = nullptr;
+    std::printf("CAPTURE still injected=%u notices=%u active=%d scheduled=%d size=%ux%u\n",
+        stillFault.failures, captureTargetErrors - notices, int(seq::StillActive(app)),
+        int(app->state.timelineAdvanceDue || app->state.timelineAdvanceRequested), stillFault.width, stillFault.height);
+    Check(stillFault.failures == 1 && captureTargetErrors == notices + 1 &&
+        !app->RecordingWindow() && !seq::StillActive(app) &&
+        !app->state.timelineAdvanceDue && !app->state.timelineAdvanceRequested,
+        "still target binding failure cancels with one notice and clears the scheduled capture");
+    {
+        std::ifstream file(captureStillPath, std::ios::binary);
+        const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(file), {}};
+        Check(bytes == original, "still target binding failure preserves the existing destination");
+    }
+    SendMessageW(app->MainWindow(), WM_COMMAND, 276, 0);
+    Check(app->RecordingWindow() && seq::StillActive(app), "retry still export through the same menu command");
+    for (unsigned step = 0; seq::StillActive(app) && step < 12; ++step) Frame(app);
+    std::ifstream image(captureStillPath, std::ios::binary);
+    BITMAPFILEHEADER fileHeader{};
+    BITMAPINFOHEADER info{};
+    image.read(reinterpret_cast<char*>(&fileHeader), sizeof(fileHeader));
+    image.read(reinterpret_cast<char*>(&info), sizeof(info));
+    Check(!seq::StillActive(app) && !app->RecordingWindow() && image &&
+        fileHeader.bfType == 0x4d42 && info.biWidth == editorWidth &&
+        std::abs(info.biHeight) == editorHeight && fs::file_size(captureStillPath) > fileHeader.bfOffBits,
+        "same-path still retry replaces the sentinel with an image of the requested dimensions");
+    std::puts("CAPTURE still failed bind preserved destination and retry replaced it with a BMP");
+
+    captureStillPath = output / L"still-alpha.png";
+    const auto alphaNotices = captureTargetErrors;
+    CaptureTargetFault alphaFault{renderer->device};
+    alphaFault.width = stillFault.width;
+    alphaFault.height = stillFault.height;
+    alphaFault.failAllocation = true;
+    captureFault = &alphaFault;
+    SendMessageW(app->MainWindow(), WM_COMMAND, 276, 0);
+    Check(app->RecordingWindow() && seq::StillActive(app), "transparent still begins on its own target path");
+    for (unsigned step = 0; seq::StillActive(app) && step < 12; ++step) Frame(app);
+    captureFault = nullptr;
+    std::ifstream png(captureStillPath, std::ios::binary);
+    std::array<unsigned char, 8> signature{};
+    png.read(reinterpret_cast<char*>(signature.data()), signature.size());
+    constexpr std::array<unsigned char, 8> expectedPng{137, 'P', 'N', 'G', 13, 10, 26, 10};
+    Check(!alphaFault.failures && captureTargetErrors == alphaNotices &&
+        !seq::StillActive(app) && !app->RecordingWindow() && png && signature == expectedPng,
+        "transparent still writes a PNG without requesting the legacy lockable target");
+    captureStillPath.clear();
+    captureTargetErrorOwner = nullptr;
+}
 void CameraKeys(MMDApp& app){
     auto* k=app.CameraKeys();Check(k!=nullptr,"real camera key pool initialized");
     k[0].next=1;k[0].eye[0]=2;k[0].eye[1]=10;k[0].eye[2]=0;k[0].distance=-45;k[0].fov=30;k[0].parentModel=-1;
@@ -338,7 +1080,8 @@ View graphCapturedView{},graphSubsequentView{};
 std::uint64_t graphFinishedGeneration=0;
 constexpr int newSceneWidth=333,newSceneHeight=222;
 bool FailGraph(DShowRecorder* recorder,HWND window,unsigned char english,void* record,void* config,float fps,
-    std::uint32_t one,std::uint32_t bitrate,const wchar_t* wav,float seconds,const WaveAudioContext* audio,unsigned char language){
+    std::uint32_t one,std::uint32_t bitrate,std::uint64_t first,std::uint64_t count,const WaveAudioContext* audio,
+    unsigned char language,const recording_output_path::Selection* approved){
     if(GetCurrentThreadId()==hostThread&&graphApp&&graphApp->Recorder()==recorder){
         ++graphFailures;
         if(sceneInGraph){
@@ -375,7 +1118,7 @@ bool FailGraph(DShowRecorder* recorder,HWND window,unsigned char english,void* r
         }
         if(nestedStart){nestedStart=false;StartAviRecordWindow(graphApp);}
         Write(*graphApp,Seed(22));return false;
-    }return realGraph(recorder,window,english,record,config,fps,one,bitrate,wav,seconds,audio,language);
+    }return realGraph(recorder,window,english,record,config,fps,one,bitrate,first,count,audio,language,approved);
 }
 using Reset=HRESULT(WINAPI*)(IDirect3DDevice9*,D3DPRESENT_PARAMETERS*);
 Reset realReset=nullptr;IDirect3DDevice9* resetDevice=nullptr;unsigned rejectedResets=0;
@@ -594,6 +1337,11 @@ void Lifecycle(){
     StartAviRecordWindow(app);graphApp=nullptr;
     Check(graphFailures==1&&!app->RecordingWindow()&&Same(Read(*app),beforeFailure),"graph-start failure invokes actual finish and restores captured fields");
     Write(*app,Seed(3,0,true));app->RestoreRecordingEditorView();Check(Same(Read(*app),Seed(3,0,true)),"failed start leaves no reusable snapshot");
+#if MMD_ORIGINAL_PROFILE
+    constexpr UINT closeMessage=WM_CLOSE;
+#else
+    constexpr UINT closeMessage=kSceneCloseReplayMessage;
+#endif
     for(bool result:{false,true}){
         app->CameraMode()=0;app->state.followCameraEnabled=0;app->CurrentFrame()=0;
         Write(*app,Seed(5,0,true));graphCapturedView=Read(*app);graphSubsequentView=Seed(35,0,true);
@@ -603,7 +1351,7 @@ void Lifecycle(){
         app->AviRecordStartFrame()=0;app->AviRecordEndFrame()=2;
         const auto calls=graphFailures;graphFinishedGeneration=0;
         MSG close{};
-        if(!result)Check(!PeekMessageW(&close,app->MainWindow(),WM_CLOSE,WM_CLOSE,PM_NOREMOVE),
+        if(!result)Check(!PeekMessageW(&close,app->MainWindow(),closeMessage,closeMessage,PM_NOREMOVE),
             "close-deferral case starts without a queued close for its own main window");
         graphApp=app;finishInGraph=true;finishedGraphResult=result;
         deferredFinishObserver=app;deferredFinishShows=0;
@@ -611,10 +1359,20 @@ void Lifecycle(){
         graphApp=nullptr;finishInGraph=false;deferredFinishObserver=nullptr;
         if(!result){
             const HWND main=app->MainWindow();
-            Check(IsWindow(main)&&PeekMessageW(&close,main,WM_CLOSE,WM_CLOSE,PM_REMOVE)&&
-                close.hwnd==main&&close.message==WM_CLOSE,"start-scope exit posts exactly the owned deferred close");
-            Check(!PeekMessageW(&close,main,WM_CLOSE,WM_CLOSE,PM_REMOVE),
+#if !MMD_ORIGINAL_PROFILE
+            Check(app->deferredSceneMainClose==main,"close requests are deferred to the recording owner's main window");
+            RetryDeferredSceneCloses(*app);
+            Check(app->sceneMainClosePosted,"the coordinator's safe point posts the replay after startup");
+#endif
+            Check(IsWindow(main)&&PeekMessageW(&close,main,closeMessage,closeMessage,PM_REMOVE)&&
+                close.hwnd==main&&close.message==closeMessage,"deferred close posts exactly one message to its owner");
+            Check(!PeekMessageW(&close,main,closeMessage,closeMessage,PM_NOREMOVE),
                 "repeated close requests coalesce to one posted close, removed without dispatch");
+#if !MMD_ORIGINAL_PROFILE
+            // Discard the intercepted test request to keep the fixture alive.
+            app->sceneMainClosePosted=false;
+            app->deferredSceneMainClose=nullptr;
+#endif
         }
         Check(graphFailures==calls+1,"reentrant-finish scenario reaches the graph boundary exactly once");
         Check(app->RecordingStartGeneration()!=graphFinishedGeneration&&deferredFinishShows==1,
@@ -645,10 +1403,234 @@ void Lifecycle(){
     std::puts("BOUNDARY windowed BMP lifecycle and injected Reset HRESULT; no actual hardware loss, fullscreen, H264 or MME claim");
 }
 }
+void WaveRecording() {
+    Hooks hooks;
+    Host host;
+    auto* app=host.app.get();
+    app->EnglishUI()=1;
+    const auto wav=installation/L"marker.wav";
+    Check(wcscpy_s(app->WavePath(),256,wav.c_str())==0,"fixture WAV path fits");
+    LoadWaveFile(app);
+    Check(app->WaveEnabled() && fs::path(app->Audio()->path)==wav,"load fixture PCM with the production WAV loader");
+    const auto sourceOffset=app->Audio()->dataOffset,sourceSize=app->Audio()->dataSize;
+    struct Case {const wchar_t* name; int first,rate,fps; bool audio; int authoredFrames=0; bool compressed=false;};
+    const Case cases[]={
+        {L"from-zero",0,30,30,true},
+        {L"nonzero",17,30,30,true},
+        {L"playback-37",27,37,24,true},
+        {L"unchecked",17,30,30,false},
+        {L"short-source",54,30,30,true},
+        {L"past-end",90,30,30,true},
+        {L"five-frames",17,30,24,true,6},
+        {L"utvideo",17,30,30,true,30,true},
+    };
+    for(const auto& test:cases){
+        std::printf("AVI_WAVE begin=%ls\n",test.name);
+        const auto path=output/(std::wstring(test.name)+L".avi");
+        Check(wcscpy_s(app->AviOutputPath(),256,path.c_str())==0,"output path fits");
+        app->CurrentFrame()=0;
+        app->PlaybackCursorSeconds()=0;
+        app->PlaybackTiming().playbackFps=test.rate;
+        app->Recorder()->selectedCodec=-1;
+        if(test.compressed)SelectUtVideoRgb(app);
+        app->AviOutputWidth()=160;app->AviOutputHeight()=120;
+        app->AviRecordStartFrame()=test.first;
+        app->AviRecordEndFrame()=test.first+(test.authoredFrames?test.authoredFrames:test.rate)-1;
+        app->AviRecordFps()=float(test.fps);app->AviIncludeWave()=test.audio;
+        app->AviStereoOutput()=0;app->AviCloseAfterExport()=0;
+        StartAviRecordWindow(app);
+        Check(app->RecordingWindow() && app->Recorder()->graph,"start actual windowed AVI export");
+        for(unsigned i=0;i<120&&app->RecordingWindow();++i)Frame(app);
+        Check(!app->RecordingWindow() && !app->Recorder()->graph && !app->FrameStepPlayback(),
+            "natural completion tears down graph and restores editing");
+        Check(app->WaveEnabled() && app->Audio()->dataOffset==sourceOffset && app->Audio()->dataSize==sourceSize,
+            "the loaded WAV range is unchanged after export");
+        Check(fs::is_regular_file(path) && fs::file_size(path)>0,"natural completion produces an AVI");
+    }
+}
+
+namespace {
+constexpr int kRetryFirst = 17, kRetryLast = 22, kRetryFps = 24;
+constexpr int kRetryWidth = 160, kRetryHeight = 120;
+decltype(&GetUiSaveFileNameW) realAviRetryPicker = nullptr;
+decltype(&UiDialogBoxParamA) realAviRetrySettings = nullptr;
+decltype(&RecordingReadbackPass) realAviRetryReadback = nullptr;
+decltype(&PostMessageW) realAviRetryPost = nullptr;
+
+BOOL AviRetryPicker(LPOPENFILENAMEW picker) {
+    if (aviProjectSave.OwnsPicker(picker)) return aviProjectSave.Pick(picker);
+    if (!aviSaveRetry.app || GetCurrentThreadId() != hostThread || !picker ||
+        picker->hwndOwner != aviSaveRetry.app->MainWindow())
+        return realAviRetryPicker(picker);
+    Check(picker->lpstrDefExt && (!wcscmp(picker->lpstrDefExt, L"avi") || !wcscmp(picker->lpstrDefExt, L"mp4")),
+        "the actual video output picker owns the AVI destination");
+    ++aviSaveRetry.pickerCalls;
+    return wcscpy_s(picker->lpstrFile, picker->nMaxFile, aviSaveRetry.video.c_str()) == 0;
+}
+
+INT_PTR CALLBACK AviRetryDriveSettings(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
+    const auto result = aviSaveRetry.settingsProc(dialog, message, wp, lp);
+    if (message != WM_INITDIALOG) return result;
+    auto& app = *aviSaveRetry.app;
+    const auto codec = GetDlgItem(dialog, panel::kAviCodecCombo);
+    const auto row = FindUtVideoRgb(codec);
+    const auto codecId = SendMessageW(codec, CB_GETITEMDATA, row, 0);
+    SendMessageW(codec, CB_SETCURSEL, row, 0);
+    SendMessageW(dialog, WM_COMMAND, MAKEWPARAM(panel::kAviCodecCombo, CBN_SELCHANGE), reinterpret_cast<LPARAM>(codec));
+    Check(codecId >= 0 && app.Recorder()->selectedCodec == codecId && app.Recorder()->compressor,
+        "select the actual UtVideo RGB compressor in the production settings");
+    SetDlgItemInt(dialog, panel::kAviWidthEdit, kRetryWidth, FALSE);
+    SetDlgItemInt(dialog, panel::kAviHeightEdit, kRetryHeight, FALSE);
+    SetDlgItemInt(dialog, panel::kAviStartFrameEdit, kRetryFirst, FALSE);
+    SetDlgItemInt(dialog, panel::kAviEndFrameEdit, kRetryLast, FALSE);
+    SetDlgItemInt(dialog, panel::kAviFpsEdit, kRetryFps, FALSE);
+    Check(IsWindowEnabled(GetDlgItem(dialog, panel::kAviWaveCheckbox)), "the real AVI options expose the loaded WAV");
+    CheckDlgButton(dialog, panel::kAviWaveCheckbox, BST_CHECKED);
+    CheckDlgButton(dialog, panel::kAviCloseAfterExportCheckbox, BST_CHECKED);
+    using Parameter = export_save_workflow::Parameter;
+    aviProjectSave.Drive(app, dialog, output / L"project-save",
+        {{panel::kAviWidthEdit}, {panel::kAviHeightEdit}, {panel::kAviStartFrameEdit}, {panel::kAviEndFrameEdit},
+         {panel::kAviFpsEdit}, {panel::kAviCodecCombo, Parameter::Choice}, {panel::kAviWaveCheckbox, Parameter::CheckBox},
+         {panel::kAvi3dVisionCheckbox, Parameter::CheckBox}, {panel::kAviCloseAfterExportCheckbox, Parameter::CheckBox}}, Check);
+    Check(SendMessageW(codec, CB_GETITEMDATA, SendMessageW(codec, CB_GETCURSEL, 0, 0), 0) == codecId &&
+        app.Recorder()->selectedCodec == codecId, "saving retains the actual selected compressor identity");
+    PostMessageW(dialog, WM_COMMAND, IDOK, 0);
+    return result;
+}
+
+INT_PTR AviRetrySettings(HINSTANCE instance, LPCSTR resource, HWND owner, DLGPROC proc, LPARAM data) {
+    if (!aviSaveRetry.app || GetCurrentThreadId() != hostThread || owner != aviSaveRetry.app->MainWindow() ||
+        !IS_INTRESOURCE(resource) || reinterpret_cast<ULONG_PTR>(resource) != 0x28e)
+        return realAviRetrySettings(instance, resource, owner, proc, data);
+    aviSaveRetry.settingsProc = proc;
+    aviSaveRetry.allowSettingsWindow = true;
+    const auto result = realAviRetrySettings(instance, resource, owner, &AviRetryDriveSettings, data);
+    aviSaveRetry.allowSettingsWindow = false;
+    return result;
+}
+
+bool AviRetryReadback(MMDApp* app) {
+    if (app != aviSaveRetry.app || !app->RecordingWindow() || !app->Recorder()->graph)
+        return realAviRetryReadback(app);
+    const double cursor = app->PlaybackCursorSeconds();
+    const bool written = realAviRetryReadback(app);
+    if (written) {
+        const double expected = kRetryFirst / 30.0 + aviSaveRetry.readbacks / double(kRetryFps);
+        Check(std::abs(cursor - expected) < .0001, "AVI readback follows the nonzero requested timeline range");
+        ++aviSaveRetry.readbacks;
+    }
+    return written;
+}
+
+BOOL WINAPI AviRetryPost(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    if (aviSaveRetry.app && window == aviSaveRetry.app->MainWindow() && message == WM_CLOSE) {
+        Check(GetCurrentThreadId() == hostThread && ++aviSaveRetry.closePosts == 1,
+            "the completed AVI posts one close request");
+        auto& app = *aviSaveRetry.app;
+        Check(!app.SceneModified() && !SceneSaveInProgress() && !app.RecordingWindow() && !app.Recorder()->graph &&
+            !app.FrameStepPlayback() && !app.AviRenderResolutionOverridden(),
+            "close follows the saved project and full AVI teardown");
+    }
+    return realAviRetryPost(window, message, wp, lp);
+}
+
+LRESULT CALLBACK AviRetryWindow(HWND window, UINT message, WPARAM wp, LPARAM lp) {
+    if (message == WM_CLOSE) {
+        Check(aviSaveRetry.closePosts == 1 && ++aviSaveRetry.closeDeliveries == 1, "deliver the single AVI close");
+    }
+    return CallWindowProcW(aviSaveRetry.windowProc, window, message, wp, lp);
+}
+
+void AviSaveRetry(bool shadowOff) {
+    Hooks hooks;
+    Host host(!shadowOff);
+    auto* app = host.app.get();
+    const auto main = app->MainWindow();
+    if (shadowOff) {
+        if (app->state.selfShadowEnabled) SendMessageW(main, WM_COMMAND, 279, 0);
+        Check(!app->state.selfShadowEnabled && DefaultEffectReadyForCapture(app),
+            "AVI save retry uses the production self-shadow-off mode");
+    }
+    const auto wav = installation / L"marker.wav";
+    Check(wcscpy_s(app->WavePath(), 256, wav.c_str()) == 0, "fixture WAV path fits");
+    LoadWaveFile(app);
+    Check(app->WaveEnabled() && fs::path(app->Audio()->path) == wav, "load the real PCM fixture");
+    app->EnglishUI() = 1;
+    app->RenderWidth() = 640;
+    app->RenderHeight() = 480;
+    app->CurrentFrame() = 0;
+    app->PlaybackCursorSeconds() = 0;
+    app->SceneModified() = 1;
+    aviSaveRetry.app = app;
+    aviSaveRetry.video = output / L"save-retry.avi";
+    aviSaveRetry.windowProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(main, GWLP_WNDPROC,
+        reinterpret_cast<LONG_PTR>(&AviRetryWindow)));
+    Check(aviSaveRetry.windowProc != nullptr, "observe the editor's real close delivery");
+    hooks.Add(&GetUiSaveFileNameW, &AviRetryPicker, realAviRetryPicker);
+    hooks.Add(&UiDialogBoxParamA, &AviRetrySettings, realAviRetrySettings);
+    hooks.Add(&RecordingReadbackPass, &AviRetryReadback, realAviRetryReadback);
+    hooks.Add(&PostMessageW, &AviRetryPost, realAviRetryPost);
+
+    SendMessageW(main, WM_COMMAND, 223, 0);
+    Check(aviSaveRetry.pickerCalls == 1 && aviSaveRetry.settingsWindows == 1 && app->RecordingWindow() &&
+        app->Recorder()->graph && app->AviOutputWidth() == kRetryWidth && app->AviOutputHeight() == kRetryHeight &&
+        app->AviRecordStartFrame() == kRetryFirst && app->AviRecordEndFrame() == kRetryLast &&
+        app->AviRecordFps() == kRetryFps && app->AviIncludeWave() && app->AviCloseAfterExport(),
+        "the original AVI options start the actual compressed DirectShow export");
+    for (unsigned i = 0; i < 120 && app->RecordingWindow(); ++i) Frame(app);
+    Check(!app->RecordingWindow() && !app->Recorder()->graph && aviSaveRetry.readbacks == 5 &&
+        fs::is_regular_file(aviSaveRetry.video), "the production graph writes and finalizes five AVI frames");
+    bool quit = false;
+    const auto deadline = GetTickCount64() + 15000;
+    while (!quit && GetTickCount64() < deadline) {
+        MSG message{};
+        if (!PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) { Sleep(1); continue; }
+        if (message.message == WM_QUIT) {
+            Check(message.wParam == 0, "the editor exits normally");
+            quit = true;
+        } else {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    Check(quit && !IsWindow(main) && aviSaveRetry.closePosts == 1 && aviSaveRetry.closeDeliveries == 1,
+        "the saved project closes the real editor only after the completed AVI");
+    std::puts("AVI_SAVE_RETRY frames=5 closePosts=1 closeDeliveries=1 realQuit=1");
+    aviSaveRetry.app = nullptr;
+}
+} // namespace
+
 int wmain(int argc,wchar_t** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
-    Check(argc==3&&(!wcscmp(argv[1],L"--fields")||!wcscmp(argv[1],L"--lifecycle")),"--fields|--lifecycle NEW_ABSOLUTE_DIRECTORY");
+    Check(argc==3&&(!wcscmp(argv[1],L"--fields")||!wcscmp(argv[1],L"--lifecycle")||
+        !wcscmp(argv[1],L"--locked-output")||!wcscmp(argv[1],L"--open-output")||!wcscmp(argv[1],L"--pending-effect")||
+        !wcscmp(argv[1],L"--fullscreen-stereo")||!wcscmp(argv[1],L"--fullscreen-stereo-copy-failure")||
+        !wcscmp(argv[1],L"--fullscreen-dpi-request")||!wcscmp(argv[1],L"--fullscreen-exclusive")||
+        !wcscmp(argv[1],L"--compressed-output")||!wcscmp(argv[1],L"--capture-target-failures")||
+        !wcscmp(argv[1],L"--avi-wave")||!wcscmp(argv[1],L"--avi-save-retry")||
+        !wcscmp(argv[1],L"--avi-save-retry-shadow-off")),
+        "--fields|--lifecycle|--locked-output|--open-output|--pending-effect|--fullscreen-stereo|--fullscreen-stereo-copy-failure|--fullscreen-dpi-request|--fullscreen-exclusive|--compressed-output|--capture-target-failures|--avi-wave|--avi-save-retry|--avi-save-retry-shadow-off NEW_ABSOLUTE_DIRECTORY");
+    const bool dpiRequest=!wcscmp(argv[1],L"--fullscreen-dpi-request");
+    if(dpiRequest){
+        const auto setContext=reinterpret_cast<HANDLE(WINAPI*)(HANDLE)>(
+            GetProcAddress(GetModuleHandleW(L"user32.dll"),"SetThreadDpiAwarenessContext"));
+        Check(setContext&&setContext(DPI_AWARENESS_CONTEXT_UNAWARE),"create a DPI-unaware test window");
+    }
     Sandbox(argv[2]);
-    if(!wcscmp(argv[1],L"--fields"))Fields();else Lifecycle();
+    if(!wcscmp(argv[1],L"--fields"))Fields();
+    else if(!wcscmp(argv[1],L"--lifecycle"))Lifecycle();
+    else if(!wcscmp(argv[1],L"--avi-wave"))WaveRecording();
+    else if(!wcscmp(argv[1],L"--avi-save-retry"))AviSaveRetry(false);
+    else if(!wcscmp(argv[1],L"--avi-save-retry-shadow-off"))AviSaveRetry(true);
+    else if(!wcscmp(argv[1],L"--capture-target-failures"))CaptureTargetFailures();
+    else {
+        auto stereo=StereoScenario::Off;
+        if(!wcscmp(argv[1],L"--fullscreen-stereo"))stereo=StereoScenario::Pack;
+        if(!wcscmp(argv[1],L"--fullscreen-stereo-copy-failure"))stereo=StereoScenario::RightCopyFailure;
+        if(dpiRequest)stereo=StereoScenario::DpiRequest;
+        if(!wcscmp(argv[1],L"--fullscreen-exclusive"))stereo=StereoScenario::NativeExclusive;
+        OutputRecording(!wcscmp(argv[1],L"--locked-output"),!wcscmp(argv[1],L"--pending-effect"),
+            stereo,!wcscmp(argv[1],L"--compressed-output"));
+    }
     std::printf("PASS recording-view mode=%ls checks=%u\n",argv[1],checks);return 0;
 }

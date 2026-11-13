@@ -14,7 +14,7 @@ void Run(MMDApp* app) {
     LoadModelFile(app,modelPath,false);
     Check(app->ModelSlot(0)!=nullptr,"load evaluation PMX");
     auto* raw=app->ModelSlot(0);auto& model=*mdl::Mdl(raw);
-    auto scene=CreateSceneStore(app);SceneClient client;auto sceneApi=scene->Api(client);
+    auto scene=CreateSceneStore(app);SceneClient client;auto sceneApi=([&]{ MmsSceneApiV1 value{}; if (scene->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     MmsSceneQueryV1 sceneQuery{};sceneQuery.h=Header<MmsSceneQueryV1>();
     sceneQuery.flags=MMS_SCENE_CURRENT_TIME;sceneQuery.channels=MMS_CHANNEL_BONES;
     MmsSnapshotV1 bind{};Check(sceneApi.acquire(sceneApi.context,&sceneQuery,&bind)==MMS_OK,"acquire stable bind identities");

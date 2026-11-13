@@ -2,7 +2,6 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
-#include "mikumikustudio/frame_rate.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include <CommCtrl.h>
@@ -62,27 +61,10 @@ void UpdateReadout(HWND dialog, MMDApp* app) {
     Show4KWarning(dialog, app, Above4K(size));
 }
 bool RefreshPreview(MMDApp* app) {
-    if(!FrameViewportRenderable(app))return false;
-    auto* renderer = app->Renderer();
-    if (!renderer || !renderer->device || FAILED(renderer->device->TestCooperativeLevel())) return false;
     auto* session = static_cast<PreviewSession*>(GetPropW(app->MainWindow(), kPreviewSession));
-    if (session) session->lastFrame = Clock::now();
-    const auto previous = app->state.messageSeen;
-    const float delta = app->DeltaTime();
-    app->state.messageSeen = 1;
-    // The modal preview redraws the current scene without advancing playback,
-    // physics or effect time. Its frame rate counts these real scene presents.
-    app->DeltaTime() = 0;
-    frame_rate::Tick(app);
-    PrepareFrameTextOverlay(app);
-    RenderFrameScene(app);
-    app->state.messageSeen = previous;
-    app->DeltaTime() = delta;
-    // RenderFrameScene already cleared the margins before drawing the HUD.
-    const RECT rect = FramePresentationRect(app);
-    const bool presented = SUCCEEDED(renderer->device->Present(&rect, &rect,
-        app->FloatingWindow() ? app->FloatingWindow() : app->MainWindow(), nullptr));
-    frame_rate::Presented(app, presented);
+    const auto started = Clock::now();
+    const bool presented = PresentViewportPreview(app);
+    if (presented && session) session->lastFrame = started;
     return presented;
 }
 LRESULT CALLBACK PreviewIdle(HWND window, UINT message, WPARAM wp, LPARAM lp,

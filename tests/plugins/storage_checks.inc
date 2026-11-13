@@ -25,22 +25,44 @@ struct SerializerFixture {
 };
 static StoredData StoredInt(int value){StoredData d;d.schema=7;d.bytes.resize(sizeof(value));std::memcpy(d.bytes.data(),&value,sizeof(value));return d;}
 static int SavedInt(const StoredData& v){int value=-1;CHECK(v.bytes.size()==sizeof(value));std::memcpy(&value,v.bytes.data(),sizeof(value));return value;}
+struct RetainedPairSeed {
+    PluginProject project;
+    std::string oldestSave, middleSave;
+    std::vector<std::string> oldest, middle;
+};
+static std::vector<fs::path> VersionMembers(const fs::path& project) {
+    return {project, mikumikustudio::pmm_paths::Effect(project), PluginSidecar(project)};
+}
+static std::vector<std::string> VersionBytes(const fs::path& project) {
+    std::vector<std::string> result;
+    for(const auto& path:VersionMembers(project)) result.push_back(ReadFile(path,96*1024*1024));
+    return result;
+}
+static RetainedPairSeed SeedRetainedPair(const fs::path& target,const fs::path& stage) {
+    RetainedPairSeed seed;
+    auto& project=seed.project;
+    project.projectId=StorageId();project.records["example.a"]=StoredInt(901);
+    Write(stage,"oldest retained PMM");PublishProjectPair(target,stage,project,true);
+    Write(mikumikustudio::pmm_paths::Effect(target),"oldest EMM");
+    seed.oldest=VersionBytes(target);seed.oldestSave=ReadPluginProject(target).saveId;
+    Write(stage,"middle retained PMM");project.records["example.a"]=StoredInt(902);
+    PublishProjectPair(target,stage,project,false,{},true);
+    Write(mikumikustudio::pmm_paths::Effect(target),"middle EMM");
+    seed.middle=VersionBytes(target);seed.middleSave=ReadPluginProject(target).saveId;
+    return seed;
+}
 static void VersionStorageChecks(const fs::path& root){
     const auto directory=root/L"retained-pair-recovery";fs::create_directories(directory);
-    const auto group=[](const fs::path& project){return std::vector<fs::path>{project,mikumikustudio::pmm_paths::Effect(project),PluginSidecar(project)};};
-    const auto bytes=[&](const fs::path& project){std::vector<std::string> result;for(const auto& file:group(project))result.push_back(ReadFile(file,96*1024*1024));return result;};
+    const auto group=VersionMembers;
+    const auto bytes=VersionBytes;
     const auto absent=[&](const fs::path& project){for(const auto& file:group(project))if(fs::exists(file))return false;return true;};
     for(unsigned fail=0;fail<4;++fail){
         const auto target=directory/(L"checkpoint-"+std::to_wstring(fail)+L".pmm"),stage=directory/L"stage.pmm";
         const auto prior=fs::path(target.native()+L"1"),older=fs::path(target.native()+L"11");
-        PluginProject project;project.projectId=StorageId();project.records["example.a"]=StoredInt(901);
-        Write(stage,"oldest retained PMM");PublishProjectPair(target,stage,project,true);
-        Write(mikumikustudio::pmm_paths::Effect(target),"oldest EMM");
-        const auto oldest=bytes(target);const auto oldestSave=ReadPluginProject(target).saveId;
-        Write(stage,"middle retained PMM");project.records["example.a"]=StoredInt(902);
-        PublishProjectPair(target,stage,project,false,{},true);
-        Write(mikumikustudio::pmm_paths::Effect(target),"middle EMM");
-        const auto middle=bytes(target);const auto middleSave=ReadPluginProject(target).saveId;
+        auto seed=SeedRetainedPair(target,stage);
+        auto& project=seed.project;
+        const auto& oldest=seed.oldest;const auto& middle=seed.middle;
+        const auto& oldestSave=seed.oldestSave;const auto& middleSave=seed.middleSave;
         CHECK(bytes(prior)==oldest && absent(older));
         Write(stage,"new interrupted PMM");project.records["example.a"]=StoredInt(903);
         bool interrupted=false;
@@ -200,9 +222,17 @@ static void StorageChecks(const fs::path& root){
     CHECK(Throws([&]{RecoverProjectPair(uncertain);}) && ReadFile(uncertain)=="unrelated external bytes");
     const auto rollbackHash=FileHash(target),rollbackSave=ReadPluginProject(target).saveId;
     Write(stage,"must roll back");
+    fs::path changedStage;
     CHECK(Throws([&]{PublishProjectPair(target,stage,project,false,[&](unsigned n){if(n==2){
-        Write(fs::path(target.native()+L".mms-"+Wide(project.saveId)+L".new-json"),"corrupt staged sidecar");throw std::runtime_error("interruption");}});}));
+        changedStage=target.native()+L".mms-"+Wide(project.saveId)+L".new-json";
+        Write(changedStage,"corrupt staged sidecar");throw std::runtime_error("interruption");}});}));
+    const fs::path rollbackJournal=target.native()+L".mms-save.json";
+    CHECK(!changedStage.empty() && fs::exists(rollbackJournal));
+    CHECK(Throws([&]{RecoverProjectPair(target);}));
+    CHECK(FileHash(target)==rollbackHash && ReadFile(changedStage)=="corrupt staged sidecar" && fs::exists(rollbackJournal));
+    CHECK(DeleteFileW(changedStage.c_str())!=FALSE);
     RecoverProjectPair(target);CHECK(FileHash(target)==rollbackHash && ReadPluginProject(target).saveId==rollbackSave);
+    CHECK(!fs::exists(rollbackJournal));
     const auto sideBefore=ReadFile(PluginSidecar(target),96*1024*1024);Write(target,"external replacement");
     CHECK(Throws([&]{ReadPluginProject(target);}));CHECK(Throws([&]{PublishProjectPair(target,stage,project,false);}));CHECK(ReadFile(PluginSidecar(target),96*1024*1024)==sideBefore);
     VersionStorageChecks(root);

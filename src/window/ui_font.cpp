@@ -25,11 +25,14 @@
 
 #include <cstdint>
 #include <cstring>
+#include <algorithm>
 
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/ui_language.hpp"
 #include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/ui_scale.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "mikumikustudio/ui_control_layout.hpp"
 #endif
@@ -84,6 +87,15 @@ bool KeepClassFont(int id) {
 HFONT UiFontForControl(MMDApp* app, HWND control, int id) {
     if (!app || !control || KeepClassFont(id)) return nullptr;
     HFONT font = app->state.hFontUI;
+    if (id == panel::kIkChainCombo && app->EnglishUI() == kUiChinese) {
+        // Use cell height here. The normal Chinese character height makes
+        // the closed combo touch the first IK radio in the fixed panel.
+        static HFONT ikComboFont = CreateFontW(14, 0, 0, 0,
+            FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, PROOF_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+        if (ikComboFont) return ikComboFont;
+    }
     wchar_t className[32]{};
     GetClassNameW(control, className, 32);
     if (_wcsicmp(className, L"Edit") == 0) {
@@ -105,6 +117,64 @@ void ApplyUiFontToControl(MMDApp* app, HWND control, int id) {
     SendMessageA(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
 #else
     ui::SetLayoutFont(control, font);
+#endif
+}
+
+void ApplyTemplateUiFont(MMDApp* app, HWND control, int percent, int buttonWidth) {
+#if !MMD_ORIGINAL_PROFILE
+    if (!control) return;
+    // Each shared base font and percentage has a stable handle for controls
+    // that may keep borrowing it when another window changes layout.
+    struct FontEntry { HFONT base; int percent; HFONT scaled; };
+    static std::vector<FontEntry> fonts;
+    const int id = GetDlgCtrlID(control);
+    const HFONT unscaled = UiFontForControl(app, control, id);
+    const HFONT base = KeepClassFont(id)
+        ? static_cast<HFONT>(GetStockObject(SYSTEM_FONT)) : unscaled;
+    if (!base) return;
+    const auto current = reinterpret_cast<HFONT>(SendMessageW(control, WM_GETFONT, 0, 0));
+    bool owned = current == unscaled;
+    for (const auto& entry : fonts)
+        if (entry.scaled == current) owned = true;
+    if (!owned) return;
+    if (buttonWidth > 0 && (percent < 100 || ui_scale::Percent() > 100)) {
+        wchar_t type[16]{}, text[256]{};
+        GetClassNameW(control, type, 16);
+        const int length = _wcsicmp(type, L"Button") == 0 ? GetWindowTextW(control, text, 256) : 0;
+        if (length > 0) {
+            const auto dc = GetDC(control);
+            if (dc) {
+                const auto previous = SelectObject(dc, base);
+                SIZE extent{};
+                if (GetTextExtentPoint32W(dc, text, length, &extent) && extent.cx > 0) {
+                    const auto style = GetWindowLongW(control, GWL_STYLE) & BS_TYPEMASK;
+                    const bool check = (style >= BS_CHECKBOX && style <= BS_AUTO3STATE) || style == BS_AUTORADIOBUTTON;
+                    const int padding = check ? GetSystemMetrics(SM_CXMENUCHECK) + 5 : 8;
+                    percent = std::min(percent, std::max(55, (buttonWidth - padding) * 100 / int(extent.cx)));
+                }
+                SelectObject(dc, previous);
+                ReleaseDC(control, dc);
+            }
+        }
+    }
+    if (percent == 100) {
+        ui::SetLayoutFont(control, unscaled);
+        return;
+    }
+    for (const auto& entry : fonts) {
+        if (entry.base == base && entry.percent == percent) {
+            ui::SetLayoutFont(control, entry.scaled);
+            return;
+        }
+    }
+    LOGFONTW data{};
+    if (GetObjectW(base, sizeof data, &data) != sizeof data) return;
+    data.lfHeight = MulDiv(data.lfHeight, percent, 100);
+    data.lfWidth = MulDiv(data.lfWidth, percent, 100);
+    if (const HFONT scaled = CreateFontIndirectW(&data)) {
+        fonts.push_back({base, percent, scaled});
+        ui::SetLayoutFont(control, scaled);
+    }
 #endif
 }
 

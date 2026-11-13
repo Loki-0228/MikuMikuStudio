@@ -1,44 +1,51 @@
 // Included inside negative_frames' private namespace after clipboard helpers.
 #if !MMD_ORIGINAL_PROFILE
-bool NegativeCommandReady(MMDApp& app,plugins::SharedHistory& history,const State* state) noexcept {
+bool NegativeInteractionReady(MMDApp& app,const State* state,bool historyTraversal=false) noexcept {
+    // The real undo route has already admitted input and holds its own scene
+    // lock. Only that publication may pass these two guards; all other input,
+    // save, drag and dialog exclusions still apply during replay.
+    const bool publication=historyTraversal && plugins::NativeObjectPublicationAuthorized(&app);
     return !app.PlaybackActive() && !app.FrameStepPlayback() && !app.state.recordPlaybackStartPending &&
-        !app.SceneMutationInProgress() && !bake::UiLocked() && !SceneSaveBlocksEdits() && !GetCapture() &&
+        (publication || (!app.SceneMutationInProgress() && !bake::UiLocked())) && !SceneSaveBlocksEdits() && !GetCapture() &&
         !app.FrameRangeDialog() && !app.state.frameCopyDialog && !app.RecordingWindow() &&
         !app.GravitySettingDialog() && !app.GroundShadowColorDialog() && !app.AccessoryOrderArray() &&
         !app.state.accessoryEditDialogOpen && !plugins::NativeModelOutlineDialogBlocks(app) &&
-        (!state || state->dragging.empty()) && history.CheckNativeEdit()==MMS_OK;
+        (!state || state->dragging.empty());
 }
-bool CommitNegativeParticipant(MMDApp& app,plugins::SharedHistory& history,
-    std::shared_ptr<plugins::HistoryChange> change,const char* label) {
-    if(!change)return true;
-    std::unique_ptr<plugins::SharedHistory::NativeTransaction> transaction;
-    if(history.PrepareNative(label,std::move(change),transaction,plugins::SharedHistory::NativeIntent::ExplicitCommit)!=MMS_OK ||
-        history.CommitNative(std::move(transaction))!=MMS_OK)return false;
-    plugins::PublishBoundPoseEdit(app,history,false);
+bool NegativeCommandReady(MMDApp& app,plugins::SharedHistory& history,const State* state) noexcept {
+    return NegativeInteractionReady(app,state) && history.CheckNativeEdit()==MMS_OK;
+}
+bool DeletionSelectionPoolsReady(MMDApp& app) {
+    // NativeSelectionFirst uses legacy capacity fallbacks for borrowed pools.
+    // Admit every pool it will scan before reading any of those key arrays.
+    if(!app.CameraMode()) {
+        if(app.SelectedModelSlot()>=kModelSlotCount || !app.SelectedModel())return false;
+        const auto& model=*mdl::Mdl(app.SelectedModel());
+        return (!model.boneKeys || mdl::BoneKeyPoolIdentity(model.boneKeys)) &&
+            (!model.morphKeys || mdl::MorphKeyPoolIdentity(model.morphKeys)) &&
+            (!model.displayKeys || mdl::KeyPoolIdentity(model.displayKeys));
+    }
+    const auto managed=[](const auto* pool){return !pool || mdl::KeyPoolIdentity(pool)!=0;};
+    if(!managed(app.CameraKeys()) || !managed(app.LightKeys()) ||
+        !managed(app.ShadowKeys()) || !managed(app.GravityKeys()))return false;
+    for(unsigned slot=0;slot<kModelSlotCount;++slot)
+        if(!managed(app.AccessoryKeys(slot)))return false;
     return true;
 }
 bool TryBoundNegativeCommand(MMDApp* app,unsigned id) noexcept {
     if(!app || (id!=421 && id!=423))return false;
     auto* history=plugins::BoundNativePoseHistory(app);if(!history)return false;
+    // The bound delete route owns both signs, including an empty selection.
+    // Refusal cannot fall through to the old positive or negative history.
+    if(id==423)return plugins::TryDeleteBoundKeys(app,false);
     try {
         auto found=states.find(app);
         State* state=found==states.end()?nullptr:&found->second;
-        const bool selected=state && std::any_of(state->keys.begin(),state->keys.end(),
-            [&](const Key& k){return k.selected && InActiveTimeline(*app,k) && Current(*app,k);});
-        if(id==423 && !selected)return false;
         if(id==421 && (!state || state->clipboard.empty()) && app->CurrentFrame()>=0)return false;
         // Once this route owns a command, rejection must not fall through to
         // native registrars or private rings. No live drag is cancelled here.
         if(!NegativeCommandReady(*app,*history,state))return true;
-        if(id==423) {
-            bool positiveSelected=false;NativeSelectionFirst(app,&positiveSelected);
-            // Mixed deletion awaits a single aggregate with the positive plan.
-            // Keep BOTH halves unchanged rather than consuming only one half.
-            if(positiveSelected)return true;
-            std::shared_ptr<plugins::HistoryChange> change;
-            if(PlanSelectedDeletion(*app,change)!=MMS_OK)return true;
-            if(!CommitNegativeParticipant(*app,*history,std::move(change),"Delete negative keys"))return true;
-        } else {
+        {
             // Native clipboard admission stays detached. Failed paste does not
             // replace the saved clipboard or temporarily write live poses.
             std::vector<Key> imported;

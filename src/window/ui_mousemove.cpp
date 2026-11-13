@@ -69,6 +69,7 @@
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/global_key_layout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/model.hpp"
@@ -369,8 +370,9 @@ void HandleMouseMove(std::uint32_t lParam, int mouseY) {
         }
         RECT rc;
         GetClientRect(static_cast<HWND>(app->Hwnd()), &rc);
+        const auto layout = MainPanelLayout(app, rc.bottom);
         if ((app->SidebarWidth() <=
-                 app->MouseX() && app->MouseY() <= rc.bottom - 158 &&
+                 app->MouseX() && app->MouseY() <= layout.bottomTop + 2 &&
              app->MouseX() <=
                  app->SidebarWidth() + 6) &
             (app->FloatingWindow() == nullptr)) {
@@ -388,11 +390,11 @@ void HandleMouseMove(std::uint32_t lParam, int mouseY) {
         // --- 4. drag-frame remap (0x444F46) --------------------------------
         if (app->SelectionBoxDragging() != 0 && app->TimelineSelectionChanged() != 0) {
             const int row =
-                (app->MouseX() -
+                (layout.DesignX(app->MouseX()) -
                  app->SelectionBoxAnchorX() - 6) /
                 kRowPitch;  // v15 == v257 (magic /13 = truncating)
             const int previousRow =
-                (previousX - app->SelectionBoxAnchorX() - 6) / kRowPitch;
+                (layout.DesignX(previousX) - app->SelectionBoxAnchorX() - 6) / kRowPitch;
             // A click or vertical/sub-cell motion does not move any keys.
             // Avoid rewriting every selected key and re-seeking physics until
             // the frame offset changes; returning to offset zero still applies.
@@ -486,7 +488,7 @@ void HandleMouseMove(std::uint32_t lParam, int mouseY) {
         } else if (app->SelectionBoxDragging() != 0) {
             // ---- 5. hover highlight (0x44606F..0x446A2C) ------------------
             // hover row/column range from the anchor (this+0xA018C/0xA0190)
-            int xEnd = app->MouseX();
+            int xEnd = layout.DesignX(app->MouseX());
             int xStart;
             if (xEnd <= app->SelectionBoxAnchorX() + 6) {
                 xStart = xEnd;
@@ -494,15 +496,10 @@ void HandleMouseMove(std::uint32_t lParam, int mouseY) {
             } else {
                 xStart = app->SelectionBoxAnchorX() + 6;
             }
-            int yTop, yBottom;
-            if (app->MouseY() <=
-                app->SelectionBoxAnchorY() + 145) {
-                yTop = app->MouseY();
-                yBottom = app->SelectionBoxAnchorY() + 145;
-            } else {
-                yTop = app->SelectionBoxAnchorY() + 145;
-                yBottom = app->MouseY();
-            }
+            const int anchorY = app->SelectionBoxAnchorY() + kTimelineGridTop;
+            const int mouseY = layout.DesignY(std::min(app->MouseY(), layout.timelineBottom));
+            const int yTop = std::min(anchorY, mouseY);
+            const int yBottom = std::max(anchorY, mouseY);
             int rowStart = (xStart - kGridX0) / kRowPitch;  // 0x4460BC
             if (xStart - kRowPitch * rowStart - kGridX0 <= 6)
                 rowStart -= 1;
@@ -511,7 +508,7 @@ void HandleMouseMove(std::uint32_t lParam, int mouseY) {
             int rowEnd = (xEnd - kGridX0) / kRowPitch;      // 0x4460F8
             if (xEnd - kRowPitch * rowEnd - kGridX0 > 6)
                 rowEnd += 1;
-            const int frameColumns = std::clamp((app->SidebarWidth() - 84) / 13, 0, 200);
+            const int frameColumns = layout.FrameColumns(app->SidebarWidth());
             rowStart = std::clamp(rowStart, 0, frameColumns);
             rowEnd = std::clamp(rowEnd, 0, frameColumns);
             int colStart = (yTop - kColY0) / kColPitch;     // 0x446135

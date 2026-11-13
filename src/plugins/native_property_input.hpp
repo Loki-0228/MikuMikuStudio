@@ -27,7 +27,10 @@ public:
     void Cancel() noexcept;
     // Called before a layout batch hides the wrapper, so focus loss cannot
     // turn hiding or folding into an edit submission.
-    void LayoutVisible(bool) noexcept;
+    // Temporary layout hiding suspends submission without cancelling the
+    // user's draft. Persistent/state hiding retains its cancellation contract.
+    void LayoutVisible(bool, bool preserveDraft = false) noexcept;
+    bool LayoutSuspended() const noexcept;
 };
 
 }

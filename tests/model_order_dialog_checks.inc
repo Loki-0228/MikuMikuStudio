@@ -327,20 +327,36 @@ void DamagedUnboundChecks(Fixture& f) {
 #if !MMD_ORIGINAL_PROFILE
 void ExerciseMappedSelectors(Fixture& f,const std::array<int,3>& rows,plugins::SharedHistory& history) {
     const auto ranks=Ranks(f);const auto undo=history.UndoCount(),redo=history.RedoCount();
+    const auto select = [&](int id, int row) {
+        HWND combo = GetDlgItem(f.app->MainWindow(), id);
+        Check(SendMessageW(combo, CB_SETCURSEL, row, 0) == row, "select an actual projected model row");
+        CommandDispatch(combo, MAKEWPARAM(id, CBN_SELCHANGE));
+    };
     for(int row=1;row<=3;++row) {
-        for(int id:kCombos) {
-            HWND combo=GetDlgItem(f.app->MainWindow(),id);
-            Check(SendMessageW(combo,CB_SETCURSEL,row,0)==row,"select an actual projected model row");
-            CommandDispatch(combo,MAKEWPARAM(id,CBN_SELCHANGE));
-            const auto expected=kSlots[rows[row-1]];
-            Expect(id==436?f.app->SelectedModelSlot()==expected:id==449?f.app->CameraParentModel()==expected:f.accessory.parentModel==expected,
-                "actual model and both parent selection handlers resolve item identity after damaged-rank undo");
-        }
+        select(436, row);
+        Expect(f.app->SelectedModelSlot() == kSlots[rows[row-1]],
+               "the model selector resolves item identity after damaged-rank undo");
         Expect(Ranks(f)==ranks&&history.UndoCount()==undo&&history.RedoCount()==redo,
             "selecting projected identities does not implicitly repair ranks or append a history record");
         Expect((IsWindowEnabled(GetDlgItem(f.app->MainWindow(),panel::kUndoButton))!=FALSE)==(undo!=0)&&
             (IsWindowEnabled(GetDlgItem(f.app->MainWindow(),panel::kRedoButton))!=FALSE)==(redo!=0),
             "actual model selection keeps shared undo and redo availability");
+    }
+    // Parent changes are edits and can branch the journal. Exercise their
+    // projected identities with a separate history so the order redo remains testable.
+    plugins::StorageStore parentStorage;
+    plugins::SharedHistory parentHistory(parentStorage);
+    {
+        plugins::NativePoseTestBinding parentBinding(*f.app, parentHistory);
+        for (int row = 1; row <= 3; ++row) {
+            const auto expected = kSlots[rows[row-1]];
+            select(449, row);
+            select(474, row);
+            Expect(f.app->CameraParentModel() == expected && f.accessory.parentModel == expected && Ranks(f) == ranks,
+                   "parent edits resolve the displayed identity and preserve the damaged rank bytes");
+        }
+        Check(parentHistory.Reset() == MMS_OK, "retire the isolated parent-edit history");
+        parentHistory.Collect();
     }
     // Reject a corrupted managed mapping before clearing a parent bone list or
     // selecting default slot zero. Restore it before the next refresh.
@@ -384,6 +400,9 @@ void DamagedBoundChecks(Fixture& f) {
     }
     f.Reset();
 }
+int retainedDeletePrompts = 0;
+int retainedDeleteResponse = IDOK;
+HWND invalidateDeleteCombo = nullptr;
 LRESULT CALLBACK ConfirmRetainedDeletion(int code,WPARAM wp,LPARAM lp) {
     if(code==HCBT_CREATEWND) {
         auto* created=reinterpret_cast<CBT_CREATEWNDW*>(lp);
@@ -392,7 +411,13 @@ LRESULT CALLBACK ConfirmRetainedDeletion(int code,WPARAM wp,LPARAM lp) {
     if(code==HCBT_ACTIVATE) {
         HWND dialog=reinterpret_cast<HWND>(wp);
         Check(GetDlgItem(dialog,IDOK)&&GetDlgItem(dialog,IDCANCEL),"actual model deletion opens its confirmation dialog");
-        PostMessageW(dialog,WM_COMMAND,IDOK,0);return 1;
+        ++retainedDeletePrompts;
+        if (invalidateDeleteCombo) {
+            const auto row = SendMessageW(invalidateDeleteCombo, CB_GETCURSEL, 0, 0);
+            Check(SendMessageW(invalidateDeleteCombo, CB_SETITEMDATA, row, kSlots[0]) != CB_ERR,
+                  "invalidate the selected mapping while confirmation is open");
+        }
+        PostMessageW(dialog,WM_COMMAND,retainedDeleteResponse,0);return 1;
     }
     return CallNextHookEx(nullptr,code,wp,lp);
 }
@@ -450,8 +475,40 @@ void BoundChecks(Fixture& f,const wchar_t* source) {
         scene_history_ui::Result::Ok,"select the imported identity without reevaluating other model poses");
     HHOOK hook=SetWindowsHookExW(WH_CBT,ConfirmRetainedDeletion,nullptr,GetCurrentThreadId());
     Check(hook!=nullptr,"install actual retained-model deletion confirmation driver");
+    HWND combo = GetDlgItem(f.app->MainWindow(), panel::kMainComboModel);
+    const auto selectedRow = SendMessageW(combo, CB_GETCURSEL, 0, 0);
+    Check(selectedRow == 1 && SendMessageW(combo, CB_GETITEMDATA, 0, 0) == -1 &&
+          SendMessageW(combo, CB_GETITEMDATA, selectedRow, 0) == 0,
+          "the reordered managed selector points at the imported model in slot zero");
+    const auto dirty = f.app->SceneModified();
+    retainedDeletePrompts = 0;
+    retainedDeleteResponse = IDCANCEL;
+    Check(SendMessageW(combo, CB_SETITEMDATA, selectedRow, kSlots[0]) != CB_ERR,
+          "plant an invalid duplicate live slot in the managed selector");
+    TryDeleteBoundModel(f.app, f.app->MainWindow());
+    Check(retainedDeletePrompts == 0 && f.app->ModelSlot(0) == imported && history.UndoCount() == 3 &&
+          f.app->SceneModified() == dirty,
+          "deletion must refuse a stale managed model row before prompting");
+    Check(SendMessageW(combo, CB_SETITEMDATA, selectedRow, 0) != CB_ERR,
+          "restore the exact selected identity for the deletion retry");
+    TryDeleteBoundModel(f.app, f.app->MainWindow());
+    Check(retainedDeletePrompts == 1 && f.app->ModelSlot(0) == imported && history.UndoCount() == 3 &&
+          f.app->SceneModified() == dirty, "cancelled retry preserves the selected object and history");
+    retainedDeleteResponse = IDOK;
+    invalidateDeleteCombo = combo;
+    TryDeleteBoundModel(f.app, f.app->MainWindow());
+    invalidateDeleteCombo = nullptr;
+    Check(retainedDeletePrompts == 2 && f.app->ModelSlot(0) == imported && history.UndoCount() == 3 &&
+          f.app->SceneModified() == dirty, "confirmation refuses a row that became invalid during the prompt");
+    Check(SendMessageW(combo, CB_SETITEMDATA, selectedRow, 0) != CB_ERR,
+          "repair the model selector after its mapping changed during confirmation");
     TryDeleteBoundModel(f.app,f.app->MainWindow());UnhookWindowsHookEx(hook);
-    Check(!f.app->ModelSlot(0)&&history.UndoCount()==4,"actual native deletion follows the plugin and both order records");
+    Check(retainedDeletePrompts == 3 && !f.app->ModelSlot(0) && history.UndoCount() == 4,
+          "confirmed retry removes the same selected model and adds one common history record");
+    for (int i = 0; i != 3; ++i)
+        Check(f.app->ModelSlot(kSlots[i]) == reinterpret_cast<unsigned char*>(f.models[i]),
+              "confirmed retry preserves every other model identity");
+    std::puts("PASS reordered managed model deletion refuses stale rows and retries the selected identity");
     for(int i=0;i<4;++i)Check(RunBoundObjectHistory(*f.app,history,false)==MMS_OK,"undo deletion, plugin order, native order and actual import in reverse sequence");
     Expect(!f.app->ModelSlot(0)&&f.models[0]->comboSelIndex==1&&f.models[1]->comboSelIndex==2&&f.models[2]->comboSelIndex==3,
         "undo interleaving restores the original three-model layout by stable identity");

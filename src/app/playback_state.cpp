@@ -1,4 +1,5 @@
 #include "mikumikustudio/undo_storage.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include <algorithm>
 // ===========================================================================
@@ -482,8 +483,7 @@ void StopPlayback(MMDApp* app) {  // was Sub4341E0
         if (app->state.waveEnabled != 0) {
             TimelineDrawTicks(app->state.timelineStartFrame,
                               app->SidebarWidth());
-            RECT rect{6, 95,
-                      app->SidebarWidth() - 3, 146};
+            RECT rect = TimelineRulerDamage(app);
             InvalidateRect(hwnd, &rect, FALSE);
         }
     }

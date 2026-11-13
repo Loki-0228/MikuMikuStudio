@@ -1,6 +1,7 @@
 #include "mikumikustudio/undo_storage.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/bone_curve.hpp"
+#include "mikumikustudio/morph_curve.hpp"
 #include "../plugins/native_physics_toggle.hpp"
 // ===========================================================================
 // Misc dialog bodies: frame-control apply, reorder fill, accessory-edit init, physics ON/OFF apply
@@ -44,6 +45,7 @@
 #include "mikumikustudio/global_key_layout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bottom_panel_resize.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/panel_controls.hpp"
@@ -145,6 +147,39 @@ void DrawCurveHighlight(MMDApp* app, const Curve& curve) {
     SelectObject(dc, oldPen);
     DeleteObject(guide);
 }
+
+#if !MMD_ORIGINAL_PROFILE
+bool DrawMorphPreview(MMDApp& app) {
+    const auto* model = app.SelectedModel();
+    animation_curve::Track interval;
+    if (!morph_curve::ReadSelectedPreview(model, interval)) return false;
+
+    const auto* bones = mdl::Mdl(model)->boneKeys;
+    if (bones && std::any_of(bones, bones + mdl::BoneKeyCapacity(bones),
+            [](const mdl::BoneKey& key) { return key.allocated != 0; }))
+        return false;
+
+    // Expressions use absolute weights. Sample the effective curve so free
+    // tangents and other intervals outside the native handle format still draw.
+    constexpr int last = kCurvePanelSize - 1;
+    const double start = interval.keys.front().frame;
+    const double duration = interval.keys.back().frame - start;
+    POINT points[kCurvePanelSize]{};
+    for (int x = 0; x <= last; ++x) {
+        const double value = animation_curve::Evaluate(interval, start + duration * x / last).value;
+        if (!std::isfinite(value)) return false;
+        points[x] = {x, last - std::lround(last * std::clamp(value, 0.0, 1.0))};
+    }
+    const HDC dc = app.CurveDC();
+    const HPEN pen = CreatePen(PS_SOLID, 1, RGB(0, 0, 255));
+    if (!pen) return false;
+    const HGDIOBJ old = SelectObject(dc, pen);
+    const bool drawn = old && old != HGDI_ERROR && Polyline(dc, points, kCurvePanelSize) != FALSE;
+    if (old && old != HGDI_ERROR) SelectObject(dc, old);
+    DeleteObject(pen);
+    return drawn;
+}
+#endif
 
 // Curve-gate byte: camera records mark timeline-selected keys at +72
 // (CameraKey::selected), bone keys mark allocated records at +56.
@@ -279,10 +314,6 @@ void CurvePanelRepaint(MMDApp* app) {  // x64 0x7FF7CB482BB0
     constexpr int kCurveUniformButton = 430; // enabled when curves agree
     constexpr int kCurvePresetButton = 431;  // also gated on preset-A byte
     constexpr int kCurveFoundButton = 432;   // enabled when a key exists
-    constexpr int kCurveDirtyLeft = 8;
-    constexpr int kCurveDirtyRight = 137;
-    constexpr int kCurveDirtyTopMargin = 135;
-    constexpr int kCurveDirtyBottomMargin = 6;
 
     app->state.interpCurveUniformFound = 0;
     HDC dc = app->CurveDC();
@@ -307,10 +338,11 @@ void CurvePanelRepaint(MMDApp* app) {  // x64 0x7FF7CB482BB0
     bool found = false;             // x64 v83: any active record seen
     bool perChannelUniform = true;  // x64 v84: per-channel consistency
 #if !MMD_ORIGINAL_PROFILE
-    if(app->state.optflag[0]==0 && bone_curve::DrawPreview(*app)) {
+    if (app->CameraMode() == 0 && (DrawMorphPreview(*app) || bone_curve::DrawPreview(*app))) {
         for(int id : {kCurveUniformButton,kCurvePresetButton,kCurveFoundButton})EnableWindow(GetDlgItem(window,id),FALSE);
         RECT client{};GetClientRect(window,&client);
-        RECT dirty{8,client.bottom-135,137,client.bottom-6};InvalidateRect(window,&dirty,FALSE);
+        const RECT dirty = BottomCurveRect(app, client.bottom);
+        InvalidateRect(window, &dirty, FALSE);
         return;
     }
 #endif
@@ -364,10 +396,7 @@ void CurvePanelRepaint(MMDApp* app) {  // x64 0x7FF7CB482BB0
 
     RECT client{};
     GetClientRect(window, &client);
-    RECT dirty{kCurveDirtyLeft,
-               client.bottom - kCurveDirtyTopMargin,
-               kCurveDirtyRight,
-               client.bottom - kCurveDirtyBottomMargin};
+    const RECT dirty = BottomCurveRect(app, client.bottom);
     InvalidateRect(window, &dirty, FALSE);
 }
 

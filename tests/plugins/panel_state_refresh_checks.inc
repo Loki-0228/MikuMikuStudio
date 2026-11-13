@@ -1,6 +1,7 @@
 // Include after manager_refresh_checks.inc. Uses the real registered surface,
 // NativeUi tab control and original refresh/provider services.
 #include <mms/refresh_state.h>
+#include <cstdio>
 namespace panel_state_refresh_checks {
 struct Fixture {
     manager_refresh_checks::Window window;
@@ -111,7 +112,14 @@ struct Fixture {
         CHECK(result==MMS_OK&&t);return t;
     }
     MmsUiRefreshStateV1 Result(MmsHandle t){MmsUiRefreshStateV1 s{};s.h=Header<MmsUiRefreshStateV1>();CHECK(refresh.query(refresh.context,t,&s)==MMS_OK);return s;}
-    void Done(MmsHandle t,uint32_t kinds=MMS_UI_REFRESH_STATE){const auto s=Result(t);CHECK(s.status==MMS_UI_REFRESH_COMPLETED&&s.result==MMS_OK&&s.completedKinds==kinds);CHECK(refresh.release(refresh.context,t)==MMS_OK);}
+    void Done(MmsHandle t,uint32_t kinds=MMS_UI_REFRESH_STATE){
+        const auto s=Result(t);
+        if(s.status!=MMS_UI_REFRESH_COMPLETED||s.result!=MMS_OK||s.completedKinds!=kinds)
+            std::fprintf(stderr,"panel refresh failed: status=%u result=%d completed=%u expected=%u visible=%u enabled=%u prepares=%u label=%s revision=%llu\n",
+                unsigned(s.status),int(s.result),unsigned(s.completedKinds),unsigned(kinds),unsigned(visible),unsigned(enabled),prepares,label.c_str(),
+                static_cast<unsigned long long>(registry.Revision()));
+        CHECK(s.status==MMS_UI_REFRESH_COMPLETED&&s.result==MMS_OK&&s.completedKinds==kinds);CHECK(refresh.release(refresh.context,t)==MMS_OK);
+    }
     std::wstring Tab(int row)const{wchar_t text[8194]{};TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=text;item.cchTextMax=8194;CHECK(SendMessageW(tabs,TCM_GETITEMW,row,reinterpret_cast<LPARAM>(&item)));return text;}
     static std::wstring TextOf(HWND w){wchar_t text[256]{};GetWindowTextW(w,text,256);return text;}
     void Identity(const std::array<UiRegistry::SurfacePresentation,2>& before){
@@ -126,6 +134,14 @@ struct Fixture {
         SendMessageW(search.found,TTM_GETTEXTW,8194,reinterpret_cast<LPARAM>(&t));return text;
     }
 };
+static void TabSelectionThenStateLayout(){
+    Fixture x;x.Register();const auto identity=x.Identity();
+    x.Select(1);x.Select(0);const auto revision=x.registry.Revision();
+    auto t=x.Submit(MMS_UI_REFRESH_STATE|MMS_UI_REFRESH_LAYOUT);x.queue.Drain();x.Done(t,12);
+    CHECK(x.registry.Revision()==revision&&TabCtrl_GetCurSel(x.tabs)==0&&x.Tab(0)==L"Updated panel");x.Identity(identity);
+    x.visible=0;t=x.Submit(MMS_UI_REFRESH_STATE|MMS_UI_REFRESH_LAYOUT);x.queue.Drain();x.Done(t,12);
+    CHECK(x.registry.Revision()==revision&&TabCtrl_GetItemCount(x.tabs)==1&&x.Tab(0)==L"Panel B");x.Identity(identity);
+}
 static void ContentAndAvailability(){
     Fixture x;const auto identity=x.Identity();const auto target=x.Target();const auto revision=x.registry.Revision();x.Register();
     auto t=x.Submit(MMS_UI_REFRESH_STATE|MMS_UI_REFRESH_REPAINT,0,true);x.queue.Drain();x.Done(t,5);
@@ -255,6 +271,7 @@ static void UnmountedAndRetirement(){
 }
 }
 static void PanelStateRefreshChecks(){
+    panel_state_refresh_checks::TabSelectionThenStateLayout();
     panel_state_refresh_checks::ContentAndAvailability();panel_state_refresh_checks::FailuresAndIdentity();
     panel_state_refresh_checks::NativeEpochAndLayoutRecovery();panel_state_refresh_checks::SurfaceFailureCompensation();
     panel_state_refresh_checks::UnmountedAndRetirement();

@@ -126,7 +126,16 @@ void ExternalHistoryGesturesAndReentry(){
     journal.onApply=[&]{SendMessageW(window,WM_COMMAND,MAKEWPARAM(kIdUndo,BN_CLICKED),0);};
     DragKeyToFrame(window,1,20);
     Check(journal.cursor==1&&journal.applies==1&&FindKey(journal.sources[0].data,0,20)&&!GetCapture(),"one completed canvas drag releases capture then publishes one host edit");
-    Check(journal.traversals==0,"write callbacks cannot reenter external undo");journal.onApply={};Click(window,kIdFitAll);
+    Check(journal.traversals==0,"write callbacks cannot reenter external undo");journal.onApply={};
+    // Fit all now follows the selected keys; the completed drag left one key
+    // selected. Clear that selection on real empty canvas so this fixture keeps
+    // the whole-track view its fixed frame points were written for.
+    CurveEditorAxisState axis{};
+    Check(SendMessageW(window,WM_APP+394,0,reinterpret_cast<LPARAM>(&axis))!=0,
+          "read canvas geometry before clearing the completed drag selection");
+    HWND clearCanvas=GetDlgItem(window,kIdCanvas);const LPARAM empty=MAKELPARAM((axis.plot.left+axis.plot.right)/2,axis.plot.top+6);
+    SendMessageW(clearCanvas,WM_LBUTTONDOWN,MK_LBUTTON,empty);SendMessageW(clearCanvas,WM_LBUTTONUP,0,empty);
+    Click(window,kIdFitAll);
     const auto origin=AskPoint(window,kHookPointForKey,1),destination=AskPoint(window,kHookPointForFrame,30);
     HWND gesture=GetDlgItem(window,kIdCanvas);
     SendMessageW(gesture,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(origin.x,origin.y));

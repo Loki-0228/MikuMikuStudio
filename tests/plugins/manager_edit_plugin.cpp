@@ -29,10 +29,12 @@ struct Plugin {
     std::map<MmsHandle,Pending*> properties;
     uint64_t propertyFlags=0,propertyCalls=0;uint32_t propertyMode=0;bool insideProperty=false;
     MmsResult propertyFailure=MMS_OK;
+    uint64_t propertyEvents=0, closingEvents=0, eventServiceReady=0;
 };
 Plugin* current = nullptr;
 uint64_t stoppedFlags = 0; int stoppedCancels = 0;
 uint64_t stoppedPropertyFlags=0,stoppedPropertyCalls=0,stoppedPropertyCandidates=0;
+uint64_t stoppedPropertyEvents=0,stoppedClosingEvents=0,stoppedEventServiceReady=0;
 bool Denied(MmsResult r) { return r == MMS_E_BUSY || r == MMS_E_NOT_READY; }
 void ProbeDenied(Plugin& p, uint64_t flag) {
     if (!p.edit.begin) return;
@@ -330,11 +332,19 @@ MmsResult MMS_CALL Start(void* context) {
     r=p.ui.registerProperty(p.ui.context,&p.editable,&p.editableHandle);
     return !r && p.id.find(".failstart") != std::string::npos ? MMS_E_FAILED : r;
 }
-void MMS_CALL Event(void* context, const MmsEventV1*) { ProbeDenied(*static_cast<Plugin*>(context), 4096); }
+void MMS_CALL Event(void* context, const MmsEventV1* event) {
+    auto& p=*static_cast<Plugin*>(context); ProbeDenied(p,4096);
+    if (event && event->kind==MMS_EVENT_PROPERTY_CHANGED) {
+        ++p.propertyEvents;MmsEditApiV1 api{};
+        if (!p.closingEvents && p.host.queryService(p.host.context,S("mms.edit"),1,0,sizeof(api),&api)==MMS_OK) ++p.eventServiceReady;
+    }
+    if (event && event->kind==MMS_EVENT_UI_CLOSING) ++p.closingEvents;
+}
 MmsResult MMS_CALL Stop(void* context) { ProbeDenied(*static_cast<Plugin*>(context), 256); return MMS_OK; }
 void MMS_CALL Destroy(void* context) {
     auto* p = static_cast<OwnedPlugin*>(context); stoppedFlags = p->flags; stoppedCancels = p->cancels;
     stoppedPropertyFlags=p->propertyFlags;stoppedPropertyCalls=p->propertyCalls;stoppedPropertyCandidates=p->properties.size();
+    stoppedPropertyEvents=p->propertyEvents;stoppedClosingEvents=p->closingEvents;stoppedEventServiceReady=p->eventServiceReady;
     if (current == p) current = nullptr; delete p;
 }
 }
@@ -354,3 +364,6 @@ extern "C" uint64_t GetPropertyStageCalls(){return current?current->propertyCall
 extern "C" uint64_t GetPropertyCandidateCount(){return current?current->properties.size():stoppedPropertyCandidates;}
 extern "C" uint64_t GetPropertyOther(){return current?current->propertyOther:0;}
 extern "C" MmsResult GetPropertyStageFailure(){return current?current->propertyFailure:MMS_E_NOT_READY;}
+extern "C" __declspec(dllexport) uint64_t GetPropertyEventCount(){return current?current->propertyEvents:stoppedPropertyEvents;}
+extern "C" __declspec(dllexport) uint64_t GetClosingEventCount(){return current?current->closingEvents:stoppedClosingEvents;}
+extern "C" __declspec(dllexport) uint64_t GetPropertyEventServiceReady(){return current?current->eventServiceReady:stoppedEventServiceReady;}

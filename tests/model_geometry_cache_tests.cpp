@@ -6,6 +6,7 @@
 #include <Windows.h>
 #include "../src/model/model_geometry_cache.hpp"
 #include "../src/model/model_geometry_cache_load.hpp"
+#include "mikumikustudio/sequential_file_reader.hpp"
 #include "model_geometry_reference.hpp"
 #include <algorithm>
 #include <array>
@@ -67,8 +68,9 @@ struct Geometry {
     bool hit=false,enabled=false,complete=false;
     std::int64_t vertexEnd=-1,indexEnd=-1;
 };
-Geometry Parse(Reader& reader,const ref::Fixture& f,unsigned char fill=0xcd) {
-    Geometry result;Check(reader.Seek(f.vertexStart),"seek independent geometry decoder to the exact wire offset");
+template<class Input>
+Geometry ParseAtCurrent(Input& reader,const ref::Fixture& f,unsigned char fill=0xcd) {
+    Geometry result;
     if(f.pmd) {
         result.pmd.resize(f.vertices);
         if(f.vertices)std::memset(result.pmd.data(),0,f.vertices*sizeof(mdl::PmdVertex));
@@ -87,6 +89,10 @@ Geometry Parse(Reader& reader,const ref::Fixture& f,unsigned char fill=0xcd) {
         if(reader.Read(&v,width)!=static_cast<int>(width))return result;
     }
     result.indexEnd=reader.Tell();result.complete=true;return result;
+}
+Geometry Parse(Reader& reader,const ref::Fixture& f,unsigned char fill=0xcd) {
+    Check(reader.Seek(f.vertexStart),"seek independent geometry decoder to the exact wire offset");
+    return ParseAtCurrent(reader,f,fill);
 }
 void Capture(gc::Session& s,const Geometry& g,const ref::Fixture& f) {
     if(f.pmd)s.CapturePmd(g.pmd.data(),reinterpret_cast<const std::uint16_t*>(g.indices.data()),
@@ -178,6 +184,52 @@ void BoundedFingerprintSource() {
         Check(_telli64(fd)==f.vertexStart&&_filelengthi64(fd)==extent,"fingerprint bypass preserves parser cursor and complete source extent");
     }
     Check(!_close(fd)&&!cache.GetStatistics().bytes&&!cache.GetStatistics().pendingBytes,"large-tail bypass retains no cache allocation");
+}
+void ObservedPmxAdmission() {
+    auto fixture = ref::Pmx(2000);
+    const auto path = NewFile(fixture);
+    gc::Cache cache;
+    float original = 0;
+    const float changed = 412.25f;
+    std::memcpy(&original, fixture.bytes.data() + fixture.vertexStart, sizeof(original));
+    Check(original != changed && fixture.indexEnd - fixture.vertexStart > 65536,
+        "use distinguishable vertices and cross a read-ahead refill");
+    for (bool replaceAfterPrefetch : {true, false}) {
+        File file(path);
+        const int fd = file.fd;
+        file.fd = -1;
+        fileio::SequentialFileReader reader(fd);
+        Check(reader.SeekAbsolute(fixture.vertexStart - 4), "seek just before the vertex count");
+        std::uint32_t count = 0;
+        Check(reader.Read(&count, 4) == 4 && count == fixture.vertices, "prime reader with the first geometry window");
+        if (replaceAfterPrefetch) {
+            std::memcpy(fixture.bytes.data() + fixture.vertexStart, &changed, sizeof(changed));
+            Write(path, fixture.bytes);
+        }
+        ReadFileProbe probe;
+        auto session = gc::Session::BeginPmx(fd, Layout(fixture), reader, &cache);
+        Check(session.Enabled() && !session.Hit() && ReadFileProbe::calls == 0,
+            "observed miss begins without a cache scan");
+        const auto geometry = ParseAtCurrent(reader, fixture);
+        Check(geometry.complete && geometry.indexEnd == fixture.indexEnd &&
+            geometry.pmx[0].position[0] == (replaceAfterPrefetch ? original : changed),
+            "decode the consumed bytes across buffered windows");
+        const auto beforeCapture = ReadFileProbe::calls;
+        const auto bytesBeforeCommit = ReadFileProbe::requested;
+        Capture(session, geometry, fixture);
+        Check(ReadFileProbe::calls == beforeCapture, "capture consumes the reader digest without rescanning");
+        Check(cache.GetStatistics().pendingBytes > 0, "valid parsed geometry is staged pending source verification");
+        session.Commit();
+        const auto stats = cache.GetStatistics();
+        Check(ReadFileProbe::requested - bytesBeforeCommit ==
+            static_cast<std::uint64_t>(fixture.indexEnd - fixture.vertexStart),
+            "commit independently reads exactly the geometry interval");
+        Check(stats.pendingBytes == 0 && stats.entries == (replaceAfterPrefetch ? 0u : 1u),
+            "commit rejects stale prefetch and accepts a fresh complete parse");
+    }
+    const auto reopened = Load(path, fixture, cache);
+    Check(reopened.hit && reopened.complete && reopened.pmx[0].position[0] == changed,
+        "only the newly parsed vertices can be reused");
 }
 void RoundTrips() {
     gc::Cache cache;
@@ -420,6 +472,7 @@ int wmain(int argc,wchar_t** argv) {
     Run("immutable-capture-and-clear-epoch",ImmutableCaptureAndClear);Run("budget-and-retired-lease",BudgetAndRetiredLeases);
     Run("source-identity-content-and-existing-mapping",SourceChangesAndMapping);Run("allocation-failure-and-fresh-hit-copy",AllocationAndFreshHitCopy);
     Run("bounded-whole-source-fingerprint",BoundedFingerprintSource);
+    Run("observed-pmx-admission",ObservedPmxAdmission);
     Run("restored-fingerprint-metadata-if-supported",RestoredMetadataContentChange);
     std::printf("PASS geometry cache CPU contracts: %u checks\n",checks);return 0;
 }

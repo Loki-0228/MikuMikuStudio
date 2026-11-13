@@ -1,6 +1,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikumikustudio/native_media.hpp"
+#include "mikumikustudio/cache_files.hpp"
+#include "mikumikustudio/media_process_retirement.hpp"
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -74,18 +76,28 @@ std::wstring FindFFmpeg() {
         L"Windows 无法解码该视频。10-bit H.264 等格式需要 FFmpeg；请将 ffmpeg.exe 放入程序的 tools 目录或 PATH"};
 }
 struct PipeDecoder {
-    Handle process, output;
+    // Owned by this decoder, not a late-created process-global static. Shutdown
+    // cannot destroy a queue while a different static Video worker still uses it.
+    ProcessRetirementQueue processes;
+    PreparedProcess process;
+    Handle output;
     ~PipeDecoder() { Close(); }
-    void Close() {
+    void Close() noexcept {
         output.Reset();
-        if (process.value) {
-            if (WaitForSingleObject(process.value, 0) == WAIT_TIMEOUT) TerminateProcess(process.value, 0);
-            WaitForSingleObject(process.value, 1000);
-            process.Reset();
-        }
+        process.Retire();
     }
     void Start(const std::wstring& executable, const std::wstring& source,
-               double seconds, UINT width, UINT height, UINT rate, UINT scale) {
+               double seconds, UINT width, UINT height, UINT rate, UINT scale,
+               std::shared_ptr<const void> sourcePin) {
+        // Preparation reserves all retirement resources before a child can
+        // exist. A timeout/error never drops its process handle or source pin.
+        PreparedProcess candidate;
+        const auto prepared = processes.Prepare(std::move(sourcePin), candidate);
+        HRESULT retirementReady = S_OK;
+        if (prepared == ProcessRetirementQueue::Result::NoMemory) retirementReady = E_OUTOFMEMORY;
+        else if (prepared == ProcessRetirementQueue::Result::Busy) retirementReady = HRESULT_FROM_WIN32(ERROR_BUSY);
+        else if (prepared != ProcessRetirementQueue::Result::Ok) retirementReady = E_FAIL;
+        Check(retirementReady, L"Prepare video process lifetime");
         Close();
         SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
         Handle write, null;
@@ -120,7 +132,8 @@ struct PipeDecoder {
         Check(CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE,
             CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS | EXTENDED_STARTUPINFO_PRESENT,
             nullptr, nullptr, &startup.StartupInfo, &child) ? S_OK : HRESULT_FROM_WIN32(GetLastError()), L"Start FFmpeg video decoder");
-        process.Reset(child.hProcess); CloseHandle(child.hThread);
+        candidate.AdoptStarted(child.hProcess); CloseHandle(child.hThread);
+        process = std::move(candidate);
     }
     bool Read(unsigned char* data, size_t count, const std::atomic<bool>& stop) {
         size_t done = 0;
@@ -155,6 +168,7 @@ struct Frame {
     bool Contains(LONGLONG target) const { return target >= time && (target < end || eos); }
 };
 struct Decoder {
+    std::shared_ptr<const cache_files::RawSourceLease> sourcePin;
     Runtime runtime;
     ComPtr<IMFSourceReader> reader;
     UINT width = 0, height = 0, sourceWidth = 0, sourceHeight = 0;
@@ -168,7 +182,9 @@ struct Decoder {
     std::shared_ptr<Frame> frame;
     const std::atomic<bool>& stop;
 
-    explicit Decoder(const std::atomic<bool>& stopping) : stop(stopping) {}
+    explicit Decoder(const std::atomic<bool>& stopping,
+        std::shared_ptr<const cache_files::RawSourceLease> source)
+        : sourcePin(std::move(source)), stop(stopping) {}
     void ReadFormat() {
         ComPtr<IMFMediaType> type;
         Check(reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &type), L"RGB32 media type");
@@ -325,8 +341,8 @@ struct Decoder {
     std::shared_ptr<Frame> DecodePipe(LONGLONG target) {
         const LONGLONG wanted = LONGLONG(std::floor(target / 10000000.0 * rate / scale + 1e-7));
         if (frame && wanted == pipeIndex) return frame;
-        if (!pipe.process.value || wanted < pipeIndex || wanted > pipeIndex + 30) {
-            pipe.Start(ffmpeg, path, double(wanted) * scale / rate, width, height, rate, scale);
+        if (!pipe.process.Handle() || wanted < pipeIndex || wanted > pipeIndex + 30) {
+            pipe.Start(ffmpeg, path, double(wanted) * scale / rate, width, height, rate, scale, sourcePin);
             pipeIndex = wanted - 1;
         }
         auto next = Allocate();
@@ -350,6 +366,9 @@ struct Decoder {
 };
 
 struct Video {
+    // Outlives the worker and its MF objects; a retired FFmpeg child also owns
+    // an independent copy until actual process exit is confirmed.
+    std::shared_ptr<const cache_files::RawSourceLease> sourcePin;
     std::mutex mutex;
     std::condition_variable ready;
     std::atomic<bool> stop{false};
@@ -365,7 +384,7 @@ struct Video {
     void Run(std::wstring path, int maxDimension) {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         try {
-            Decoder decoder(stop);
+            Decoder decoder(stop, sourcePin);
             decoder.Open(path, maxDimension);
             {
                 std::lock_guard<std::mutex> lock(mutex);
@@ -409,20 +428,46 @@ unsigned long long VideoFrameRevision(MMDApp* app) {
     const auto found = videos.find(app);
     return found != videos.end() && found->second->displayed ? found->second->displayed->revision : 0;
 }
-bool OpenVideo(MMDApp* app, const wchar_t* path, int& width, int& height, double& duration, std::wstring& error, int maxDimension) {
+namespace {
+bool OpenVideoImpl(MMDApp* app, const wchar_t* path,
+    std::shared_ptr<const cache_files::RawSourceLease> sourcePin,
+    int& width, int& height, double& duration, std::wstring& error, int maxDimension) {
     error.clear();
     try {
+        if (!app || !path || !*path) { error = L"视频来源无效。"; return false; }
         auto video = std::make_unique<Video>();
+        video->sourcePin = std::move(sourcePin);
         video->worker = std::thread(&Video::Run, video.get(), std::wstring(path), maxDimension);
         {
             std::unique_lock<std::mutex> lock(video->mutex);
             video->ready.wait(lock, [&] { return video->opened || video->failed; });
             if (video->failed) { error = video->error; return false; }
-            width = video->width; height = video->height; duration = video->duration;
             video->displayed = video->latest;
         }
-        videos[app] = std::move(video); return true;
+        // The map insertion can allocate. Do it before changing public outputs
+        // or retiring an existing decoder, then publish only with noexcept moves.
+        auto insertion = videos.try_emplace(app);
+        auto previous = std::move(insertion.first->second);
+        insertion.first->second = std::move(video);
+        const auto& published = *insertion.first->second;
+        width = published.width; height = published.height; duration = published.duration;
+        return true;
     } catch (const std::exception&) { error = L"无法启动视频解码线程。"; return false; }
+}
+}
+bool OpenVideo(MMDApp* app, const wchar_t* path, int& width, int& height, double& duration, std::wstring& error, int maxDimension) {
+    return OpenVideoImpl(app, path, {}, width, height, duration, error, maxDimension);
+}
+bool OpenVideoFromSource(MMDApp* app, cache_files::RawSourceLease source,
+    int& width, int& height, double& duration, std::wstring& error, int maxDimension) {
+    error.clear();
+    try {
+        if (!source.IsValid()) { error = L"视频来源租约无效。"; return false; }
+        auto pin = std::make_shared<const cache_files::RawSourceLease>(std::move(source));
+        // Keep this local owner through the call: argument evaluation order must
+        // not move the last owner before obtaining the path pointer.
+        return OpenVideoImpl(app, pin->Path().c_str(), pin, width, height, duration, error, maxDimension);
+    } catch (const std::exception&) { error = L"无法保留视频来源。"; return false; }
 }
 BITMAPINFOHEADER* VideoFrame(MMDApp* app, double seconds, std::wstring& error, bool waitForFrame) {
     error.clear();

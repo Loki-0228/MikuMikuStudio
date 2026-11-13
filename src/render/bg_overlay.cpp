@@ -23,6 +23,9 @@
 #define NOMINMAX
 #include "mikumikustudio/native_media.hpp"
 #include <Windows.h>
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/background_identity.hpp"
+#endif
 #include <algorithm>
 #include <climits>
 #include <d3d9.h>
@@ -176,19 +179,25 @@ void ComputeOverlayRect(MMDApp* app, const OverlayPlacement& placement,
         hv * zoomV * ratio * syF / k + top + 1.0;
 }
 
-void RefreshOverlayVertexBuffer(MMDApp* app, IDirect3DVertexBuffer9* vb,
+bool RefreshOverlayVertexBuffer(MMDApp* app, IDirect3DVertexBuffer9* vb,
                                 const OverlayPlacement& placement) {
     // Port-side guard: the 168-byte overlay vertex buffers are created by the
     // D3D init chain; the original walks them unconditionally.
-    if (vb == nullptr || app->Renderer() == nullptr)
-        return;
-    void* locked = nullptr;
-    if (FAILED(vb->Lock(0, kBackgroundVertexBytes, &locked, 0)) || locked == nullptr)  // 0x416CE9
-        return;
+    if (app == nullptr || vb == nullptr || app->Renderer() == nullptr)
+        return false;
     double left, top, right, bottom;
     ComputeOverlayRect(app, placement, &left, &top, &right, &bottom);
+    void* locked = nullptr;
+    if (FAILED(vb->Lock(0, kBackgroundVertexBytes, &locked, 0)))  // 0x416CE9
+        return false;
+    if (locked == nullptr) {
+        // A successful Lock still needs its paired Unlock, even if a faulty
+        // resource supplied no writable address. This is not a valid refresh.
+        vb->Unlock();
+        return false;
+    }
     WriteOverlayQuad(locked, left, top, right, bottom);
-    vb->Unlock();                                                // 0x417123
+    return SUCCEEDED(vb->Unlock());                              // 0x417123
 }
 
 }  // namespace
@@ -216,6 +225,9 @@ void AviBgOverlayRefresh(MMDApp* app) {
             D3DPOOL_DEFAULT, &tex, nullptr);
         s.AviBackgroundTexture() = tex;
         if (hr != 0) {
+#if !MMD_ORIGINAL_PROFILE
+            plugins::background_identity::Mutation mediaMutation(app, false, true);
+#endif
             ReleaseAviBackgroundHandles(app);
             MessageBoxA(OverlayHwnd(app),                         // 0x416988
                         app->EnglishUI() != 0
@@ -236,6 +248,9 @@ void AviBgOverlayRefresh(MMDApp* app) {
             D3DPOOL_DEFAULT, &surf, nullptr);
         s.AviBackgroundSurface() = surf;
         if (hr != 0) {
+#if !MMD_ORIGINAL_PROFILE
+            plugins::background_identity::Mutation mediaMutation(app, false, true);
+#endif
             ReleaseAviBackgroundHandles(app);
             MessageBoxA(OverlayHwnd(app),                         // 0x416A78
                         app->EnglishUI() != 0
@@ -305,6 +320,9 @@ void AviBgOverlayRefresh(MMDApp* app) {
                 : getFrame != nullptr ? AVIStreamGetFrame(getFrame, sample)
                                      : nullptr;                   // 0x416B4F
     if (bits == nullptr) {
+#if !MMD_ORIGINAL_PROFILE
+        plugins::background_identity::Mutation mediaMutation(app, false, true);
+#endif
         ReleaseAviBackgroundHandles(app);
         if (!decodeError.empty())
             MessageBoxW(OverlayHwnd(app), decodeError.c_str(), L"Video playback", MB_OK | MB_ICONERROR);
@@ -401,8 +419,13 @@ void AviBgPlacementRefresh(MMDApp* app) {
 
 // VA 0x00417130 - picture background overlay quad refresh.
 void PicBgOverlayRefresh(MMDApp* app) {
+    (void)TryPicBgOverlayRefresh(app);
+}
+
+bool TryPicBgOverlayRefresh(MMDApp* app) {
+    if (!app) return false;
     auto& s = *app;
-    RefreshOverlayVertexBuffer(
+    return RefreshOverlayVertexBuffer(
         app, s.PictureOverlayVertices(),
         {s.PictureOffsetX(), s.PictureOffsetY(), s.PictureScale(),
          s.PictureWidth(), s.PictureHeight()});

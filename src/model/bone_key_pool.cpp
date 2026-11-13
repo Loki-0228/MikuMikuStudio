@@ -251,6 +251,11 @@ struct BoneKeyPoolGrowth::Impl {
 BoneKeyPoolGrowth::BoneKeyPoolGrowth(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
 BoneKeyPoolGrowth::~BoneKeyPoolGrowth() = default;
 
+std::uint64_t BoneKeyPoolGrowth::NoGrowthPreparationBytes(std::size_t capacity) noexcept {
+    constexpr auto fixed=std::uint64_t(sizeof(BoneKeyPoolGrowth)+sizeof(Impl));
+    return capacity>UINT64_MAX-fixed?UINT64_MAX:fixed+capacity;
+}
+
 bool BoneKeyPoolGrowth::Prepare(ModelRecord& model, std::uint64_t needed,
                                std::unique_ptr<BoneKeyPoolGrowth>& out) noexcept {
     if (out) return false;

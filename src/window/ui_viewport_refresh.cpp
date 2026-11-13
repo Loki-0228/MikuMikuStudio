@@ -16,6 +16,7 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/window_dpi_scope.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/viewport_bounds.hpp"
@@ -249,20 +250,23 @@ void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
 
     const int pluginHeight = plugins::ToolbarHeight(app);
     const int propertyHeight = plugins::PropertyAreaHeight(app);
+    const auto nativePanels = MainPanelLayout(app, view.bottom);
+    const int bottomExtra = nativePanels.bottomExtra;
     if(editor){
         FrameViewportGeometry geometry;
         if(IsIconic(hwnd)||!CalculateFrameViewport(view,s.SidebarWidth(),pluginHeight,FrameViewportMode::Docked,
-            renderWidth,renderHeight,geometry,propertyHeight,plugins::LeftAreaWidth(app),plugins::RightAreaWidth(app))){view={};return;}
+            renderWidth,renderHeight,geometry,propertyHeight,plugins::LeftAreaWidth(app),plugins::RightAreaWidth(app),
+            bottomExtra,FitViewportToolbarRows(nativePanels.bottomTop,ui_scale::Percent()))){view={};return;}
         view=geometry.scene;
     }else{
-    const int availableHeight = std::max(1L, view.bottom - 217 - pluginHeight - propertyHeight);
+    const int availableHeight = std::max(1L, view.bottom - 217 - bottomExtra - pluginHeight - propertyHeight);
     const int sidebar = s.SidebarWidth();
     const int availableWidth = view.right - sidebar - 9;
     const int fittedWidth = availableHeight * renderWidth / renderHeight;
 
     if (availableWidth >= fittedWidth) {                // 0x42C8DD
         view.top += 25 + pluginHeight;
-        view.bottom -= 192 + propertyHeight;
+        view.bottom -= 192 + bottomExtra + propertyHeight;
         const int center = availableWidth / 2 + sidebar + 9;
         view.left = center - fittedWidth / 2;
         view.right = center + fittedWidth / 2;
@@ -328,8 +332,11 @@ void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
             reinterpret_cast<const D3DMATRIX*>(&projection));
     }
 
+    // Background placement is stored in editor coordinates. Its recording
+    // quad applies the output-to-editor ratio separately, just as the floating
+    // viewport path below does; using the output width here scales it twice.
     wrapper->viewScale = static_cast<float>(
-        static_cast<double>(viewport.Width) * 1.2 / 1280.0);
+        static_cast<double>(view.right - view.left) * 1.2 / 1280.0);
 
     const float width = static_cast<float>(view.right - view.left);
     WriteQuad(s.LeftViewportVertices(),
@@ -344,6 +351,10 @@ void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
               static_cast<float>(view.right) - 60.0f,
               static_cast<float>(view.top) + 120.0f,
               0.625f, 0.9375f);
+
+    // Layout is complete: prepare the text batch for the next draw. The frame
+    // driver prepares at frame end, too late for an immediate refresh like this.
+    if(editor&&FrameViewportRenderable(app))PrepareFrameTextOverlay(app);
 }
 
 void RefreshSeparateWindowViewport(MMDApp* app) {  // was Sub4290F0, 0x4290F0..0x42976B
@@ -369,10 +380,12 @@ void RefreshSeparateWindowViewport(MMDApp* app) {  // was Sub4290F0, 0x4290F0..0
         return;
     }
 
+    const int bottomExtra = MainPanelLayout(app, view.bottom).bottomExtra;
     if(editor){
         FrameViewportGeometry geometry;
         if(IsIconic(target)||!CalculateFrameViewport(view,0,0,
-            fullScreen?FrameViewportMode::Fullscreen:FrameViewportMode::Floating,renderWidth,renderHeight,geometry)){
+            fullScreen?FrameViewportMode::Fullscreen:FrameViewportMode::Floating,renderWidth,renderHeight,geometry,
+            0,0,0,0,FitViewportToolbarRows(view.bottom,ui_scale::Percent()))){
             view={};return;}
         view=geometry.scene;
     }else{
@@ -471,6 +484,10 @@ void RefreshSeparateWindowViewport(MMDApp* app) {  // was Sub4290F0, 0x4290F0..0
               static_cast<float>(view.right) - 60.0f,
               static_cast<float>(view.top) + 120.0f,
               0.625f, 0.9375f);
+
+    // Layout is complete: prepare the text batch for the next draw. The frame
+    // driver prepares at frame end, too late for an immediate refresh like this.
+    if(editor&&FrameViewportRenderable(app))PrepareFrameTextOverlay(app);
 }
 
 }  // namespace mikumikustudio

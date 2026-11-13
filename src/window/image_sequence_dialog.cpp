@@ -5,6 +5,7 @@
 #include "export_save_prompt.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/recording_state.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 #include <ShObjIdl.h>
 #include <wrl/client.h>
@@ -139,13 +140,20 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
         return TRUE;
     }
     if (!c) return FALSE;
+    if (message == WM_COMMAND && c->scene != c->app->SceneGeneration()) {
+        EndDialog(dialog, IDCANCEL);
+        return TRUE;
+    }
     if (const auto handled = export_save_prompt::HandleMessage(dialog, c->app, message, wp, lp)) return handled;
     if (message == WM_CLOSE) { EndDialog(dialog, IDCANCEL); return TRUE; }
     if (message != WM_COMMAND) return FALSE;
     const int id = LOWORD(wp), notification = HIWORD(wp);
     if (id == IDCANCEL) { EndDialog(dialog, IDCANCEL); return TRUE; }
     if (id == Browse) {
-        if (PickFolder(dialog, c->app, c->options.directory))
+        const bool picked = PickFolder(dialog, c->app, c->options.directory);
+        if (!IsWindow(dialog)) return TRUE;
+        if (c->scene != c->app->SceneGeneration()) EndDialog(dialog, IDCANCEL);
+        else if (picked)
             SetDlgItemTextW(dialog, Folder, c->options.directory.c_str());
         return TRUE;
     }
@@ -202,17 +210,26 @@ bool HandleCommand(MMDApp* app, unsigned command) {
     // Export the scene in either editing mode, just like video export.
     // CameraMode is an editor selection, not a playback/recording guard.
     if (app->PlaybackActive() || app->RecordingWindow() || Active(app)) return true;
-    DialogContext context{app};
+    recording_state::Guard choosing(app, recording_state::Operation::VideoOptions);
+    if (!choosing) return true;
+    const HWND owner = app->MainWindow();
+    DialogContext context{app, app->SceneGeneration()};
+    const auto canStart = [&] {
+        return IsWindow(owner) && app->MainWindow() == owner &&
+            context.scene == app->SceneGeneration() && !app->sceneRecoveryPending &&
+            !app->SceneMutationInProgress() && !app->PlaybackActive() &&
+            !app->RecordingWindow();
+    };
     context.options.width = app->RenderWidth();
     context.options.height = app->RenderHeight();
     context.options.end = static_cast<int>(SceneEndFrame(app));
     context.options.playbackFps = app->PlaybackTiming().playbackFps;
     context.options.directory = app->DirUser();
-    if (!PickFolder(app->MainWindow(), app, context.options.directory)) return true;
+    if (!PickFolder(owner, app, context.options.directory) || !canStart()) return true;
     app->state.enterKeyState = 1;
     const auto result = UiDialogBoxParamA(static_cast<HINSTANCE>(app->HInstance()),
-        MAKEINTRESOURCEA(kDialog), app->MainWindow(), DialogProc, reinterpret_cast<LPARAM>(&context));
-    if (result != IDOK) { Abort(app); return true; }
+        MAKEINTRESOURCEA(kDialog), owner, DialogProc, reinterpret_cast<LPARAM>(&context));
+    if (result != IDOK || !canStart()) { Abort(app); return true; }
     const auto& o = context.options;
     app->AviOutputWidth() = o.width;
     app->AviOutputHeight() = o.height;

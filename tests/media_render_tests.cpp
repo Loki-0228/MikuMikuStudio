@@ -13,6 +13,7 @@
 #include <btBulletDynamicsCommon.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <vfw.h>
 #include "mikumikustudio/transparent_capture.hpp"
 #include <filesystem>
 #include <fstream>
@@ -243,6 +244,160 @@ void CheckEmptyPlaybackRange(MMDApp* app) {
     std::puts("PASS playback button, P shortcut, empty/explicit bounds, loop and invalid input");
 }
 
+namespace video_replacement {
+
+const wchar_t* selectedPath = nullptr;
+bool expectError = false;
+int errors = 0;
+
+BOOL WINAPI SelectFile(OPENFILENAMEW* request) {
+    Check(std::wcscmp(request->lpstrTitle, L"Open background video") == 0,
+          "production video file picker");
+    return selectedPath && wcscpy_s(request->lpstrFile, request->nMaxFile, selectedPath) == 0;
+}
+
+int WINAPI ReportErrorA(HWND window, LPCSTR text, LPCSTR title, UINT flags) {
+    if (!expectError || std::strcmp(title, "open AVI file") != 0)
+        return UnexpectedA(window, text, title, flags);
+    ++errors;
+    return IDOK;
+}
+
+int WINAPI ReportErrorW(HWND window, LPCWSTR text, LPCWSTR title, UINT flags) {
+    if (!expectError || std::wcscmp(title, L"Video import") != 0)
+        return UnexpectedW(window, text, title, flags);
+    ++errors;
+    return IDOK;
+}
+
+void Menu(MMDApp& app, const wchar_t* path) {
+    selectedPath = path;
+    SendMessageW(app.MainWindow(), WM_COMMAND, MAKEWPARAM(0xD5, 0), 0);
+    selectedPath = nullptr;
+}
+
+void Drop(MMDApp& app, const fs::path& path) {
+    const auto name = path.wstring();
+    const auto size = sizeof(DROPFILES) + (name.size() + 2) * sizeof(wchar_t);
+    const auto drop = GlobalAlloc(GHND, size);
+    auto* files = static_cast<DROPFILES*>(GlobalLock(drop));
+    Check(files != nullptr, "allocate video drop");
+    files->pFiles = sizeof(DROPFILES);
+    files->fWide = TRUE;
+    std::memcpy(reinterpret_cast<char*>(files) + sizeof(DROPFILES),
+        name.c_str(), (name.size() + 1) * sizeof(wchar_t));
+    GlobalUnlock(drop);
+    SendMessageW(app.MainWindow(), WM_DROPFILES, reinterpret_cast<WPARAM>(drop), 0);
+}
+
+void WriteGreenAvi(const fs::path& path) {
+    constexpr LONG width = 80, height = 64;
+    PAVIFILE file = nullptr;
+    Check(AVIFileOpenW(&file, path.c_str(), OF_WRITE | OF_CREATE, nullptr) == 0, "create AVI fixture");
+    AVISTREAMINFOW streamInfo{};
+    streamInfo.fccType = streamtypeVIDEO;
+    streamInfo.dwScale = 1;
+    streamInfo.dwRate = 30;
+    streamInfo.rcFrame = {0, 0, width, height};
+    PAVISTREAM stream = nullptr;
+    Check(AVIFileCreateStreamW(file, &stream, &streamInfo) == 0, "create AVI fixture stream");
+    BITMAPINFOHEADER info{};
+    info.biSize = sizeof(info);
+    info.biWidth = width;
+    info.biHeight = height;
+    info.biPlanes = 1;
+    info.biBitCount = 24;
+    info.biSizeImage = width * height * 3;
+    Check(AVIStreamSetFormat(stream, 0, &info, sizeof(info)) == 0, "set AVI fixture format");
+    std::vector<unsigned char> pixels(info.biSizeImage);
+    for (size_t i = 1; i < pixels.size(); i += 3) pixels[i] = 255;
+    Check(AVIStreamWrite(stream, 0, 1, pixels.data(), static_cast<LONG>(pixels.size()),
+                         AVIIF_KEYFRAME, nullptr, nullptr) == 0, "write green AVI fixture frame");
+    AVIStreamRelease(stream);
+    AVIFileRelease(file);
+}
+
+void Run(MMDApp& app, const fs::path& root) {
+    const auto clip = root / L"one" / L"red.mp4";
+    const auto avi = fs::current_path() / L"green.avi";
+    const auto blue = root / L"two" / L"blue.mp4";
+    const auto brokenMp4 = root / L"bad" / L"broken.mp4";
+    const auto brokenAvi = root / L"bad" / L"broken.avi";
+    const auto menu = GetMenu(app.MainWindow());
+    Check(CheckMenuItem(menu, 0x12D, MF_CHECKED) != UINT(-1), "enable remembered directory");
+    auto* device = app.Renderer()->device;
+    WriteGreenAvi(avi);
+    const auto showsColor = [&](int channel) {
+        const auto pixels = Read(device, app.AviBackgroundSurface());
+        for (int i = 0; i < 3; ++i)
+            if (i == channel ? pixels[i] < 200 : pixels[i] > 45) return false;
+        return true;
+    };
+    const auto displayed = [&] {
+        return (GetMenuState(menu, 0xD8, MF_BYCOMMAND) & MF_CHECKED) != 0;
+    };
+
+    Drop(app, clip);
+    Check(app.AviBackgroundEnabled() && displayed() && media::HasVideo(&app) && showsColor(2),
+          "drop publishes red MP4");
+    const std::wstring remembered = app.DirBg();
+    const auto* surface = app.AviBackgroundSurface();
+    const auto revision = media::VideoFrameRevision(&app);
+    app.SceneModified() = 0;
+    Menu(app, nullptr);
+    Check(!app.SceneModified() && errors == 0 && surface == app.AviBackgroundSurface(),
+          "cancel video picker retains the current video");
+
+    app.AviOffsetX() = 17;
+    expectError = true;
+    Menu(app, brokenMp4.c_str());
+    Drop(app, brokenAvi);
+    expectError = false;
+    Check(errors == 2 && !app.SceneModified() && remembered == app.DirBg(),
+          "failed menu and drop preserve the saved state and directory");
+    Check(app.AviBackgroundEnabled() && displayed() && media::HasVideo(&app) &&
+          clip == fs::path(app.AviBackgroundPath()) && app.AviOffsetX() == 17 &&
+          surface == app.AviBackgroundSurface() && revision == media::VideoFrameRevision(&app) &&
+          showsColor(2), "failed replacements retain the old decoder, placement and uploaded red frame");
+
+    // Queue a seek on the old decoder, then switch backends immediately.
+    std::wstring error;
+    media::VideoFrame(&app, 0.5, error, false);
+    Menu(app, avi.c_str());
+    Check(app.SceneModified() && app.AviBackgroundEnabled() && displayed() &&
+          !media::HasVideo(&app) && app.AviFrameReader() && app.AviOffsetX() == 0 &&
+          avi == fs::path(app.AviBackgroundPath()) && remembered != app.DirBg() && showsColor(1),
+          "menu switches from MP4 to AVI and displays the green frame");
+    app.SceneModified() = 0;
+    const auto* reader = app.AviFrameReader();
+    expectError = true;
+    Drop(app, brokenMp4);
+    expectError = false;
+    Check(errors == 3 && !app.SceneModified() && reader == app.AviFrameReader() && showsColor(1),
+          "failed modern replacement retains the green AVI reader");
+
+    Drop(app, blue);
+    Check(app.SceneModified() && app.AviBackgroundEnabled() && displayed() &&
+          !app.AviFrameReader() && media::HasVideo(&app) && blue == fs::path(app.AviBackgroundPath()) &&
+          showsColor(0), "drop switches back to MP4 and uploads the blue frame");
+    for (int i = 0; i < 10; ++i) {
+        Sleep(5);
+        AviBgOverlayRefresh(&app);
+        Check(showsColor(0), "retired video does not overwrite the current surface");
+    }
+
+    CopyPathW(app.AviBackgroundPath(), brokenMp4.c_str());
+    expectError = true;
+    LoadAviFile(&app);
+    expectError = false;
+    Check(errors == 4 && !app.AviBackgroundEnabled() && !displayed() &&
+          !media::HasVideo(&app) && !app.AviBackgroundSurface() && !*app.AviBackgroundPath(),
+          "project video loader clears the previous background on failed open");
+    std::puts("PASS background video picker cancel, failed imports, AVI/MP4 replacement and project reset");
+}
+
+}  // namespace video_replacement
+
 int wmain(int argc,wchar_t** argv) {
     Check(argc==2 || argc==3 || argc==4 || argc==6,"fixture directory required"); std::setvbuf(stdout,nullptr,_IONBF,0);
     const fs::path directory=fs::absolute(argv[1]);
@@ -250,10 +405,13 @@ int wmain(int argc,wchar_t** argv) {
     const bool coordinatorOnly = argc==3 && std::wcscmp(argv[2],L"--stopped-coordinator")==0;
     const bool backgroundOnly = coordinatorOnly || (argc==3 && std::wcscmp(argv[2],L"--background")==0);
     const bool mediaOnly = argc==3 && std::wcscmp(argv[2],L"--media-only")==0;
-    const bool benchmark = argc==3 && !backgroundOnly && !mediaOnly;
+    const bool replacementOnly = argc==3 && std::wcscmp(argv[2],L"--video-replacement")==0;
+    const bool benchmark = argc==3 && !backgroundOnly && !mediaOnly && !replacementOnly;
     const auto initialized=MH_Initialize(); Check(initialized==MH_OK || initialized==MH_ERROR_ALREADY_INITIALIZED,"dialog guard init");
-    MH_CreateHook(reinterpret_cast<void*>(&MessageBoxA),reinterpret_cast<void*>(&UnexpectedA),nullptr);
-    MH_CreateHook(reinterpret_cast<void*>(&MessageBoxW),reinterpret_cast<void*>(&UnexpectedW),nullptr);
+    MH_CreateHook(reinterpret_cast<void*>(&MessageBoxA),
+        reinterpret_cast<void*>(replacementOnly ? &video_replacement::ReportErrorA : &UnexpectedA),nullptr);
+    MH_CreateHook(reinterpret_cast<void*>(&MessageBoxW),
+        reinterpret_cast<void*>(replacementOnly ? &video_replacement::ReportErrorW : &UnexpectedW),nullptr);
     MH_EnableHook(reinterpret_cast<void*>(&MessageBoxA)); MH_EnableHook(reinterpret_cast<void*>(&MessageBoxW));
     Check(MH_CreateHook(reinterpret_cast<void*>(&ShowWindow), reinterpret_cast<void*>(&KeepHidden),
         reinterpret_cast<void**>(&originalShowWindow)) == MH_OK, "hide recording window guard");
@@ -265,6 +423,18 @@ int wmain(int argc,wchar_t** argv) {
     Check(!IsWindowVisible(app->MainWindow()),"host stays hidden");
     std::printf("PLAYBACK_HOST mme=%d mmhack=%d\n",GetModuleHandleW(L"MMEffect.dll")!=nullptr,
         GetModuleHandleW(L"MMHack.dll")!=nullptr);
+    if (replacementOnly) {
+        app->EnglishUI() = 1;
+        AVIFileInit();
+        Check(MH_CreateHook(reinterpret_cast<void*>(&GetOpenFileNameW),
+            reinterpret_cast<void*>(&video_replacement::SelectFile), nullptr) == MH_OK,
+            "install video picker fixture");
+        Check(MH_EnableHook(reinterpret_cast<void*>(&GetOpenFileNameW)) == MH_OK,
+            "enable video picker fixture");
+        video_replacement::Run(*app, directory);
+        ShutdownCleanup(app); g_Block=nullptr; delete app; UnhookWindowsHookEx(hide);
+        return 0;
+    }
     if (playbackOnly) {
         const auto model = argc==6 ? fs::absolute(argv[4]) : directory/L"alpha-triangle.pmx";
         if (argc!=6) Fixture(model);

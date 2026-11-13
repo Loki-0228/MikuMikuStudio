@@ -1,4 +1,5 @@
 #include "native_bone_evaluation.hpp"
+#include "native_bone_registration.hpp"
 #include "mikumikustudio/bone_key_sampling.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "mikumikustudio/bone_curve.hpp"
@@ -164,6 +165,57 @@ public:
     }
 };
 }
+std::uint64_t BoneDeletionEvaluationStorageBytes(std::size_t count) noexcept {
+    try {
+        model_delete_budget::Bytes bytes;
+        bytes.Add(sizeof(Evaluation));
+        bytes.Array<BoneSample>(count);
+        bytes.Array<unsigned>(count);
+        return bytes.value;
+    }catch(...){return UINT64_MAX;}
+}
+MmsResult SampleBoneEvaluation(const mdl::BoneRecord& bone, unsigned index,
+    unsigned boneCount, int physicsMode, int sampleFrame, const BoneEvaluationView& view,
+    BoneEvaluationSample& out) noexcept {
+    if (!view.key || !view.scale || !view.curves || view.keyCapacity > std::size_t(INT32_MAX) ||
+        boneCount > view.keyCapacity || index >= boneCount || sampleFrame < 0 || sampleFrame > frame_limits::maximum)
+        return MMS_E_ARGUMENT;
+    return Boundary([&]() -> MmsResult {
+        Interval interval;
+        if (!ReadInterval(view, index, boneCount, unsigned(sampleFrame), interval)) return MMS_E_ARGUMENT;
+        BoneSample sample;
+        sample.rigid = bone.hasRigidBody; sample.physics = bone.physicsDisabled;
+        sample.after = ReadPose(bone);
+        if (NativeType(bone.type)) {
+            if (bone.slotIndex >= 0) {
+                if (!view.selectors || std::size_t(bone.slotIndex) >= view.selectorCount) return MMS_E_ARGUMENT;
+                const auto& window = view.selectors[bone.slotIndex];
+                sample.window = true; sample.windowStart = window.windowStart; sample.windowEnd = window.windowEnd;
+            }
+            if (const auto status = SampleNative(sample, interval, unsigned(sampleFrame), physicsMode)) return status;
+            sample.writePose = true;
+        }
+        auto scale = view.scale->Key(int(interval.lowerSlot));
+        if (interval.upperSlot) {
+            const float time = float(std::clamp((double(sampleFrame) - interval.lower.frame) /
+                double(interval.upper.frame - interval.lower.frame), 0.0, 1.0));
+            scale = bone_scale::Interpolate(scale, view.scale->Key(int(interval.upperSlot)),
+                bone_scale::CurveTime(view.scale->KeyCurve(int(interval.upperSlot)), time));
+        }
+        sample.writePose |= view.curves->Sample(int(index), sampleFrame, interval.nativeHash,
+            sample.after.position.data(), sample.after.rotation.data(), scale);
+        if (!bone_scale::Valid(scale)) return MMS_E_ARGUMENT;
+        if (sample.writePose) {
+            for (float value : sample.after.position) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+            for (float value : sample.after.rotation) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
+        }
+        BoneEvaluationSample result;
+        result.position = sample.after.position; result.rotation = sample.after.rotation;
+        result.scale = scale; result.writePose = sample.writePose;
+        out = result;
+        return MMS_OK;
+    });
+}
 MmsResult PrepareBoneEvaluation(MMDApp& app, unsigned slot, const std::vector<unsigned>& affected,
     const BoneEvaluationView& view, std::unique_ptr<PreparedHistoryChange>& out) noexcept {
     out.reset();
@@ -185,36 +237,26 @@ MmsResult PrepareBoneEvaluation(MMDApp& app, unsigned slot, const std::vector<un
             sample.rigid = bone.hasRigidBody; sample.physics = bone.physicsDisabled;
             sample.type = bone.type; sample.selector = bone.slotIndex; sample.before = sample.after = ReadPose(bone);
             if (!sample.dirty) {
-                Interval interval;
-                if (!ReadInterval(view, index, model.boneCount, unsigned(candidate->frame), interval)) return MMS_E_ARGUMENT;
+                auto target = view;
                 if (NativeType(bone.type)) {
                     if (sample.selector >= 0) {
                         if (!candidate->order || unsigned(sample.selector) >= candidate->orderCount) return MMS_E_ARGUMENT;
                         sample.sourceWindow = static_cast<const mdl::BoneOrderEntry*>(candidate->order)[sample.selector];
                         if (view.selectors && view.selectorCount != candidate->orderCount) return MMS_E_ARGUMENT;
-                        const auto& window = view.selectors ? view.selectors[sample.selector] : sample.sourceWindow;
-                        sample.window = true; sample.windowStart = window.windowStart; sample.windowEnd = window.windowEnd;
+                        if (!target.selectors) {
+                            target.selectors = static_cast<const mdl::BoneOrderEntry*>(candidate->order);
+                            target.selectorCount = candidate->orderCount;
+                        }
+                        sample.window = true;
                     }
-                    const auto status = SampleNative(sample, interval, unsigned(candidate->frame), candidate->physicsMode);
-                    if (status != MMS_OK) return status;
-                    sample.writePose = true;
                 }
-                auto scale = view.scale->Key(int(interval.lowerSlot));
-                if (interval.upperSlot) {
-                    const float time = float(std::clamp((double(candidate->frame) - interval.lower.frame) /
-                        double(interval.upper.frame - interval.lower.frame), 0.0, 1.0));
-                    scale = bone_scale::Interpolate(scale, view.scale->Key(int(interval.upperSlot)),
-                        bone_scale::CurveTime(view.scale->KeyCurve(int(interval.upperSlot)), time));
-                }
-                sample.writePose |= view.curves->Sample(int(index), candidate->frame, interval.nativeHash,
-                    sample.after.position.data(), sample.after.rotation.data(), scale);
-                if (!bone_scale::Valid(scale)) return MMS_E_ARGUMENT;
-                if (sample.writePose) {
-                    for (float value : sample.after.position) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
-                    for (float value : sample.after.rotation) if (!std::isfinite(value)) return MMS_E_ARGUMENT;
-                }
-                if (bone_scale::Identity(scale)) candidate->afterScale.erase(int(index));
-                else candidate->afterScale[int(index)] = scale;
+                BoneEvaluationSample result;
+                if (const auto status = SampleBoneEvaluation(bone, index, model.boneCount, candidate->physicsMode,
+                    candidate->frame, target, result)) return status;
+                sample.after.position = result.position; sample.after.rotation = result.rotation;
+                sample.writePose = result.writePose;
+                if (bone_scale::Identity(result.scale)) candidate->afterScale.erase(int(index));
+                else candidate->afterScale[int(index)] = result.scale;
             }
             candidate->samples.push_back(sample);
         }

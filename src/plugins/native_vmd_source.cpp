@@ -1,6 +1,7 @@
 #include "native_vmd_source.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../model/vmd_read_guard.hpp"
+#include "../model/vmd_prepare.hpp"
 #include "mikumikustudio/accessory_motion_io.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/global_key_layout.hpp"
@@ -11,14 +12,21 @@
 #include <fcntl.h>
 #include <io.h>
 #include <share.h>
-#include <stdexcept>
 #include <sys/stat.h>
 namespace mikumikustudio::plugins {
 namespace {
 struct VmdDescriptor {int value=-1;~VmdDescriptor(){if(value>=0)_close(value);}};
 template<class T> T VmdValue(const std::uint8_t* bytes){T value;std::memcpy(&value,bytes,sizeof(value));return value;}
-void VmdFinite(const std::uint8_t* bytes,unsigned count){for(unsigned i=0;i<count;++i)if(!std::isfinite(VmdValue<float>(bytes+4*i)))throw std::invalid_argument("nonfinite VMD value");}
-void VmdCurve(const std::uint8_t* bytes,unsigned count){for(unsigned i=0;i<count;++i)if(bytes[i]>127)throw std::invalid_argument("invalid VMD interpolation");}
+bool VmdFinite(const std::uint8_t* bytes, unsigned count) noexcept {
+    for (unsigned i = 0; i < count; ++i)
+        if (!std::isfinite(VmdValue<float>(bytes + 4 * i))) return false;
+    return true;
+}
+bool VmdCurve(const std::uint8_t* bytes, unsigned count) noexcept {
+    for (unsigned i = 0; i < count; ++i)
+        if (bytes[i] > 127) return false;
+    return true;
+}
 }
 MmsResult DecodeGlobalVmdSource(const char* ansi,const wchar_t* wide,std::uint32_t offset,GlobalVmdSource& out) noexcept {
     if((!wide&&!ansi)||offset>unsigned(frame_limits::maximum))return MMS_E_ARGUMENT;
@@ -38,42 +46,59 @@ MmsResult DecodeGlobalVmdSource(const char* ansi,const wchar_t* wide,std::uint32
         if(input.version==2&&decoded.modelName!=cameraName)return MMS_E_ARGUMENT;
         // Global import discards these standard tracks, but their numeric data
         // and maximum frames still participate in whole-file admission.
-        auto at=std::size_t(30+nameBytes+4);
-        for(unsigned i=0;i<input.boneCount;++i,at+=111){const auto* record=input.Data(at);VmdFinite(record+19,7);VmdCurve(record+47,64);}
-        at+=4;
-        for(unsigned i=0;i<input.morphCount;++i,at+=23)VmdFinite(input.Data(at)+19,1);
-        decoded.source.cameras.reserve(input.cameraCount);
-        if(input.cameraOffset!=vmd_read::Input::absent){
-            at=input.cameraOffset+4;
-            for(unsigned i=0;i<input.cameraCount;++i,at+=input.version==1?36:61){
-                const auto* record=input.Data(at);VmdFinite(record+4,7);mdl::CameraClipboardRecord key{};
-                key.frame=VmdValue<std::uint32_t>(record);key.distance=VmdValue<float>(record+4);
-                std::memcpy(key.eye,record+8,sizeof(key.eye));std::memcpy(key.target,record+20,sizeof(key.target));
-                key.parentModel=-1;key.parentBone=0;
-                if(input.version==1){
-                    VmdCurve(record+32,4);for(unsigned lane=0;lane<6;++lane){key.interpolation[lane]=record[32];key.interpolation[12+lane]=record[33];key.interpolation[6+lane]=record[34];key.interpolation[18+lane]=record[35];}
-                    key.fov=45;key.perspective=0;
-                }else{
-                    VmdCurve(record+32,24);for(unsigned lane=0;lane<6;++lane){key.interpolation[lane]=record[32+4*lane];key.interpolation[12+lane]=record[33+4*lane];key.interpolation[6+lane]=record[34+4*lane];key.interpolation[18+lane]=record[35+4*lane];}
-                    key.fov=VmdValue<std::int32_t>(record+56);key.perspective=std::uint8_t(record[60]!=0);
-                    if(key.fov<1||key.fov>179)return MMS_E_ARGUMENT;
-                }
-                decoded.source.cameras.push_back(key);
+        const auto boneStart = std::size_t(30 + nameBytes + 4);
+        const auto morphStart = boneStart + std::size_t(input.boneCount) * 111 + 4;
+        if (!vmd_read::PrepareRecords(input.boneCount, [&](std::size_t i) noexcept {
+            const auto* record = input.Data(boneStart + i * 111);
+            return VmdFinite(record + 19, 7) && VmdCurve(record + 47, 64);
+        }) || !vmd_read::PrepareRecords(input.morphCount, [&](std::size_t i) noexcept {
+            return VmdFinite(input.Data(morphStart + i * 23) + 19, 1);
+        })) return MMS_E_ARGUMENT;
+        decoded.source.cameras.resize(input.cameraCount);
+        const auto cameraStride = input.version == 1 ? 36u : 61u;
+        if (!vmd_read::PrepareRecords(decoded.source.cameras.size(), [&](std::size_t i) noexcept {
+            const auto* record = input.Data(input.cameraOffset + 4 + i * cameraStride);
+            if (!VmdFinite(record + 4, 7)) return false;
+            auto& key = decoded.source.cameras[i];
+            key.frame = VmdValue<std::uint32_t>(record);
+            key.distance = VmdValue<float>(record + 4);
+            std::memcpy(key.eye, record + 8, sizeof(key.eye));
+            std::memcpy(key.target, record + 20, sizeof(key.target));
+            key.parentModel = -1;
+            key.parentBone = 0;
+            const bool old = input.version == 1;
+            if (!VmdCurve(record + 32, old ? 4 : 24)) return false;
+            for (unsigned lane = 0; lane < 6; ++lane) {
+                const auto* curve = record + 32 + (old ? 0 : 4 * lane);
+                key.interpolation[lane] = curve[0];
+                key.interpolation[12 + lane] = curve[1];
+                key.interpolation[6 + lane] = curve[2];
+                key.interpolation[18 + lane] = curve[3];
             }
-        }
-        decoded.source.lights.reserve(input.lightCount);
-        if(input.lightOffset!=vmd_read::Input::absent){
-            at=input.lightOffset+4;
-            for(unsigned i=0;i<input.lightCount;++i,at+=28){const auto* record=input.Data(at);VmdFinite(record+4,6);mdl::LightClipboardRecord key{};
-                key.frame=VmdValue<std::uint32_t>(record);std::memcpy(key.color,record+4,sizeof(key.color));std::memcpy(key.direction,record+16,sizeof(key.direction));decoded.source.lights.push_back(key);}
-        }
-        decoded.source.shadows.reserve(input.shadowCount);
-        if(input.shadowOffset!=vmd_read::Input::absent){
-            at=input.shadowOffset+4;
-            for(unsigned i=0;i<input.shadowCount;++i,at+=9){const auto* record=input.Data(at);VmdFinite(record+5,1);mdl::ShadowClipboardRecord key{};
-                key.frame=VmdValue<std::uint32_t>(record);key.mode=record[4];key.distance=VmdValue<float>(record+5);
-                if(key.mode>2||key.distance<0||key.distance>1)return MMS_E_ARGUMENT;decoded.source.shadows.push_back(key);}
-        }
+            key.fov = old ? 45 : VmdValue<std::int32_t>(record + 56);
+            key.perspective = old ? 0 : std::uint8_t(record[60] != 0);
+            return key.fov >= 1 && key.fov <= 179;
+        })) return MMS_E_ARGUMENT;
+        decoded.source.lights.resize(input.lightCount);
+        if (!vmd_read::PrepareRecords(decoded.source.lights.size(), [&](std::size_t i) noexcept {
+            const auto* record = input.Data(input.lightOffset + 4 + i * 28);
+            if (!VmdFinite(record + 4, 6)) return false;
+            auto& key = decoded.source.lights[i];
+            key.frame = VmdValue<std::uint32_t>(record);
+            std::memcpy(key.color, record + 4, sizeof(key.color));
+            std::memcpy(key.direction, record + 16, sizeof(key.direction));
+            return true;
+        })) return MMS_E_ARGUMENT;
+        decoded.source.shadows.resize(input.shadowCount);
+        if (!vmd_read::PrepareRecords(decoded.source.shadows.size(), [&](std::size_t i) noexcept {
+            const auto* record = input.Data(input.shadowOffset + 4 + i * 9);
+            if (!VmdFinite(record + 5, 1)) return false;
+            auto& key = decoded.source.shadows[i];
+            key.frame = VmdValue<std::uint32_t>(record);
+            key.mode = record[4];
+            key.distance = VmdValue<float>(record + 5);
+            return key.mode <= 2 && key.distance >= 0 && key.distance <= 1;
+        })) return MMS_E_ARGUMENT;
         const auto tailBytes=input.Size()-input.standardEnd;
         if(tailBytes>=sizeof(accessory_motion_io::kMagic)&&!std::memcmp(input.Data(input.standardEnd),accessory_motion_io::kMagic,sizeof(accessory_motion_io::kMagic))){
             accessory_motion_io::Decode(input.Data(input.standardEnd),tailBytes,decoded.accessoryTracks);

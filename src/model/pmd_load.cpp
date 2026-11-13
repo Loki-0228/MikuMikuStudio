@@ -57,6 +57,7 @@
 #include "mikumikustudio/path_workspace.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/effect_api.hpp"
+#include "project_model_path.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -112,8 +113,8 @@ inline void LogPmdRigid(const wchar_t*, std::uint32_t, std::int32_t,
 
 }  // namespace
 
-bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
-                  D3DRenderer* sub, int unusedA06CE, std::uint8_t boxGate,
+static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
+                  D3DRenderer* sub, bool exact, std::uint8_t boxGate,
                   std::uint8_t englishUi, PhysicsScene* sub048,
                   PathResolutionWorkspace& paths) {          // 0x4BF3E0
     // Arg map (original 0x46050F call site, pushes -0x20..-0x4; the
@@ -147,8 +148,8 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     model.scenePtr = sub048;               // 0x4BF42B
     model.physicsFlags = englishUi;           // 0x4BF431: English-data byte
 
-    ResolveUserFilePath(paths, path);                         // 0x4089F0
-    wcscpy_s(model.path, 0x100, paths.resolvedPath);
+    const wchar_t* source = exact ? path : ResolveUserFilePath(paths, path);
+    wcscpy_s(model.path, 0x100, source);
 
     // MME records this wide path when associating the index-buffer output
     // slot with the model ID (the PMX parser shares this open path).
@@ -1073,4 +1074,14 @@ bool ModelLoadPMD(unsigned char* m, HWND hwnd, const wchar_t* path,
     return true;
 }
 
+bool ModelLoadPMD(unsigned char* model, HWND window, const wchar_t* path, D3DRenderer* renderer,
+                  int, std::uint8_t showInfo, std::uint8_t language, PhysicsScene* physics,
+                  PathResolutionWorkspace& workspace) {
+    return LoadModelFile(model, window, path, renderer, false, showInfo, language, physics, workspace);
+}
+
+bool project_model::LoadExact(unsigned char* model, HWND window, const wchar_t* path,
+        D3DRenderer* renderer, std::uint8_t language, PhysicsScene* physics, PathResolutionWorkspace& workspace) {
+    return LoadModelFile(model, window, path, renderer, true, 0, language, physics, workspace);
+}
 }  // namespace mikumikustudio

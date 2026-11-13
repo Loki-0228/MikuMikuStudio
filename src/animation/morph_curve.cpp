@@ -474,8 +474,13 @@ struct State {
     std::map<int, std::vector<NativeKey>> observed;  // chain at the last derive
 };
 
-std::map<const unsigned char*, State>& States() {
-    static std::map<const unsigned char*, State> states;
+using StateRegistry=std::map<const unsigned char*, State>;
+// Measurement must not call States(): its first call allocates the MSVC tree
+// sentinel. Only the normal state accessor initializes and publishes this view.
+StateRegistry* initializedStates=nullptr;
+StateRegistry& States() {
+    static StateRegistry states;
+    initializedStates=&states;
     return states;
 }
 
@@ -795,6 +800,57 @@ static bool ReadSynced(const unsigned char* model, const State* state, int morph
 bool Read(const unsigned char* model, int morph, ac::Track& out, std::string& error) {
     return ReadSynced(model, Current(model), morph, out, error);
 }
+
+#if !MMD_ORIGINAL_PROFILE
+bool ReadSelectedPreview(const unsigned char* model, ac::Track& interval) {
+    auto* state = Lookup(model);
+    if (!state) return false;
+    const auto& record = *mdl::Mdl(model);
+    const auto* keys = record.morphKeys;
+    const auto capacity = mdl::MorphKeyCapacity(keys);
+    if (!record.morphs || !capacity) return false;
+
+    int selectedMorph = -1;
+    std::uint32_t selectedFrame = 0;
+    for (const auto& entry : state->authored) {
+        const auto morph = static_cast<unsigned>(entry.first);
+        if (morph >= record.morphCount || PanelGroup(static_cast<std::uint8_t>(record.morphs[morph].panel)) < 0)
+            continue;
+        bool marked = false;
+        std::uint32_t frame = 0;
+        std::size_t slot = morph;
+        for (std::size_t visited = 0; slot < capacity && visited < capacity; ++visited) {
+            const auto& key = keys[slot];
+            if (key.allocated) {
+                marked = true;
+                frame = key.frame;
+                if (frame != 0) break;
+            }
+            if (key.next < record.morphCount) break;
+            slot = key.next;
+        }
+        if (!marked) continue;
+        if (selectedMorph != -1) return false;
+        selectedMorph = entry.first;
+        selectedFrame = frame;
+    }
+    if (selectedMorph < 0) return false;
+
+    Sync(model, *state);
+    const auto match = state->effective.find(selectedMorph);
+    if (match == state->effective.end() || match->second.keys.size() < 2) return false;
+    const auto& track = match->second;
+    auto end = track.keys.begin() + 1;
+    if (selectedFrame != 0) {
+        end = std::lower_bound(end, track.keys.end(), selectedFrame,
+            [](const ac::Key& key, std::uint32_t frame) { return std::int64_t(key.frame) < frame; });
+        if (end == track.keys.end() || std::int64_t(end->frame) != selectedFrame) return false;
+    }
+    interval.discrete = track.discrete;
+    interval.keys.assign(end - 1, end + 1);
+    return true;
+}
+#endif
 
 bool Read(const MMDApp& app, int morph, ac::Track& out, std::wstring& error) {
     unsigned char* const model = app.SelectedModel();
@@ -1359,6 +1415,15 @@ void LoadPmm(const MMDApp& app, const pmm_extension::Document& document) {
 
 namespace {
 
+// The interpolation enum belongs to the incoming interval. The outgoing
+// handle can still describe an unchanged interval to the next exported key.
+void MakeIncomingLinear(ac::Key& key) {
+    key.inSlope = 0;
+    key.inWeight = kHandleWeight;
+    key.interpolation = ac::Interpolation::Linear;
+    key.tangent = ac::Tangent::Free;
+}
+
 // The keys of one effective curve that the standard morph section carries:
 // exactly the frames of the allocated native records (the same "selected" mark
 // vmd_save writes), rebased by minFrame.  The authored interpolation of a key
@@ -1381,7 +1446,7 @@ bool SelectExported(const ac::Track& effective, const std::vector<NativeKey>& ch
             continue;
         }
         ac::Key copy = key;
-        if (!previousKept) MakeNativeInterpolation(copy);
+        if (!previousKept) MakeIncomingLinear(copy);
         copy.frame -= static_cast<std::int32_t>(minFrame);
         out.keys.push_back(copy);
         previousKept = true;
@@ -1404,7 +1469,7 @@ void MergeImported(const ac::Track& target, const ac::Track& imported, ac::Track
         ac::Key key = imported.keys[index];
         // The first imported key governs no interval of its own, so it must not
         // fabricate one over whatever target key precedes it.
-        if (index == 0) MakeNativeInterpolation(key);
+        if (index == 0) MakeIncomingLinear(key);
         auto at = std::lower_bound(out.keys.begin(), out.keys.end(), key.frame, compare);
         if (at != out.keys.end() && at->frame == key.frame) {
             *at = key;
@@ -1415,7 +1480,7 @@ void MergeImported(const ac::Track& target, const ac::Track& imported, ac::Track
     }
     for (ac::Key& key : out.keys) {
         if (invalidated.count(key.frame) != 0 && importedFrames.count(key.frame) == 0) {
-            MakeNativeInterpolation(key);
+            MakeIncomingLinear(key);
         }
     }
     // An imported interval keeps its authored ease only while its two keys are
@@ -1426,7 +1491,7 @@ void MergeImported(const ac::Track& target, const ac::Track& imported, ac::Track
                                    compare);
         if (at == out.keys.end() || at->frame != imported.keys[index].frame) continue;
         if (at == out.keys.begin() || (at - 1)->frame != imported.keys[index - 1].frame) {
-            MakeNativeInterpolation(*at);
+            MakeIncomingLinear(*at);
         }
     }
     ac::UpdateAutomatic(out);
@@ -1950,13 +2015,81 @@ bool OwnedAuthorEqual(const State& a,const State& b,unsigned morph)noexcept{
 void LayerAdd(std::uint64_t& bytes,std::uint64_t n,std::uint64_t stride=1)noexcept{bytes=stride&&n>(UINT64_MAX-bytes)/stride?UINT64_MAX:bytes+n*stride;}
 std::uint64_t LayerBytes(const State& state)noexcept{
     std::uint64_t bytes=sizeof(State);
-    const auto tracks=[&](const auto& entries){LayerAdd(bytes,entries.size()+1,sizeof(typename std::decay_t<decltype(entries)>::value_type)+4*sizeof(void*));
+    const auto tracks=[&](const auto& entries){constexpr auto node=sizeof(typename std::decay_t<decltype(entries)>::value_type)+4*sizeof(void*);
+        LayerAdd(bytes,1,node);LayerAdd(bytes,entries.size(),node);
         for(const auto& entry:entries)LayerAdd(bytes,entry.second.keys.capacity(),sizeof(ac::Key));};
-    const auto chains=[&](const auto& entries){LayerAdd(bytes,entries.size()+1,sizeof(typename std::decay_t<decltype(entries)>::value_type)+4*sizeof(void*));
+    const auto chains=[&](const auto& entries){constexpr auto node=sizeof(typename std::decay_t<decltype(entries)>::value_type)+4*sizeof(void*);
+        LayerAdd(bytes,1,node);LayerAdd(bytes,entries.size(),node);
         for(const auto& entry:entries)LayerAdd(bytes,entry.second.capacity(),sizeof(NativeKey));};
     tracks(state.authored);tracks(state.effective);chains(state.mirror);chains(state.observed);return bytes;
 }
+// The supported MSVC vector grows by max(old + old/2, requested size).
+// Follow that recurrence without allocating, including the old buffer still
+// alive during the largest reallocation. This is a buffer-growth bound, not
+// an object multiplier. Erasing elements cannot increase that maximum.
+std::uint64_t DeletionVectorPeak(std::uint64_t initial,std::uint64_t elements,std::uint64_t stride) noexcept {
+    std::uint64_t capacity=initial,previous=0;
+    while(capacity<elements) {
+        auto geometric=capacity;LayerAdd(geometric,capacity/2);
+        auto nextSize=capacity;LayerAdd(nextSize,1);
+        const auto next=(std::max)(geometric,nextSize);
+        if(next==UINT64_MAX)return UINT64_MAX;
+        previous=capacity;capacity=next;
+    }
+    std::uint64_t bytes=0;LayerAdd(bytes,capacity,stride);LayerAdd(bytes,previous,stride);return bytes;
+}
 template<class Map>void CopyLayerEntry(Map& target,const Map& source,int morph){const auto at=source.find(morph);if(at==source.end())target.erase(morph);else target[morph]=at->second;}
+}
+std::uint64_t DeletionPreparationBytes(const unsigned char* model,std::size_t nativeCapacity) noexcept {
+    if(!model)return UINT64_MAX;
+    const State* source=nullptr;
+    if(initializedStates) {
+        const auto found=initializedStates->find(model);
+        if(found!=initializedStates->end()&&Matches(found->second.identity,model)&&!found->second.authored.empty())
+            source=&found->second;
+    }
+    std::uint64_t bytes=sizeof(AuthoredLayers);
+    LayerAdd(bytes,sizeof(AuthoredLayers::Impl));
+    // AuthoredLayers constructs four empty maps. CaptureLayers also constructs
+    // a temporary State{} while resetting them; charge those four sentinels
+    // separately even though that reset scratch precedes sampling.
+    constexpr auto trackNode=sizeof(decltype(State::authored)::value_type)+4*sizeof(void*);
+    constexpr auto chainNode=sizeof(decltype(State::mirror)::value_type)+4*sizeof(void*);
+    const auto emptyState=[&]() {
+        LayerAdd(bytes,1,trackNode);LayerAdd(bytes,1,trackNode);
+        LayerAdd(bytes,1,chainNode);LayerAdd(bytes,1,chainNode);
+    };
+    if(source) {
+        const auto layers=LayerBytes(*source);
+        if(layers==UINT64_MAX)return UINT64_MAX;
+        LayerAdd(bytes,layers-sizeof(State));
+    }else emptyState();
+    emptyState(); // CaptureLayers reset scratch, not another retained copy.
+    if(!initializedStates)LayerAdd(bytes,sizeof(StateRegistry::value_type)+4*sizeof(void*));
+    // All sample calls are sequential, and source/target chains share this
+    // real pool capacity. Keep one native traversal's maximum reallocation.
+    LayerAdd(bytes,DeletionVectorPeak(0,nativeCapacity,sizeof(NativeKey)));
+    std::uint64_t largestCurveScratch=0;
+    if(source)for(const auto& entry:source->authored) {
+        const auto& authored=entry.second;
+        std::uint64_t scratch=0;
+        const bool derives=source->mirror.find(entry.first)!=source->mirror.end()&&
+            source->observed.find(entry.first)!=source->observed.end();
+        if(derives) {
+            auto maximumKeys=std::uint64_t(authored.keys.size());LayerAdd(maximumKeys,nativeCapacity);
+            if(maximumKeys==UINT64_MAX)return UINT64_MAX;
+            LayerAdd(scratch,DeletionVectorPeak(authored.keys.size(),maximumKeys,sizeof(ac::Key)));
+            // Every invalidated frame belongs to the original authored keys
+            // or the inserted native keys, including frames erased meanwhile.
+            constexpr auto invalidationNode=sizeof(std::int32_t)+4*sizeof(void*);
+            LayerAdd(scratch,1,invalidationNode);LayerAdd(scratch,maximumKeys,invalidationNode);
+        }else {
+            // Missing baselines take the plain authored-copy sample branch.
+            LayerAdd(scratch,authored.keys.capacity(),sizeof(ac::Key));
+        }
+        largestCurveScratch=(std::max)(largestCurveScratch,scratch);
+    }
+    LayerAdd(bytes,largestCurveScratch);return bytes;
 }
 struct AuthoredReplacement::Impl{
     unsigned char* model;Identity identity;bool beforePresent=false,published=false,forwardState=false,erasing=false,erasureChanged=false;std::uint64_t generation=1,initialDigest=0;
@@ -2209,7 +2342,82 @@ const ac::Track& ValidateSampledCurve(const ac::Track& curve) {
     return curve;
 }
 
+void ValidateCopyMirror(const std::vector<NativeKey>& mirror) {
+    if (mirror.empty() || mirror.front().frame != 0)
+        throw std::invalid_argument("invalid morph copy author mirror");
+    for (std::size_t i = 0; i < mirror.size(); ++i) {
+        if (mirror[i].frame < 0 || mirror[i].frame > kMaximumFrame ||
+            !std::isfinite(mirror[i].value) ||
+            (i && mirror[i].frame <= mirror[i - 1].frame))
+            throw std::invalid_argument("invalid morph copy author mirror");
+    }
+}
+
 }  // namespace
+
+bool CaptureCopyAuthoring(const unsigned char* model, const std::vector<int>& selectedMorphs,
+                          std::vector<CopyAuthoring>& out, std::string& error) {
+    out.clear();
+    error.clear();
+    if (!model) {
+        error = "there is no model to capture morph authoring from";
+        return false;
+    }
+    const auto& record = *mdl::Mdl(model);
+    // Validate even when no registry or author exists. No native chain is
+    // needed for an absent author; the native copy owns that separate payload.
+    for (int morph : selectedMorphs) {
+        if (morph < 0 || static_cast<std::uint32_t>(morph) >= record.morphCount || !record.morphs) {
+            error = "morph copy index is outside the model";
+            return false;
+        }
+    }
+    if (selectedMorphs.empty() || !initializedStates) return true;
+    const auto found = initializedStates->find(model);
+    if (found == initializedStates->end() || !Matches(found->second.identity, model)) return true;
+    const State& state = found->second;
+    std::vector<CopyAuthoring> captured;
+    // A vector keeps an author-free capture allocation-free, including on
+    // implementations whose empty associative containers allocate a sentinel.
+    std::vector<int> seen;
+    const NativeKeyView view{record.morphKeys,
+        [](const void* keys, std::uint32_t slot) noexcept -> const mdl::MorphKey* {
+            return keys ? static_cast<const mdl::MorphKey*>(keys) + slot : nullptr;
+        }, mdl::MorphKeyCapacity(record.morphKeys)};
+    try {
+        for (int morph : selectedMorphs) {
+            const auto author = state.authored.find(morph);
+            if (author == state.authored.end() || std::find(seen.begin(), seen.end(), morph) != seen.end())
+                continue;
+            seen.push_back(morph);
+            ValidateSampledCurve(author->second);
+            // Unlike ReadChain, ViewChain rejects malformed order/backlinks,
+            // duplicate frames and cross-head links instead of normalizing them.
+            const auto native = ViewChain(view, record.morphCount, unsigned(morph));
+            const auto mirror = state.mirror.find(morph);
+            const auto observed = state.observed.find(morph);
+            CopyAuthoring entry;
+            entry.morph = morph;
+            if (mirror == state.mirror.end() && observed == state.observed.end()) {
+                // RebuildLayers intentionally defers baseline installation.
+                // Honor that convention privately, without filling live maps.
+                entry.track = author->second;
+            } else {
+                if (mirror == state.mirror.end() || observed == state.observed.end())
+                    throw std::invalid_argument("incomplete morph copy author baseline");
+                ValidateCopyMirror(mirror->second);
+                Derive(author->second, mirror->second, native, entry.track);
+            }
+            ValidateSampledCurve(entry.track);
+            captured.push_back(std::move(entry));
+        }
+    } catch (const std::invalid_argument& failure) {
+        error = failure.what();
+        return false;
+    }
+    out.swap(captured);
+    return true;
+}
 
 struct SamplingState::Impl {
     std::vector<SamplingTrack> tracks;

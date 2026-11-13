@@ -20,10 +20,14 @@
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/antialias.hpp"
 #include "mikumikustudio/frame_rate.hpp"
+#include "mikumikustudio/frame_clipboard.hpp"
 #include "mikumikustudio/playback_timing.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+
+#include <array>
 
 #include "mikumikustudio/app_layout.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
@@ -39,6 +43,7 @@
 #include "mikumikustudio/view_options.hpp"
 
 namespace mikumikustudio {
+namespace project_relocation { class LoadScope; class Ticket; struct Owner; }
 
 namespace mdl {
 struct BoneRecord;
@@ -251,6 +256,10 @@ public:
     bool TransparentSortCrossObjects() const { return !MMD_ORIGINAL_PROFILE && m_transparentSortCrossObjects; }
 
     LetterHotkeyState& LetterHotkeys() { return m_letterHotkeys; }
+    // Polled keyboard eligibility/history owned by this app instance; runtime
+    // only, never part of the serialized legacy state.
+    PolledKeyState& PolledKeys() { return m_polledKeys; }
+    const PolledKeyState& PolledKeys() const { return m_polledKeys; }
 
     // Frame-range output dialog HWND (x86 blob slot 0xA0B50).
     HWND& FrameRangeDialog() {
@@ -609,7 +618,35 @@ public:
     ModifiedFlag SceneModified() { return ModifiedFlag(*this); }
     std::uint64_t SceneRevision() const { return m_sceneRevision; }
     std::uint64_t SceneGeneration() const { return m_sceneGeneration; }
-    void AdvanceSceneGeneration() { ++m_sceneGeneration; }
+#if !MMD_ORIGINAL_PROFILE
+    std::uint64_t& PendingPictureUiTicket() { return m_pendingPictureUiTicket; }
+    frame_clipboard::GlobalCopyState& GlobalClipboardCopy() { return m_globalClipboardCopy; }
+    const frame_clipboard::GlobalCopyState& GlobalClipboardCopy() const { return m_globalClipboardCopy; }
+    frame_clipboard::CopyBatchState& FrameClipboardCopy(frame_clipboard::CopyMode mode) {
+        return mode == frame_clipboard::CopyMode::Global ? m_globalFrameCopy : m_modelFrameCopy;
+    }
+    const frame_clipboard::CopyBatchState& FrameClipboardCopy(frame_clipboard::CopyMode mode) const {
+        return mode == frame_clipboard::CopyMode::Global ? m_globalFrameCopy : m_modelFrameCopy;
+    }
+    void RetireFrameCopies() noexcept {
+        for (auto* state : {&m_globalFrameCopy, &m_modelFrameCopy}) {
+            state->snapshot.reset(); state->status = frame_clipboard::CopyBatchStatus::Unavailable;
+            state->error = 0; state->preparing = false;
+            // Advance rather than reset: invalidate in-flight work and UI
+            // callbacks even when scene generation has not changed.
+            if (state->attempt != std::uint64_t(-1)) ++state->attempt;
+        }
+    }
+#endif
+    void AdvanceSceneGeneration() {
+        m_relocationOwner.reset();
+#if !MMD_ORIGINAL_PROFILE
+        m_globalClipboardCopy = {};
+        m_globalFrameCopy = {};
+        m_modelFrameCopy = {};
+#endif
+        ++m_sceneGeneration;
+    }
     std::uint8_t SceneModified() const {
         return state.sceneModified;
     }
@@ -1577,23 +1614,33 @@ public:
     struct HudSpriteRange { unsigned first = 0, count = 0; } hudSprites;
 
     // Session-only UI geometry; never part of the PMM/legacy state blob.
+    std::uint64_t sidebarSizingSerial = 0, bottomPanelSizingSerial = 0;
     struct SidebarSizing {
         bool active = false;
         int startWidth = 0;
         float startRatio = 0;
+        std::uint64_t layoutToken = 0, epoch = 0;
+        bool preparing = false;
     } sidebarSizing;
     struct BottomPanelSizing {
         bool relayout = false;
-        int extra[9]{};
+        std::array<int, 11> extra{}; // Nine widths, then the two main panel heights.
         int dragging = -1;
         int startX = 0;
+        int startY = 0;
         int startExtra = 0;
+        std::uint64_t layoutToken = 0, epoch = 0;
+        bool preparing = false;
     } bottomPanelSizing;
 
 private:
     friend class ScopedSceneMutation;
     unsigned int m_sceneMutationDepth = 0;
     std::uint64_t m_sceneRevision = 0, m_sceneGeneration = 0;
+#if !MMD_ORIGINAL_PROFILE
+    // Transient post-publication work, outside the serialized legacy state.
+    std::uint64_t m_pendingPictureUiTicket = 0;
+#endif
     // Port settings use the PMM v2 extension, outside the legacy state layout.
     pmm_settings::State m_pmmProjectSettings;
     bool m_transparentMaterialIndexOrderDirty = false;
@@ -1605,6 +1652,12 @@ private:
     bool m_transparentSortCrossObjects = false;
 
     LetterHotkeyState m_letterHotkeys;
+
+    // Foreground-owner latches for the polled keyboard path.  A value member,
+    // not a global registry keyed by HWND: nothing allocates per poll and no
+    // entry can outlive its window.  Kept out of MMDAppState so the pinned
+    // serialized layout and ctor/reset behavior are unchanged.
+    PolledKeyState m_polledKeys;
 
 #if defined(_M_X64)
     // In the original x86 blob, 0x9E180 is a D3DLIGHT9 overlay spanning
@@ -1748,13 +1801,42 @@ public:
         enum class Target { Camera, Empty, Picture, Video };
         Target target = Target::Camera;
         double x = 0, y = 0;
+#if !MMD_ORIGINAL_PROFILE
+        // A live drag owns only this application instance and media identity.
+        // Last accepted values detect another editor replacing its preview.
+        std::uint64_t instance = 0, media = 0;
+        std::int32_t appliedX = 0, appliedY = 0;
+        float appliedScale = 0;
+#endif
     } backgroundGesture;
 #if !MMD_ORIGINAL_PROFILE
     // Transient UI/device work, appended outside the PMM/compatibility state.
     // A pending request always applies current camera data, never an old pose.
     bool cameraProjectionRefreshPending = false;
+    // Close requests received while scene data is borrowed are replayed once
+    // the outermost scene mutation has finished.
+    HWND deferredSceneMainClose = nullptr;
+    HWND deferredSceneFloatingClose = nullptr;
+    bool sceneMainClosePosted = false, sceneFloatingClosePosted = false;
+    bool sceneMainCloseProcessing = false, sceneFloatingCloseProcessing = false;
+    unsigned sceneMutationFinishing = 0;
+    unsigned sceneCloseHold = 0;
 #endif
+    // Transient host state, appended outside the serialized PMM/compatibility
+    // state: true while an irreversible PMM replacement is not yet recovered.
+    // Only a ResetAppState that completes in full clears it; refusals and
+    // exceptions keep it set. It is not part of SceneMutationInProgress and
+    // does not block window close.
+    bool sceneRecoveryPending = false;
 private:
+    friend class project_relocation::LoadScope;
+    friend class project_relocation::Ticket;
+    std::shared_ptr<project_relocation::Owner> m_relocationOwner;
+    project_relocation::LoadScope* m_relocationLoad = nullptr;
+#if !MMD_ORIGINAL_PROFILE
+    frame_clipboard::GlobalCopyState m_globalClipboardCopy;
+    frame_clipboard::CopyBatchState m_globalFrameCopy, m_modelFrameCopy;
+#endif
     float m_lastVideoExportFps = 30.0f;
     playback_timing::Settings m_playbackTiming;
     playback_timing::PhysicsClock m_playbackPhysicsClock;

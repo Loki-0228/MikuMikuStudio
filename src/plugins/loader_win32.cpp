@@ -2,6 +2,7 @@
 #include <bcrypt.h>
 #include <fstream>
 #include <set>
+#include <string_view>
 
 namespace mikumikustudio::plugins {
 namespace {
@@ -34,6 +35,15 @@ class Pe {
         }
         throw std::invalid_argument("invalid DLL import name");
     }
+    int CompareExportName(uint32_t rva, std::string_view name) const {
+        for (size_t i = 0; i <= name.size(); ++i) {
+            if (i > UINT32_MAX - rva) throw std::invalid_argument("export name overflow");
+            const auto actual = static_cast<unsigned char>(bytes_[Offset(rva + static_cast<uint32_t>(i), 1)]);
+            const auto expected = i < name.size() ? static_cast<unsigned char>(name[i]) : 0;
+            if (actual != expected) return actual < expected ? -1 : 1;
+        }
+        return 0;
+    }
 public:
     explicit Pe(const fs::path& file): bytes_(ReadFile(file, 256u * 1024u * 1024u)) {
         auto dos = Read<IMAGE_DOS_HEADER>(0); if (dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew < 0) throw std::invalid_argument("invalid DOS header");
@@ -44,6 +54,46 @@ public:
             nt_.FileHeader.NumberOfSections > 96) throw std::invalid_argument("expected valid x64 DLL");
         const size_t base = size_t(dos.e_lfanew) + offsetof(IMAGE_NT_HEADERS64, OptionalHeader) + nt_.FileHeader.SizeOfOptionalHeader;
         for (unsigned i = 0; i < nt_.FileHeader.NumberOfSections; ++i) sections_.push_back(Read<IMAGE_SECTION_HEADER>(base + i * sizeof(IMAGE_SECTION_HEADER)));
+    }
+    void VerifyLegacyObserverExports() const {
+        const auto dir = nt_.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+        if (!dir.VirtualAddress || dir.Size < sizeof(IMAGE_EXPORT_DIRECTORY))
+            throw std::invalid_argument("legacy MMDPlugin has no valid export directory");
+        const auto table = Read<IMAGE_EXPORT_DIRECTORY>(Offset(dir.VirtualAddress, sizeof(IMAGE_EXPORT_DIRECTORY)));
+        if (!table.NumberOfNames || !table.NumberOfFunctions || !table.AddressOfNames ||
+            !table.AddressOfNameOrdinals || !table.AddressOfFunctions)
+            throw std::invalid_argument("legacy MMDPlugin has no named factory exports");
+        const auto names = Offset(table.AddressOfNames, size_t(table.NumberOfNames) * sizeof(DWORD));
+        const auto ordinals = Offset(table.AddressOfNameOrdinals, size_t(table.NumberOfNames) * sizeof(WORD));
+        const auto functions = Offset(table.AddressOfFunctions, size_t(table.NumberOfFunctions) * sizeof(DWORD));
+        auto hasDirectExport = [&](std::string_view name) {
+            uint32_t begin = 0, end = table.NumberOfNames;
+            while (begin < end) {
+                const auto index = begin + (end - begin) / 2;
+                const auto nameRva = Read<DWORD>(names + size_t(index) * sizeof(DWORD));
+                const auto order = CompareExportName(nameRva, name);
+                if (order < 0) begin = index + 1;
+                else if (order > 0) end = index;
+                else {
+                    const auto ordinal = Read<WORD>(ordinals + size_t(index) * sizeof(WORD));
+                    if (ordinal >= table.NumberOfFunctions) return false;
+                    const auto entry = Read<DWORD>(functions + size_t(ordinal) * sizeof(DWORD));
+                    // An RVA in the export directory names a forwarded symbol.
+                    if (!entry || (entry >= dir.VirtualAddress && entry - dir.VirtualAddress < dir.Size))
+                        return false;
+                    Offset(entry, 1);
+                    return std::any_of(sections_.begin(), sections_.end(), [entry](const auto& section) {
+                        return (section.Characteristics & IMAGE_SCN_MEM_EXECUTE) &&
+                            entry >= section.VirtualAddress && entry - section.VirtualAddress < section.SizeOfRawData;
+                    });
+                }
+            }
+            return false;
+        };
+        for (const char* name : {"version", "create3", "destroy3"}) {
+            if (!hasDirectExport(name))
+                throw std::invalid_argument(std::string("legacy MMDPlugin missing direct export ") + name);
+        }
     }
     PeInfo Info() const {
         PeInfo result; result.subsystemMajor = nt_.OptionalHeader.MajorSubsystemVersion; result.subsystemMinor = nt_.OptionalHeader.MinorSubsystemVersion;
@@ -109,31 +159,47 @@ NativeLoader::NativeLoader(bool forceFallback) {
     wchar_t system[32768]; UINT n = GetSystemDirectoryW(system, 32768);
     if (!n || n >= 32768) throw std::runtime_error("cannot locate system directory"); system_ = std::wstring(system, n);
 }
-LoadedPackage NativeLoader::Load(const Manifest& manifest, const Log& log) {
-    if (manifest.kind != Manifest::Kind::Native) throw std::invalid_argument("legacy MME is loaded only during graphics startup");
+LoadedPackage NativeLoader::Load(const Manifest& manifest, const Log& log, const fs::path& legacyMmdProvider) {
+    if (manifest.kind == Manifest::Kind::LegacyMme) throw std::invalid_argument("legacy MME is loaded only during graphics startup");
+    const bool legacyMmd = manifest.kind == Manifest::Kind::LegacyMmdPlugin;
+    if (legacyMmd != !legacyMmdProvider.empty()) throw std::invalid_argument("legacy MMDPlugin provider mismatch");
     if (WindowsVersion() < manifest.minWindows) throw std::invalid_argument("minimum Windows version is not met");
     std::map<std::wstring, fs::path> declared;
     for (auto path : manifest.nativeDependencies) if (!declared.emplace(Lower(path.filename().native()), path).second) throw std::invalid_argument("duplicate native DLL basename");
     if (!declared.emplace(Lower(manifest.entry.filename().native()), manifest.entry).second) throw std::invalid_argument("entry basename collision");
+    if (legacyMmd && (!manifest.nativeDependencies.empty() ||
+        Lower(legacyMmdProvider.filename().native()) != L"mmdplugin.dll" ||
+        !declared.emplace(L"mmdplugin.dll", legacyMmdProvider).second))
+        throw std::invalid_argument("invalid legacy MMDPlugin provider or dependency");
+    auto verifyPath = [&](const fs::path& path) {
+        if (legacyMmd && path == legacyMmdProvider)
+            PackageFile(path.parent_path(), "MMDPlugin.dll");
+        else
+            PackageFile(manifest.package, Utf8(path.lexically_relative(manifest.package).native()));
+    };
     struct Files {
         std::vector<HANDLE> values;
         ~Files() { for (HANDLE h : values) CloseHandle(h); }
     } locked;
     locked.values.reserve(declared.size());
     for (const auto& [name, path] : declared) {
-        PackageFile(manifest.package, Utf8(path.lexically_relative(manifest.package).native()));
+        verifyPath(path);
         HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot hold plugin binary for verification: " + Utf8(path.native()));
         locked.values.push_back(h);
     }
+    if (legacyMmd && Sha256(manifest.entry) != manifest.legacyEntrySha256)
+        throw std::invalid_argument("legacy MMDPlugin entry SHA-256 mismatch");
     std::map<std::wstring, unsigned> state;
     std::vector<fs::path> order; std::set<fs::path> systems;
     std::function<void(const fs::path&)> visit = [&](const fs::path& path) {
         const auto key = Lower(path.filename().native()); auto& status = state[key];
         if (status == 1) throw std::invalid_argument("native DLL dependency cycle"); if (status == 2) return; status = 1;
         // Repeat the no-junction check immediately before inspecting any code.
-        PackageFile(manifest.package, Utf8(path.lexically_relative(manifest.package).native()));
-        for (const auto& imported : InspectPe(path).imports) {
+        verifyPath(path);
+        const Pe pe(path);
+        if (legacyMmd && path == manifest.entry) pe.VerifyLegacyObserverExports();
+        for (const auto& imported : pe.Info().imports) {
             auto w = Wide(imported); auto dep = declared.find(Lower(w));
             if (dep != declared.end()) { visit(dep->second); continue; }
             if (ApiSet(imported)) {
@@ -148,6 +214,7 @@ LoadedPackage NativeLoader::Load(const Manifest& manifest, const Log& log) {
         }
         status = 2; order.push_back(path);
     };
+    if (legacyMmd) visit(legacyMmdProvider);
     visit(manifest.entry);
     for (const auto& path : manifest.nativeDependencies) visit(path);
     LoadedPackage result;

@@ -13,14 +13,17 @@
 #include <d3d9.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <new>
+#include <vector>
 
 #include "btBulletDynamicsCommon.h"
 
 #include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/bone_edit_axes.hpp"
 #include "mikumikustudio/bone_projection.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/bone_scale_gizmo.hpp"
@@ -589,7 +592,10 @@ bool BoneGizmoTransform(MMDApp* app, const float frameMatrix[16],
         world.m[3][2] = z;
     } else {
         Matrix basis;
-        BoneLocalAxes(app, &basis.m[0][0]);
+        auto* model = CurrentModel(app);
+        auto* bones = model ? mdl::Bones(model) : nullptr;
+        BoneLocalAxesForBone(model, bones ? static_cast<int>(bone - bones) : -1,
+                             &basis.m[0][0]);
         api.multiply(&world, &basis, &translation);
         api.multiply(&world, &world, BoneMatrix(bone));
     }
@@ -1043,39 +1049,197 @@ void DrawBoneScaleHandles(MMDApp* app, IDirect3DDevice9* device,
 // with the camera distance.
 enum class HudPreviewKind { Rotate, Move, Scale };
 
-// Drag state of the rotate sector: the angle swept since the drag began, and
-// how far the ring's own start direction has turned with the bone (non-zero
-// only when the ring follows the bone, i.e. Local).  Both are measured from
-// the bone's real matrices each frame, so the sector matches the applied
-// rotation whatever the input path, and >360 degree drags keep counting.
+// Keep the authored joint increment separate from movement inherited through
+// a selected parent. The latter moves the ring, but must not fill its sector.
 struct RotateSectorState {
-    bool active = false;
-    const void* bone = nullptr;
-    int axis = -1;
-    float previousLinear[9]{};
+    bool initialized = false;
+    bool startInWorldSpace = false;
+    float previousRotation[4]{};
+    float previousAxis[3]{};
     float previousStart[3]{};
     float swept = 0.0f;
     float drift = 0.0f;
 };
-RotateSectorState g_rotateSector;
+struct RotatePreviewState {
+    const MMDApp* app = nullptr;
+    std::uint64_t sceneGeneration = 0;
+    int frame = 0;
+    const void* model = nullptr;
+    const void* bones = nullptr;
+    int axis = -1;
+    int coordinates = -1;
+    bool dragging = false;
+    std::vector<int> selection;
+    std::vector<unsigned char> selectionMask;
+    std::vector<RotateSectorState> sectors;
+};
+RotatePreviewState g_rotatePreviews;
+std::vector<int> g_rotateTargets;
+
+void CollectRotateTargets(unsigned char* model) {
+    g_rotateTargets.clear();
+    const auto* record = mdl::Mdl(model);
+    const auto* bones = mdl::Bones(model);
+    for (unsigned i = 0; record->boneSelection && i < record->boneCount; ++i)
+        if (i != static_cast<unsigned>(record->selectedBone) && record->boneSelection[i] &&
+            BoneRotatesInPlace(bones[i].type)) g_rotateTargets.push_back(static_cast<int>(i));
+    g_rotateTargets.push_back(record->selectedBone);
+}
+
+void ClearRotatePreviews() {
+    g_rotatePreviews = {};
+}
+
+void PrepareRotatePreviews(MMDApp* app, unsigned char* model,
+                          const std::vector<int>& selection, int axis,
+                          bool dragging) {
+    auto& state = g_rotatePreviews;
+    const int coordinates = EffectiveCoordinateState(app);
+    const auto* record = mdl::Mdl(model);
+    const bool sameMask = state.selectionMask.size() == record->boneCount &&
+        (record->boneSelection
+            ? std::equal(state.selectionMask.begin(), state.selectionMask.end(),
+                         record->boneSelection)
+            : std::all_of(state.selectionMask.begin(), state.selectionMask.end(),
+                          [](unsigned char value) { return value == 0; }));
+    if (state.app != app || state.model != model ||
+        state.sceneGeneration != app->SceneGeneration() || state.frame != app->CurrentFrame() ||
+        state.bones != mdl::Bones(model) || state.axis != axis ||
+        state.coordinates != coordinates || state.selection != selection || !sameMask ||
+        (state.dragging && !dragging)) {
+        ClearRotatePreviews();
+        state.app = app;
+        state.sceneGeneration = app->SceneGeneration();
+        state.frame = app->CurrentFrame();
+        state.model = model;
+        state.bones = mdl::Bones(model);
+        state.axis = axis;
+        state.coordinates = coordinates;
+        state.selection = selection;
+        if (record->boneSelection)
+            state.selectionMask.assign(record->boneSelection,
+                record->boneSelection + record->boneCount);
+        else
+            state.selectionMask.assign(record->boneCount, 0);
+        state.sectors.resize(selection.size());
+    }
+    state.dragging = dragging;
+}
+
+bool NormalizePreviewVector(float v[3]) {
+    const double length2 = double(v[0]) * v[0] + double(v[1]) * v[1] +
+                           double(v[2]) * v[2];
+    if (!(length2 > 1.0e-12) || !std::isfinite(length2))
+        return false;
+    const double inverse = 1.0 / std::sqrt(length2);
+    for (int c = 0; c < 3; ++c)
+        v[c] = static_cast<float>(v[c] * inverse);
+    return true;
+}
+
+// Preserve the existing ring's start direction while aligning its normal to
+// the exact production edit axis, including fixed-axis and PMX local axes.
+bool AlignRotationPreview(MMDApp* app, unsigned char* model, int index,
+                          int axis, const float frameMatrix[16], Matrix& world,
+                          float parentAxis[3]) {
+    float direction[3]{};
+    if (!BoneRotationAxisWorld(app, model, index, axis, direction, parentAxis))
+        return false;
+    float normal[3]{};
+    for (int c = 0; c < 3; ++c)
+        for (int k = 0; k < 3; ++k)
+            normal[c] += direction[k] * frameMatrix[k * 4 + c];
+    if (!NormalizePreviewVector(normal))
+        return false;
+    const int u = (axis + 1) % 3;
+    const int v = (axis + 2) % 3;
+    float start[3] = {world.m[u][0], world.m[u][1], world.m[u][2]};
+    const float along = start[0] * normal[0] + start[1] * normal[1] +
+                        start[2] * normal[2];
+    for (int c = 0; c < 3; ++c)
+        start[c] -= along * normal[c];
+    if (!NormalizePreviewVector(start)) {
+        int least = 0;
+        for (int c = 1; c < 3; ++c)
+            if (std::fabs(normal[c]) < std::fabs(normal[least]))
+                least = c;
+        for (int c = 0; c < 3; ++c)
+            start[c] = (c == least ? 1.0f : 0.0f) - normal[least] * normal[c];
+        if (!NormalizePreviewVector(start))
+            return false;
+    }
+    const float other[3] = {
+        normal[1] * start[2] - normal[2] * start[1],
+        normal[2] * start[0] - normal[0] * start[2],
+        normal[0] * start[1] - normal[1] * start[0]};
+    for (int c = 0; c < 3; ++c) {
+        world.m[axis][c] = normal[c];
+        world.m[u][c] = start[c];
+        world.m[v][c] = other[c];
+    }
+    return true;
+}
+
+float JointRotationIncrement(const float previous[4], const float current[4],
+                             const float axis[3]) {
+    double p[4], q[4], pLength2 = 0.0, qLength2 = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        pLength2 += double(previous[i]) * previous[i];
+        qLength2 += double(current[i]) * current[i];
+    }
+    if (!(pLength2 > 1.0e-12) || !(qLength2 > 1.0e-12) ||
+        !std::isfinite(pLength2) || !std::isfinite(qLength2))
+        return 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        p[i] = previous[i] / std::sqrt(pLength2);
+        q[i] = current[i] / std::sqrt(qLength2);
+    }
+    // Production applies q = dq * previous (Hamilton product). Recover dq
+    // in the parent-local frame, whose previous edit axis is saved per joint.
+    const double x = -q[3] * p[0] + q[0] * p[3] - q[1] * p[2] + q[2] * p[1];
+    const double y = -q[3] * p[1] + q[0] * p[2] + q[1] * p[3] - q[2] * p[0];
+    const double z = -q[3] * p[2] - q[0] * p[1] + q[1] * p[0] + q[2] * p[3];
+    const double w = q[0] * p[0] + q[1] * p[1] + q[2] * p[2] + q[3] * p[3];
+    const double sign = w < 0.0 ? -1.0 : 1.0;
+    return static_cast<float>(2.0 * std::atan2(
+        sign * (x * axis[0] + y * axis[1] + z * axis[2]), sign * w));
+}
 
 void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
                         mikumikustudio::mdl::BoneRecord* bone,
                         const float frameMatrix[16], HudPreviewKind kind,
-                        int axis, bool rotateDragging) {
-    if (!rotateDragging || kind != HudPreviewKind::Rotate || bone == nullptr ||
-        (g_rotateSector.active &&
-         (g_rotateSector.bone != bone || g_rotateSector.axis != axis)))
-        g_rotateSector.active = false;
-    if (axis < 0 || axis > 2 || bone == nullptr)
+                        int axis, bool rotateDragging,
+                        RotateSectorState* sector = nullptr,
+                        bool secondary = false) {
+    const auto invalidateSector = [&] {
+        if (sector != nullptr)
+            *sector = {};
+    };
+    if (axis < 0 || axis > 2 || bone == nullptr) {
+        invalidateSector();
         return;
+    }
     Matrix world;
     float unitScale = 1.0f;
-    if (!BoneGizmoTransform(app, frameMatrix, bone, world, unitScale))
+    if (!BoneGizmoTransform(app, frameMatrix, bone, world, unitScale)) {
+        invalidateSector();
         return;
+    }
+    float parentAxis[3]{};
+    if (kind == HudPreviewKind::Rotate) {
+        auto* model = CurrentModel(app);
+        if (!model || !AlignRotationPreview(app, model,
+            static_cast<int>(bone - mdl::Bones(model)), axis, frameMatrix,
+            world, parentAxis)) {
+            invalidateSector();
+            return;
+        }
+    }
     D3DRenderer* sub = app->Renderer();
-    if (sub == nullptr || device == nullptr)
+    if (sub == nullptr || device == nullptr) {
+        invalidateSector();
         return;
+    }
 
     auto& api = d3dx::Get();
     Matrix scaleMatrix;
@@ -1107,8 +1271,10 @@ void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
     const float origin[3] = {0.0f, 0.0f, 0.0f};
     float originX = 0.0f;
     float originY = 0.0f;
-    if (!project(origin, &originX, &originY))
+    if (!project(origin, &originX, &originY)) {
+        invalidateSector();
         return;
+    }
     // Axis screen vectors come from the camera's rotation alone: each axis
     // direction is rotated into view space and its x / y parts are taken
     // (screen y points down).  Projecting probe points instead mixed in the
@@ -1135,8 +1301,10 @@ void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
         vector[a][1] = -vy;
         longest = std::max(longest, std::hypot(vx, vy));
     }
-    if (!(longest > 1.0e-4f))
+    if (!(longest > 1.0e-4f)) {
+        invalidateSector();
         return;
+    }
     const float pixel = sub->viewScale > 0.0f ? sub->viewScale : 1.0f;
     // Unit axes: a full-length axis spans kScaleRodPixels, a foreshortened
     // one proportionally less, independent of which axis is longest.
@@ -1167,8 +1335,13 @@ void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
     device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
     device->SetTexture(0, nullptr);
 
-    constexpr D3DCOLOR kYellow = 0xFFFFE000u;
-    constexpr D3DCOLOR kOutline = 0xFF000000u;
+    const D3DCOLOR kYellow = secondary ? 0xC0FFE000u : 0xFFFFE000u;
+    const D3DCOLOR kOutline = secondary ? 0xC0000000u : 0xFF000000u;
+    // Bounded stack storage: no allocation may throw after render-state changes.
+    // A complete 64-segment ring, sector, arrows and origin fit in one batch.
+    std::array<ScreenHandleVertex, 1026> triangles;
+    std::size_t triangleVertices = 0;
+    bool directTriangle = false;
     const auto vertex = [](float x, float y, D3DCOLOR color) {
         return ScreenHandleVertex{x, y, 0.0f, 1.0f, color};
     };
@@ -1177,8 +1350,18 @@ void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
         const ScreenHandleVertex v[3] = {vertex(x0, y0, color),
                                          vertex(x1, y1, color),
                                          vertex(x2, y2, color)};
-        device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, v,
-                                sizeof(ScreenHandleVertex));
+        if (directTriangle)
+            device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, v,
+                                    sizeof(ScreenHandleVertex));
+        else {
+            if (triangleVertices + 3 > triangles.size()) {
+                device->DrawPrimitiveUP(D3DPT_TRIANGLELIST,
+                    static_cast<UINT>(triangleVertices / 3), triangles.data(), sizeof(ScreenHandleVertex));
+                triangleVertices = 0;
+            }
+            std::copy(v, v + 3, triangles.begin() + triangleVertices);
+            triangleVertices += 3;
+        }
     };
     // A stroke of half width `half`, extended by `half` past both ends so
     // consecutive ring segments join without gaps.
@@ -1202,8 +1385,8 @@ void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
         triangle(cx - half, cy - half, cx + half, cy + half,
                  cx - half, cy + half, color);
     };
-    const float line = 1.5f * pixel;    // yellow half width
-    const float edge = 1.5f * pixel;    // black outline around it
+    const float line = (secondary ? 1.0f : 1.5f) * pixel;
+    const float edge = (secondary ? 0.75f : 1.5f) * pixel;
 
     const float axisX = vector[axis][0];
     const float axisY = vector[axis][1];
@@ -1222,7 +1405,7 @@ void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
         // camera angle, and only the ellipse's tilt and flattening change.
         // Major semi-axis of c*U + s*V: sqrt of the larger eigenvalue of
         // [[U.U, U.V], [U.V, V.V]].
-        constexpr float kRingPixels = 56.0f;
+        const float kRingPixels = 56.0f * (secondary ? 0.65f : 1.0f);
         const float uu = vector[u][0] * vector[u][0] + vector[u][1] * vector[u][1];
         const float vv = vector[v][0] * vector[v][0] + vector[v][1] * vector[v][1];
         const float uv = vector[u][0] * vector[v][0] + vector[u][1] * vector[v][1];
@@ -1285,7 +1468,7 @@ void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
         };
 
         // ---- swept-angle sector while the rotate drag runs ----------------
-        if (rotateDragging) {
+        if (sector != nullptr) {
             // Signed angle from `from` to `to` about A, after removing the A
             // component of both.
             const auto angleAbout = [&](const float* from, const float* to) {
@@ -1299,75 +1482,63 @@ void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
                 cross(f, t, x);
                 return std::atan2(dot(x, A), dot(f, t));
             };
-            const bone_scale::Matrix current = bone_scale::Linear(bone->matInit);
-            if (!g_rotateSector.active) {
-                g_rotateSector = {};
-                g_rotateSector.active = true;
-                g_rotateSector.bone = bone;
-                g_rotateSector.axis = axis;
-            } else {
-                // World-space change since last frame, D = Mprev^-1 * Mcur
-                // (row vectors), carried into frame space through the frame's
-                // rotation F: w_f = w_world * F, w_world = w_f * F^T.
-                bone_scale::Matrix previous;
-                std::memcpy(previous.v.data(), g_rotateSector.previousLinear,
-                            sizeof(g_rotateSector.previousLinear));
-                bone_scale::Matrix inverse;
-                if (bone_scale::Inverse(previous, inverse)) {
-                    const bone_scale::Matrix delta =
-                        bone_scale::Multiply(inverse, current);
-                    const auto* F = reinterpret_cast<const Matrix*>(frameMatrix);
-                    float worldU[3] = {0.0f, 0.0f, 0.0f};
+            if (rotateDragging && sector->initialized) {
+                if (sector->startInWorldSpace) {
+                    float start[3]{};
                     for (int c = 0; c < 3; ++c)
                         for (int k = 0; k < 3; ++k)
-                            worldU[c] += U[k] * F->m[c][k];
-                    float movedWorld[3] = {0.0f, 0.0f, 0.0f};
-                    for (int c = 0; c < 3; ++c)
-                        for (int k = 0; k < 3; ++k)
-                            movedWorld[c] += worldU[k] * delta.v[k * 3 + c];
-                    float moved[3] = {0.0f, 0.0f, 0.0f};
-                    for (int c = 0; c < 3; ++c)
-                        for (int k = 0; k < 3; ++k)
-                            moved[c] += movedWorld[k] * F->m[k][c];
-                    g_rotateSector.swept += angleAbout(U, moved);
+                            start[c] += sector->previousStart[k] * frameMatrix[k * 4 + c];
+                    NormalizePreviewVector(start);
+                    std::memcpy(sector->previousStart, start, sizeof(start));
+                    sector->startInWorldSpace = false;
                 }
+                const float directionSign = axis == 2 ? -1.0f : 1.0f;
+                sector->swept += directionSign * JointRotationIncrement(
+                    sector->previousRotation, bone->rotQuat,
+                    sector->previousAxis);
                 // The ring's own start direction turning with the bone.
-                g_rotateSector.drift +=
-                    angleAbout(g_rotateSector.previousStart, U);
+                sector->drift += angleAbout(sector->previousStart, U);
+            } else {
+                sector->swept = 0.0f;
+                sector->drift = 0.0f;
             }
-            std::memcpy(g_rotateSector.previousLinear, current.v.data(),
-                        sizeof(g_rotateSector.previousLinear));
-            std::memcpy(g_rotateSector.previousStart, U, sizeof(U));
+            sector->initialized = true;
+            std::memcpy(sector->previousRotation, bone->rotQuat,
+                        sizeof(sector->previousRotation));
+            std::memcpy(sector->previousAxis, parentAxis, sizeof(parentAxis));
+            std::memcpy(sector->previousStart, U, sizeof(U));
 
-            const float start = -g_rotateSector.drift * orientation;
-            float sweep = g_rotateSector.swept * orientation;
-            constexpr float kTau = 6.2831853f;
-            sweep = std::max(-kTau, std::min(kTau, sweep));
-            const int steps = std::max(1, static_cast<int>(
-                std::fabs(sweep) / kTau * kSegments + 0.5f));
-            if (std::fabs(sweep) > 1.0e-3f) {
-                float previousX = 0.0f, previousY = 0.0f;
-                ringPoint(start, &previousX, &previousY);
-                for (int i = 1; i <= steps; ++i) {
-                    float x = 0.0f, y = 0.0f;
-                    ringPoint(start + sweep * static_cast<float>(i) / steps,
-                              &x, &y);
-                    triangle(originX, originY, previousX, previousY, x, y,
-                             0x70FFE000u);
-                    previousX = x;
-                    previousY = y;
+            if (rotateDragging) {
+                const float start = -sector->drift * orientation;
+                float sweep = sector->swept * orientation;
+                constexpr float kTau = 6.2831853f;
+                sweep = std::max(-kTau, std::min(kTau, sweep));
+                const int steps = std::max(1, static_cast<int>(
+                    std::fabs(sweep) / kTau * kSegments + 0.5f));
+                if (std::fabs(sweep) > 1.0e-3f) {
+                    float previousX = 0.0f, previousY = 0.0f;
+                    ringPoint(start, &previousX, &previousY);
+                    for (int i = 1; i <= steps; ++i) {
+                        float x = 0.0f, y = 0.0f;
+                        ringPoint(start + sweep * static_cast<float>(i) / steps,
+                                  &x, &y);
+                        triangle(originX, originY, previousX, previousY, x, y,
+                                 0x70FFE000u);
+                        previousX = x;
+                        previousY = y;
+                    }
                 }
+                // Start and current edges of the sector.
+                float startX = 0.0f, startY = 0.0f, endX = 0.0f, endY = 0.0f;
+                ringPoint(start, &startX, &startY);
+                ringPoint(start + sweep, &endX, &endY);
+                stroke(originX, originY, startX, startY, 1.0f * pixel + edge,
+                       kOutline);
+                stroke(originX, originY, startX, startY, 1.0f * pixel,
+                       0xFFFFFFFFu);
+                stroke(originX, originY, endX, endY, line + edge, kOutline);
+                stroke(originX, originY, endX, endY, line, kYellow);
             }
-            // Start and current edges of the sector.
-            float startX = 0.0f, startY = 0.0f, endX = 0.0f, endY = 0.0f;
-            ringPoint(start, &startX, &startY);
-            ringPoint(start + sweep, &endX, &endY);
-            stroke(originX, originY, startX, startY, 1.0f * pixel + edge,
-                   kOutline);
-            stroke(originX, originY, startX, startY, 1.0f * pixel,
-                   0xFFFFFFFFu);
-            stroke(originX, originY, endX, endY, line + edge, kOutline);
-            stroke(originX, originY, endX, endY, line, kYellow);
         }
         for (int pass = 0; pass < 2; ++pass) {
             const float half = pass == 0 ? line + edge : line;
@@ -1401,8 +1572,9 @@ void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
                          px + nx * size, py + ny * size,
                          px - nx * size, py - ny * size, color);
             };
-            head(9.0f * pixel, kOutline);
-            head(6.5f * pixel, kYellow);
+            const float headScale = secondary ? 0.65f : 1.0f;
+            head(9.0f * pixel * headScale, kOutline);
+            head(6.5f * pixel * headScale, kYellow);
         }
     } else if (endOn) {
         // Move / scale along an axis that points at the camera: a marker on
@@ -1439,8 +1611,15 @@ void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
         }
     }
     // The bone origin, so the preview reads as attached to the bone.
-    square(originX, originY, 3.0f * pixel, kOutline);
-    square(originX, originY, 2.0f * pixel, kYellow);
+    square(originX, originY, 3.0f * pixel, 0xFF000000u);
+    if (triangleVertices)
+        device->DrawPrimitiveUP(D3DPT_TRIANGLELIST,
+            static_cast<UINT>(triangleVertices / 3), triangles.data(),
+            sizeof(ScreenHandleVertex));
+    // Keep the two origin triangles separate: the production scene observer
+    // uses these final draws to verify the bone anchor at every render scale.
+    directTriangle = true;
+    square(originX, originY, 2.0f * pixel, 0xFFFFE000u);
 
     device->SetRenderState(D3DRS_LIGHTING, previousLighting);
     device->SetRenderState(D3DRS_ALPHABLENDENABLE, previousBlend);
@@ -1452,12 +1631,50 @@ void DrawHudAxisPreview(MMDApp* app, IDirect3DDevice9* device,
 
 }  // namespace
 
+void ResetBoneHudPreview(const MMDApp* app) noexcept {
+    if (!app || g_rotatePreviews.app == app) {
+        ClearRotatePreviews();
+        std::vector<int>{}.swap(g_rotateTargets);
+    }
+}
+void ForgetBoneHudPreview(const void* model) noexcept {
+    if (g_rotatePreviews.model == model) ResetBoneHudPreview(nullptr);
+}
+
+void BeginBoneHudPreview(MMDApp* app, int axis) noexcept {
+    ResetBoneHudPreview(nullptr);
+    if (!app || axis < 0 || axis > 2) return;
+    auto* model = CurrentModel(app);
+    if (!model || !mdl::Bones(model)) return;
+    const auto* record = mdl::Mdl(model);
+    if (record->selectedBone < 0 || static_cast<unsigned>(record->selectedBone) >= record->boneCount) return;
+    const auto& api = d3dx::Get();
+    if (!api.translation || !api.multiply) return;
+    try {
+        CollectRotateTargets(model);
+        PrepareRotatePreviews(app, model, g_rotateTargets, axis, true);
+        Matrix identity; Identity(&identity);
+        for (std::size_t i = 0; i < g_rotateTargets.size(); ++i) {
+            auto& bone = mdl::Bones(model)[g_rotateTargets[i]];
+            auto& sector = g_rotatePreviews.sectors[i];
+            Matrix world; float unitScale = 1.0f;
+            if (!BoneGizmoTransform(app, &identity.m[0][0], &bone, world, unitScale) ||
+                !AlignRotationPreview(app, model, g_rotateTargets[i], axis, &identity.m[0][0], world, sector.previousAxis)) continue;
+            const int startAxis = (axis + 1) % 3;
+            for (int c = 0; c < 3; ++c)
+                for (int k = 0; k < 3; ++k)
+                    sector.previousStart[c] += kScaleAxisDirection[startAxis][k] * world.m[k][c];
+            std::memcpy(sector.previousRotation, bone.rotQuat, sizeof(sector.previousRotation));
+            sector.initialized = sector.startInWorldSpace = true;
+        }
+    } catch (...) { ResetBoneHudPreview(nullptr); }
+}
+
 void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16],
                            IDirect3DDevice9* presentationDevice) {
     auto* sub = app->Renderer();
-    if (!sub) return;
-    auto* device = presentationDevice ? presentationDevice : sub->device;
-    if (!device) return;
+    auto* device = presentationDevice;
+    if (!device && sub) device = sub->device;
     unsigned char* model = CurrentModel(app);
     // Deliberate hardening: the ledger records no VA for this access, and the
     // original call site was never located, so the port adds this guard intentionally
@@ -1466,11 +1683,17 @@ void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16],
     // selection (sprite_overlay.cpp, frame_driver.cpp) already check the model
     // pointer.
     // Defect RB-03.
-    if (model == nullptr)
+    if (model == nullptr) {
+        ClearRotatePreviews();
+        bone_scale::gizmo::Publish(app, {});
         return;
+    }
     const int selected = mikumikustudio::mdl::Mdl(model)->selectedBone;
-    if (selected < 0)
+    if (selected < 0) {
+        ClearRotatePreviews();
+        bone_scale::gizmo::Publish(app, {});
         return;
+    }
     auto* bones = mikumikustudio::mdl::Bones(model);
     // pmm_load_v1 reads selectedBone directly from the file without validating it,
     // so an index beyond the model's own table can reach this draw; keep the
@@ -1478,8 +1701,11 @@ void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16],
     // Defect RB-12.
     const int boneCount =
         static_cast<int>(mikumikustudio::mdl::Mdl(model)->boneCount);
-    if (bones == nullptr || selected >= boneCount)
+    if (bones == nullptr || selected >= boneCount) {
+        ClearRotatePreviews();
+        bone_scale::gizmo::Publish(app, {});
         return;
+    }
     mikumikustudio::mdl::BoneRecord* bone = &bones[selected];
 
     // MMS addition: scale mode draws its own handles instead of the operation
@@ -1518,7 +1744,28 @@ void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16],
     }
     if (previewAxis >= 0) {
         bone_scale::gizmo::Publish(app, bone_scale::gizmo::ScreenGeometry{});
-        // Rotate / move keep the original fixed-axis filter; every bone scales.
+        if (previewKind == HudPreviewKind::Rotate) {
+            try {
+            // Keep the active joint's full-size preview on top, and retain the
+            // final origin marker used by the production anchoring regression.
+            CollectRotateTargets(model);
+            const auto& targets = g_rotateTargets;
+            const bool dragging = activeDrag >= 4 && activeDrag <= 6;
+            PrepareRotatePreviews(app, model, targets, previewAxis, dragging);
+            for (std::size_t i = 0; i < targets.size(); ++i)
+                DrawHudAxisPreview(app, device, &bones[targets[i]], frameMatrix,
+                    previewKind, previewAxis, dragging,
+                    &g_rotatePreviews.sectors[i], targets[i] != selected);
+            } catch (...) {
+                // Preview allocation failure must never escape into editing or
+                // keep a partly prepared sector history for the next frame.
+                ResetBoneHudPreview(nullptr);
+                DrawHudAxisPreview(app, device, bone, frameMatrix, previewKind, previewAxis, false);
+            }
+            return;
+        }
+        ClearRotatePreviews();
+        // Move keeps its original fixed-axis filter; every bone scales.
         const bool fixedAxis =
             bone->type == mdl::BoneType::FixedAxis ||
             (bone->type == mdl::BoneType::UnderIk &&
@@ -1526,16 +1773,11 @@ void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16],
                  mdl::kBoneFlagFixedAxis);
         if (previewKind == HudPreviewKind::Scale || !fixedAxis)
             DrawHudAxisPreview(app, device, bone, frameMatrix, previewKind,
-                               previewAxis,
-                               activeDrag >= 4 && activeDrag <= 6);
-        else
-            DrawHudAxisPreview(app, device, nullptr, frameMatrix, previewKind, -1,
-                               false);   // ends any sector tracking
+                               previewAxis, false);
         return;
     }
     // No rotate preview this frame: drop the sector's drag state.
-    DrawHudAxisPreview(app, device, nullptr, frameMatrix, HudPreviewKind::Rotate, -1,
-                       false);
+    ClearRotatePreviews();
     // The HUD uniform scale cell drives every axis at once, so its preview is
     // the whole scale gizmo, fully highlighted (gizmo::HighlightOf), in every
     // edit mode.  Outside scale mode its published geometry stays inert:
@@ -1576,6 +1818,8 @@ void DrawBoneOperationAxis(MMDApp* app, const float frameMatrix[16],
     Matrix scaleMatrix;
     api.scaling(&scaleMatrix, unitScale, unitScale, unitScale);
     api.multiply(&world, &scaleMatrix, &world);
+    if (device == nullptr)
+        return;
     device->SetTransform(D3DTS_WORLD,
                          reinterpret_cast<const D3DMATRIX*>(&world));
     if (presentationDevice) {

@@ -1,6 +1,7 @@
 #pragma once
 #include "mikumikustudio/image_sequence_export.hpp"
 #include <Windows.h>
+#include <cstdint>
 
 namespace mikumikustudio::image_sequence {
 constexpr int kDialog = 9100;
@@ -10,6 +11,7 @@ enum Control {
 };
 struct DialogContext {
     MMDApp* app;
+    std::uint64_t scene;
     Options options;
     bool updating = false;
 };

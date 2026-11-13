@@ -1,6 +1,8 @@
 #pragma once
 #include "build_profile.hpp"
 #if !MMD_ORIGINAL_PROFILE
+#include <mms/plugin.h>
+#include <cstdint>
 #include <memory>
 namespace mikumikustudio::plugins::resource_budget { class Collector; }
 #endif
@@ -20,10 +22,15 @@ bool CollisionTransform(const btRigidBody *body, float matrix[16]);
 void JointBaseline(const btGeneric6DofConstraint &joint, btTransform &a, btTransform &b);
 float JointRadiusBaseline(const unsigned char *model, int joint);
 #if !MMD_ORIGINAL_PROFILE
+// Allocation-free bound for Capture's wrapper, private Impl and control block.
+// The active scale node is borrowed; no scale map or native resource is copied.
+// Failure preserves bytes. CRT/driver/process allocation metadata is excluded.
+MmsResult MeasureResourceStateCapturePreparation(std::uint64_t& bytes) noexcept;
 // Own the complete scale-derived state while its native resource version is
 // parked. Active states stay in the ordinary lookup table, preserving all old
 // physics-scale queries. Switching uses preexisting map nodes only.
 class ResourceState : public std::enable_shared_from_this<ResourceState> {
+    friend MmsResult MeasureResourceStateCapturePreparation(std::uint64_t&) noexcept;
     struct Impl;
     std::unique_ptr<Impl> impl_;
     explicit ResourceState(std::unique_ptr<Impl>);

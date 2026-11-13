@@ -1,4 +1,17 @@
 #include <mms/surface.h>
+#include <mms/layout_session.h>
+_Static_assert(sizeof(MmsUiLayoutSessionApiV1) == 88, "layout session C table");
+_Static_assert(sizeof(MmsUiLayoutSessionValueV1) == 40, "layout session C value");
+_Static_assert(sizeof(MmsUiLayoutSessionTargetV1) == 24, "layout session C claim");
+_Static_assert(sizeof(MmsUiLayoutSessionInfoV1) == 32, "layout session C state");
+_Static_assert(offsetof(MmsUiLayoutSessionApiV1, release) == 80, "layout session C release");
+_Static_assert(sizeof(MmsUiLayoutSessionApiV1_2) == 128, "layout parent C table");
+_Static_assert(sizeof(MmsUiLayoutSessionTargetV1_2) == 32, "layout parent C claim");
+_Static_assert(sizeof(MmsUiLayoutSessionValueV1_2) == 48, "layout parent C value");
+_Static_assert(offsetof(MmsUiLayoutSessionApiV1_2, queryCapabilitiesEx) == 88, "layout parent C appended callbacks");
+_Static_assert(offsetof(MmsUiLayoutSessionApiV1_2, release) == 80, "layout parent C prefix release");
+_Static_assert(offsetof(MmsUiLayoutSessionTargetV1_2, parent) == 24, "layout parent C claim parent");
+_Static_assert(offsetof(MmsUiLayoutSessionValueV1_2, parent) == 40, "layout parent C value parent");
 #include <mms/refresh.h>
 #include <mms/refresh_binding.h>
 #include <mms/refresh_state.h>

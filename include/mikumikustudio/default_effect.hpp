@@ -10,5 +10,8 @@ class D3DRenderer;
 bool QueueDefaultEffect(D3DRenderer* renderer, int resource);
 void StartDefaultEffectCompilation(D3DRenderer* renderer);
 void UpdateDefaultEffect(MMDApp* app);
+// A capture range may enable self-shadow after its first frame.
+// Start pending compilation without waiting on the UI thread.
+bool DefaultEffectReadyForCapture(MMDApp* app);
 void CancelDefaultEffectCompilation(D3DRenderer* renderer);
 }

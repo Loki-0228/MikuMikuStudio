@@ -64,6 +64,25 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
         Unknown(j, {"schemaVersion", "id", "name", "version", "kind", "entry", "hack", "architecture", "minWindows", "reloadPolicy"}, log);
         return m;
     }
+    if (kind == "legacy_mmdplugin") {
+        m.kind = Manifest::Kind::LegacyMmdPlugin; m.major = 3; m.minor = 0;
+        if (j.At("architecture").String() != "x64" || j.At("reloadPolicy").String() != "restart")
+            throw std::invalid_argument("legacy MMDPlugin requires x64 and restart");
+        if (j.At("profile").String() != "window_observer_v3")
+            throw std::invalid_argument("unsupported legacy MMDPlugin profile");
+        m.minWindows = ParseVersion(j.At("minWindows").String());
+        m.entry = PackageFile(m.package, j.At("entry").String());
+        if (Lower(m.entry.extension().native()) != L".dll") throw std::invalid_argument("entry must be a DLL");
+        m.legacyEntrySha256 = j.At("sha256").String();
+        if (m.legacyEntrySha256.size() != 64 || m.legacyEntrySha256.find_first_not_of("0123456789abcdef") != std::string::npos)
+            throw std::invalid_argument("legacy MMDPlugin requires a lowercase SHA-256");
+        constexpr std::string_view allowed[] = {"schemaVersion", "id", "name", "version", "kind", "entry", "sha256",
+            "profile", "architecture", "minWindows", "reloadPolicy"};
+        for (const auto& field : j.object)
+            if (std::find(std::begin(allowed), std::end(allowed), field.first) == std::end(allowed))
+                throw std::invalid_argument("unsupported legacy MMDPlugin field: " + field.first);
+        return m;
+    }
     if (kind != "native") throw std::invalid_argument("unsupported plugin kind");
     const auto& abi = j.At("abi"); m.major = abi.At("major").UInt(); m.minor = abi.At("minMinor").UInt();
     if (m.major != 1 || m.minor != 0) throw std::invalid_argument("unsupported plugin ABI");

@@ -57,10 +57,8 @@
 //   0x45B090  light track read (40-byte records, same shape as v2) + light
 //             misc + rgb/direction slider UI
 //   0x45B761  9E170 byte + 9DA48 dword; combo 0x1D7/0x1DB resets; accessory
-//             block (0x4B0 objects, GetOpenFileNameW retry with .x/.vac
-//             filter; cancel and retry failure both keep the empty
-//             accessory record and continue (the original closed + reset),
-//             ResetAppState + return (NO HandleWindowSize); 60-byte track
+//             block (0x4B0 objects, select replacement, skip or abort;
+//             abort closes input and resets without HandleWindowSize); 60-byte track
 //             records with the transparency quirk byte)
 //   0x45C390  current accessory UI (CB_SETCURSEL 0x1D7, parent-model frame
 //             entries with the (<7 || ==8) filter, SyncAccessoryEditPanel)
@@ -111,6 +109,11 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/background_identity.hpp"
+#include "../plugins/native_picture_gesture.hpp"
+#include "mikumikustudio/background_picture_load.hpp"
+#endif
 #include <commdlg.h>
 #include <commctrl.h>
 #include <btBulletDynamicsCommon.h>
@@ -124,7 +127,10 @@
 #include <io.h>
 
 #include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/ui_message.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/accessory_import.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/recent_projects.hpp"
@@ -140,6 +146,8 @@
 // v1/v2 parameterization points).
 #include "pmm_io_common.hpp"
 #include "pmm_input.hpp"
+#include "pmm_accessory_recovery.hpp"
+#include "project_relocation_context.hpp"
 
 #pragma comment(lib, "avifil32.lib")
 
@@ -243,28 +251,6 @@ const char kJpChainFmtDisp[] =
     "\x83t\x83\x8C\x81[\x83\x80\x88\xC8\x8D~\x82\xCC\x22\x95\x5C"
     "\x8E\xA6\xA5IK\x22\x82\xF0\x8D\xC4\x93x\x90\xDD\x92\xE8\x82"
     "\xB5\x92\xBC\x82\xB5\x82\xC4\x89\xBA\x82\xB3\x82\xA2";   // 0x52D848
-const char kJpModelFailFmt[] =
-    "%s\x82\xCC\x83\x82\x83\x66\x83\x8B\x83t\x83@\x83\x43\x83"
-    "\x8B\x82\xAA\x8C\xA9\x82\xC2\x82\xA9\x82\xE8\x82\xDC\x82"
-    "\xB9\x82\xF1\x0A\x0A\x83\x82\x83\x66\x83\x8B\x83t\x83@\x83"
-    "\x43\x83\x8B\x82\xCC\x8F\xEA\x8F\x8A\x82\xF0\x8Ew\x92\xE8"
-    "\x82\xB5\x82\xC4\x89\xBA\x82\xB3\x82\xA2\x0A\x0A(\x83|\x83"
-    "\x8A\x83S\x83\x93\x92\xB8\x93_\x90\x94\x82\xE2\x83{\x81["
-    "\x83\x93\x8D\x5C\x91\xA2\x81\x41\x95\x5C\x8F\xEE\x82\xCC"
-    "\x8E\xED\x97\xDE\x93\x99\x91S\x82\xAD\x93\xAF\x82\xB6\x83"
-    "\x82\x83\x66\x83\x8B\x83t\x83@\x83\x43\x83\x8B\x82\xC5\x82"
-    "\xC8\x82\xA2\x82\xC6\x0A\x93\xC7\x82\xDD\x8D\x9E\x82\xDD"
-    "\x83G\x83\x89\x81[\x82\xAA\x94\xAD\x90\xB6\x82\xB5MMD\x82"
-    "\xAA\x8B\xAD\x90\xA7\x8FI\x97\xB9\x82\xB7\x82\xE9\x89\xC2"
-    "\x94\x5C\x90\xAB\x82\xAA\x82\xA0\x82\xE8\x82\xDC\x82\xB7"
-    "\x82\xCC\x82\xC5\x92\x8D\x88\xD3\x82\xB5\x82\xC4\x89\xBA"
-    "\x82\xB3\x82\xA2)";   // 0x52DE00
-const char kJpCannotOpenAcc[] =
-    "\x83\x41\x83N\x83Z\x83T\x83\x8A\x83t\x83@\x83\x43\x83\x8B"
-    "(%s)\x82\xAA\x8C\xA9\x82\xC2\x82\xA9\x82\xE8\x82\xDC\x82"
-    "\xB9\x82\xF1\x0A\x0A%s\x82\xCC\x8F\xEA\x8F\x8A\x82\xF0\x8E"
-    "w\x92\xE8\x82\xB5\x82\xC4\x89\xBA\x82\xB3\x82\xA2(\x91\xE3"
-    "\x91\xD6\x89\xC2)";   // 0x52DAE0
 
 }  // namespace
 
@@ -276,6 +262,8 @@ namespace {
 // loader's PmmV2LoadContext).
 struct PmmV1LoadContext {
     MMDApp* s;
+    const std::filesystem::path projectDirectory;
+    project_relocation::Ticket relocation;
     HWND main;
     PathResolutionWorkspace* paths;
     D3DRenderer* wrap;
@@ -285,7 +273,6 @@ struct PmmV1LoadContext {
     // shared scratch buffers (the 0x218/0x318/0x380/0xdb8 frame slots of
     // the original stack)
     char text[0x100];          // name/EM_REPLACESEL scratch
-    char box[0x3E8];           // 1000-byte message-box text (0x459994)
     char mbPath[0x100];        // accessory/background path scratch
     wchar_t widePath[0x100];   // model path
     wchar_t wideTmp[0x100];    // accessory path
@@ -301,6 +288,7 @@ struct PmmV1LoadContext {
 
     explicit PmmV1LoadContext(MMDApp* app)
         : s(app),
+          projectDirectory(std::filesystem::path(app->EnvFileName()).parent_path()),
           main(reinterpret_cast<HWND>(app->Hwnd())),
           paths(&app->PathWorkspace()),
           wrap(app->Renderer()),
@@ -309,14 +297,16 @@ struct PmmV1LoadContext {
           accTracks(app->AccessoryKeyTracks()) {}
 };
 
-// abort helper (0x45A7C5) - no longer reached from a cancelled locate-file
-// dialog, which now skips that file:
-// close + ResetAppState + HandleWindowSize + return; the split-out twin
-// of the abortLoad lambda the inline body carried.
+// Retire the partial scene before exposing it to the editor. A refused
+// reset is retried by the project load boundary.
 static void AbortV1Load(MMDApp* s, pmm_io::Input& input) {
+    project_relocation::LoadScope::FailCurrent(*s);
     input.Close();                                           // 0x45A7CA
-    ResetAppState(s);                                        // 0x45A7D4
-    HandleWindowSize(s);                                     // 0x45A7DB
+    if (ResetAfterLoadFailure(s)) {                          // 0x45A7D4
+        HandleWindowSize(s);                                 // 0x45A7DB
+        return;
+    }
+    throw SceneResetRefused{true};
 }
 
 // ---- 0x45916D..0x459630: dispose + scene-state reset + menu/checkbox
@@ -473,16 +463,14 @@ static unsigned char LoadSceneV1_ModelPrePass(PmmV1LoadContext& ctx,
 
 
 // ---- 0x459861..0x45A6B4: one per-model record - allocate/init, load
-// the PMD (MessageBoxA + GetOpenFileNameW retry; a cancelled picker keeps
-// the empty slot and the state load continues), then
-// the direct-index state load.  Returns false after AbortV1Load ran.
+// the model and then reads its direct-index state. V1 needs the model
+// to determine the size of the dense keys and pose blocks.
 static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
     auto* const s = ctx.s;
     HWND const main = ctx.main;
     PathResolutionWorkspace& paths = *ctx.paths;
     D3DRenderer* const wrap = ctx.wrap;
     unsigned char** const slots = ctx.slots;
-    char* const box = ctx.box;
     char* const mbPath = ctx.mbPath;
     wchar_t* const widePath = ctx.widePath;
     wchar_t* const ofnFile = ctx.ofnFile;
@@ -508,87 +496,83 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
             std::memset(model, 0, mdl::kSize);                   // 0x4598BC
             ModelInitDefaults(model);                            // 0x4598D0
 
-            char name20[0x14];
+            char name20[0x14 + 1]{};
             pmm_io::ReadText(fd, name20, 0x14, 20);                                // 0x4598E4
             pmm_io::ReadText(fd, mbPath, 0x100, 255);                               // 0x4598FB
-            ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
-                                mbPath, widePath, 0x100,
-                                paths);                           // 0x459925
-
+            if (strnlen_s(mbPath, sizeof(ctx.mbPath)) == sizeof(ctx.mbPath))
+                throw std::runtime_error("Unterminated PMM model path");
+            const auto reference = ctx.relocation.Locate(mbPath, ctx.projectDirectory);
             LogV1Stage("model-resolved", Tell(fd), slotByte);
-            bool loaded = ModelLoadPMD(                          // 0x459965
-                model, main, widePath, wrap,
-                static_cast<int>(
-                    reinterpret_cast<std::uintptr_t>(s->state.exeDir)),
-                0, s->EnglishUI(), s->Physics(),
-                paths);
-            if (!loaded) {                                       // 0x45998B
-                sprintf_s(box, 0x3E8,
-                          s->EnglishUI() != 0
-                              ? "Cannot open the model file:%s"
-                                "\n\nPlease select the same model"
-                              : kJpModelFailFmt,
-                          name20);
-                LegacyUiMessageBoxA(main, box,
-                            s->EnglishUI() != 0 ? "open file"
-                                                : kJpOpenCaption,
-                            0);                                  // 0x4599ED
-                SetCurrentDirectoryW(reinterpret_cast<const wchar_t*>(
-                    s->state.exeDir));                         // 0x4599FA
-                swprintf_s(ofnFile, 0x100, L"");                 // 0x459A11
-                OPENFILENAMEW ofn;
-                std::memset(&ofn, 0, sizeof(ofn));
-                ofn.lStructSize = sizeof(ofn);                          // 0x459A22
-                ofn.hwndOwner =
-                    s->state.floatingWindow
-                        ? reinterpret_cast<HWND>(
-                              s->state.floatingWindow)
-                        : main;
+            bool loaded = false;
+            if (!reference.exactPath.empty()) {
+                loaded = project_model::LoadExact(model, main, reference.exactPath.c_str(), wrap,
+                                                   s->EnglishUI(), s->Physics(), paths);
+            } else if (reference.tryLegacy) {
+                ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap), mbPath, widePath, 0x100, paths);
+                loaded = ModelLoadPMD(model, main, widePath, wrap,
+                    static_cast<int>(reinterpret_cast<std::uintptr_t>(s->state.exeDir)),
+                    0, s->EnglishUI(), s->Physics(), paths);
+            }
+            bool manuallyLoaded = false;
+            const auto label = text_encoding::Display(name20);
+            while (!loaded) {
+                const auto answer = ShowProjectModelDialog(s, GetModuleHandleW(nullptr), main,
+                    ProjectModelIssue::MissingV1Model, label.c_str());
+                if (answer == kLocateProjectEffect) {
+                    if (project_relocation::RecoverProjectEffect(*s, main)) {
+                        const auto mapped = ctx.relocation.Locate(mbPath, ctx.projectDirectory);
+                        if (!mapped.exactPath.empty()) {
+                            if (mdl::Mdl(model)->modelDirectory[0]) {
+                                ModelDispose(model);
+                                std::memset(model, 0, mdl::kSize);
+                                ModelInitDefaults(model);
+                            }
+                            loaded = project_model::LoadExact(model, main, mapped.exactPath.c_str(), wrap,
+                                                              s->EnglishUI(), s->Physics(), paths);
+                        }
+                    }
+                    continue;
+                }
+                if (answer != 1) break;
+
+                ofnFile[0] = L'\0';
+                OPENFILENAMEW ofn{};
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner = s->FloatingWindow() ? s->FloatingWindow() : main;
                 ofn.lpstrFilter = kWFilterModel;
                 ofn.lpstrFile = ofnFile;
                 ofn.nMaxFile = 0x100;
-                ofn.Flags = OFN_FILEMUSTEXIST;
-                ofn.lpstrInitialDir =
-                    (GetMenuState(GetMenu(main), 0x12D, 0) & 8)
-                        ? reinterpret_cast<LPCWSTR>(s->state.dirModel)
-                        : kWUserModel;
+                ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+                using project_relocation::LoadScope;
+                constexpr auto pickerKind = LoadScope::Picker::Model;
+                const bool remember = LoadScope::RememberPickerDirectory(main);
+                const auto* exeDirectory = reinterpret_cast<const wchar_t*>(s->state.exeDir);
+                const auto defaultDirectory = std::filesystem::path(exeDirectory ? exeDirectory : L"") / kWUserModel;
+                ofn.lpstrInitialDir = remember
+                    ? LoadScope::PickerDirectory(*s, pickerKind)
+                    : defaultDirectory.c_str();
                 ofn.lpstrDefExt = L"pmd;pmx";
-                ofn.nMaxFileTitle = 0x100;
-                ofn.lpstrFileTitle = ofnTitle;
-                ofn.lpstrTitle =
-                    s->EnglishUI() != 0
-                        ? L"load model"
-                        : reinterpret_cast<LPCWSTR>(kWOpenFile);
-                if (!GetUiOpenFileNameW(&ofn)) {                   // 0x459B09
-                    // Closing the picker without a file skips this model's
-                    // file: the slot keeps its initialised (empty) record and
-                    // the per-model state load below still runs, exactly like
-                    // the failed-retry path - instead of aborting the load.
-                } else {
-                if (GetMenuState(GetMenu(main), 0x12D, 0) & 8) {
-                    ExtractDirFromPath(ofnTitle, ofnFile,
-                                      sizeof(ctx.ofnTitle)
-                                          / sizeof(ctx.ofnTitle[0]));       // 0x459B3F
-                    wcscpy_s(reinterpret_cast<wchar_t*>(
-                                 s->state.dirModel),
-                             0x3E8, ofnTitle);                   // 0x459B51
+                ofn.lpstrTitle = s->EnglishUI() == kUiChinese ? L"加载模型"
+                    : s->EnglishUI() == kUiJapanese ? L"モデル読み込み" : L"Load model";
+                if (!GetUiOpenFileNameW(&ofn)) break;
+
+                // Dispose a failed parse before retrying with a different model.
+                if (mdl::Mdl(model)->modelDirectory[0]) {
+                    ModelDispose(model);
+                    std::memset(model, 0, mdl::kSize);
+                    ModelInitDefaults(model);
                 }
-                if (!ModelLoadPMD(                               // 0x459B94
-                        model, main, ofnFile, wrap,
-                        static_cast<int>(reinterpret_cast<
-                            std::uintptr_t>(s->state.exeDir)),
-                        0, s->EnglishUI(),
-                        s->Physics(),
-                        paths)) {
-                    // retry failed: box + CONTINUE (no abort)   // 0x459BCC
-                    LegacyUiMessageBoxA(
-                        main,
-                        s->EnglishUI() != 0 ? "Cannot open the model file"
-                                           : kJpCannotOpenModel,
-                        s->EnglishUI() != 0 ? "open file" : kJpOpenCaption,
-                        0);
+                loaded = project_model::LoadExact(model, main, ofnFile, wrap,
+                    s->EnglishUI(), s->Physics(), paths);
+                manuallyLoaded = loaded;
+                if (loaded && remember) LoadScope::StagePickerDirectory(*s, pickerKind, ofnFile);
+            }
+            if (!loaded) {
+                if (!slotInRange) {
+                    ModelDispose(model);
+                    std::free(model);
                 }
-                }
+                return false;
             }
 
             LogV1Stage("model-loaded", Tell(fd), loaded ? 1 : 0);
@@ -806,6 +790,9 @@ static bool LoadSceneV1_ModelBlock(PmmV1LoadContext& ctx, int fd) {
                 ikChains[i].enabled = (b == 1) ? 1 : 0;
             }
             LogV1Stage("state-done", Tell(fd));
+            if (slotInRange && manuallyLoaded &&
+                std::wcscmp(record->path, ofnFile) == 0)
+                ctx.relocation.Confirm(reference, record->path);
             EnableMenuItem(GetMenu(main), 0x120, 0);             // 0x45A682
             EnableMenuItem(GetMenu(main), 0x121, 0);             // 0x45A6A2
             if (!slotInRange) {
@@ -1087,23 +1074,17 @@ static void LoadSceneV1_LightTrack(PmmV1LoadContext& ctx, int fd) {
 }
 
 
-// ---- 0x45B761..0x45C479: accessory block (retry dialog; a cancelled
-// picker keeps the empty accessory and goes on, retry failure ->
-// close+ResetAppState WITHOUT HandleWindowSize) + UI; false = aborted ----
+// ---- 0x45B761..0x45C479: accessory block + UI; false = aborted ----
 static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, pmm_io::Input& input) {
     const int fd = input.Descriptor();
     auto* const s = ctx.s;
     HWND const main = ctx.main;
     PathResolutionWorkspace& paths = *ctx.paths;
-    D3DRenderer* const wrap = ctx.wrap;
     mdl::AccessoryRecord** const accs = ctx.accs;
     mdl::AccessoryKey** const accTracks = ctx.accTracks;
     unsigned char** const slots = ctx.slots;
     char* const text = ctx.text;
     char* const mbPath = ctx.mbPath;
-    wchar_t* const wideTmp = ctx.wideTmp;
-    wchar_t* const ofnFile = ctx.ofnFile;
-    wchar_t* const ofnTitle = ctx.ofnTitle;
 
     // ---- accessory block (0x45B761..0x45C479) -----------------------------
     Rd(fd, &s->SelectedAccessorySlot(), 1);                       // 0x45B761
@@ -1167,73 +1148,17 @@ static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, pmm_io::Input& inp
         Sub04B0Init(accs[accSlot]);                              // 0x45B8D6
         pmm_io::ReadText(fd, accName, 100, 99);                                    // 0x45B8EA
         pmm_io::ReadText(fd, mbPath, 0x100, 255);                                   // 0x45B901
-        ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
-                            mbPath, wideTmp, 0x100,
-                            paths);                               // 0x45B92B
-        if (!LoadAccessoryObject(s, accs[accSlot], wideTmp)) {   // 0x45B961
-            sprintf_s(text, 0x100,
-                      s->EnglishUI() != 0
-                          ? "Cannot open file:%s.\n\nPlease select "
-                            "accessory of %s."
-                          : kJpCannotOpenAcc,
-                      accName, accName);                         // 0x45B9CE
-            LegacyUiMessageBoxA(main, text,
-                        s->EnglishUI() != 0 ? "open file" : kJpOpenCaption,
-                        0);                                      // 0x45B9ED
-            SetCurrentDirectoryW(reinterpret_cast<const wchar_t*>(
-                s->state.exeDir));                             // 0x45B9FA
-            swprintf_s(ofnFile, 0x100, L"");                     // 0x45BA11
-            OPENFILENAMEW ofn;
-            std::memset(&ofn, 0, sizeof(ofn));
-            ofn.lStructSize = sizeof(ofn);                              // 0x45BA22
-            ofn.hwndOwner =
-                s->state.floatingWindow
-                    ? reinterpret_cast<HWND>(
-                          s->state.floatingWindow)
-                    : main;
-            ofn.lpstrFilter =
-                s->EnglishUI() != 0 ? kWFilterAccEn : kWFilterAccJp;
-            ofn.lpstrFile = ofnFile;
-            ofn.nMaxFile = 0x100;
-            ofn.Flags = OFN_FILEMUSTEXIST;
-            ofn.lpstrInitialDir =
-                (GetMenuState(GetMenu(main), 0x12D, 0) & 8)
-                    ? reinterpret_cast<LPCWSTR>(s->state.dirAccs)
-                    : kWUserAcc;
-            ofn.lpstrDefExt = L"x";                              // 0x5297D8
-            ofn.nMaxFileTitle = 0x100;
-            ofn.lpstrFileTitle = ofnTitle;
-            ofn.lpstrTitle =
-                s->EnglishUI() != 0
-                    ? L"open file"                               // 0x52DA00
-                    : reinterpret_cast<LPCWSTR>(kWOpenFile);
-            if (!GetUiOpenFileNameW(&ofn)) {                       // 0x45BB0D
-                // Closing the picker without a file skips this accessory's
-                // file: the accessory keeps its initialised (empty) record and
-                // its remaining stream records are still consumed below,
-                // instead of aborting the whole project load.
-            } else {
-            if (GetMenuState(GetMenu(main), 0x12D, 0) & 8) {
-                ExtractDirFromPath(ofnTitle, ofnFile,
-                                      sizeof(ctx.ofnTitle)
-                                          / sizeof(ctx.ofnTitle[0]));           // 0x45BB47
-                wcscpy_s(reinterpret_cast<wchar_t*>(
-                             s->state.dirAccs),
-                         0x3E8, ofnTitle);                       // 0x45BB59
-            }
-            if (!LoadAccessoryObject(s, accs[accSlot], ofnFile)) {
-                input.Close();                                  // 0x45C5D5
-                ResetAppState(s);                                // 0x45C5DF
-                // NOTE: no HandleWindowSize on this path (unlike 0x45A7C5).
-                return false;
-            }
-            }
+        accName[sizeof accName - 1] = '\0';
+        if (!LoadProjectAccessory(s, accs[accSlot], mbPath, accName, paths, ctx.projectDirectory)) {
+            project_relocation::LoadScope::FailCurrent(*s);
+            input.Close();
+            if (!ResetAfterLoadFailure(s)) throw SceneResetRefused{false};
+            return false;
         }
 
         LogV1Stage("acc-obj-done", Tell(fd), accSlot);
         mdl::AccessoryRecord& accessory = *mdl::Accessory(accs[accSlot]);
         Rd(fd, &accessory.order, 1);                              // 0x45BBB8
-        accName[sizeof accName - 1] = '\0';
         const auto displayName = text_encoding::LegacyFilename(accName, accessory.sourcePath);
         text_encoding::EncodeDisplay(accessory.name, sizeof accessory.name, displayName.c_str());
         // Replace the shadow-list label using the resolved Unicode filename.
@@ -1325,7 +1250,11 @@ static bool LoadSceneV1_AccessoryBlock(PmmV1LoadContext& ctx, pmm_io::Input& inp
 // ---- 0x45C48C..0x45D278: config block head, register radios, checkbox
 // bytes, wave/AVI/picture blocks, menu checks, FPS + capture-mode
 // switches, physics defaults --------------------------------------------
-static void LoadSceneV1_ConfigBlock(PmmV1LoadContext& ctx, int fd) {
+static void LoadSceneV1_ConfigBlock(PmmV1LoadContext& ctx, int fd
+#if !MMD_ORIGINAL_PROFILE
+    , const plugins::background_identity::Mutation& projectScope, std::uint64_t expectedScene
+#endif
+) {
     auto* const s = ctx.s;
     HWND const main = ctx.main;
     PathResolutionWorkspace& paths = *ctx.paths;
@@ -1456,6 +1385,16 @@ static void LoadSceneV1_ConfigBlock(PmmV1LoadContext& ctx, int fd) {
         Rd(fd, &p2, 4);                                          // 0x45CC70
         Rd(fd, &p3, 4);                                          // 0x45CC84
         pmm_io::ReadText(fd, mbPath, 0x100, 255);                                   // 0x45CC9B
+#if !MMD_ORIGINAL_PROFILE
+        Rd(fd, &b, 1);                                           // 0x45CCF6
+        wchar_t pictureRequest[256]{};
+        const bool pictureResolved = mbPath[0] == 0 ||
+            ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap), mbPath,
+                               pictureRequest, 0x100, paths);
+        float pictureScale = 0;
+        std::memcpy(&pictureScale, &p3, sizeof p3);
+        (void)LoadProjectBackgroundPicture(s, pictureRequest, p1, p2, pictureScale, b != 0, projectScope, expectedScene, !pictureResolved);
+#else
         ResolveAnsiUserFile(reinterpret_cast<unsigned char*>(wrap),
                             mbPath,
                             s->PictureBackgroundPath(),
@@ -1480,6 +1419,7 @@ static void LoadSceneV1_ConfigBlock(PmmV1LoadContext& ctx, int fd) {
                 CheckMenuItem(GetMenu(main), 0xE9, 0);           // 0x45CD7D
             }
         }
+#endif
     }
     // 0x31E / 0x31D / 0x918 menu checks (0x45CD95..0x45CF2C)
     {
@@ -2197,19 +2137,33 @@ bool TryLoadSceneV1(MMDApp* app, pmm_io::Input& input, bool& replaced) {
     auto* s = app;
     PmmV1LoadContext ctx(app);
     if (!plugins::BeginProjectSceneReplacement(app)) throw std::runtime_error("history scene replacement refused");
+#if !MMD_ORIGINAL_PROFILE
+    plugins::CancelPictureGesture(*app);
+    plugins::background_identity::Mutation mediaMutation(app, true, true);
+#endif
     replaced = true;
     AcceptProjectSceneReplacement(app);
+    ctx.relocation = project_relocation::LoadScope::Accepted(*app);
+#if !MMD_ORIGINAL_PROFILE
+    const auto pictureProjectScene = app->SceneGeneration();
+#endif
     pmm_settings::Reset(*app);
     input.EnableReadAhead();
 
+    // Mandatory V1 fields must fail on truncated input just like V2. Keep
+    // this scope out of the optional tail, whose historical EOF is valid.
+    {
+    pmm_io::CheckedReads mandatoryReads(fd);
     LoadSceneV1_DisposeAndHeader(ctx, fd);            // 0x45916D..0x459630
     const unsigned char modelCount = LoadSceneV1_ModelPrePass(ctx, fd);
     LogV1Stage("pre-pass-done", Tell(fd), modelCount);
     if (modelCount != 0) {
         unsigned char modelIdx = 0;
         for (;;) {
-            if (!LoadSceneV1_ModelBlock(ctx, fd))
-                return false;  // AbortV1Load already ran (0x45A7C5)
+            if (!LoadSceneV1_ModelBlock(ctx, fd)) {
+                AbortV1Load(s, input);
+                return false;
+            }
             if (++modelIdx >= modelCount) break;                 // 0x45A6B4
         }
     }
@@ -2221,10 +2175,19 @@ bool TryLoadSceneV1(MMDApp* app, pmm_io::Input& input, bool& replaced) {
     LoadSceneV1_LightTrack(ctx, fd);                  // 0x45B090..0x45B761
     if (!LoadSceneV1_AccessoryBlock(ctx, input)) return false; // 0x45B761..0x45C479
     LogV1Stage("accessories-done", Tell(fd));
-    LoadSceneV1_ConfigBlock(ctx, fd);                 // 0x45C48C..0x45D278
+    LoadSceneV1_ConfigBlock(ctx, fd
+#if !MMD_ORIGINAL_PROFILE
+        , mediaMutation, pictureProjectScene
+#endif
+    );                                               // 0x45C48C..0x45D278
+    }
     LoadSceneV1_ReadGatedTail(ctx, fd);               // 0x45D278..0x45E117
     LogV1Stage("gated-tail-done", Tell(fd));
     input.Close();                                    // 0x45E11D
+    if (!project_relocation::ConfirmRemainingProjectEffects(*s, ctx.main)) {
+        AbortV1Load(s, input);
+        return false;
+    }
     LoadSceneV1_SuccessTail(ctx);                     // 0x45E149..0x45E7F7
     native_mesh::ProjectOpened(app, app->EnvFileName());
     mmv4mms::ProjectOpened(app, app->EnvFileName());
@@ -2236,7 +2199,17 @@ bool TryLoadSceneV1(MMDApp* app, pmm_io::Input& input, bool& replaced) {
 void LoadSceneV1(MMDApp* app, int fd) {
     pmm_io::Input input(fd);
     bool replaced = false;
-    (void)TryLoadSceneV1(app, input, replaced);
+    project_relocation::LoadScope relocation(*app, project_relocation::LoadScope::FreezePath(app->EnvFileName()));
+    try {
+        if (relocation.Run([&] { return TryLoadSceneV1(app, input, replaced); }))
+            relocation.Complete();
+    } catch (const SceneResetRefused& refused) {
+        // This entry owns only its input, not a caller-prepared plugin load
+        // transaction; reuse the same bounded recovery and never let the
+        // private signal escape.
+        input.Close();
+        (void)RecoverSceneResetRefusal(app, false, refused.restoreWindowSize);
+    }
 }
 
 }  // namespace mikumikustudio

@@ -169,5 +169,187 @@ int main() {
     CmdControl500(app.get(), nullptr, 501, 0);
     Check(model->selectedBone == 0, "Incomplete model must not be modified");
     std::puts("PASS incomplete bone buffers");
+
+    // PolledKeyState is a plain value: ineligible until the first poll, an
+    // edge on the first eligible poll, no edge while eligibility is sustained,
+    // and a fresh history whenever either owner identity changes.  The owner
+    // tokens below are synthetic pointers; the state only compares them.
+    {
+        PolledKeyState polled;
+        Check(!polled.Eligible() && !polled.Regained(),
+              "Default PolledKeyState is ineligible");
+        Check(!polled.HasForegroundOverride() && polled.ForegroundOverride() == nullptr,
+              "Default PolledKeyState has no foreground override");
+
+        int mainToken = 0;
+        int floatingToken = 0;
+        int rebuiltToken = 0;
+        void* const mainId = &mainToken;
+        void* const floatingId = &floatingToken;
+        void* const rebuiltId = &rebuiltToken;
+
+        Check(polled.Advance(mainId, nullptr, true),
+              "First eligible poll regains eligibility");
+        Check(polled.Eligible() && polled.Regained(),
+              "First eligible poll is eligible with an edge");
+        Check(!polled.Advance(mainId, nullptr, true),
+              "Sustained eligibility must not report a regain");
+        Check(polled.Eligible() && !polled.Regained(),
+              "Sustained poll stays eligible without an edge");
+        Check(!polled.Advance(mainId, nullptr, false),
+              "Losing eligibility is not a regain");
+        Check(!polled.Eligible() && !polled.Regained(),
+              "Loss clears both the latch and the edge");
+        Check(!polled.Advance(mainId, nullptr, false),
+              "Staying ineligible is not a regain");
+        Check(polled.Advance(mainId, nullptr, true),
+              "The same owners regain after a loss");
+        Check(polled.Regained(), "Recovery reports the regained edge");
+
+        Check(polled.Advance(rebuiltId, nullptr, true),
+              "Replacing the main owner restarts from ineligible");
+        Check(!polled.Advance(rebuiltId, nullptr, true),
+              "The rebuilt main owner cannot inherit the old edge");
+        Check(polled.Advance(rebuiltId, floatingId, true),
+              "Replacing the floating owner restarts from ineligible");
+        Check(!polled.Advance(rebuiltId, floatingId, true),
+              "The full replacement owner pair then sustains");
+        Check(!polled.Advance(rebuiltId, floatingId, false),
+              "Loss with both owners is not a regain");
+        Check(polled.Advance(rebuiltId, floatingId, true),
+              "Recovery with both owners regains");
+
+        polled.SetForegroundOverride(nullptr);
+        Check(polled.HasForegroundOverride() && polled.ForegroundOverride() == nullptr,
+              "An explicit nullptr override is still enabled");
+        polled.SetForegroundOverride(mainId);
+        Check(polled.HasForegroundOverride() && polled.ForegroundOverride() == mainId,
+              "A later override replaces the explicit nullptr");
+        polled.ClearForegroundOverride();
+        Check(!polled.HasForegroundOverride() && polled.ForegroundOverride() == nullptr,
+              "Clearing the override disables it");
+        Check(polled.Eligible() && polled.Regained(),
+              "Clearing the override leaves the eligibility latch unchanged");
+
+        PolledKeyState reconstructed;
+        Check(!reconstructed.Eligible() && !reconstructed.Regained(),
+              "A fresh reconstructed PolledKeyState starts ineligible");
+        Check(reconstructed.Advance(mainId, floatingId, true),
+              "A fresh reconstructed instance regains from scratch");
+        PolledKeyState independent;
+        Check(!independent.Eligible(),
+              "A second instance starts ineligible while the first is eligible");
+        independent.Advance(mainId, nullptr, false);
+        Check(polled.Eligible() && !independent.Eligible(),
+              "Instances keep independent eligibility latches");
+        std::puts("PASS polled key state value semantics");
+    }
+
+    // The seven polled-key helpers.  The owner tokens below stand in for HWNDs
+    // and reach only identity comparisons: Advance, the latch readers, and the
+    // foreground helpers (with the test override enabled) make no Win32 call on
+    // a synthetic handle, and no real foreground window is activated.
+    {
+        int mainToken = 0;
+        int floatingToken = 0;
+        int replacementToken = 0;
+        int foreignToken = 0;
+        void* const mainId = &mainToken;
+        void* const floatingId = &floatingToken;
+        void* const replacementId = &replacementToken;
+        void* const foreignId = &foreignToken;
+
+        app->Hwnd() = mainId;
+        app->state.floatingWindow = reinterpret_cast<HWND>(floatingId);
+
+        Check(PollKeyInputEligibleWithForeground(app.get(), mainId),
+              "Foreground matching the main owner is eligible");
+        Check(PollKeyInputEligibleWithForeground(app.get(), floatingId),
+              "Foreground matching the floating owner is eligible");
+        Check(!PollKeyInputEligibleWithForeground(app.get(), foreignId),
+              "A foreign foreground is not eligible");
+        Check(!PollKeyInputEligibleWithForeground(app.get(), nullptr),
+              "A null foreground is not eligible");
+        app->state.floatingWindow = nullptr;
+        Check(!PollKeyInputEligibleWithForeground(app.get(), floatingId),
+              "A floating identity cannot match when the app has none");
+        Check(PollKeyInputEligibleWithForeground(app.get(), mainId),
+              "The main owner is eligible without a floating window");
+        app->state.floatingWindow = reinterpret_cast<HWND>(floatingId);
+
+        Check(!PollKeyEligible(app.get()) && !PollKeyRegained(app.get()),
+              "A freshly constructed app has no polled keyboard history");
+
+        SetPollKeyForegroundForTests(app.get(), mainId);
+        Check(app->PolledKeys().HasForegroundOverride(),
+              "The test foreground override enables");
+        Check(PollKeyInputEligible(app.get()),
+              "An override matching the main owner is eligible");
+        SetPollKeyForegroundForTests(app.get(), floatingId);
+        Check(PollKeyInputEligible(app.get()),
+              "An override matching the floating owner is eligible");
+        SetPollKeyForegroundForTests(app.get(), foreignId);
+        Check(!PollKeyInputEligible(app.get()),
+              "A foreign override is not eligible");
+        SetPollKeyForegroundForTests(app.get(), nullptr);
+        Check(app->PolledKeys().HasForegroundOverride() &&
+                  app->PolledKeys().ForegroundOverride() == nullptr,
+              "An explicit nullptr override stays enabled");
+        Check(!PollKeyInputEligible(app.get()),
+              "An explicit nullptr override reports ineligible");
+        ClearPollKeyForegroundForTests(app.get());
+        Check(!app->PolledKeys().HasForegroundOverride() &&
+                  app->PolledKeys().ForegroundOverride() == nullptr,
+              "Clearing the test override disables it");
+
+        AdvancePollKeyEligibility(app.get(), false);
+        Check(!PollKeyEligible(app.get()) && !PollKeyRegained(app.get()),
+              "The first ineligible poll is not a regain");
+        AdvancePollKeyEligibility(app.get(), true);
+        Check(PollKeyEligible(app.get()) && PollKeyRegained(app.get()),
+              "The first eligible poll regains through the helper");
+        AdvancePollKeyEligibility(app.get(), true);
+        Check(PollKeyEligible(app.get()) && !PollKeyRegained(app.get()),
+              "Sustained eligibility does not regain through the helper");
+        AdvancePollKeyEligibility(app.get(), false);
+        Check(!PollKeyEligible(app.get()) && !PollKeyRegained(app.get()),
+              "Loss clears the helper latch");
+        AdvancePollKeyEligibility(app.get(), true);
+        Check(PollKeyRegained(app.get()), "Recovery regains through the helper");
+
+        SetPollKeyForegroundForTests(app.get(), nullptr);
+        ClearPollKeyForegroundForTests(app.get());
+        Check(PollKeyEligible(app.get()) && PollKeyRegained(app.get()),
+              "Clearing the override leaves the helper latch untouched");
+
+        app->Hwnd() = replacementId;
+        AdvancePollKeyEligibility(app.get(), true);
+        Check(PollKeyRegained(app.get()),
+              "Replacing the main owner regains through the helper");
+        AdvancePollKeyEligibility(app.get(), true);
+        Check(!PollKeyRegained(app.get()),
+              "The replacement main owner pair then sustains");
+        app->state.floatingWindow = reinterpret_cast<HWND>(foreignId);
+        AdvancePollKeyEligibility(app.get(), true);
+        Check(PollKeyRegained(app.get()),
+              "Replacing the floating owner regains through the helper");
+        AdvancePollKeyEligibility(app.get(), true);
+        Check(!PollKeyRegained(app.get()),
+              "The full replacement owner pair then sustains");
+
+        Check(!PollKeyInputEligibleWithForeground(nullptr, mainId),
+              "A null app is never eligible with a foreground");
+        Check(!PollKeyInputEligible(nullptr), "A null app is never eligible");
+        Check(!PollKeyEligible(nullptr) && !PollKeyRegained(nullptr),
+              "A null app has no polled keyboard latch");
+        AdvancePollKeyEligibility(nullptr, true);
+        SetPollKeyForegroundForTests(nullptr, mainId);
+        ClearPollKeyForegroundForTests(nullptr);
+        std::puts("PASS polled key eligibility helpers");
+
+        app->Hwnd() = nullptr;
+        app->state.floatingWindow = nullptr;
+        AdvancePollKeyEligibility(app.get(), false);
+    }
     return 0;
 }

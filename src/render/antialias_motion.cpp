@@ -73,6 +73,9 @@ struct SavedState {
     D3DVIEWPORT9 viewport{};
     explicit SavedState(IDirect3DDevice9* d):device(d) {
         Check(d->CreateStateBlock(D3DSBT_ALL,&block),"Cannot save motion capture state");
+        // Explicitly snapshot current shader constants before motion replay.
+        // Creation alone left high registers changed on the observed device.
+        Check(block->Capture(),"Cannot capture motion capture state");
         Check(d->GetRenderTarget(0,&targets[0]),"Cannot save motion capture target");
         for(unsigned i=1;i<4;++i)d->GetRenderTarget(i,&targets[i]);
         d->GetDepthStencilSurface(&depth);d->GetViewport(&viewport);

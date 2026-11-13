@@ -4,8 +4,13 @@
 #include "../plugins/history_runtime.hpp"
 #include "../plugins/json.hpp"
 #include "../plugins/shared_history.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "mikumikustudio/background_picture_policy.hpp"
+#include "mikumikustudio/background_picture_source.hpp"
+#endif
 #include <Windows.h>
 #include <algorithm>
+#include <stdexcept>
 
 namespace mikumikustudio::system_settings_ui {
 namespace {
@@ -13,7 +18,15 @@ const wchar_t* Text(MMDApp* app,const wchar_t* zh,const wchar_t* en,const wchar_
     return app->EnglishUI()==2?zh:app->EnglishUI()?en:ja;
 }
 using Mode=plugins::SharedHistory::RecordingMode;
-struct State { MMDApp* app; HistoryPreferences preference; };
+struct State {
+    MMDApp* app;
+    HistoryPreferences preference;
+#if !MMD_ORIGINAL_PROFILE
+    // Zero displays an empty field: an unreadable preference must not be
+    // silently replaced by a seemingly valid default when the dialog saves.
+    unsigned pictureSourcesMiB = 0;
+#endif
+};
 bool Number(HWND dialog,int id,unsigned maximum,unsigned& result) {
     wchar_t text[16]{};const int length=GetWindowTextLengthW(GetDlgItem(dialog,id));
     if(length<1||length>=16)return false;
@@ -25,10 +38,11 @@ bool Number(HWND dialog,int id,unsigned maximum,unsigned& result) {
 HWND Control(HWND dialog,const wchar_t* cls,const wchar_t* text,DWORD style,int id,int x,int y,int w,int h) {
     const auto child=CreateWindowExW(0,cls,text,WS_CHILD|WS_VISIBLE|style,x,y,w,h,dialog,
         reinterpret_cast<HMENU>(INT_PTR(id)),GetModuleHandleW(nullptr),nullptr);
+    if(!child)throw std::runtime_error("create system settings control");
     SendMessageW(child,WM_SETFONT,reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)),TRUE);
     return child;
 }
-INT_PTR CALLBACK Procedure(HWND dialog,UINT message,WPARAM wp,LPARAM lp) {
+INT_PTR ProcedureImpl(HWND dialog,UINT message,WPARAM wp,LPARAM lp) {
     auto* state=reinterpret_cast<State*>(GetWindowLongPtrW(dialog,DWLP_USER));
     if(message==WM_INITDIALOG) {
         state=reinterpret_cast<State*>(lp);SetWindowLongPtrW(dialog,DWLP_USER,lp);
@@ -48,8 +62,18 @@ INT_PTR CALLBACK Procedure(HWND dialog,UINT message,WPARAM wp,LPARAM lp) {
         Control(dialog,L"EDIT",std::to_wstring(state->preference.memoryMiB).c_str(),ES_NUMBER|WS_BORDER|WS_TABSTOP,104,210,198,110,24);
         Control(dialog,L"BUTTON",Text(app,L"按本机计算建议值",L"Suggest limits for this PC",L"このPCの推奨値を計算"),BS_PUSHBUTTON|WS_TABSTOP,105,20,234,240,26);
         Control(dialog,L"STATIC",Text(app,L"达到上限时回收最旧记录。预算不代表程序总内存。",L"Oldest records are retired at the limit. This is not a total process memory cap.",L"上限に達すると古い履歴を破棄します。アプリ全体のメモリ上限ではありません。"),0,-1,20,270,width-40,42);
-        Control(dialog,L"BUTTON",Text(app,L"保存",L"Save",L"保存"),BS_DEFPUSHBUTTON|WS_TABSTOP,IDOK,width-184,318,76,26);
-        Control(dialog,L"BUTTON",Text(app,L"取消",L"Cancel",L"キャンセル"),BS_PUSHBUTTON|WS_TABSTOP,IDCANCEL,width-96,318,76,26);
+        int buttonY = 318;
+#if !MMD_ORIGINAL_PROFILE
+        Control(dialog,L"STATIC",Text(app,L"图片源数据预算（MiB）",L"Picture sources (MiB)",L"画像元データ上限（MiB）"),0,-1,20,316,185,22);
+        Control(dialog,L"EDIT",state->pictureSourcesMiB?std::to_wstring(state->pictureSourcesMiB).c_str():L"",
+            ES_NUMBER|WS_BORDER|WS_TABSTOP,106,210,314,110,24);
+        Control(dialog,L"STATIC",Text(app,L"范围 16～4096。替换时新旧图片共同计费；降低上限保留已有图片。",
+            L"16–4096. Replacing counts both sources. Lower limits keep existing pictures.",
+            L"16～4096。置換中は新旧を合算します。上限を下げても既存画像は保持します。"),0,-1,20,350,width-40,46);
+        buttonY = 408;
+#endif
+        Control(dialog,L"BUTTON",Text(app,L"保存",L"Save",L"保存"),BS_DEFPUSHBUTTON|WS_TABSTOP,IDOK,width-184,buttonY,76,26);
+        Control(dialog,L"BUTTON",Text(app,L"取消",L"Cancel",L"キャンセル"),BS_PUSHBUTTON|WS_TABSTOP,IDCANCEL,width-96,buttonY,76,26);
         CheckRadioButton(dialog,101,102,state->preference.recordAdjustments?101:102);return TRUE;
     }
     if(!state)return FALSE;
@@ -70,12 +94,35 @@ INT_PTR CALLBACK Procedure(HWND dialog,UINT message,WPARAM wp,LPARAM lp) {
         if(!Number(dialog,103,100000,steps)||!Number(dialog,104,16384,memoryMiB)||memoryMiB<16) {
             MessageBoxW(dialog,Text(state->app,L"步数范围为 1 至 100000，内存预算范围为 16 至 16384 MB。",L"Steps: 1–100000. Memory budget: 16–16384 MB.",L"履歴数は1～100000、メモリ上限は16～16384 MBです。"),L"MMS",MB_OK|MB_ICONINFORMATION);return TRUE;
         }
+#if !MMD_ORIGINAL_PROFILE
+        unsigned pictureMiB = 0;
+        if(!Number(dialog,106,4096,pictureMiB)||pictureMiB<16) {
+            MessageBoxW(dialog,Text(state->app,L"图片源数据预算范围为 16 至 4096 MiB。",L"Picture source budget: 16–4096 MiB.",
+                L"画像元データの上限は16～4096 MiBです。"),L"MMS",MB_OK|MB_ICONINFORMATION);return TRUE;
+        }
+#endif
         auto* history=plugins::NativeHistory(state->app);
         const auto next=record?Mode::AllOperations:Mode::ExplicitOnly;
-        const std::string body=std::string("{\"recordAdjustments\":")+(record?"true":"false")+",\"steps\":"+
-            std::to_string(steps)+",\"memoryMiB\":"+std::to_string(memoryMiB)+"}";
-        const auto persist=[&]()->MmsResult{return system_settings::WriteSection("history",body)==system_settings::Result::Ok?MMS_OK:MMS_E_FAILED;};
-        const auto saved=history?history->Configure(next,steps,std::uint64_t(memoryMiB)*1024*1024,persist):persist();
+        MmsResult saved=MMS_E_FAILED;
+        try {
+            const std::string body=std::string("{\"recordAdjustments\":")+(record?"true":"false")+",\"steps\":"+
+                std::to_string(steps)+",\"memoryMiB\":"+std::to_string(memoryMiB)+"}";
+#if !MMD_ORIGINAL_PROFILE
+            // Obtain all potentially allocating state before persistence. Both
+            // sections share one lock and file replacement; no half-save.
+            auto& budget=media::GlobalPictureSourceBudget();
+            const auto sections=std::string("{\"history\":")+body+",\"resources\":{\"backgroundPictureSourcesMiB\":"+
+                std::to_string(pictureMiB)+"}}";
+            const auto persist=[&]()->MmsResult {
+                if(system_settings::WriteSections(sections)!=system_settings::Result::Ok)return MMS_E_FAILED;
+                budget.Configure(std::uint64_t(pictureMiB)*1024*1024);
+                return MMS_OK;
+            };
+#else
+            const auto persist=[&]()->MmsResult{return system_settings::WriteSection("history",body)==system_settings::Result::Ok?MMS_OK:MMS_E_FAILED;};
+#endif
+            saved=history?history->Configure(next,steps,std::uint64_t(memoryMiB)*1024*1024,persist):persist();
+        } catch(...) { /* Keep the dialog and old runtime settings on failure. */ }
         if(saved!=MMS_OK) {
             MessageBoxW(dialog,Text(state->app,L"设置未能保存，已保留原设置。",L"The setting could not be saved. The previous setting was kept.",L"設定を保存できなかったため、元の設定を保持しました。"),
                 Text(state->app,L"系统设置",L"System settings",L"システム設定"),MB_OK|MB_ICONERROR);return TRUE;
@@ -84,6 +131,16 @@ INT_PTR CALLBACK Procedure(HWND dialog,UINT message,WPARAM wp,LPARAM lp) {
         EndDialog(dialog,IDOK);return TRUE;
     }
     return FALSE;
+}
+INT_PTR CALLBACK Procedure(HWND dialog,UINT message,WPARAM wp,LPARAM lp) {
+    try { return ProcedureImpl(dialog,message,wp,lp); }
+    catch(...) {
+        // Creation and advisory-value calculation can allocate too. Never let
+        // an exception escape the Windows callback or save incomplete controls.
+        OutputDebugStringW(L"MMS: system settings dialog could not complete its operation.\n");
+        EndDialog(dialog,IDCANCEL);
+        return TRUE;
+    }
 }
 }
 HistoryPreferences HistoryPreference() noexcept {
@@ -116,10 +173,18 @@ bool HandleCommand(MMDApp* app,unsigned command) {
     if(command!=kCommand||!app)return false;
     if(GetCapture())return true;
     State state{app,HistoryPreference()};
+#if !MMD_ORIGINAL_PROFILE
+    std::uint64_t sourceLimit=0;
+    if(media::ReadBackgroundPictureSourceLimit(sourceLimit)==system_settings::Result::Ok)
+        state.pictureSourcesMiB=static_cast<unsigned>(sourceLimit/(1024*1024));
+#endif
     // No resource DLL or new Windows dialog API is required.
     struct {DLGTEMPLATE dialog;WORD menu,windowClass,title;} layout{};
     layout.dialog.style=WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME;
     layout.dialog.dwExtendedStyle=WS_EX_DLGMODALFRAME;layout.dialog.cx=310;layout.dialog.cy=236;
+#if !MMD_ORIGINAL_PROFILE
+    layout.dialog.cy=296;
+#endif
     DialogBoxIndirectParamW(GetModuleHandleW(nullptr),&layout.dialog,app->MainWindow(),Procedure,reinterpret_cast<LPARAM>(&state));
     return true;
 }

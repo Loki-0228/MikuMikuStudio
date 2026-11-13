@@ -148,18 +148,26 @@ Result Store::ReadSection(std::string_view name, std::string& output) const noex
 Result Store::WriteSection(std::string_view name, std::string_view object) const noexcept {
     return Write(name, object, false, nullptr);
 }
+Result Store::WriteSections(std::string_view sectionsObject) const noexcept {
+    return Write({}, sectionsObject, false, nullptr, true);
+}
 Result Store::CompareExchangeSection(std::string_view name, const std::string* expected,
     std::string_view object) const noexcept {
     return Write(name, object, true, expected);
 }
 Result Store::Write(std::string_view name, std::string_view object, bool compare,
-    const std::string* expected) const noexcept {
+    const std::string* expected, bool multiple) const noexcept {
     try {
-        if (!ValidName(name) || path_.empty() || !path_.is_absolute()) return Result::Invalid;
+        if ((!multiple && !ValidName(name)) || path_.empty() || !path_.is_absolute()) return Result::Invalid;
         Json update;
         try { update = Json::Parse(object, MaximumBytes); }
         catch (const std::invalid_argument&) { return Result::Invalid; }
         if (update.kind != Json::Object) return Result::Invalid;
+        if (multiple) {
+            if (update.object.empty()) return Result::Invalid;
+            for (const auto& entry : update.object)
+                if (!ValidName(entry.first) || entry.second.kind != Json::Object) return Result::Invalid;
+        }
         std::string expectedCanonical;
         if (compare && expected) {
             try {
@@ -181,13 +189,21 @@ Result Store::Write(std::string_view name, std::string_view object, bool compare
         if (loaded == Result::Missing) root = Json::Parse("{\"schemaVersion\":1,\"sections\":{}}");
         else before = Serialize(root);
         auto& sections = root.object.at("sections").object;
-        const auto current = sections.find(std::string(name));
-        if (compare && (expected ? current == sections.end() || Serialize(current->second) != expectedCanonical
-            : current != sections.end())) return Result::Conflict;
-        auto& section = sections[std::string(name)];
-        if (section.kind != Json::Object) section.kind = Json::Object;
-        if (compare) section = std::move(update);
-        else Merge(section, update);
+        if (multiple) {
+            for (const auto& entry : update.object) {
+                auto& section = sections[entry.first];
+                if (section.kind != Json::Object) section.kind = Json::Object;
+                Merge(section, entry.second);
+            }
+        } else {
+            const auto current = sections.find(std::string(name));
+            if (compare && (expected ? current == sections.end() || Serialize(current->second) != expectedCanonical
+                : current != sections.end())) return Result::Conflict;
+            auto& section = sections[std::string(name)];
+            if (section.kind != Json::Object) section.kind = Json::Object;
+            if (compare) section = std::move(update);
+            else Merge(section, update);
+        }
         auto bytes = Serialize(root);
         if (bytes.size() > MaximumBytes) return Result::Invalid;
         // Validate combined depth/node limits as well as byte size before save.
@@ -205,6 +221,9 @@ Result ReadSection(std::string_view name, std::string& output) noexcept {
 }
 Result WriteSection(std::string_view name, std::string_view object) noexcept {
     try { return Store(Path()).WriteSection(name, object); } catch (...) { return Result::Io; }
+}
+Result WriteSections(std::string_view sectionsObject) noexcept {
+    try { return Store(Path()).WriteSections(sectionsObject); } catch (...) { return Result::Io; }
 }
 Result CompareExchangeSection(std::string_view name, const std::string* expected,
     std::string_view object) noexcept {

@@ -15,7 +15,7 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include <array>
 namespace mikumikustudio::plugins {
-bool TryPasteBoundKeys(MMDApp* app, HWND window, bool mirror) noexcept {
+bool TryPasteBoundKeys(MMDApp* app, HWND window, bool mirror, bool* missingTrack) noexcept {
     if (!app) return false;
     auto* history = BoundNativePoseHistory(app);
     if (!history) return false;
@@ -48,16 +48,22 @@ bool TryPasteBoundKeys(MMDApp* app, HWND window, bool mirror) noexcept {
                 display ? ModelPasteDisplays : ModelPasteBones;
             if (auto captured = CaptureModelPasteSource(*app, source, capture)) return captured;
             const auto* model = slot < kModelSlotCount ? app->ModelSlot(slot) : nullptr;
-            for (std::size_t i = 0; i < source.bones.size(); ++i) {
-                const int target = frame_clipboard::BoneTarget(app, model, i);
-                if (target == frame_clipboard::kMissingTarget) return MMS_E_NOT_FOUND;
-                if (target >= 0) { source.bones[i].targetResolved = true; source.bones[i].targetIndex = target; }
-            }
-            for (std::size_t i = 0; i < source.morphs.size(); ++i) {
-                const int target = frame_clipboard::MorphTarget(app, model, i);
-                if (target == frame_clipboard::kMissingTarget) return MMS_E_NOT_FOUND;
-                if (target >= 0) { source.morphs[i].targetResolved = true; source.morphs[i].targetIndex = target; }
-            }
+            const auto resolveTargets = [&](auto& records, auto resolve) {
+                for (std::size_t i = 0; i < records.size(); ++i) {
+                    const int target = resolve(app, model, i);
+                    if (target == frame_clipboard::kMissingTarget) {
+                        if (missingTrack) *missingTrack = true;
+                        return false;
+                    }
+                    if (target >= 0) {
+                        records[i].targetResolved = true;
+                        records[i].targetIndex = target;
+                    }
+                }
+                return true;
+            };
+            if (!resolveTargets(source.bones, frame_clipboard::BoneTarget) ||
+                !resolveTargets(source.morphs, frame_clipboard::MorphTarget)) return MMS_E_NOT_FOUND;
             result = mixed ? PlanModelKeyPaste(*app, slot, source, change) : morph ? PlanMorphKeyPaste(*app, slot, source, change) :
                 display ? PlanDisplayKeyPaste(*app, slot, source, change) : PlanBoneKeyPaste(*app, slot, false, source, change);
         }

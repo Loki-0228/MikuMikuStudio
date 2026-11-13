@@ -39,6 +39,15 @@ public:
     ModelPhysicsResources(const ModelPhysicsResources&) = delete;
     ModelPhysicsResources& operator=(const ModelPhysicsResources&) = delete;
     static std::shared_ptr<ModelPhysicsResources> Capture(unsigned char* model);
+#if !MMD_ORIGINAL_PROFILE
+    // Allocation-free preallocation bound for Capture, under the owning scene
+    // gate. Reusable current owners cost zero. Counts actual live resources,
+    // checks topology and sums allocation stages (including replaced buffers).
+    // Excludes scene-resident resources and existing shared bookkeeping. This
+    // is requested C++ allocation storage, not CRT/driver/process memory.
+    // On any failure bytes is unchanged; no owner/identity/world is modified.
+    static MmsResult MeasureCapturePreparation(unsigned char* model,std::uint64_t& bytes) noexcept;
+#endif
     static std::shared_ptr<ModelPhysicsResources> Find(unsigned char* model) noexcept;
     // Existing private model import: ownership transfers only after its parser
     // releases the model, by the caller's following AdoptOwnership() call.

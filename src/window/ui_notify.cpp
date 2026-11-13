@@ -73,9 +73,16 @@
 
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#include "bottom_panel_control_paint.hpp"
+#include "light_slider_paint_buffer.hpp"
+#include "mikumikustudio/bottom_panel_layout.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include <native_ui/win32_host.hpp>
+#endif
 
 namespace mikumikustudio {
 
@@ -88,11 +95,17 @@ void DrawControlText(MMDApp* app, HWND hwnd, HDC hdc, RECT rc);
 
 namespace {
 
+bool IsNativeTrackbar(HWND window) {
+    wchar_t type[32]{};
+    return GetClassNameW(window, type, std::size(type)) && _wcsicmp(type, TRACKBAR_CLASSW) == 0;
+}
+
 // Match each checkbox's panel gradient in HandlePaletteChanged without
 // repainting the parent or triggering a GPU frame. Clear the control before
 // painting so the XOR focus rectangle cannot leave stale pixels. The panel
 // border lies outside the control's clip; its x span does not affect the colour.
 void PaintCheckboxPanelBackground(HWND hwnd, HDC hdc) {
+    if (PaintBottomControlBackground(hwnd, hdc)) return;
     MMDApp* app = g_Block;
     if (app == nullptr)
         return;
@@ -114,7 +127,8 @@ void PaintCheckboxPanelBackground(HWND hwnd, HDC hdc) {
                       origin.x + own.right, origin.y + own.bottom);
     const bool shadow = GetDlgCtrlID(hwnd) == panel::kAdaptiveShadowCheckbox ||
                         GetDlgCtrlID(hwnd) == panel::kShadowFilterCheckbox;
-    FillPanelBottom(hdc, origin.x + own.left - 1, mainRc.bottom - 157,
+    const int panelTop = MainPanelLayout(app, mainRc.bottom).bottomTop + 3;
+    FillPanelBottom(hdc, origin.x + own.left - 1, panelTop,
                     origin.x + own.right + 1, mainRc.bottom - (shadow ? 3 : 0x52),
                     app->ThemeColorAt(shadow ? 20 : 16),
                     app->ThemeColorAt(shadow ? 11 : 17), 1);
@@ -226,6 +240,216 @@ LRESULT CALLBACK WhiteReferenceCheckboxProc(HWND hwnd, UINT message,
 
 }  // namespace
 
+#if !MMD_ORIGINAL_PROFILE
+namespace {
+
+struct TrackbarGeometry {
+    LONG_PTR style;
+    RECT thumb{}, channel{};
+
+    RECT Orient(RECT rect) const noexcept {
+        return (style & TBS_VERT) ? RECT{rect.top, rect.left, rect.bottom, rect.right} : rect;
+    }
+};
+
+std::optional<TrackbarGeometry> ReadTrackbarGeometry(HWND slider, const RECT& client) {
+    TrackbarGeometry geometry{GetWindowLongPtrW(slider, GWL_STYLE)};
+    SendMessageW(slider, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&geometry.channel));
+    SendMessageW(slider, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&geometry.thumb));
+    const RECT track = geometry.Orient(geometry.channel);
+    RECT visible{};
+    if (!IntersectRect(&visible, &track, &client) ||
+        (!(geometry.style & TBS_NOTHUMB) && !IntersectRect(&visible, &geometry.thumb, &client)))
+        return std::nullopt;
+    return geometry;
+}
+
+bool PaintBottomTrackbar(const ui::BottomPanelControlSurface& surface, HWND slider, HDC dc,
+                        const TrackbarGeometry& geometry) {
+    if (!surface.PaintBackground(dc)) return false;
+    const auto& [style, thumb, channel] = geometry;
+    const bool vertical = (style & TBS_VERT) != 0;
+    const bool centered = (style & (TBS_BOTH | TBS_NOTICKS)) != 0;
+    const bool reverse = (style & TBS_TOP) != 0;
+    const RECT track = geometry.Orient(channel);
+
+    const HTHEME theme = OpenThemeData(slider, L"TRACKBAR");
+    RECT edge = track;
+    if (!theme || FAILED(DrawThemeBackground(theme, dc, vertical ? TKP_TRACKVERT : TKP_TRACK,
+                                              TRS_NORMAL, &track, nullptr)))
+        DrawEdge(dc, &edge, EDGE_SUNKEN, BF_RECT | BF_MIDDLE);
+
+    if (!(style & TBS_NOTICKS)) {
+        const auto normalThumb = geometry.Orient(thumb);
+        const LONG half = (normalThumb.right - normalThumb.left) / 2;
+        const int count = static_cast<int>(SendMessageW(slider, TBM_GETNUMTICS, 0, 0));
+        const HBRUSH tickBrush = GetSysColorBrush(IsWindowEnabled(slider) ? COLOR_BTNTEXT : COLOR_GRAYTEXT);
+        const auto tick = [&](int x) {
+            if (x < 0) return;
+            if (reverse || (style & TBS_BOTH)) {
+                const RECT mark = geometry.Orient({x, normalThumb.top - 3, x + 1, normalThumb.top - 1});
+                FillRect(dc, &mark, tickBrush);
+            }
+            if (!reverse || (style & TBS_BOTH)) {
+                const RECT mark = geometry.Orient({x, normalThumb.bottom + 1, x + 1, normalThumb.bottom + 3});
+                FillRect(dc, &mark, tickBrush);
+            }
+        };
+        tick(channel.left + half);
+        for (int index = 0; index < count - 2; ++index)
+            tick(static_cast<int>(SendMessageW(slider, TBM_GETTICPOS, index, 0)));
+        tick(channel.right - half - 1);
+    }
+    if (!(style & TBS_NOTHUMB)) {
+        const int part = vertical ? (centered ? TKP_THUMBVERT : reverse ? TKP_THUMBLEFT : TKP_THUMBRIGHT) :
+            centered ? TKP_THUMB : reverse ? TKP_THUMBTOP : TKP_THUMBBOTTOM;
+        POINT cursor{};
+        const bool hot = GetCursorPos(&cursor) && ScreenToClient(slider, &cursor) && PtInRect(&thumb, cursor);
+        const bool focused = GetFocus() == slider && !(SendMessageW(slider, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS);
+        const int state = !IsWindowEnabled(slider) ? TUS_DISABLED : GetCapture() == slider ? TUS_PRESSED :
+            hot ? TUS_HOT : focused ? TUS_FOCUSED : TUS_NORMAL;
+        if (!theme || FAILED(DrawThemeBackground(theme, dc, part, state, &thumb, nullptr))) {
+            FillRect(dc, &thumb, GetSysColorBrush(COLOR_BTNFACE));
+            RECT thumbEdge = thumb;
+            DrawEdge(dc, &thumbEdge, EDGE_RAISED, BF_RECT);
+        }
+        if (focused) DrawFocusRect(dc, &surface.Client());
+    }
+    if (theme) CloseThemeData(theme);
+    return true;
+}
+
+template<class Next>
+std::optional<LRESULT> TryPaintBottomTrackbar(MMDApp& app, HWND slider, UINT message, WPARAM wp, LPARAM lp, Next next) {
+    if (message != WM_PAINT && message != WM_PRINTCLIENT && message != WM_ERASEBKGND) return std::nullopt;
+    const auto surface = ui::BottomPanelControlSurface::Find(app, slider);
+    if (!surface || !surface->FitsHeight()) return std::nullopt;
+
+    const HWND capture = GetCapture();
+    const int id = GetDlgCtrlID(slider);
+    const auto& client = surface->Client();
+    const bool light = id >= panel::kLightColorSliderR && id <= panel::kLightDirSliderZ;
+    const bool compactLight = light && ui::light_slider_paint_buffer::CompactLightClient(id, client);
+    const bool resizing = capture == app.MainWindow() &&
+        (app.SidebarResizeDragging() || app.bottomPanelSizing.dragging >= 0);
+    // Keep the compact native path for the original light geometry. A light
+    // slider moving between columns uses the template buffer at its new size.
+    if (!surface->Expanded() && ((capture == slider && compactLight) ||
+        (resizing && (!light || compactLight)))) return std::nullopt;
+
+    // Native paint needs both the erase and the untouched update region when
+    // its cached geometry is still empty. Make that decision before BeginPaint.
+    const auto geometry = ReadTrackbarGeometry(slider, surface->Client());
+    if (!geometry) return std::nullopt;
+    if (message == WM_ERASEBKGND) return TRUE;
+    if (wp) {
+        if (PaintBottomTrackbar(*surface, slider, reinterpret_cast<HDC>(wp), *geometry)) return 0;
+        return std::nullopt;
+    }
+    if (message != WM_PAINT) return std::nullopt;
+
+    PAINTSTRUCT paint{};
+    if (const HDC dc = BeginPaint(slider, &paint)) {
+        // Commit the backdrop and the track together. A partial paint can
+        // still prepare the whole control and transfer only the damaged pixels.
+        native_ui::PanelBuffer buffer;
+        const HDC memory = buffer.Begin(dc, client.right, client.bottom, 0, GetSysColor(COLOR_BTNFACE));
+        const bool copied = memory && PaintBottomTrackbar(*surface, slider, memory, *geometry) &&
+            buffer.Copy(dc, paint.rcPaint);
+        if (!copied && !PaintBottomTrackbar(*surface, slider, dc, *geometry))
+            next(slider, WM_PAINT, reinterpret_cast<WPARAM>(dc), lp);
+        EndPaint(slider, &paint);
+        return 0;
+    }
+    return std::nullopt;
+}
+
+bool IsDraggingTrackbarLayout(void* context) noexcept {
+    auto& app = *static_cast<MMDApp*>(context);
+    return app.SidebarResizeDragging() != 0 || app.bottomPanelSizing.dragging >= 0;
+}
+
+template<class Next>
+LRESULT ForwardBottomTrackbar(MMDApp& app, HWND slider, UINT message, WPARAM wp, LPARAM lp, Next next) {
+    // Preserve the native focus and capture contract while hiding the
+    // keyboard cue for mouse input only.
+    static thread_local HWND mouseFocusTarget = nullptr;
+    struct RestoreMouseFocusTarget {
+        HWND& target;
+        HWND previous;
+        ~RestoreMouseFocusTarget() { target = previous; }
+    } restoreMouseFocusTarget{mouseFocusTarget, mouseFocusTarget};
+    const bool mouseFocus = message == WM_LBUTTONDOWN || message == WM_LBUTTONDBLCLK;
+    if (mouseFocus) mouseFocusTarget = slider;
+    const bool keyboardNavigation = message == WM_KEYDOWN &&
+        (wp == VK_LEFT || wp == VK_RIGHT || wp == VK_UP || wp == VK_DOWN ||
+         wp == VK_HOME || wp == VK_END || wp == VK_PRIOR || wp == VK_NEXT || wp == VK_TAB);
+    if (mouseFocus || keyboardNavigation || (message == WM_SETFOCUS && mouseFocusTarget != slider)) {
+        const bool hidden = (SendMessageW(slider, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS) != 0;
+        if (hidden != mouseFocus)
+            SendMessageW(slider, WM_UPDATEUISTATE, MAKEWPARAM(mouseFocus ? UIS_SET : UIS_CLEAR, UISF_HIDEFOCUS), 0);
+    }
+    if (message == WM_LBUTTONUP) SetFocus(app.MainWindow());
+
+    if (const auto result = TryPaintBottomTrackbar(app, slider, message, wp, lp, next))
+        return *result;
+    return ui::light_slider_paint_buffer::ForwardTo(next, slider, message, wp, lp,
+        {app.MainWindow(), &app, IsDraggingTrackbarLayout});
+}
+
+LRESULT CALLBACK BottomTrackbarClassProc(HWND slider, UINT message, WPARAM wp, LPARAM lp) {
+    auto& app = *g_Block;
+    return ForwardBottomTrackbar(app, slider, message, wp, lp, [&app](HWND child, UINT msg, WPARAM w, LPARAM l) {
+        return CallWindowProcA(app.OriginalTrackbarProc(), child, msg, w, l);
+    });
+}
+
+inline constexpr UINT_PTR kBottomTrackbarSubclass = 0x4D4D5354;
+
+LRESULT CALLBACK BottomTrackbarSubclass(HWND slider, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data) {
+    if (message == WM_NCDESTROY) RemoveWindowSubclass(slider, BottomTrackbarSubclass, id);
+    auto& app = *reinterpret_cast<MMDApp*>(data);
+    return ForwardBottomTrackbar(app, slider, message, wp, lp, DefSubclassProc);
+}
+
+}  // namespace
+
+bool ui::AttachBottomTrackbar(MMDApp& app, HWND child) {
+    // The child is created inside the host's WM_CREATE, before CreateWindowEx
+    // returns the main HWND to MMDApp. Painting checks ownership when it runs.
+    const HWND main = app.MainWindow();
+    if (GetWindowThreadProcessId(child, nullptr) != GetCurrentThreadId() ||
+        !(GetWindowLongPtrW(child, GWL_STYLE) & WS_CHILD) ||
+        (main && GetParent(child) != main) || !IsNativeTrackbar(child))
+        return false;
+    DWORD_PTR data = 0;
+    if (GetWindowSubclass(child, BottomTrackbarSubclass, kBottomTrackbarSubclass, &data))
+        return data == reinterpret_cast<DWORD_PTR>(&app);
+    const auto current = reinterpret_cast<WNDPROC>(GetWindowLongPtrA(child, GWLP_WNDPROC));
+    if (!current) return false;
+    if (current == BottomTrackbarClassProc) return &app == g_Block;
+    auto& native = app.OriginalTrackbarProc();
+    // Keep the captured class procedure for the generated startup controls.
+    // Later attachments preserve the individual child's subclass chain.
+    if (!main && &app == g_Block && (!native || native == current) &&
+        SetWindowLongPtrA(child, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(BottomTrackbarClassProc))) {
+        native = current;
+    } else if (!SetWindowSubclass(child, BottomTrackbarSubclass, kBottomTrackbarSubclass,
+                                  reinterpret_cast<DWORD_PTR>(&app))) return false;
+    InvalidateRect(child, nullptr, TRUE);
+    return true;
+}
+#endif
+
+void ui::InvalidateBottomTrackbars(MMDApp& app) {
+    if (build_profile::original) return;
+    const HWND main = app.MainWindow();
+    for (HWND child = GetWindow(main, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        if (IsNativeTrackbar(child) && BottomPanelControlSurface::Find(app, child))
+            InvalidateRect(child, nullptr, FALSE);
+    }
+}
+
 // Use the SDK layout: NMHDR contains pointer-sized fields on Win64.
 LRESULT HandleNotify(HWND h, UINT m, WPARAM w, LPARAM l) {
     MMDApp* app = g_Block;
@@ -233,10 +457,13 @@ LRESULT HandleNotify(HWND h, UINT m, WPARAM w, LPARAM l) {
     const HWND mainHwnd =
         static_cast<HWND>(app->state.hwnd);  // this+0xA06B8 (657080)
 
-    // Gate: NM_CUSTOMDRAW (-12) on NMHDR.code and CDDS_PREPAINT (1) on
-    // dwDrawStage, else default.  (asm 0x4398B9 / 0x4398C7)
-    if (cd->hdr.code != -12 || cd->dwDrawStage != 1)
+    if (cd->hdr.code != NM_CUSTOMDRAW || cd->dwDrawStage != CDDS_PREPAINT)
         return DefWindowProcA(h, m, w, l);
+
+    if (!build_profile::original && GetParent(cd->hdr.hwndFrom) == mainHwnd && IsNativeTrackbar(cd->hdr.hwndFrom)) {
+        PaintBottomControlBackground(cd->hdr.hwndFrom, cd->hdc);
+        return CDRF_DODEFAULT;
+    }
 
     // ---- Unconditional prologue (asm 0x4398D1..0x43993D) ----------------
     // First BM_GETCHECK probe: ctrl 556 on the main window.

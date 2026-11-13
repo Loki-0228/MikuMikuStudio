@@ -545,6 +545,8 @@ void DrawFrameOverlayBatches(MMDApp* app) {
 
 void RenderFrameScene(MMDApp* app) {
     frame_rate::BeginScene(app);
+    const bool still = app && app->RecordingWindow() && image_sequence::StillActive(app);
+    if (still) image_sequence::SetStillFrameReady(app, false);
     if(!FrameSceneRenderable(app))return;
     MMD_PERF_SCOPE(Scene);
     shadow_filter::Invalidate(app);
@@ -585,15 +587,18 @@ void RenderFrameScene(MMDApp* app) {
     mmv4mms::Initialize(app);
     const bool transparent = TransparentExportActive(app);
     if (!mmv4mms::Active() && !transparent && !NativeBakePreviewActive() && !deformed_mesh_capture::Active() && mesh_bake_cache::Empty() &&
-        FrameViewportRenderable(app) && RenderD3D12Native(app, reinterpret_cast<const float*>(&frameWorld))) {
+        RenderD3D12Native(app, reinterpret_cast<const float*>(&frameWorld))) {
         frame_rate::CompleteScene(app);
         frame_rate::Presented(app, true);
         return;
     }
     // Reset releases the legacy recording target. Establish the scene target
     // before the shadow pass captures it, rather than rebinding at its tail.
-    if (!transparent && app->RecordingWindow() && sub->multisampleAvailable == 0)
-        EnsureCaptureRenderTarget(app);
+    if (!transparent && app->RecordingWindow() && sub->multisampleAvailable == 0 &&
+        !EnsureCaptureRenderTarget(app)) {
+        CancelExportAfterCaptureTargetFailure(app);
+        return;
+    }
     TransparentFrameScope transparentFrame(app);
     if (!transparentFrame.Ready()) {
         if (!image_sequence::CancelStillCapture(app)) FinishAviRecord(app);
@@ -635,7 +640,11 @@ void RenderFrameScene(MMDApp* app) {
         app->state.blackBackgroundEnabled != 0
             ? D3DCOLOR_XRGB(0, 0, 0)
             : D3DCOLOR_XRGB(255, 255, 255);
-    { MMD_PERF_SCOPE(Clear); device->Clear(0, nullptr, clearFlags, clearColor, 1.0f, 0); }
+    {
+        MMD_PERF_SCOPE(Clear);
+        const HRESULT cleared = device->Clear(0, nullptr, clearFlags, clearColor, 1.0f, 0);
+        if (still && FAILED(cleared)) return;
+    }
 
     // A completed MMV4MMS frame replaces the native scene before BeginScene.
     // The usual capture and UI composition below consume this same texture.
@@ -691,14 +700,10 @@ void RenderFrameScene(MMDApp* app) {
     }
 
     // 0x46DFDE: mirror the full-size capture RT into the secondary-window
-    // back buffer. The original reacquires the back buffer after a reset.
-    // A reset also releases the capture target, so recreate it before
-    // the mirror; if that fails, skip the mirror rather than read a
-    // released surface.
-    // Defect RB-04.
-    if (!transparent && sub->multisampleAvailable == 0 &&
+    // back buffer. Only mirror a target that was prepared before rendering.
+    if (!still && !transparent && sub->multisampleAvailable == 0 &&
         app->RecordingWindow() != nullptr &&
-        EnsureCaptureRenderTarget(app)) {
+        sub->captureSurface) {
         auto** backBufferSlot = &sub->backbufferSurface;
         if (*backBufferSlot == nullptr)
             device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO,
@@ -711,11 +716,21 @@ void RenderFrameScene(MMDApp* app) {
     // 0x46E208: the recording/sub-window path ends the scene here; it never
     // draws debug geometry or the dynamic overlay batches.
     if (app->RecordingWindow() != nullptr) {
-        device->EndScene();
+        const HRESULT ended = device->EndScene();
+        if (still && FAILED(ended)) return;
         if (antialiasFrame.Complete()) {
-            if (!transparent && sub->multisampleAvailable == 0 && EnsureCaptureRenderTarget(app))
+            if (!still && !transparent && sub->multisampleAvailable == 0 && sub->captureSurface)
                 DownsampleCaptureSurface(app);
             CaptureAccessoryScreenTexture(app, sub, device);
+        }
+        if (still && antialiasFrame.Succeeded()) {
+            bool ready = true;
+            if (!transparent && sub->multisampleAvailable == 0) {
+                auto*& backBuffer = sub->backbufferSurface;
+                if (!backBuffer) device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer);
+                ready = DownsampleCaptureSurface(app);
+            }
+            image_sequence::SetStillFrameReady(app, ready);
         }
 
         DumpAccessoryScreenTexture(app, device);

@@ -104,10 +104,19 @@ struct NativeUi::Impl {
     std::map<unsigned, std::pair<HMENU, MmsHandle>> overflowMenuItems;
     bool overflowOpen = false, overflowLayout = false;
     unsigned nativeWorkDepth = 0;
+    unsigned propertyInputWorkDepth = 0;
     bool closePending = false;
     WPARAM closeWParam = 0; LPARAM closeLParam = 0;
     std::vector<std::string> panelOrder;
     std::string activePanel;
+    struct PanelRestore {
+        std::string id;
+        MmsHandle element = 0;
+        HWND window = nullptr;
+        uint64_t instance = 0;
+    };
+    std::shared_ptr<const PanelRestore> panelRestore;
+    uint64_t panelTabsSyncSerial = 0;
     std::map<std::string, MmsResult> panelErrors;
     uint32_t dpi = 96;
     native_ui::PanelBuffer workspaceBuffer, bodyBuffer;
@@ -541,13 +550,10 @@ struct NativeUi::Impl {
             if (reinterpret_cast<HWND>(lp) == self->overflowButton) self->OpenOverflow();
             else self->Command(LOWORD(wp));
             return MMS_OK; }); return 0; }
-        if (msg == WM_NOTIFY && reinterpret_cast<NMHDR*>(lp)->hwndFrom == self->tabs && reinterpret_cast<NMHDR*>(lp)->code == TCN_SELCHANGE) {
-            int index = TabCtrl_GetCurSel(self->tabs); if (index >= 0 && size_t(index) < self->panelOrder.size()) {
-                if (self->activePanel != self->panelOrder[index]) ++self->layoutContext;
-                self->activePanel = self->panelOrder[index]; Boundary([&] {
-                    self->Layout(); return self->PanelEnabled(self->activePanel) ? self->registry.FocusSurface(self->activePanel) : MMS_OK;
-                });
-            } return 0;
+        if (msg == WM_NOTIFY && lp && reinterpret_cast<NMHDR*>(lp)->hwndFrom == self->tabs && reinterpret_cast<NMHDR*>(lp)->code == TCN_SELCHANGE) {
+            const auto result = Boundary([&] { return self->SelectPanel(); });
+            if (result) { self->registry.SuspendGeometry(); self->registry.Refresh().SuspendTargets(); self->DeferPresentation(); }
+            return 0;
         }
         if (hwnd == self->body && (msg == WM_VSCROLL || msg == WM_HSCROLL || msg == WM_MOUSEWHEEL)) {
             const bool horizontal = msg == WM_HSCROLL; int& position = horizontal ? self->panelScrollX : self->panelScrollY;
@@ -692,12 +698,15 @@ struct NativeUi::Impl {
     }
     std::vector<std::string> Children(const std::string& parent) const {
         std::vector<std::string> out;
-        for (const auto& [id, e] : registry.elements) if (!e.nativeObserved && String(e.desc.parentId) == parent) out.push_back(id);
-        std::stable_sort(out.begin(), out.end(), [&](const auto& a, const auto& b) { return registry.elements.at(a).effectiveHints.order < registry.elements.at(b).effectiveHints.order; }); return out;
+        for (const auto& [id, e] : registry.elements) if (!e.nativeObserved && String(registry.EffectiveParent(e)) == parent) out.push_back(id);
+        std::stable_sort(out.begin(), out.end(), [&](const auto& a, const auto& b) {
+            return registry.EffectiveLayout(registry.elements.at(a)).hints.order <
+                   registry.EffectiveLayout(registry.elements.at(b)).hints.order;
+        }); return out;
     }
-    bool State(const ElementRecord& e, MmsCommandStateV1& out) {
+    bool State(const ElementRecord& e, MmsCommandStateV1& out, bool layoutIndependent = false) {
         out = {}; out.h = Header<MmsCommandStateV1>();
-        if (!e.visible) return false;
+        if (!layoutIndependent && !registry.EffectiveLayout(e).visible) return false;
         if (e.desc.kind == MMS_UI_INPUT) {
             const auto control = controls.find(String(e.desc.id));
             const auto content = control != controls.end() ? control->second.content : nullptr;
@@ -733,12 +742,67 @@ struct NativeUi::Impl {
             view.window == state.window && view.instance == state.instance;
     }
     bool PanelVisible(const std::string& id) const {
-        const auto element = registry.elements.find(id); if (element == registry.elements.end() || !element->second.visible) return false;
+        const auto element = registry.elements.find(id); if (element == registry.elements.end() || !registry.EffectiveLayout(element->second).visible) return false;
         const auto state = panelStates.find(id);
         return state == panelStates.end() || !CurrentPanel(id, state->second) || state->second.visible;
     }
     bool PanelEnabled(const std::string& id) const {
         const auto state = panelStates.find(id); return state == panelStates.end() || !CurrentPanel(id, state->second) || state->second.enabled;
+    }
+    bool RestorablePanel(const PanelRestore& saved) const {
+        const auto e = registry.elements.find(saved.id);
+        if (e == registry.elements.end() || e->second.handle != saved.element || e->second.desc.kind != MMS_UI_PANEL ||
+            !e->second.visible || String(e->second.desc.parentId) != "mms.workspace.tabs.extensions") return false;
+        const auto factory = registry.surfaces.find(String(e->second.desc.surfaceId));
+        if (factory == registry.surfaces.end() || !factory->second->owner || factory->second->owner->stopping) return false;
+        UiRegistry::SurfacePresentation view;
+        if (!registry.ExistingSurface(saved.id, view) || view.window != saved.window || view.instance != saved.instance || !IsWindow(view.window)) return false;
+        const auto state = panelStates.find(saved.id);
+        return state == panelStates.end() || !CurrentPanel(saved.id, state->second) || state->second.visible;
+    }
+    MmsResult SelectPanel() {
+        if (registry.InCallback() || propertyInputWorkDepth || refreshing) { DeferPresentation(); return MMS_E_BUSY; }
+        const auto sourceRevision = registry.Revision(), sourceContext = layoutContext;
+        const HWND sourceTabs = tabs;
+        const int index = TabCtrl_GetCurSel(sourceTabs);
+        TCITEMW item{}; item.mask = TCIF_PARAM;
+        if (index < 0 || !SendMessageW(sourceTabs, TCM_GETITEMW, index, reinterpret_cast<LPARAM>(&item))) return MMS_E_STALE;
+        if (tabs != sourceTabs || registry.Revision() != sourceRevision || layoutContext != sourceContext) return MMS_E_STALE;
+        // A native index belongs to the preview order. Capture the exact
+        // registration before revocation rebuilds the list in baseline order.
+        const MmsHandle target = MmsHandle(item.lParam);
+        std::string targetId;
+        for (const auto& [id, e] : registry.elements) if (e.handle == target && e.desc.kind == MMS_UI_PANEL) { targetId = id; break; }
+        if (targetId.empty()) return MMS_E_STALE;
+        panelRestore.reset();
+        const auto intent = ++layoutContext; // Even selecting the same page is user intent.
+        uint64_t token = 0;
+        struct Interaction {
+            UiRegistry& registry; uint64_t& token;
+            ~Interaction() { registry.EndHostLayout(token); }
+        } interaction{registry, token};
+        if (const auto r = registry.BeginHostLayout(HostLayoutWorkspace, token)) return r;
+        const auto current = [&]() {
+            const auto e = registry.elements.find(targetId);
+            return layoutContext == intent && tabs == sourceTabs && IsWindow(sourceTabs) &&
+                registry.IsHostLayoutCurrent(HostLayoutWorkspace, token) && e != registry.elements.end() &&
+                e->second.handle == target && e->second.desc.kind == MMS_UI_PANEL;
+        };
+        if (!current()) return MMS_E_STALE;
+        if (const auto r = SyncPanelTabs()) return r;
+        if (!current()) return MMS_E_STALE;
+        const bool selectTarget = PanelVisible(targetId) && std::find(panelOrder.begin(), panelOrder.end(), targetId) != panelOrder.end();
+        if (selectTarget) activePanel = targetId;
+        // Host takeover advances the registry even when no preview existed.
+        // Refresh the complete retained adapter before accepting STATE/LAYOUT
+        // requests for that generation; assigning revision alone would hide
+        // registrations changed by the synchronous takeover notification.
+        if (revision != registry.Revision()) Refresh();
+        else Layout();
+        if (!current()) return MMS_E_STALE;
+        if (revision != registry.Revision()) return MMS_E_NOT_READY;
+        if (layoutResult) return layoutResult;
+        return selectTarget && activePanel == targetId && PanelEnabled(targetId) ? registry.FocusSurface(targetId) : MMS_OK;
     }
     std::wstring PanelCaption(const std::string& id) const {
         const auto state = panelStates.find(id);
@@ -909,18 +973,32 @@ struct NativeUi::Impl {
             return result;
         }
         state.content = content; state.enabled = enabled; state.visible = content->visible; state.tip = hadTip || addedTip;
+        if (!state.visible && panelRestore && panelRestore->element == handle) panelRestore.reset();
         // PANEL visibility is retained by this original surface instance.
         // retainedVisibility belongs to the retained control-mount trees.
         publication.completed = true;
         return MMS_OK;
     }
     MmsResult SyncPanelTabs() {
+        const auto syncSerial = ++panelTabsSyncSerial;
         std::vector<std::string> wanted; std::vector<std::wstring> labels;
         for (const auto& id : Children("mms.workspace.tabs.extensions")) if (PanelVisible(id)) { wanted.push_back(id); labels.push_back(PanelCaption(id)); }
         // Prepare replacement ownership and verification buffers before any
         // tab message. Publication below uses only swaps and existing nodes.
         auto nextOrder = wanted;
         std::string nextActive = std::find(wanted.begin(), wanted.end(), activePanel) != wanted.end() ? activePanel : wanted.empty() ? "" : wanted.front();
+        auto nextRestore = panelRestore;
+        if (nextRestore && !RestorablePanel(*nextRestore)) nextRestore.reset();
+        if (!nextRestore && !activePanel.empty() && nextActive != activePanel) {
+            const auto e = registry.elements.find(activePanel); UiRegistry::SurfacePresentation view;
+            if (e != registry.elements.end() && registry.HasLayoutPreviewFields(e->second.handle, PreviewVisible) &&
+                !registry.EffectiveLayout(e->second).visible && registry.ExistingSurface(activePanel, view)) {
+                auto saved = std::make_shared<PanelRestore>(PanelRestore{activePanel, e->second.handle, view.window, view.instance});
+                if (RestorablePanel(*saved)) nextRestore = std::move(saved);
+            }
+        }
+        const bool restoring = nextRestore && std::find(wanted.begin(), wanted.end(), nextRestore->id) != wanted.end();
+        if (restoring) nextActive = nextRestore->id;
         std::vector<std::vector<wchar_t>> buffers; buffers.reserve(labels.size());
         for (const auto& label : labels) buffers.emplace_back(label.size() + 2);
         const auto sourceRevision = registry.Revision(), sourceContext = layoutContext;
@@ -932,7 +1010,8 @@ struct NativeUi::Impl {
             sources.push_back({registry.elements.at(id).handle, view, mounted});
         }
         const std::function<MmsResult()> check = [&]() -> MmsResult {
-            if (!IsWindow(sourceTabs) || tabs != sourceTabs || registry.Revision() != sourceRevision || layoutContext != sourceContext) return MMS_E_STALE;
+            if (panelTabsSyncSerial != syncSerial || !IsWindow(sourceTabs) || tabs != sourceTabs || registry.Revision() != sourceRevision || layoutContext != sourceContext) return MMS_E_STALE;
+            if (nextRestore && !RestorablePanel(*nextRestore)) return MMS_E_STALE;
             for (size_t i = 0; i < wanted.size(); ++i) {
                 const auto e = registry.elements.find(wanted[i]); UiRegistry::SurfacePresentation view;
                 if (e == registry.elements.end() || e->second.handle != sources[i].element || e->second.desc.kind != MMS_UI_PANEL) return MMS_E_STALE;
@@ -951,7 +1030,7 @@ struct NativeUi::Impl {
             if (!TabCtrl_DeleteAllItems(tabs)) return MMS_E_FAILED;
             if (const auto r = check()) return r;
             for (size_t i = 0; i < wanted.size(); ++i) {
-                TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = labels[i].data();
+                TCITEMW item{}; item.mask = TCIF_TEXT | TCIF_PARAM; item.pszText = labels[i].data(); item.lParam = LPARAM(sources[i].element);
                 if (SendMessageW(tabs, TCM_INSERTITEMW, i, reinterpret_cast<LPARAM>(&item)) != LRESULT(i)) return MMS_E_FAILED;
                 if (const auto r = check()) return r;
             }
@@ -964,10 +1043,15 @@ struct NativeUi::Impl {
             if (const auto r = WritePanelCaption(wanted[i], labels[i], labels[i], check, buffers[i], true)) return r;
         }
         activePanel.swap(nextActive);
-        if (!activePanel.empty()) TabCtrl_SetCurSel(tabs, int(std::find(panelOrder.begin(), panelOrder.end(), activePanel) - panelOrder.begin()));
+        const int selected = activePanel.empty() ? -1 : int(std::find(panelOrder.begin(), panelOrder.end(), activePanel) - panelOrder.begin());
+        TabCtrl_SetCurSel(tabs, selected);
         if (const auto r = check()) return r;
+        const int actualSelected = TabCtrl_GetCurSel(tabs);
+        if (const auto r = check()) return r;
+        if (actualSelected != selected) return MMS_E_FAILED;
         if (const auto r = SyncPanelTips()) return r;
         if (const auto r = check()) return r;
+        panelRestore = restoring ? nullptr : std::move(nextRestore);
         publication.completed = true;
         return MMS_OK;
     }
@@ -1103,16 +1187,22 @@ struct NativeUi::Impl {
     }
     void Gather(const std::string& parent, std::vector<std::string>& out, unsigned depth = 0) {
         if (depth > 64) return;
-        for (const auto& id : Children(parent)) { const auto& e = registry.elements.at(id); if (!e.visible) continue;
-            if (e.desc.kind == MMS_UI_GROUP) Gather(id, out, depth + 1); else out.push_back(id); }
+        // A temporary hide retains existing INPUT drafts and HWNDs. Persistent
+        // user hiding still unmounts the presentation and invalidates providers.
+        // Do not eagerly allocate controls in regions never shown by the user.
+        for (const auto& id : Children(parent)) { const auto& e = registry.elements.at(id);
+            const auto visibility = registry.ControlVisibility(e);
+            if (e.desc.kind == MMS_UI_GROUP) Gather(id, out, depth + 1);
+            else if (visibility == ControlLayoutVisibility::Visible ||
+                (visibility == ControlLayoutVisibility::TemporaryHidden && controls.count(id))) out.push_back(id); }
     }
     HWND ControlHost(const ElementRecord& element) const {
-        auto parent = String(element.desc.parentId);
+        auto parent = String(registry.EffectiveParent(element));
         for (size_t depth = 0; depth <= registry.elements.size(); ++depth) {
             for (const auto& mount : mounts) if (parent == mount.anchor) return mount.window;
             const auto found = registry.elements.find(parent);
             if (found == registry.elements.end() || found->second.desc.kind != MMS_UI_GROUP) return nullptr;
-            parent = String(found->second.desc.parentId);
+            parent = String(registry.EffectiveParent(found->second));
         }
         return nullptr;
     }
@@ -1121,14 +1211,17 @@ struct NativeUi::Impl {
         return visible && mount && mount->shown && !IsRectEmpty(&mount->bounds);
     }
     bool AvailableAncestors(const ElementRecord& element) const {
-        auto parent = String(element.desc.parentId);
+        auto parent = String(registry.EffectiveParent(element));
         for (unsigned depth = 0; depth <= 64; ++depth) {
             if (NativeControlAnchor(parent)) return true;
             const auto found = registry.elements.find(parent);
-            if (found == registry.elements.end() || !found->second.visible) return false;
-            parent = String(found->second.desc.parentId);
+            if (found == registry.elements.end() || !registry.EffectiveLayout(found->second).visible) return false;
+            parent = String(registry.EffectiveParent(found->second));
         }
         return false;
+    }
+    bool TemporaryLayoutHidden(const ElementRecord& element) const {
+        return registry.ControlVisibility(element) == ControlLayoutVisibility::TemporaryHidden;
     }
     struct HostLayoutPaint {
         struct Snapshot { HWND window, parent; RECT bounds; bool visible, force = false; };
@@ -1304,7 +1397,7 @@ struct NativeUi::Impl {
         const auto control = controls.find(id);
         const bool current = element != registry.elements.end() && element->second.handle == menu->second.second &&
             control != controls.end() && control->second.element == element->second.handle && overflowIds.count(id) &&
-            element->second.visible && AvailableAncestors(element->second);
+            registry.EffectiveLayout(element->second).visible && AvailableAncestors(element->second);
         const bool shown = current && registry.Refresh().CachedStateVisible(element->second.handle, control->second.stateVisible);
         if (!shown) {
             const bool removed = DeleteMenu(menu->second.first, commandId->second, MF_BYCOMMAND) != FALSE;
@@ -1322,7 +1415,7 @@ struct NativeUi::Impl {
         bool emitted = false, separator = false;
         for (const auto& id : Children(parent)) {
             const auto& e = registry.elements.at(id);
-            if (!e.visible) continue;
+            if (!registry.EffectiveLayout(e).visible) continue;
             if (e.desc.kind == MMS_UI_GROUP) {
                 struct OwnedMenu {
                     HMENU handle = CreatePopupMenu();
@@ -1355,33 +1448,36 @@ struct NativeUi::Impl {
     }
     void OpenOverflow() {
         const NativeWork work(*this);
+        if (propertyInputWorkDepth) { DeferPresentation(); return; }
         if (overflowOpen || overflowLayout || registry.InCallback() || !IsWindowVisible(overflowButton) || overflowIds.empty()) return;
         overflowOpen = true; HMENU menu = CreatePopupMenu(); overflowPopup = menu;
         struct Guard { Impl& self; HMENU menu; ~Guard() { self.overflowMenuItems.clear(); self.overflowPopup = nullptr;
             if (menu) DestroyMenu(menu); self.overflowOpen = false;
         } } guard{*this, menu};
         if (!menu) throw std::runtime_error("plugin overflow menu");
+        const auto menuRevision = registry.Revision(), menuContext = layoutContext;
         OverflowMenu(menu, "mms.toolbar.main.extensions");
-        if (overflowMenuItems.empty() || closePending || !IsWindow(main)) return;
+        if (overflowMenuItems.empty() || closePending || !IsWindow(main) ||
+            registry.Revision() != menuRevision || layoutContext != menuContext) return;
         RECT anchor{}; if (!GetWindowRect(overflowButton, &anchor)) return;
         // Own the native menu loop here. Sending menu notifications to main
         // would run its unrelated recent-file/antialias menu handlers and its
         // WM_INITMENU refresh path while this popup snapshot is being tracked.
         const unsigned selected = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
             anchor.left, anchor.bottom, toolbar, nullptr);
-        if (closePending || !IsWindow(main)) return;
+        if (closePending || !IsWindow(main) || registry.Revision() != menuRevision || layoutContext != menuContext) return;
         const auto snapshot = overflowMenuItems.find(selected);
         const auto dispatchItem = dispatch.find(selected);
         if (snapshot == overflowMenuItems.end() || dispatchItem == dispatch.end() || dispatchItem->second.second != snapshot->second.second) return;
         const auto element = registry.elements.find(dispatchItem->second.first);
-        if (element == registry.elements.end() || element->second.handle != snapshot->second.second || !element->second.visible ||
+        if (element == registry.elements.end() || element->second.handle != snapshot->second.second || !registry.EffectiveLayout(element->second).visible ||
             !AvailableAncestors(element->second) || !overflowIds.count(element->first)) return;
         // Invoke rechecks command state and owner lifetime at the ordinary gate.
         Command(selected);
     }
     void Refresh() {
         const NativeWork work(*this);
-        if (registry.InCallback()) { DeferPresentation(); return; }
+        if (registry.InCallback() || propertyInputWorkDepth) { DeferPresentation(); return; }
         if (refreshing || !IsWindow(main)) return;
         presentationPending = false;
         refreshing = true; struct Guard { bool& v; ~Guard() { v = false; } } guard{refreshing};
@@ -1401,7 +1497,8 @@ struct NativeUi::Impl {
             } else ++it;
         }
         for (const auto& id : wanted) {
-            const auto& e = registry.elements.at(id); MmsCommandStateV1 state{}; bool show = State(e, state);
+            const auto& e = registry.elements.at(id); MmsCommandStateV1 state{};
+            const bool show = State(e, state, true) && registry.EffectiveLayout(e).visible && AvailableAncestors(e);
             const auto commandId = Id(id, e);
             auto& control = controls[id];
             const bool input = e.desc.kind == MMS_UI_INPUT;
@@ -1413,12 +1510,19 @@ struct NativeUi::Impl {
                 if (!control.input) {
                     control.element = e.handle; control.instance = registry.NewPresentationInstance();
                     control.input = std::make_unique<NativePropertyInput>(registry, id, parent, commandId,
-                        [this](bool enter) { if (enter) ++nativeWorkDepth; else { --nativeWorkDepth; ReplayClose(); } }, log);
+                        [this](bool enter) {
+                            if (enter) { ++nativeWorkDepth; ++propertyInputWorkDepth; }
+                            else { --propertyInputWorkDepth; --nativeWorkDepth; ReplayClose(); }
+                        }, log);
                     control.window = control.input->Window();
                 }
                 control.input->Refresh(dpi);
                 if (const auto result = SyncInputTips(control)) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); throw std::runtime_error("cannot create plugin input tips"); }
-                control.input->LayoutVisible(show && HostVisible(control) && !overflowIds.count(id));
+                // A restored group can still have its previous zero-height
+                // mount until Layout runs. Retain its suspended draft through
+                // this intermediate refresh; final placement decides visibility.
+                control.input->LayoutVisible(show && HostVisible(control) && !overflowIds.count(id),
+                    state.visible && (TemporaryLayoutHidden(e) || (show && control.input->LayoutSuspended())));
                 if (bool(IsWindowEnabled(control.window)) != bool(state.enabled)) EnableWindow(control.window, state.enabled);
                 ShowWindow(control.window, show && !overflowIds.count(id) ? SW_SHOWNA : SW_HIDE);
                 control.stateVisible = state.visible != 0;
@@ -1464,6 +1568,7 @@ struct NativeUi::Impl {
         revision = registry.Revision(); Layout();
     }
     void ObserveCatalog() noexcept {
+        if (propertyInputWorkDepth) { DeferPresentation(); return; }
         if (!catalogObserver || registry.InCallback() || refreshing || menuLoopDepth || overflowOpen || !IsWindow(main)) return;
         const NativeWork work(*this);
         const auto result = Boundary([&]() -> MmsResult {
@@ -1502,14 +1607,24 @@ struct NativeUi::Impl {
             MmsUiRectV1 rect{-panelScrollX, -panelScrollY, uint32_t(std::max(int(std::ceil(size.width * dpi / 96)), availableWidth)), uint32_t(std::max(int(std::ceil(size.height * dpi / 96)), availableHeight))};
             MmsResult result = MMS_OK;
             UiRegistry::SurfacePresentation existing;
-            const bool attempted = !refreshLayout || registry.ExistingSurface(id, existing);
+            const bool mountedBefore = registry.ExistingSurface(id, existing);
+            const auto prior = panelStates.find(id);
+            const bool retainedBefore = prior != panelStates.end() &&
+                prior->second.element == registry.elements.at(id).handle;
+            const bool attempted = !refreshLayout || mountedBefore;
             if (attempted)
                 result = registry.ShowSurface(id, body, rect, dpi, shown);
             else if (const auto error = panelErrors.find(id); error != panelErrors.end()) result = error->second;
             const float scale = 96.0f / dpi;
             geometry[id] = {(x + rect.x) * scale, (height + header + rect.y) * scale, rect.width * scale, rect.height * scale, shown, rect.width > uint32_t(availableWidth) || rect.height > uint32_t(availableHeight)};
             if (result != MMS_OK) {
-                if (refreshLayout && attempted) { applied = false; layoutResult = result; }
+                UiRegistry::SurfacePresentation failedView;
+                // Initial factory failure may still render its established
+                // error placeholder. A failed transition of a retained/newly
+                // created view must never republish geometry as successful.
+                if (attempted && (refreshLayout || mountedBefore || retainedBefore || registry.ExistingSurface(id, failedView))) {
+                    applied = false; layoutResult = result;
+                }
                 if (panelErrors[id] != result && log) log("surface " + id + " returned " + std::to_string(result));
                 panelErrors[id] = result;
                 if (shown) { failed = true; SetWindowTextW(failure, (L"无法打开插件面板（" + std::to_wstring(result) + L"），切换页签后重试。").c_str()); }
@@ -1528,28 +1643,28 @@ struct NativeUi::Impl {
     }
     native_ui::Size PanelSize(const ElementRecord& e) {
         const auto factory = registry.surfaces.find(String(e.desc.surfaceId)); if (factory == registry.surfaces.end()) return {};
-        const auto& d = factory->second->desc; const auto& h = e.effectiveHints;
+        const auto& d = factory->second->desc; const auto layout = registry.EffectiveLayout(e); const auto& h = layout.hints;
         float minimumWidth = std::max(d.minimumWidth, h.minimum[0]), minimumHeight = std::max(d.minimumHeight, h.minimum[1]);
-        float w = e.width ? e.width : h.preferred[0] ? h.preferred[0] : d.preferredWidth;
-        float v = e.height ? e.height : h.preferred[1] ? h.preferred[1] : d.preferredHeight ? d.preferredHeight : 160;
+        float w = layout.width ? layout.width : h.preferred[0] ? h.preferred[0] : d.preferredWidth;
+        float v = layout.height ? layout.height : h.preferred[1] ? h.preferred[1] : d.preferredHeight ? d.preferredHeight : 160;
         return {std::clamp(w, minimumWidth, std::max(minimumWidth, h.maximum[0] ? h.maximum[0] : 32768)),
                 std::clamp(v, minimumHeight, std::max(minimumHeight, h.maximum[1] ? h.maximum[1] : 32768))};
     }
     native_ui::Node LayoutNode(const std::string& id, HDC dc, bool ancestorsVisible = true) {
-        const auto& e = registry.elements.at(id); const auto& hints = e.effectiveHints;
+        const auto& e = registry.elements.at(id); const auto layout = registry.EffectiveLayout(e); const auto& hints = layout.hints;
         native_ui::Node node; node.id = id; MmsCommandStateV1 state{};
         if (refreshLayout) {
             const auto cached = retainedVisibility.find(id);
             if (cached == retainedVisibility.end()) throw std::invalid_argument("unpublished retained layout");
             state.visible = registry.Refresh().CachedStateVisible(e.handle, cached->second) ? 1 : 0;
-            node.visible = e.visible && state.visible;
+            node.visible = layout.visible && state.visible;
         } else {
-            node.visible = State(e, state);
+            node.visible = State(e, state, true) && layout.visible;
             retainedVisibility[id] = state.visible != 0;
         }
         if (auto control = controls.find(id); control != controls.end()) {
             control->second.stateVisible = state.visible != 0;
-            control->second.layoutVisible = ancestorsVisible && e.visible;
+            control->second.layoutVisible = ancestorsVisible && layout.visible;
         }
         auto& h = node.hints; h.flow = native_ui::Flow(hints.flow); h.columns = hints.columns; h.align = hints.align;
         h.minimum = {hints.minimum[0], hints.minimum[1]}; h.preferred = {hints.preferred[0], hints.preferred[1]}; h.maximum = {hints.maximum[0], hints.maximum[1]};
@@ -1557,7 +1672,7 @@ struct NativeUi::Impl {
         h.keepTogether = (hints.flags & MMS_HINT_KEEP_TOGETHER) != 0; h.preserveHidden = (hints.flags & MMS_HINT_PRESERVE_HIDDEN_SLOT) != 0;
         if (hints.flags & MMS_HINT_EXPLICIT_SPACING) { std::copy_n(hints.gap, 2, h.gap); std::copy_n(hints.padding, 4, h.padding); }
         if (hints.overflow == 1) h.flow = native_ui::Flow::Wrap;
-        if (e.width) h.preferred.width = e.width; if (e.height) h.preferred.height = e.height;
+        if (layout.width) h.preferred.width = layout.width; if (layout.height) h.preferred.height = layout.height;
         if (e.desc.capabilities & MMS_UI_CONTAINER) for (const auto& child : Children(id)) node.children.push_back(LayoutNode(child, dc, ancestorsVisible && node.visible));
         else {
             const bool separator = e.desc.kind == MMS_UI_SEPARATOR;
@@ -1618,7 +1733,7 @@ struct NativeUi::Impl {
                         out.back().propertyDataRefresh = true; out.back().propertyRecord = property->second;
                     }
                 }
-                out.back().stateVisibility = (element.effectiveHints.flags & MMS_HINT_PRESERVE_HIDDEN_SLOT) != 0;
+                out.back().stateVisibility = (registry.EffectiveLayout(element).hints.flags & MMS_HINT_PRESERVE_HIDDEN_SLOT) != 0;
                 out.back().layoutVisible = control->second.layoutVisible && HostVisible(control->second);
                 out.back().layoutRefresh = true;
             } else if (element.desc.kind == MMS_UI_GROUP) {
@@ -1654,7 +1769,7 @@ struct NativeUi::Impl {
         return std::any_of(arranged.items.begin(), arranged.items.end(), [&](const auto& item) {
             const auto control = controls.find(item.id);
             return control != controls.end() && control->second.parent == mount.window && item.rect.height > 0 &&
-                (item.visible || (registry.elements.at(item.id).effectiveHints.flags & MMS_HINT_PRESERVE_HIDDEN_SLOT));
+                (item.visible || (registry.EffectiveLayout(registry.elements.at(item.id)).hints.flags & MMS_HINT_PRESERVE_HIDDEN_SLOT));
         });
     }
     int Layout(bool fromRefresh = false, bool hostConsumes = false) {
@@ -1665,7 +1780,7 @@ struct NativeUi::Impl {
         const auto context = layoutContext;
         const auto prior = publishedReservations;
         layoutResult = MMS_E_NOT_READY;
-        if (registry.InCallback() && !fromRefresh) { DeferPresentation(); return height + workspaceHeight; }
+        if (propertyInputWorkDepth || (registry.InCallback() && !fromRefresh)) { DeferPresentation(); return height + workspaceHeight; }
         if (overflowLayout) { layoutResult = MMS_E_NOT_READY; return height + workspaceHeight; }
         overflowLayout = true;
         struct OverflowLayoutGuard { bool& value; ~OverflowLayoutGuard() { value = false; } } overflowGuard{overflowLayout};
@@ -1706,7 +1821,7 @@ struct NativeUi::Impl {
         const int centralWidth = std::max(0, baseWidth - sideWidths[0] - sideWidths[1]);
         auto tree = measureTree(mounts[ToolbarMount].anchor, toolbar);
         std::map<std::string, toolbar_overflow::Policy> policies;
-        for (const auto& [id, e] : registry.elements) if (!e.nativeObserved) policies[id] = {e.effectiveHints.overflow == 3,
+        for (const auto& [id, e] : registry.elements) if (!e.nativeObserved) policies[id] = {registry.EffectiveLayout(e).hints.overflow == 3,
             e.desc.kind == MMS_UI_BUTTON, e.desc.kind == MMS_UI_SEPARATOR, (e.desc.capabilities & MMS_UI_CONTAINER) != 0};
         const int layoutWidth = std::max(0, centralWidth - scrollWidth);
         auto overflow = toolbar_overflow::Arrange(tree, policies, float(layoutWidth) * 96 / dpi, float(maximum) * 96 / dpi);
@@ -1730,6 +1845,19 @@ struct NativeUi::Impl {
             UiRegistry& registry; bool completed = false;
             ~PublicationGuard() { if (!completed) { registry.SuspendGeometry(); registry.Refresh().SuspendTargets(); } }
         } publication{registry};
+        // Parent hiding can synchronously move focus before child placement.
+        // Suspend temporary-hidden INPUTs before any native window changes.
+        for (auto& [id, control] : controls) if (control.input && control.stateVisible) {
+            const auto element = registry.elements.find(id);
+            if (element != registry.elements.end() && TemporaryLayoutHidden(element->second))
+                control.input->LayoutVisible(false, true);
+        }
+        // IMM cancellation can synchronously change registration or layout.
+        // Refresh is deferred while the INPUT is on the stack; discard the
+        // measured tree too, before looking up its now potentially stale IDs.
+        if (registry.Revision() != uiRevision || layoutContext != context) {
+            layoutResult = MMS_E_STALE; DeferPresentation(); return height + workspaceHeight;
+        }
         HostLayoutPaint paint(*this);
         x = centralX; width = centralWidth;
         contentHeight = toolbarContent; height = toolbarExtent;
@@ -1808,6 +1936,7 @@ struct NativeUi::Impl {
         const int extent = mount.clientHeight;
         const int hostWidth = mount.clientWidth;
         for (const auto& item : arranged.items) {
+            if (registry.Revision() != uiRevision || layoutContext != context) { applied = false; return; }
             auto rect = item.rect; auto control = controls.find(item.id);
             // The hidden HWND is still the STATE/provider target. Keep its
             // measured client extent so refresh can update the menu without
@@ -1822,7 +1951,9 @@ struct NativeUi::Impl {
                 if (control->second.parent != host) { applied = false; continue; }
                 const bool hidden = commandOverflow && overflowIds.count(item.id) != 0;
                 const bool shown = item.visible && !hidden && mount.shown;
-                if (control->second.input) control->second.input->LayoutVisible(shown);
+                if (control->second.input) control->second.input->LayoutVisible(shown,
+                    control->second.stateVisible && TemporaryLayoutHidden(registry.elements.at(item.id)));
+                if (registry.Revision() != uiRevision || layoutContext != context) { applied = false; return; }
                 if (hidden) control->second.layoutVisible = false;
                 const HWND focused = GetFocus();
                 if (!shown && focused && (focused == control->second.window || IsChild(control->second.window, focused)))
@@ -1838,6 +1969,9 @@ struct NativeUi::Impl {
         place(flow, mounts[ToolbarMount]);
         place(propertyFlow, mounts[PropertyMount]);
         for (size_t side = 0; side < sideFlows.size(); ++side) place(sideFlows[side], mounts[LeftMount + side]);
+        if (registry.Revision() != uiRevision || layoutContext != context) {
+            layoutResult = MMS_E_STALE; DeferPresentation(); return height + workspaceHeight;
+        }
         {
             const WindowDpiScope toolbarDpi(toolbar);
             applied = native_ui::ApplyWindows(moves) == native_ui::ApplyResult::Applied && applied;
@@ -1876,7 +2010,7 @@ struct NativeUi::Impl {
         geometry["mms.workspace.tabs.extensions"] = {workspaceBounds.left * 96.0f / dpi, workspaceBounds.top * 96.0f / dpi,
             (workspaceBounds.right - workspaceBounds.left) * 96.0f / dpi, (workspaceBounds.bottom - workspaceBounds.top) * 96.0f / dpi, workspaceHeight > 0, false};
         LayoutPanels(geometry, applied, paint);
-        if (fromRefresh && context != layoutContext) { layoutResult = MMS_E_STALE; applied = false; }
+        if (context != layoutContext) { layoutResult = MMS_E_STALE; applied = false; }
         const auto reserved = Reservations();
         // Extents are measured before HWND application and host publication.
         // A failed pass must retry the host even when the next measurement is
@@ -1950,7 +2084,7 @@ struct NativeUi::Impl {
         if (it == registry.elements.end() || it->second.handle != item->second.second) return true;
         if (it->second.desc.kind == MMS_UI_MENU_ITEM || it->second.desc.kind == MMS_UI_MENU) {
             auto current = menuStates.find(item->second.first);
-            if (current == menuStates.end() || current->second->id != id || !it->second.visible || !CurrentMenu(current->first, current->second) ||
+            if (current == menuStates.end() || current->second->id != id || !registry.EffectiveLayout(it->second).visible || !CurrentMenu(current->first, current->second) ||
                 !current->second->visible || !current->second->enabled || !MenuMatches(*current->second, true,
                     current->second->caption, current->second->enabled, current->second->checked)) return true;
             auto parent = String(it->second.desc.parentId);
@@ -1959,7 +2093,7 @@ struct NativeUi::Impl {
                 if (depth > 64 || ancestor == menuStates.end() || !CurrentMenu(parent, ancestor->second) ||
                     !ancestor->second->visible || !ancestor->second->enabled || !MenuMatches(*ancestor->second, true,
                         ancestor->second->caption, ancestor->second->enabled, ancestor->second->checked)) return true;
-                const auto source = registry.elements.find(parent); if (source == registry.elements.end() || !source->second.visible) return true;
+                const auto source = registry.elements.find(parent); if (source == registry.elements.end() || !registry.EffectiveLayout(source->second).visible) return true;
                 const auto snapshot = source->second; const auto state = ancestor->second;
                 MmsCommandStateV1 live{};
                 if (!State(snapshot, live) || !live.enabled || !CurrentMenu(parent, state) ||
@@ -1980,7 +2114,8 @@ void NativeUi::Refresh() { impl_->Refresh(); impl_->ObserveCatalog(); }
 bool NativeUi::Command(unsigned id) { return impl_->Command(id); }
 bool NativeUi::Shortcut(unsigned key, unsigned modifiers, bool viewportFocused) {
     const Impl::NativeWork work(*impl_);
-    for (const auto& [id, e] : impl_->registry.elements) if (!e.nativeObserved && e.key == key && e.modifiers == modifiers && (!e.scope || viewportFocused) && e.visible) return impl_->Command(impl_->Id(id, e));
+    if (impl_->propertyInputWorkDepth) { impl_->DeferPresentation(); return false; }
+    for (const auto& [id, e] : impl_->registry.elements) if (!e.nativeObserved && e.key == key && e.modifiers == modifiers && (!e.scope || viewportFocused) && impl_->registry.EffectiveLayout(e).visible) return impl_->Command(impl_->Id(id, e));
     return false;
 }
 int NativeUi::Layout(int x, int width, int maximum, bool visible) {
@@ -2033,6 +2168,9 @@ void NativeUi::SetLayoutPublished(std::function<MmsResult(int)> callback) {
 }
 HWND NativeUi::Toolbar() const { return impl_->toolbar; }
 bool NativeUi::PopupActive() const noexcept { return impl_->overflowOpen; }
+bool NativeUi::Busy() const noexcept {
+    return impl_->nativeWorkDepth || impl_->overflowOpen || impl_->menuLoopDepth || impl_->refreshing;
+}
 bool NativeUi::DeferClose(WPARAM wp, LPARAM lp) noexcept { return impl_->DeferClose(wp, lp); }
 bool NativeUi::DialogMessage(MSG* message) {
     const Impl::NativeWork work(*impl_);

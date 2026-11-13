@@ -14,6 +14,7 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/bone_projection.hpp"
+#include "mikumikustudio/bone_edit_axes.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/viewport_corner_settings.hpp"
 #include "mikumikustudio/viewport_tool_layout.hpp"
@@ -701,7 +702,10 @@ void PrepareFrameSpriteOverlay(MMDApp* app) {
     // 0x46C6E2..0x46CE84: camera and bone operation rows. Playback takes
     // LABEL_105 and deliberately emits neither rows nor highlights.
     if (!playback) {
-        if (app->state.optflag[0] != 0) {
+        const bool cameraPanel = app->state.optflag[0] != 0;
+        const bool boneRotation = !cameraPanel && SelectedBoneHudAllows(app, true);
+        const bool boneTranslation = !cameraPanel && SelectedBoneHudAllows(app, false);
+        if (cameraPanel) {
             // The panel's third coordinate state edits the selected accessory,
             // so its buttons carry a ".x" mark in place of the camera plate.
             // Those two rows sit below the caption band of the same sheet
@@ -725,8 +729,8 @@ void PrepareFrameSpriteOverlay(MMDApp* app) {
         } else {
             const int boneMode = static_cast<std::int32_t>(app->state.v32c);
             if (boneMode >= 0 && boneMode <= 3) {
-                const bool alternate = (boneMode & 1) != 0;
-                const bool lowerPair = boneMode >= 2;
+                const bool alternate = (boneMode & 1) != 0 || !boneTranslation;
+                const bool lowerPair = boneMode >= 2 || !boneRotation;
                 append(right - scale * 130.0f, bottom - scale * 120.0f,
                        right - scale * 10.0f, bottom - scale * 90.0f,
                        0.001953f,
@@ -780,7 +784,8 @@ void PrepareFrameSpriteOverlay(MMDApp* app) {
         const int operation = static_cast<int>(app->ViewportToolOperation());
         const auto highlight = [&](int first, int second, int column,
                                    int row) {
-            if (operation != first && operation != second)
+            if (cameraPanel ? operation != second :
+                (operation != first || !(row == 0 ? boneRotation : boneTranslation)))
                 return;
             const float x0 = right - scale * (130.0f - 40.0f * column);
             // Rows moved up 40: row 0 (rotate) is bottom-120, row 1 (move)
@@ -837,7 +842,7 @@ void PrepareFrameSpriteOverlay(MMDApp* app) {
             const float x = static_cast<float>(app->ViewportToolCenterX());
             const float y = static_cast<float>(app->ViewportToolCenterY());
             const int cursorKind = static_cast<int>(app->EditMode());
-            if (cursorKind == 3) {
+            if (cursorKind == 3 && boneRotation) {
                 float u0 = 0.5f;
                 float v0 = 0.5f;
                 if (operation == 3) {
@@ -850,7 +855,7 @@ void PrepareFrameSpriteOverlay(MMDApp* app) {
                 }
                 append(x - 45.0f, y - 45.0f, x + 45.0f, y + 45.0f,
                        u0, v0, u0 + 0.25f, v0 + 0.25f);
-            } else if (cursorKind == 4) {
+            } else if (cursorKind == 4 && boneTranslation) {
                 float u0 = 0.5f;
                 float v0 = 0.0f;
                 if (operation == 6) {

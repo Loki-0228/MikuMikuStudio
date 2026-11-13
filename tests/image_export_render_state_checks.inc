@@ -92,9 +92,185 @@ bool Reject(Failure value) {
     if (failure != value || injected) return false;
     ++injected; return true;
 }
+// Shadow failure-injection context and diagnostics. active is true only while
+// ShadowTargets drives one RenderShadowMap/RenderShadowMapChecked call, so the
+// input setup, the warm-up frame, cold/reset runs and the final restore never
+// inject or record hook calls. Injection matches the renderer's current shadow
+// surface at the hook call; failingTarget/failingDepth are historical evidence
+// only. The hooks below read fields and print; they add no device query,
+// resource, render or state change.
+struct ShadowBoundaryDiag {
+    bool active = false;
+    unsigned caseId = 0;
+    D3DRenderer* renderer = nullptr;
+    unsigned calls[4]{};
+    unsigned injected[4]{};
+    unsigned original[4]{};
+};
+ShadowBoundaryDiag shadowDiag;
+unsigned shadowCase = 0;
+const char* ShadowFailureName(Failure value) {
+    switch (value) {
+    case Failure::None: return "none";
+    case Failure::Target: return "target";
+    case Failure::Depth: return "depth";
+    case Failure::Clear: return "clear";
+    case Failure::Viewport: return "viewport";
+    }
+    return "unknown";
+}
+void ShadowDiagBeginScope(MMDApp* app, unsigned caseId) {
+    shadowDiag = ShadowBoundaryDiag{};
+    shadowDiag.active = true;
+    shadowDiag.caseId = caseId;
+    shadowDiag.renderer = app->Renderer();
+}
+void ShadowDiagEndScope() { shadowDiag.active = false; }
+bool ShadowInjectionDevice(IDirect3DDevice9* device) {
+    return shadowDiag.active && shadowDiag.renderer != nullptr &&
+        device == shadowDiag.renderer->device;
+}
+void ShadowDiagTargetCall(DWORD index, IDirect3DSurface9* surface, bool deviceMatch,
+    IDirect3DSurface9* currentTarget, bool injectedNow, bool originalCalled, HRESULT result) {
+    if (!shadowDiag.active) return;
+    ++shadowDiag.calls[0];
+    if (injectedNow) ++shadowDiag.injected[0];
+    if (originalCalled) ++shadowDiag.original[0];
+    auto* renderer = shadowDiag.renderer;
+    std::printf("TRACE shadow-hook case=%u hook=set-target call=%u index=%lu surface=%p "
+        "old_target=%p old_depth=%p rnd_shadow_rt=%p rnd_shadow_depth=%p "
+        "match_target=%p device_match=%u current_target_match=%u old_target_match=%u "
+        "injected=%u original_called=%u hr=%08lX\n",
+        shadowDiag.caseId, shadowDiag.calls[0], static_cast<unsigned long>(index),
+        static_cast<void*>(surface), static_cast<void*>(failingTarget),
+        static_cast<void*>(failingDepth), static_cast<void*>(renderer->shadowSurface),
+        static_cast<void*>(renderer->shadowDepthSurface), static_cast<void*>(currentTarget),
+        unsigned(deviceMatch), unsigned(currentTarget != nullptr && surface == currentTarget),
+        unsigned(surface == failingTarget),
+        unsigned(injectedNow), unsigned(originalCalled), result);
+}
+void ShadowDiagDepthCall(IDirect3DSurface9* surface, bool deviceMatch,
+    IDirect3DSurface9* currentDepth, bool injectedNow, bool originalCalled, HRESULT result) {
+    if (!shadowDiag.active) return;
+    ++shadowDiag.calls[1];
+    if (injectedNow) ++shadowDiag.injected[1];
+    if (originalCalled) ++shadowDiag.original[1];
+    auto* renderer = shadowDiag.renderer;
+    std::printf("TRACE shadow-hook case=%u hook=set-depth call=%u surface=%p "
+        "old_target=%p old_depth=%p rnd_shadow_rt=%p rnd_shadow_depth=%p "
+        "match_depth=%p device_match=%u current_target_match=%u old_target_match=%u "
+        "injected=%u original_called=%u hr=%08lX\n",
+        shadowDiag.caseId, shadowDiag.calls[1], static_cast<void*>(surface),
+        static_cast<void*>(failingTarget), static_cast<void*>(failingDepth),
+        static_cast<void*>(renderer->shadowSurface),
+        static_cast<void*>(renderer->shadowDepthSurface), static_cast<void*>(currentDepth),
+        unsigned(deviceMatch), unsigned(currentDepth != nullptr && surface == currentDepth),
+        unsigned(surface == failingDepth),
+        unsigned(injectedNow), unsigned(originalCalled), result);
+}
+void ShadowDiagReadCall(const char* hook, unsigned slot, bool getRtCalled,
+    HRESULT getRtHr, IDirect3DSurface9* currentRt, bool deviceMatch,
+    IDirect3DSurface9* currentTarget, bool injectedNow, bool originalCalled,
+    HRESULT result) {
+    if (!shadowDiag.active) return;
+    ++shadowDiag.calls[slot];
+    if (injectedNow) ++shadowDiag.injected[slot];
+    if (originalCalled) ++shadowDiag.original[slot];
+    auto* renderer = shadowDiag.renderer;
+    const bool currentMatch = getRtCalled && currentTarget != nullptr &&
+        currentRt != nullptr && currentRt == currentTarget;
+    const bool oldMatch = getRtCalled && currentRt != nullptr && currentRt == failingTarget;
+    if (getRtCalled)
+        std::printf("TRACE shadow-hook case=%u hook=%s call=%u get_rt_called=true "
+            "get_rt_hr=%08lX current_rt=%p old_target=%p old_depth=%p "
+            "rnd_shadow_rt=%p rnd_shadow_depth=%p match_target=%p "
+            "device_match=%u current_target_match=%u old_target_match=%u "
+            "injected=%u original_called=%u hr=%08lX\n",
+            shadowDiag.caseId, hook, shadowDiag.calls[slot], getRtHr,
+            static_cast<void*>(currentRt), static_cast<void*>(failingTarget),
+            static_cast<void*>(failingDepth), static_cast<void*>(renderer->shadowSurface),
+            static_cast<void*>(renderer->shadowDepthSurface),
+            static_cast<void*>(currentTarget), unsigned(deviceMatch),
+            unsigned(currentMatch), unsigned(oldMatch),
+            unsigned(injectedNow), unsigned(originalCalled), result);
+    else
+        std::printf("TRACE shadow-hook case=%u hook=%s call=%u get_rt_called=false "
+            "get_rt_hr=n/a current_rt=n/a old_target=%p old_depth=%p "
+            "rnd_shadow_rt=%p rnd_shadow_depth=%p match_target=%p "
+            "device_match=%u current_target_match=n/a old_target_match=n/a "
+            "injected=%u original_called=%u hr=%08lX\n",
+            shadowDiag.caseId, hook, shadowDiag.calls[slot],
+            static_cast<void*>(failingTarget), static_cast<void*>(failingDepth),
+            static_cast<void*>(renderer->shadowSurface),
+            static_cast<void*>(renderer->shadowDepthSurface),
+            static_cast<void*>(currentTarget), unsigned(deviceMatch),
+            unsigned(injectedNow), unsigned(originalCalled), result);
+}
+void ShadowDiagCaseBefore(unsigned caseId, D3DMULTISAMPLE_TYPE samples,
+    bool withDepth, bool checked, Failure fail, MMDApp* app) {
+    auto* renderer = app->Renderer();
+    const unsigned expected = fail == Failure::None ? 0u : 1u;
+    const bool entryOk = renderer->effect && renderer->shadowSurface &&
+        renderer->shadowDepthSurface;
+    std::printf("TRACE shadow-case-before case=%u samples=%u with_depth=%u "
+        "checked=%u fail=%u(%s) expected_injected=%u injected=%u edit_mode=%d "
+        "playback=%u old_target=%p old_depth=%p rnd_shadow_rt=%p "
+        "rnd_shadow_depth=%p rnd_rt_size=%dx%d old_target_is_rnd=%u "
+        "old_depth_is_rnd=%u entry_ok=%u effect=%p capture=%p\n",
+        caseId, unsigned(samples), unsigned(withDepth), unsigned(checked),
+        unsigned(fail), ShadowFailureName(fail), expected, injected, int(app->EditMode()),
+        unsigned(app->PlaybackActive()), static_cast<void*>(failingTarget),
+        static_cast<void*>(failingDepth), static_cast<void*>(renderer->shadowSurface),
+        static_cast<void*>(renderer->shadowDepthSurface),
+        int(renderer->renderTargetWidth), int(renderer->renderTargetHeight),
+        unsigned(failingTarget == renderer->shadowSurface),
+        unsigned(failingDepth == renderer->shadowDepthSurface), unsigned(entryOk),
+        static_cast<void*>(renderer->effect),
+        static_cast<void*>(renderer->captureSurface));
+}
+void ShadowDiagBeginScene(unsigned caseId, HRESULT result) {
+    std::printf("TRACE shadow-begin case=%u hr=%08lX\n", caseId, result);
+}
+void ShadowDiagCaseAfter(unsigned caseId, D3DMULTISAMPLE_TYPE samples,
+    bool withDepth, bool checked, bool result, Failure fail, MMDApp* app,
+    HRESULT beginHr, HRESULT endHr) {
+    auto* renderer = app->Renderer();
+    const unsigned expected = fail == Failure::None ? 0u : 1u;
+    std::printf("TRACE shadow-case-after case=%u samples=%u with_depth=%u "
+        "checked=%u fail=%u(%s) result=%s injected=%u expected_injected=%u "
+        "begin_hr=%08lX end_hr=%08lX old_target=%p old_depth=%p "
+        "rnd_shadow_rt=%p rnd_shadow_depth=%p rnd_rt_size=%dx%d "
+        "old_target_is_rnd=%u old_depth_is_rnd=%u "
+        "hook_calls="
+        "set-target:%u set-depth:%u clear:%u set-viewport:%u "
+        "hook_injected="
+        "set-target:%u set-depth:%u clear:%u set-viewport:%u "
+        "hook_original="
+        "set-target:%u set-depth:%u clear:%u set-viewport:%u\n",
+        caseId, unsigned(samples), unsigned(withDepth), unsigned(checked),
+        unsigned(fail), ShadowFailureName(fail),
+        checked ? (result ? "true" : "false") : "n/a", injected, expected,
+        beginHr, endHr, static_cast<void*>(failingTarget),
+        static_cast<void*>(failingDepth), static_cast<void*>(renderer->shadowSurface),
+        static_cast<void*>(renderer->shadowDepthSurface),
+        int(renderer->renderTargetWidth), int(renderer->renderTargetHeight),
+        unsigned(failingTarget == renderer->shadowSurface),
+        unsigned(failingDepth == renderer->shadowDepthSurface),
+        shadowDiag.calls[0], shadowDiag.calls[1], shadowDiag.calls[2],
+        shadowDiag.calls[3], shadowDiag.injected[0], shadowDiag.injected[1],
+        shadowDiag.injected[2], shadowDiag.injected[3], shadowDiag.original[0],
+        shadowDiag.original[1], shadowDiag.original[2], shadowDiag.original[3]);
+}
 HRESULT WINAPI SetTargetProbe(IDirect3DDevice9* device, DWORD index, IDirect3DSurface9* surface) {
-    if (index == 0 && surface == failingTarget && Reject(Failure::Target)) return E_FAIL;
+    const bool deviceMatch = ShadowInjectionDevice(device);
+    IDirect3DSurface9* currentTarget = deviceMatch ? shadowDiag.renderer->shadowSurface : nullptr;
+    if (deviceMatch && currentTarget != nullptr && index == 0 &&
+        surface == currentTarget && Reject(Failure::Target)) {
+        ShadowDiagTargetCall(index, surface, deviceMatch, currentTarget, true, false, E_FAIL);
+        return E_FAIL;
+    }
     const HRESULT result = originalTarget(device, index, surface);
+    ShadowDiagTargetCall(index, surface, deviceMatch, currentTarget, false, true, result);
     if (probe && probe->recreated && index == 0 && surface &&
         surface == g_Block->Renderer()->captureSurface) {
         Check(SUCCEEDED(result), "actual device accepts the recreated capture render-target binding");
@@ -115,21 +291,61 @@ HRESULT WINAPI CreateTargetProbe(IDirect3DDevice9* device, UINT width, UINT heig
     return result;
 }
 HRESULT WINAPI SetDepthProbe(IDirect3DDevice9* device, IDirect3DSurface9* surface) {
-    if (surface == failingDepth && Reject(Failure::Depth)) return E_FAIL;
-    return originalDepth(device, surface);
+    const bool deviceMatch = ShadowInjectionDevice(device);
+    IDirect3DSurface9* currentDepth = deviceMatch ? shadowDiag.renderer->shadowDepthSurface : nullptr;
+    if (deviceMatch && currentDepth != nullptr && surface == currentDepth &&
+        Reject(Failure::Depth)) {
+        ShadowDiagDepthCall(surface, deviceMatch, currentDepth, true, false, E_FAIL);
+        return E_FAIL;
+    }
+    const HRESULT result = originalDepth(device, surface);
+    ShadowDiagDepthCall(surface, deviceMatch, currentDepth, false, true, result);
+    return result;
 }
 HRESULT WINAPI ClearProbe(IDirect3DDevice9* device, DWORD count, const D3DRECT* rects,
                          DWORD flags, D3DCOLOR colour, float z, DWORD stencil) {
     ComPtr<IDirect3DSurface9> current;
-    if (failure == Failure::Clear && SUCCEEDED(device->GetRenderTarget(0, &current)) &&
-        current.Get() == failingTarget && Reject(Failure::Clear)) return E_FAIL;
-    return originalClear(device, count, rects, flags, colour, z, stencil);
+    const bool deviceMatch = ShadowInjectionDevice(device);
+    IDirect3DSurface9* currentTarget = deviceMatch ? shadowDiag.renderer->shadowSurface : nullptr;
+    bool getRtCalled = false, injectedNow = false;
+    HRESULT getRtHr = E_FAIL;
+    if (deviceMatch && currentTarget != nullptr && failure == Failure::Clear) {
+        getRtCalled = true;
+        getRtHr = device->GetRenderTarget(0, &current);
+        if (SUCCEEDED(getRtHr) && current.Get() == currentTarget)
+            injectedNow = Reject(Failure::Clear);
+    }
+    if (injectedNow) {
+        ShadowDiagReadCall("clear", 2, getRtCalled, getRtHr, current.Get(), deviceMatch,
+            currentTarget, true, false, E_FAIL);
+        return E_FAIL;
+    }
+    const HRESULT result = originalClear(device, count, rects, flags, colour, z, stencil);
+    ShadowDiagReadCall("clear", 2, getRtCalled, getRtHr, current.Get(), deviceMatch,
+        currentTarget, false, true, result);
+    return result;
 }
 HRESULT WINAPI SetViewportProbe(IDirect3DDevice9* device, const D3DVIEWPORT9* viewport) {
     ComPtr<IDirect3DSurface9> current;
-    if (failure == Failure::Viewport && SUCCEEDED(device->GetRenderTarget(0, &current)) &&
-        current.Get() == failingTarget && Reject(Failure::Viewport)) return E_FAIL;
-    return originalViewport(device, viewport);
+    const bool deviceMatch = ShadowInjectionDevice(device);
+    IDirect3DSurface9* currentTarget = deviceMatch ? shadowDiag.renderer->shadowSurface : nullptr;
+    bool getRtCalled = false, injectedNow = false;
+    HRESULT getRtHr = E_FAIL;
+    if (deviceMatch && currentTarget != nullptr && failure == Failure::Viewport) {
+        getRtCalled = true;
+        getRtHr = device->GetRenderTarget(0, &current);
+        if (SUCCEEDED(getRtHr) && current.Get() == currentTarget)
+            injectedNow = Reject(Failure::Viewport);
+    }
+    if (injectedNow) {
+        ShadowDiagReadCall("set-viewport", 3, getRtCalled, getRtHr, current.Get(), deviceMatch,
+            currentTarget, true, false, E_FAIL);
+        return E_FAIL;
+    }
+    const HRESULT result = originalViewport(device, viewport);
+    ShadowDiagReadCall("set-viewport", 3, getRtCalled, getRtHr, current.Get(), deviceMatch,
+        currentTarget, false, true, result);
+    return result;
 }
 
 // Ordinary and checked entry points must restore exact objects on failures,
@@ -195,11 +411,19 @@ void ShadowTargets(MMDApp* app) {
                     SUCCEEDED(device->SetTransform(D3DTS_PROJECTION, &projection)),
                     "bind a nondefault scene viewport and projection");
                 injected = 0; failure = fail;
-                Check(SUCCEEDED(device->BeginScene()), "begin actual shadow test scene");
+                const unsigned caseId = ++shadowCase;
+                ShadowDiagCaseBefore(caseId, samples, withDepth, checked, fail, app);
+                const HRESULT beginHr = device->BeginScene();
+                ShadowDiagBeginScene(caseId, beginHr);
+                Check(SUCCEEDED(beginHr), "begin actual shadow test scene");
                 bool result = true;
+                ShadowDiagBeginScope(app, caseId);
                 if (checked) result = RenderShadowMapChecked(app, reinterpret_cast<const float*>(&frame));
                 else RenderShadowMap(app, reinterpret_cast<const float*>(&frame));
-                Check(SUCCEEDED(device->EndScene()), "end actual shadow test scene");
+                ShadowDiagEndScope();
+                const HRESULT endHr = device->EndScene();
+                ShadowDiagCaseAfter(caseId, samples, withDepth, checked, result, fail, app, beginHr, endHr);
+                Check(SUCCEEDED(endHr), "end actual shadow test scene");
                 failure = Failure::None;
                 Check(injected == (fail == Failure::None ? 0u : 1u), "failure injection reaches its requested shadow boundary");
                 if (checked) Check(result == (fail == Failure::None), "checked shadow reports the actual failed boundary");
@@ -210,6 +434,14 @@ void ShadowTargets(MMDApp* app) {
                     SUCCEEDED(device->GetTransform(D3DTS_PROJECTION, &actualProjection)),
                     "read actual state after shadow entry or early exit");
                 const HRESULT gotDepth = device->GetDepthStencilSurface(&actualDepth);
+                std::printf("TRACE shadow-restore case=%u actual_rt=%p wanted_rt=%p "
+                    "actual_depth=%p wanted_depth=%p depth_hr=%08lX viewport_match=%u "
+                    "projection_match=%u\n",
+                    caseId, static_cast<void*>(actual.Get()), static_cast<void*>(target.Get()),
+                    static_cast<void*>(actualDepth.Get()),
+                    static_cast<void*>(withDepth ? depth.Get() : nullptr), gotDepth,
+                    unsigned(!std::memcmp(&actualViewport, &viewport, sizeof viewport)),
+                    unsigned(!std::memcmp(&actualProjection, &projection, sizeof projection)));
                 Check((withDepth ? SUCCEEDED(gotDepth) : gotDepth == D3DERR_NOTFOUND) &&
                     actual.Get() == target.Get() && actualDepth.Get() == (withDepth ? depth.Get() : nullptr) &&
                     !std::memcmp(&actualViewport, &viewport, sizeof viewport) &&

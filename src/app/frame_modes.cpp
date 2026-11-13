@@ -36,6 +36,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include "mikumikustudio/bone_edit_axes.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 
 #include <algorithm>
@@ -64,11 +65,16 @@
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_history_commands.hpp"
 #include "../plugins/native_global_commands.hpp"
+#include "../plugins/background_identity.hpp"
+#include "../plugins/native_picture_gesture.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
 #endif
 
 namespace mikumikustudio {
 #if !MMD_ORIGINAL_PROFILE
 void FinishPhysicsDraftInteraction(MMDApp*) noexcept;
+bool HandlePictureGestureInput(MMDApp*,HWND,UINT,WPARAM,LPARAM) noexcept;
+void FinalizePictureGestureInput(MMDApp*,HWND,WPARAM) noexcept;
 namespace plugins { bool StepPhysicsModelDraft(MMDApp*) noexcept; }
 #endif
 
@@ -133,8 +139,18 @@ namespace {
 bool g_viewportPressHandled = false;
 
 void PollKey(MMDApp* app, std::int32_t& keyState, int virtualKey) {
+    const bool keyboardCell = virtualKey != VK_LBUTTON &&
+                              virtualKey != VK_RBUTTON &&
+                              virtualKey != VK_MBUTTON;
+    if (keyboardCell && !PollKeyEligible(app)) {
+        // Losing input eligibility discards keyboard edges: a key held across
+        // the loss is cleared without a press or release edge, and a later poll
+        // reports it as held (state 3), never as a fresh press.
+        keyState = 0;
+        return;
+    }
     const std::int32_t oldState = keyState;
-    bool down = (GetKeyState(virtualKey) & 0x8000) != 0;
+    bool down = (ReadPolledKeyState(virtualKey) & 0x8000) != 0;
     if (!down) {
         // A Chinese/Japanese IME can consume the keystroke before the thread
         // key-state table records it - the same reason the letter ladder also
@@ -144,13 +160,18 @@ void PollKey(MMDApp* app, std::int32_t& keyState, int virtualKey) {
         const HWND main = app->state.hwnd;
         if (foreground != nullptr &&
             (foreground == main || foreground == app->state.floatingWindow) &&
-            (GetAsyncKeyState(virtualKey) & 0x8000) != 0)
+            (ReadPolledAsyncKeyState(virtualKey) & 0x8000) != 0)
             down = true;
     }
     std::int32_t state = 0;
-    if (down)
-        state = oldState == 0 ? 1 : 3;
-    else if (oldState == 1 || oldState == 3)
+    if (down) {
+        if (keyboardCell)
+            state = (PollKeyRegained(app) || oldState == 1 || oldState == 3)
+                        ? 3
+                        : 1;
+        else
+            state = oldState == 0 ? 1 : 3;
+    } else if (oldState == 1 || oldState == 3)
         state = 2;
     keyState = state;
     if (state == 0 && virtualKey == VK_LBUTTON)
@@ -282,12 +303,12 @@ int ViewportToolAtPoint(MMDApp* app) {
             if (fy > rotateTop && fy < rotateBottom) {
                 if (modelPanel)
                     operation = 18 + column;
-                else if (axisMode == 0 || axisMode == 1)
+                else if ((axisMode == 0 || axisMode == 1) && SelectedBoneHudAllows(app, true))
                     operation = 9 + column;
             } else if (fy > moveTop && fy < moveBottom) {
                 if (modelPanel)
                     operation = 15 + column;
-                else if (axisMode == 0 || axisMode == 2)
+                else if ((axisMode == 0 || axisMode == 2) && SelectedBoneHudAllows(app, false))
                     operation = 12 + column;
             }
         }
@@ -311,7 +332,8 @@ int ViewportToolAtPoint(MMDApp* app) {
                 operation = 22 + scaleColumn;
         }
 
-        if (operation == 0 && app->EditMode() == ViewportEditMode::Camera) {
+        if (operation == 0 && app->EditMode() == ViewportEditMode::Camera &&
+            SelectedBoneHudAllows(app, true)) {
             const int cx = app->ViewportToolCenterX();
             const int cy = app->ViewportToolCenterY();
             const int px = x - cx;
@@ -332,7 +354,7 @@ int ViewportToolAtPoint(MMDApp* app) {
                     operation = 5;
             }
         } else if (operation == 0 &&
-                   app->EditMode() == ViewportEditMode::Light) {
+                   app->EditMode() == ViewportEditMode::Light && SelectedBoneHudAllows(app, false)) {
             const int px = x - app->ViewportToolCenterX();
             const int py = y - app->ViewportToolCenterY();
             if (px > 41 && px < 61 && py > -8 && py < 8)
@@ -405,34 +427,41 @@ float ViewportScale(MMDApp* app) {
     return scale > 0.0f ? scale : 1.0f;
 }
 
-void WarpCursorRaw(MMDApp* app, POINT point) {
+bool WarpCursorRaw(MMDApp* app, POINT point) {
     HWND window = ViewportWindow(app);
     if (window == nullptr)
-        return;
-    ClientToScreen(window, &point);
-    SetCursorPos(point.x, point.y);
+        return false;
+    return ClientToScreen(window, &point) && SetCursorPos(point.x, point.y);
 }
 
-void WarpCursor(MMDApp* app, POINT point) {
-    HWND window = ViewportWindow(app);
-    if (window == nullptr)
-        return;
-    WarpCursorRaw(app, point);
+bool WarpCursor(MMDApp* app, POINT point) {
+    if (!WarpCursorRaw(app, point)) return false;
     app->state.separateWindowMouseSeen = 1;
+    return true;
 }
 
 void BeginCenteredDrag(MMDApp* app, int operation) {
+#if !MMD_ORIGINAL_PROFILE
+    const auto pictureSerial = plugins::PictureGestureSerial(*app);
+#endif
     const RECT view = app->ViewportRect();
     POINT point{(view.left + view.right) / 2,
                 (view.top + view.bottom) / 2};
-    app->MouseX() = point.x;
-    app->MouseY() = point.y;
-    app->PreviousMouseX() = point.x;
-    app->PreviousMouseY() = point.y;
-    app->ViewToolDragOperation() =
-        static_cast<ViewportToolAction>(operation);
+    // A denied cursor warp must not manufacture a movement from the centre
+    // to the unchanged OS pointer on the next sample.
+    app->ViewToolDragOperation() = static_cast<ViewportToolAction>(operation);
+    const bool warped = WarpCursorRaw(app, point);
+#if !MMD_ORIGINAL_PROFILE
+    if (pictureSerial && plugins::PictureGestureSerial(*app) != pictureSerial) return;
+#endif
+    if (warped) {
+        app->MouseX() = point.x;
+        app->MouseY() = point.y;
+        app->state.separateWindowMouseSeen = 1;
+    }
+    app->PreviousMouseX() = app->MouseX();
+    app->PreviousMouseY() = app->MouseY();
     app->state.mouseJumped = 0;
-    WarpCursor(app, point);
     while (ShowCursor(FALSE) >= 0) {}
 }
 
@@ -626,6 +655,26 @@ void BeginBackgroundGesture(MMDApp* app) {
         gesture.target = Target::Picture;
         gesture.x = app->PictureOffsetX(); gesture.y = app->PictureOffsetY();
     }
+#if !MMD_ORIGINAL_PROFILE
+    if (gesture.target == Target::Empty) return;
+    namespace identity = plugins::background_identity;
+    const bool video = gesture.target == Target::Video;
+    const auto kind = video ? identity::Kind::Video : identity::Kind::Picture;
+    gesture.instance = identity::Instance(app);
+    gesture.media = identity::Acquire(app, kind);
+    identity::Placement observed{};
+    const identity::PlacementFields fields{
+        video ? &app->AviOffsetX() : &app->PictureOffsetX(),
+        video ? &app->AviOffsetY() : &app->PictureOffsetY(),
+        video ? &app->AviScale() : &app->PictureScale()};
+    if (identity::PlacementAccess(app, kind, gesture.instance, gesture.media, fields, observed) != identity::PlacementResult::Ok) {
+        gesture.target = Target::Empty;
+        return;
+    }
+    gesture.x = gesture.appliedX = observed.x;
+    gesture.y = gesture.appliedY = observed.y;
+    gesture.appliedScale = observed.scale;
+#endif
 }
 
 void DragBackground(MMDApp* app, bool zoom, int dx, int dy) {
@@ -633,6 +682,62 @@ void DragBackground(MMDApp* app, bool zoom, int dx, int dy) {
     auto& gesture = app->backgroundGesture;
     if (gesture.target == Target::Empty || (dx == 0 && dy == 0)) return;
     const bool video = gesture.target == Target::Video;
+#if !MMD_ORIGINAL_PROFILE
+    namespace identity = plugins::background_identity;
+    if (video ? app->AviBackgroundEnabled() != 1 : !app->PictureBackgroundEnabled()) {
+        gesture.target = Target::Empty;
+        if (!video) plugins::CancelPictureGesture(*app);
+        return;
+    }
+    // Prepare privately. The media identity and all last-applied fields are
+    // checked in the same critical section that publishes the next sample.
+    // A failed sample stays Empty until release; it must not fall into camera
+    // movement or resume against a newly loaded image/video at the same path.
+    double nextX = gesture.x, nextY = gesture.y;
+    float nextScale = gesture.appliedScale;
+    if (zoom) {
+        const double before = std::isfinite(nextScale) && nextScale > 0 ? nextScale : 1.0;
+        nextScale = static_cast<float>(std::clamp(before * std::exp(std::clamp(-static_cast<double>(dy) * .01, -20.0, 20.0)), .001, 100.0));
+        nextX += (before - nextScale) * (video ? app->AviFrameWidth() : app->PictureWidth()) * .5;
+        nextY += (before - nextScale) * (video ? app->AviFrameHeight() : app->PictureHeight()) * .5;
+    } else {
+        const double unitsPerPixel = 1.2000000476837158 / ViewportScale(app);
+        nextX += dx * unitsPerPixel;
+        nextY += dy * unitsPerPixel;
+    }
+    const auto bounded = [](double value) {
+        return std::clamp(value, double(std::numeric_limits<std::int32_t>::min()),
+                          double(std::numeric_limits<std::int32_t>::max()));
+    };
+    nextX = bounded(nextX); nextY = bounded(nextY);
+    const identity::Placement expected{gesture.appliedX, gesture.appliedY, gesture.appliedScale};
+    const identity::Placement replacement{static_cast<std::int32_t>(std::llround(nextX)),
+        static_cast<std::int32_t>(std::llround(nextY)), nextScale};
+    identity::Placement observed{};
+    const identity::PlacementFields fields{
+        video ? &app->AviOffsetX() : &app->PictureOffsetX(),
+        video ? &app->AviOffsetY() : &app->PictureOffsetY(),
+        video ? &app->AviScale() : &app->PictureScale()};
+    const auto kind = video ? identity::Kind::Video : identity::Kind::Picture;
+    const bool boundPicture = !video && plugins::BoundNativePoseHistory(app);
+    const bool accepted = boundPicture ?
+        plugins::PreviewPictureGesture(*app,replacement.x,replacement.y,replacement.scale)==MMS_OK :
+        identity::PlacementAccess(app, kind, gesture.instance, gesture.media, fields,
+            observed, &expected, &replacement, 7)==identity::PlacementResult::Ok;
+    if (!accepted) {
+        gesture.target = Target::Empty;
+        if (boundPicture) plugins::CancelPictureGesture(*app);
+        return;
+    }
+    gesture.x = nextX; gesture.y = nextY;
+    gesture.appliedX = replacement.x; gesture.appliedY = replacement.y;
+    gesture.appliedScale = replacement.scale;
+    app->state.messageSeen = 1;
+    // D3D refresh can call out. Do not mutate the gesture or app after it.
+    if (boundPicture) plugins::RefreshPictureGesture(*app);
+    else if (video) AviBgPlacementRefresh(app);
+    else PicBgOverlayRefresh(app);
+#else
     if (video ? app->AviBackgroundEnabled() != 1 : !app->PictureBackgroundEnabled()) return;
     auto& x = video ? app->AviOffsetX() : app->PictureOffsetX();
     auto& y = video ? app->AviOffsetY() : app->PictureOffsetY();
@@ -660,10 +765,12 @@ void DragBackground(MMDApp* app, bool zoom, int dx, int dy) {
     if (video) AviBgPlacementRefresh(app);
     else PicBgOverlayRefresh(app);
     app->state.messageSeen = 1;
+#endif
 }
 
 void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
 #if !MMD_ORIGINAL_PROFILE
+    ScopedSceneCloseDeferral close(*app);
     if (plugins::BoundPhysicsModelDraft(app)) {
         if (app->LeftMouseButtonState() == 1) {
             // The six native axis buttons manipulate the private physics
@@ -680,7 +787,16 @@ void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
     if (plugins::BoundNativePoseHistory(app) && app->LeftMouseButtonState() == 1 &&
         operation != 0 && operation != 21) {
         auto* history = plugins::BoundNativePoseHistory(app);
-        if (plugins::ModelHudOperation(*app,operation)) {
+        if (operation == 1 || operation == 2) {
+            BeginBackgroundGesture(app);
+            // The frontmost media owns Ctrl-header input. Video history is
+            // not ready yet, and an empty target must never become a camera drag.
+            if (app->backgroundGesture.target != MMDApp::BackgroundGesture::Target::Picture ||
+                plugins::BeginPictureGesture(*app,*history,ViewportWindow(app),operation)!=MMS_OK) {
+                app->backgroundGesture.target=MMDApp::BackgroundGesture::Target::Empty;
+                return;
+            }
+        } else if (plugins::ModelHudOperation(*app,operation)) {
             if(plugins::BeginModelHudGesture(*app,*history,ViewportWindow(app),operation)!=MMS_OK)return;
         } else if (plugins::AccessoryHudOperation(*app, operation)) {
             if (plugins::BeginAccessoryHudGesture(*app, *history, ViewportWindow(app), operation) != MMS_OK) return;
@@ -740,6 +856,11 @@ void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
                 BeginCenteredDrag(app, operation);
             }
             app->InteractionDragMode() = static_cast<ViewportDragMode>(mode);
+            if (operation >= 9 && operation <= 11
+#if !MMD_ORIGINAL_PROFILE
+                && !plugins::BoundNativePoseHistory(app)
+#endif
+            ) BeginBoneHudPreview(app, operation - 9);
             if (operation == 5) {
                 app->ViewportToolDragOriginX() = app->ViewportToolCenterX();
                 app->ViewportToolDragOriginY() = app->ViewportToolCenterY();
@@ -796,6 +917,11 @@ void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
         }
     } else if (leftState == 2) {
 #if !MMD_ORIGINAL_PROFILE
+        if (plugins::PictureGestureActive(*app)) {
+            const WPARAM modifiers=(app->ShiftModifierActive()?MK_SHIFT:0)|(app->CtrlModifierActive()?MK_CONTROL:0);
+            FinalizePictureGestureInput(app,plugins::PictureGestureOwner(*app),modifiers);
+            return;
+        }
         if(plugins::ModelHudGestureActive(*app)){
             const WPARAM modifiers=(app->ShiftModifierActive()?MK_SHIFT:0)|(app->CtrlModifierActive()?MK_CONTROL:0);
             plugins::HandleModelHudMessage(*app,ViewportWindow(app),WM_LBUTTONUP,modifiers,0);
@@ -872,6 +998,57 @@ void BeginOrEndViewportToolDrag(MMDApp* app, int operation) {
 }  // namespace
 
 #if !MMD_ORIGINAL_PROFILE
+void FinishPictureGestureInteraction(MMDApp* app,int operation) noexcept {
+    // The backend holds its detached-session barrier across cursor/capture
+    // callbacks. Clear the old tool before any synchronous window callback.
+    if (static_cast<int>(app->ViewToolDragOperation())!=operation || (operation!=1 && operation!=2)) return;
+    app->ViewToolDragOperation()=ViewportToolAction::None;
+    app->InteractionDragMode()=ViewportDragMode::None;
+    app->backgroundGesture={};
+    app->PendingTimelineSelectionRow()=TimelineSelectionRow::None;
+    app->state.a06B5=0;
+    app->LeftMouseButtonState()=LeftButtonPhysicallyDown(app)?3:0;
+    g_viewportPressHandled=false;
+    RestoreViewportToolCursor(app,operation);
+}
+void FinalizePictureGestureInput(MMDApp* app,HWND owner,WPARAM modifiers) noexcept {
+    ScopedSceneCloseDeferral close(*app);
+    const auto serial=plugins::PictureGestureSerial(*app);
+    if (!serial || plugins::PictureGestureOwner(*app)!=owner) return;
+    const int operation=plugins::PictureGestureOperation(*app);
+    // A centered drag can leave pre-warp coordinates in the release message.
+    // Both frame polling and WM_LBUTTONUP consume the same live final sample.
+    POINT point{};
+    if (owner && GetCursorPos(&point) && ScreenToClient(owner,&point)) {
+        app->MouseX()=point.x;app->MouseY()=point.y;
+        app->ShiftModifierState()=(modifiers&MK_SHIFT)?3:0;
+        app->CtrlModifierState()=(modifiers&MK_CONTROL)?3:0;
+        DragBackground(app,operation==1,app->MouseX()-app->PreviousMouseX(),app->MouseY()-app->PreviousMouseY());
+        if (plugins::PictureGestureSerial(*app)!=serial) return;
+        app->PreviousMouseX()=app->MouseX();app->PreviousMouseY()=app->MouseY();
+    }
+    if (plugins::PictureGestureSerial(*app)==serial) {
+        bool changed=false;
+        plugins::EndPictureGesture(*app,changed);
+    }
+}
+bool HandlePictureGestureInput(MMDApp* app,HWND owner,UINT message,WPARAM wp,LPARAM lp) noexcept {
+    if (!plugins::PictureGestureActive(*app)) return false;
+    if (message==WM_CANCELMODE || message==WM_KILLFOCUS || message==WM_CLOSE ||
+        message==WM_DESTROY || message==WM_NCDESTROY || (message==WM_ACTIVATEAPP && !wp) ||
+        (message==WM_KEYDOWN && wp==VK_ESCAPE) ||
+        (message==WM_CAPTURECHANGED && reinterpret_cast<HWND>(lp)!=plugins::PictureGestureOwner(*app))) {
+        plugins::CancelPictureGesture(*app);
+        return message==WM_KEYDOWN;
+    }
+    if (message==WM_LBUTTONUP && owner==plugins::PictureGestureOwner(*app)) {
+        FinalizePictureGestureInput(app,owner,wp);
+        // Complete cursor/tool/capture cleanup is owned by this session. The
+        // legacy release continuation must not touch a replacement gesture.
+        return true;
+    }
+    return false;
+}
 void FinishPhysicsDraftInteraction(MMDApp* app) noexcept {
     const int operation = static_cast<int>(app->ViewToolDragOperation());
     if (operation >= 9 && operation <= 14) RestoreViewportToolCursor(app, operation);
@@ -918,6 +1095,9 @@ void ApplyCenteredDragCursorSample(MMDApp* app, int x, int y) {
 }
 
 void RecentreCenteredDragCursor(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    const auto pictureSerial = plugins::PictureGestureSerial(*app);
+#endif
     const HWND owner = ViewportWindow(app);
     if (owner && (GetCapture() != owner || GetForegroundWindow() != owner)) return;
     // While one of the six operation buttons owns the drag, a pointer that
@@ -941,17 +1121,15 @@ void RecentreCenteredDragCursor(MMDApp* app) {
     if (!OwnsCenteredViewportDrag(app)) return;
     const RECT view = app->ViewportRect();
     POINT point{app->MouseX(), app->MouseY()};
+    const bool recenterX = point.x <= view.left || point.x >= view.right - 1;
+    const bool recenterY = point.y <= view.top || point.y >= view.bottom - 1;
     bool recentred = false;
-    if (point.x <= view.left || point.x >= view.right - 1) {
-        app->MouseX() = (view.left + view.right) / 2;
-        app->PreviousMouseX() = app->MouseX();
-        point.x = app->MouseX();
+    if (recenterX) {
+        point.x = (view.left + view.right) / 2;
         recentred = true;
     }
-    if (point.y <= view.top || point.y >= view.bottom - 1) {
-        app->MouseY() = (view.top + view.bottom) / 2;
-        app->PreviousMouseY() = app->MouseY();
-        point.y = app->MouseY();
+    if (recenterY) {
+        point.y = (view.top + view.bottom) / 2;
         recentred = true;
     }
     // The recentring stores both positions itself, so it must not mark a warp
@@ -959,8 +1137,13 @@ void RecentreCenteredDragCursor(MMDApp* app) {
     // the previous position without applying its delta, which would eat the
     // first pixels of the movement that follows each recentring.  The original
     // marks 0xA16C0/0xA16C2 here, not the 0xA0088 byte its move handler reads.
-    if (recentred)
-        WarpCursorRaw(app, point);
+    if (recentred && WarpCursorRaw(app, point)) {
+#if !MMD_ORIGINAL_PROFILE
+        if (pictureSerial && plugins::PictureGestureSerial(*app) != pictureSerial) return;
+#endif
+        if (recenterX) app->MouseX() = app->PreviousMouseX() = point.x;
+        if (recenterY) app->MouseY() = app->PreviousMouseY() = point.y;
+    }
 }
 
 namespace {
@@ -970,6 +1153,9 @@ namespace {
 constexpr int kCoordinateStripOperation = 21;
 
 bool PressViewportTool(MMDApp* app, int requiredOperation) {
+#if !MMD_ORIGINAL_PROFILE
+    ScopedSceneCloseDeferral close(*app);
+#endif
     const auto active = app->ViewportInputActive();
     app->ViewportInputActive() = 1;
     const int operation = ViewportToolAtPoint(app);
@@ -990,6 +1176,13 @@ bool PressViewportTool(MMDApp* app, int requiredOperation) {
         return true;
     app->LeftMouseButtonState() = 1;
     BeginOrEndViewportToolDrag(app, operation);
+#if !MMD_ORIGINAL_PROFILE
+    if ((operation == 1 || operation == 2) && plugins::BoundNativePoseHistory(app) &&
+        !plugins::PictureGestureActive(*app)) {
+        app->LeftMouseButtonState() = LeftButtonPhysicallyDown(app) ? 3 : 0;
+        return true;
+    }
+#endif
     // Consume this edge immediately: the click can complete before the next rendered frame.
     app->LeftMouseButtonState() = 3;
     return true;
@@ -1025,6 +1218,8 @@ bool HandleCoordinateStripPress(MMDApp* app) {
 
 void ReleaseLeftButtonState(MMDApp* app, bool physicallyHeld) {
 #if !MMD_ORIGINAL_PROFILE
+    ScopedSceneCloseDeferral close(*app);
+    const auto pictureSerial=plugins::PictureGestureSerial(*app);
     const auto modelSource=plugins::ModelHudPreviewSource(*app);
 #endif
     // The gesture has ended: the next press, regardless of the tracked state, is a
@@ -1035,6 +1230,7 @@ void ReleaseLeftButtonState(MMDApp* app, bool physicallyHeld) {
     app->LeftMouseButtonState() = 2;
     BeginOrEndViewportToolDrag(app, 0);
 #if !MMD_ORIGINAL_PROFILE
+    if(pictureSerial)return; // The picture session owns all release cleanup.
     if(modelSource&&plugins::ModelHudPreviewSource(*app)!=modelSource&&
         (plugins::ModelHudGestureActive(*app)||plugins::CameraHudGestureActive(*app)||plugins::AccessoryHudGestureActive(*app)))return;
 #endif
@@ -1148,6 +1344,11 @@ void DriveViewportBoxSelect(MMDApp* app, int step, int x, int y) {
 }
 
 void MouseInteractionBegin(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    ScopedSceneCloseDeferral close(*app);
+#endif
+    // Latch this poll's keyboard eligibility once, before any key is sampled.
+    AdvancePollKeyEligibility(app, PollKeyInputEligible(app));
     // 0x46FF02 -> 0x42D3A0 -> 0x40E3D0.  State values are exactly
     // 0 idle, 1 pressed, 2 released, 3 held.
     struct KeySlot { int key; std::int32_t MMDAppState::* state; };
@@ -1215,6 +1416,9 @@ void MouseInteractionBegin(MMDApp* app) {
 
     if (app->LeftMouseButtonHeld()) {
         const ViewportToolAction viewMode = app->ViewToolDragOperation();
+#if !MMD_ORIGINAL_PROFILE
+        const auto pictureSerial=plugins::PictureGestureSerial(*app);
+#endif
         const bool header = viewMode == ViewportToolAction::CameraOrbit || viewMode == ViewportToolAction::CameraPan;
         if (header && app->backgroundGesture.target != MMDApp::BackgroundGesture::Target::Camera) {
             DragBackground(app, viewMode == ViewportToolAction::CameraOrbit, dx, dy);
@@ -1232,6 +1436,11 @@ void MouseInteractionBegin(MMDApp* app) {
             }
             ViewRefreshGate(app);
         }
+        // Geometry refresh may synchronously cancel the old picture session.
+        // Its continuation must not warp the cursor or touch a new session.
+#if !MMD_ORIGINAL_PROFILE
+        if (pictureSerial && plugins::PictureGestureSerial(*app)!=pictureSerial) return;
+#endif
         if (viewMode == ViewportToolAction::CameraOrbit || viewMode == ViewportToolAction::CameraPan)
             RecentreCenteredDragCursor(app);
     }

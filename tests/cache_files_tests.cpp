@@ -305,6 +305,100 @@ bool Junction(HANDLE handle,const fs::path& destination,DWORD& error) {
     DWORD done=0;const bool ok=DeviceIoControl(handle,FSCTL_SET_REPARSE_POINT,data.data(),static_cast<DWORD>(data.size()),nullptr,0,&done,nullptr)!=FALSE;
     error=ok?ERROR_SUCCESS:GetLastError();return ok;
 }
+bool SymbolicDirectory(HANDLE handle,const fs::path& destination,DWORD& error) {
+    const std::wstring substitute=L"\\??\\"+destination.wstring(),print=destination.wstring();
+    const auto subBytes=static_cast<unsigned>(substitute.size()*sizeof(wchar_t));
+    const auto printBytes=static_cast<unsigned>(print.size()*sizeof(wchar_t));
+    Bytes data(20+subBytes+sizeof(wchar_t)+printBytes+sizeof(wchar_t),0);
+    PutLE(data,0,IO_REPARSE_TAG_SYMLINK,4);PutLE(data,4,data.size()-8,2);
+    PutLE(data,10,subBytes,2);PutLE(data,12,subBytes+sizeof(wchar_t),2);PutLE(data,14,printBytes,2);
+    std::memcpy(data.data()+20,substitute.data(),subBytes);
+    std::memcpy(data.data()+20+subBytes+sizeof(wchar_t),print.data(),printBytes);
+    DWORD done=0;const bool ok=DeviceIoControl(handle,FSCTL_SET_REPARSE_POINT,data.data(),static_cast<DWORD>(data.size()),nullptr,0,&done,nullptr)!=FALSE;
+    error=ok?ERROR_SUCCESS:GetLastError();return ok;
+}
+void AncestorSharing(const fs::path& root) {
+    const auto base=root/L"ancestor-sharing",data=base/L"data",cache=data/L"cache",target=base/L"redirect";
+    NewDirectory(base);NewDirectory(data);NewDirectory(cache);NewDirectory(target);
+    NewText(target/L"redirect-marker.txt","foreign target\n");
+    const auto settings=data/L"settings.json",temporary=data/L"settings.json.tmp";
+    NewText(settings,"old settings\n");NewText(temporary,"new settings\n");
+    auto directory=Open(cache);
+    Check(ReplaceFileW(settings.c_str(),temporary.c_str(),nullptr,0,nullptr,nullptr)!=FALSE&&
+        Text(settings)=="new settings\n"&&!fs::exists(temporary),
+        "protected child permits actual atomic sibling replacement without releasing guards");
+    for(const auto& guarded:std::array<fs::path,2>{data,cache}) {
+        const auto renamed=fs::path(guarded.wstring()+L"-moved");
+        const bool moved=MoveFileExW(guarded.c_str(),renamed.c_str(),0)!=FALSE;
+        const auto moveError=moved?ERROR_SUCCESS:GetLastError();
+        Check(!moved&&moveError==ERROR_SHARING_VIOLATION&&!fs::exists(renamed),
+            "both broadened ancestor and strict root still deny actual rename");
+        const bool removed=RemoveDirectoryW(guarded.c_str())!=FALSE;
+        const auto removeError=removed?ERROR_SUCCESS:GetLastError();
+        Check(!removed&&removeError==ERROR_SHARING_VIOLATION&&fs::is_directory(guarded),
+            "both broadened ancestor and strict root still deny actual deletion");
+    }
+    // Establish support under this actual test process token before claiming
+    // the negative symbolic-link control tested nonempty-directory protection.
+    // Win7 and restricted runners may reject the IOCTL for missing privilege
+    // before the filesystem evaluates whether the destination is empty.
+    const auto symbolic=base/L"empty-symbolic";NewDirectory(symbolic);
+    bool symbolicCreated=false;DWORD symbolicError=0;
+    {
+        Handle writable(CreateFileW(symbolic.c_str(),GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+            nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,nullptr));
+        Check(writable.value!=INVALID_HANDLE_VALUE,"open empty symbolic positive control");
+        symbolicCreated=SymbolicDirectory(writable.value,target,symbolicError);
+    }
+    std::printf("ancestor symbolic positive supported=%u error=%lu\n",unsigned(symbolicCreated),symbolicError);
+    if(!symbolicCreated){
+        Check(symbolicError==ERROR_PRIVILEGE_NOT_HELD||symbolicError==ERROR_ACCESS_DENIED,
+            "symbolic positive control may fail only for explicit privilege denial");
+        ++skips;
+        NewText(base/L"symbolic-privilege.txt","SKIP symbolic nonempty protection: positive control denied; Win32="+std::to_string(symbolicError)+"\n");
+        std::printf("SKIP symbolic nonempty protection: positive control error=%lu\n",symbolicError);
+        Check((GetFileAttributesW(symbolic.c_str())&FILE_ATTRIBUTE_REPARSE_POINT)==0,
+            "privilege-denied symbolic positive control remains an ordinary directory");
+    }
+    {
+        Handle writable(CreateFileW(data.c_str(),GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+            nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,nullptr));
+        Check(writable.value!=INVALID_HANDLE_VALUE,"proven ancestor allows writable handle for nonempty reparse control");
+        DWORD error=0;
+        Check(!Junction(writable.value,target,error)&&error==ERROR_DIR_NOT_EMPTY,
+            "protected nonempty ancestor rejects real mount-point conversion");
+        if(symbolicCreated){
+            const bool converted=SymbolicDirectory(writable.value,target,error);
+            std::printf("ancestor symbolic nonempty converted=%u error=%lu\n",unsigned(converted),error);
+            Check(!converted&&error==ERROR_DIR_NOT_EMPTY,
+                "protected nonempty ancestor rejects real symbolic-directory conversion");
+        }
+    }
+    Check((GetFileAttributesW(data.c_str())&FILE_ATTRIBUTE_REPARSE_POINT)==0&&
+        !fs::exists(data/L"redirect-marker.txt")&&Text(settings)=="new settings\n"&&fs::is_directory(cache),
+        "failed reparse attempts neither redirect paths nor change existing sibling bytes");
+    files::Directory child;
+    Check(directory.Child(L"inner",true,child)==Result::Ok,"create child beneath public strict root");
+    {
+        Handle writable(CreateFileW(cache.c_str(),GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+            nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,nullptr));
+        const auto error=writable.value==INVALID_HANDLE_VALUE?GetLastError():ERROR_SUCCESS;
+        Check(writable.value==INVALID_HANDLE_VALUE&&error==ERROR_SHARING_VIOLATION,
+            "Directory Child does not weaken the original public final-root guard");
+    }
+    const auto baseline=base/L"empty-junction";NewDirectory(baseline);
+    {
+        Handle writable(CreateFileW(baseline.c_str(),GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+            nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,nullptr));
+        DWORD error=0;Check(writable.value!=INVALID_HANDLE_VALUE&&Junction(writable.value,target,error),
+            "same mount-point request succeeds on unguarded empty positive control");
+    }
+    files::Directory rejected;
+    Check(files::Directory::Open(baseline,false,rejected)==Result::Invalid&&!rejected.IsValid(),
+        "preexisting mount point is rejected before ancestor protection can be relaxed");
+    if(symbolicCreated)Check(files::Directory::Open(symbolic,false,rejected)==Result::Invalid&&!rejected.IsValid(),
+        "preexisting symbolic directory is also rejected");
+}
 void GuardOperations(const fs::path& path,const fs::path& target,const fs::path& report) {
     const auto renamed=fs::path(path.wstring()+L"-renamed");
     Check(!fs::exists(renamed),"rename target is unoccupied owned name");
@@ -541,7 +635,7 @@ int wmain(int argc,wchar_t** argv) {
         if(argc==6&&std::wstring(argv[1])==L"--worker")return Worker(argv[2],argv[3],argv[4],argv[5]);
         Check(argc==3&&std::wstring(argv[1])==L"--store","usage: --store NEW_ABSOLUTE_DIR");
         const fs::path root(argv[2]);NewDirectory(root);
-        Basic(root);Arguments(root);Corruption(root);PathsAndGuards(root);LocksAndProcesses(root);AllocationChecks(root);
+        Basic(root);Arguments(root);Corruption(root);PathsAndGuards(root);AncestorSharing(root);LocksAndProcesses(root);AllocationChecks(root);
         NewText(root/L"result.txt","checks="+std::to_string(checks)+"\nskips="+std::to_string(skips)+"\n");
         std::printf("PASS cache files checks=%u skips=%u evidence=%ls\n",checks,skips,root.c_str());return 0;
     } catch(const std::exception& e){std::fprintf(stderr,"FAIL cache files checks=%u: %s\n",checks,e.what());return 1;}

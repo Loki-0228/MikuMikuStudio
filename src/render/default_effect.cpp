@@ -32,14 +32,12 @@ struct Compilation {
     std::string error;
     CreateCompiler create = nullptr;
     HMODULE module = nullptr;
-    HANDLE completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     std::atomic<bool> done{false};
     bool started = false; // UI thread only.
     int resource = 0;
     HRESULT result = E_FAIL;
     ULONGLONG elapsed = 0;
     ~Compilation() {
-        if (completed) CloseHandle(completed);
         if (module) FreeLibrary(module);
     }
 };
@@ -72,7 +70,6 @@ void Compile(const std::shared_ptr<Compilation>& work) noexcept {
     }
     work->elapsed = GetTickCount64() - start;
     work->done.store(true, std::memory_order_release);
-    SetEvent(work->completed);
 }
 
 bool HasSceneObjects(const MMDApp* app) {
@@ -127,7 +124,7 @@ bool QueueDefaultEffect(D3DRenderer* renderer, int resource) {
         work->resource = resource;
         work->create = reinterpret_cast<CreateCompiler>(
             GetProcAddress(api.module, "D3DXCreateEffectCompiler"));
-        if (!work->completed || !work->create || !GetModuleHandleExW(
+        if (!work->create || !GetModuleHandleExW(
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                 reinterpret_cast<LPCWSTR>(work->create), &work->module)) return false;
         const auto info = FindResourceW(nullptr, MAKEINTRESOURCEW(resource), MAKEINTRESOURCEW(10));
@@ -143,7 +140,6 @@ bool QueueDefaultEffect(D3DRenderer* renderer, int resource) {
             work->binary = std::move(work->source);
             work->result = S_OK;
             work->done.store(true, std::memory_order_release);
-            SetEvent(work->completed);
         }
         pending.emplace(renderer, std::move(work));
         runtime_log::Write("DEFAULT_EFFECT queued resource=%d", resource);
@@ -164,8 +160,16 @@ void StartDefaultEffectCompilation(D3DRenderer* renderer) {
     } catch (...) {
         work->result = E_OUTOFMEMORY;
         work->done.store(true, std::memory_order_release);
-        SetEvent(work->completed);
     }
+}
+
+bool DefaultEffectReadyForCapture(MMDApp* app) {
+    auto* renderer = app->Renderer();
+    const auto found = pending.find(renderer);
+    if (found == pending.end() || !app->state.selfShadowEnabled ||
+        !HasSceneObjects(app)) return true;
+    StartDefaultEffectCompilation(renderer);
+    return found->second->done.load(std::memory_order_acquire);
 }
 
 void UpdateDefaultEffect(MMDApp* app) {
@@ -177,9 +181,6 @@ void UpdateDefaultEffect(MMDApp* app) {
     // resources compile, interactive previews use the existing fixed renderer.
     if (!HasSceneObjects(app) || !app->state.selfShadowEnabled || app->SelfShadowMode() <= 0) return;
     StartDefaultEffectCompilation(renderer);
-    // An export must not write temporary fallback shading into its first frame.
-    if (app->RecordingWindow() && !work->done.load(std::memory_order_acquire))
-        WaitForSingleObject(work->completed, INFINITE);
     if (!work->done.load(std::memory_order_acquire)) return;
     // Resizing while compilation runs is safe: the worker owns no device
     // resources. Delay publication if the UI thread is recovering the device.

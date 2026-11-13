@@ -10,6 +10,10 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/scene_ownership.hpp"
 #include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/recording_state.hpp"
 
 #include "mikumikustudio/effect_api.hpp"
 
@@ -48,16 +52,73 @@ inline void TraceAccessoryRelease(int, const char*, const void*) {}
 
 }  // namespace
 
+#if !MMD_ORIGINAL_PROFILE
+bool SceneCloseBlocked(MMDApp& app) noexcept {
+    return app.SceneMutationInProgress() || app.sceneMutationFinishing || app.sceneCloseHold ||
+        app.sceneMainCloseProcessing || app.sceneFloatingCloseProcessing ||
+        plugins::CloseBlocked(&app) || SceneSaveBlocksEdits() || bake::UiLocked() ||
+        recording_state::Stopping(&app) ||
+        recording_state::Guard::Active(&app, recording_state::Operation::Start) ||
+        recording_state::Guard::Active(app.Recorder(), recording_state::Operation::GraphTeardown);
+}
+void RetryDeferredSceneCloses(MMDApp& app) noexcept {
+    if (SceneCloseBlocked(app)) return;
+    const HWND main = app.deferredSceneMainClose;
+    const HWND floating = app.deferredSceneFloatingClose;
+    if (floating && (floating != app.FloatingWindow() || !IsWindow(floating))) {
+        app.deferredSceneFloatingClose = nullptr; app.sceneFloatingClosePosted = false;
+    } else if (floating && !app.sceneFloatingClosePosted) {
+        app.sceneFloatingClosePosted = true;
+        if (!PostMessageW(floating, kSceneCloseReplayMessage, 0, 0)) app.sceneFloatingClosePosted = false;
+    }
+    if (main && (main != app.MainWindow() || !IsWindow(main))) {
+        app.deferredSceneMainClose = nullptr; app.sceneMainClosePosted = false;
+    } else if (main && !app.sceneMainClosePosted) {
+        app.sceneMainClosePosted = true;
+        if (!PostMessageW(main, kSceneCloseReplayMessage, 0, 0)) app.sceneMainClosePosted = false;
+    }
+}
+ScopedSceneCloseDeferral::ScopedSceneCloseDeferral(MMDApp& app) noexcept : app_(app) { ++app_.sceneCloseHold; }
+ScopedSceneCloseDeferral::~ScopedSceneCloseDeferral() {
+    --app_.sceneCloseHold;
+    RetryDeferredSceneCloses(app_);
+}
+#endif
+
 ScopedSceneMutation::ScopedSceneMutation(MMDApp& app)
     : app_(app), previousLayoutReady_(app.WindowLayoutReady()) {
-    InvalidateEffectCurrentObjectCache();
-    ShutdownD3D12Native();
+#if !MMD_ORIGINAL_PROFILE
+    // Establish the gate before releasing device objects, which may dispatch.
     ++app_.m_sceneMutationDepth;
     app_.WindowLayoutReady() = 0;
+#endif
+    InvalidateEffectCurrentObjectCache();
+    ShutdownD3D12Native();
+#if MMD_ORIGINAL_PROFILE
+    ++app_.m_sceneMutationDepth;
+    app_.WindowLayoutReady() = 0;
+#endif
 }
 
 ScopedSceneMutation::~ScopedSceneMutation() {
     app_.WindowLayoutReady() = previousLayoutReady_;
+#if !MMD_ORIGINAL_PROFILE
+    if (app_.m_sceneMutationDepth == 1) {
+        ++app_.sceneMutationFinishing;
+        --app_.m_sceneMutationDepth;
+        app_.state.messageSeen = 1;
+        if (app_.MainWindow() != nullptr)
+            RedrawWindow(app_.MainWindow(), nullptr, nullptr,
+                         RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        // Redraw may dispatch WM_CLOSE. Keep a close gate while painting but
+        // preserve the existing first-paint contract of a cleared depth.
+        --app_.sceneMutationFinishing;
+        if (app_.sceneMutationFinishing) return;
+        RetryDeferredSceneCloses(app_);
+    } else {
+        --app_.m_sceneMutationDepth;
+    }
+#else
     if (--app_.m_sceneMutationDepth == 0) {
         app_.state.messageSeen = 1;
         if (app_.MainWindow() != nullptr)
@@ -66,6 +127,7 @@ ScopedSceneMutation::~ScopedSceneMutation() {
             RedrawWindow(app_.MainWindow(), nullptr, nullptr,
                          RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
     }
+#endif
 }
 
 void ReleaseSceneModels(MMDApp& app) {

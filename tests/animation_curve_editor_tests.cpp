@@ -20,11 +20,20 @@
 // MMD diagonal handles for a Linear interval, disabled MMD panel for an
 // unrepresentable interval, the launcher icon geometry for the 22 and 18 pixel
 // buttons, and the three-language layout (no overlap, >= 4 logical pixel label
-// gaps, >= 4 logical pixel edit margins).
+// gaps, >= 4 logical pixel edit margins). Close/reopen paint and handle-drag
+// damage are measured separately on a generic value curve: the canonical
+// non-linear native-control geometry is rendered before any edit through both
+// WM_PRINTCLIENT and the buffered WM_PAINT, and its painted height at interior
+// frames is compared with the canonical Bezier so a straightened chord cannot
+// pass as a curve. The fixture does not model morph/expression persistence;
+// that channel identity path is host-side. Each real handle drag may damage
+// only the surface it owns.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <CommCtrl.h>
+#include <TlHelp32.h>
+#include <Shellapi.h>
 
 #include "mikumikustudio/animation_curve_editor.hpp"
 #include "../src/window/curve_editor_axis.hpp"
@@ -32,10 +41,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
 #include <cstring>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <limits>
@@ -136,6 +147,638 @@ void Note(const char *description) {
     }
     std::printf("PASS %s\n", description);std::fflush(stdout);
 }
+
+// ---------------------------------------------------------------------------
+// Optional first-chance 0xC0000005 diagnostics.
+//
+// Inert unless MMS_CURVE_CRASH_DIAGNOSTICS is exactly "1": no module snapshot,
+// no handler registration, no ring writes and no output.  The vector handler is
+// observe-only; it always returns EXCEPTION_CONTINUE_SEARCH, never edits
+// CONTEXT and never resumes, swallows, exits or translates the exception, so
+// the normal SEH/debugger chain and termination stay untouched.  A record
+// labelled FIRST_CHANCE_AV is a first-chance observation, not a proven fatal
+// or unhandled exit.
+//
+// Modules come from bounded Toolhelp snapshots published as immutable caches.
+// The startup snapshot is published before the tests; ComparisonCallbackLifetime
+// builds the other slot once and publishes it with one interlocked store, so the
+// handler reads a stable snapshot without loader calls, locks or allocation.
+// Later refresh requests are ignored on purpose: only the startup and the one
+// comparison snapshot can ever be visible, so a published slot is never reused.
+// Modules loaded after that snapshot, and names or paths whose UTF-8 form does
+// not fit the bounded field, are reported as unknown or degraded.
+//
+// The comparison ring is a fixed POD array per thread written with scalar
+// stores only.  Each slot is invalidated, filled and committed before it is
+// counted, so a fault during a wrapped overwrite cannot expose a partial record.
+// The handler dumps the bounded recent window oldest-to-newest; it names
+// completed stages, not the exact faulting instruction, so a fault inside a
+// stage is attributed to the preceding boundary.  A thread with no published
+// slot reports no comparison history rather than borrowing another thread's.
+// ---------------------------------------------------------------------------
+enum : unsigned {
+    kCurveDiagModuleCapacity = 96,
+    kCurveDiagModuleNameChars = 64,
+    kCurveDiagModulePathChars = 260,
+    kCurveDiagModuleCacheCount = 2,
+    kCurveDiagStageCapacity = 32,
+    kCurveDiagReportCapacity = 2048,
+    kCurveDiagStageLineCapacity = 320,
+};
+enum : unsigned {
+    kCurveDiagModuleGenerationStartup = 1,
+    kCurveDiagModuleGenerationComparison = 2,
+};
+struct CurveDiagModuleEntry {
+    std::uintptr_t base;
+    std::uintptr_t end;
+    unsigned nameLength;
+    unsigned pathLength;
+    char name[kCurveDiagModuleNameChars];
+    char path[kCurveDiagModulePathChars];
+};
+// ready==0 while a slot is being rebuilt; the published index is flipped only
+// after ready==1, so the handler never reads a partially filled entry array.
+struct CurveDiagModuleCache {
+    volatile LONG ready;
+    unsigned count;
+    unsigned truncated;
+    unsigned partial;
+    unsigned unavailable;
+    unsigned encodingDegraded;
+    unsigned generation;
+    CurveDiagModuleEntry entries[kCurveDiagModuleCapacity];
+};
+CurveDiagModuleCache g_curveDiagModuleCaches[kCurveDiagModuleCacheCount];
+volatile LONG g_curveDiagPublishedModuleCache = -1;
+volatile LONG g_curveDiagModuleRefreshDone = 0;
+bool g_curveDiagEnabled = false;
+HANDLE g_curveDiagStderr = INVALID_HANDLE_VALUE;
+PVOID g_curveDiagHandlerHandle = nullptr;
+volatile LONG g_curveDiagHandlerBusy = 0;
+char g_curveDiagReportBuffer[kCurveDiagReportCapacity];
+char g_curveDiagStageLineBuffer[kCurveDiagStageLineCapacity];
+
+// Cached once at iteration start; provider/copy/retire stages read this instead
+// of touching an object that the fixture may already have retired.
+struct CurveDiagCase {
+    int route, kind, mouse, phase, action, response;
+};
+thread_local CurveDiagCase g_curveDiagCase;
+
+enum CurveDiagStageId : int {
+    kCurveDiagStageIterationBegin = 1,
+    kCurveDiagStageInitialOpenBegin,
+    kCurveDiagStageInitialOpenEnd,
+    kCurveDiagStageTriggerBegin,
+    kCurveDiagStageTriggerEnd,
+    kCurveDiagStageProviderCopyEntry,
+    kCurveDiagStageProviderCopyAfterRetire,
+    kCurveDiagStageRetireBegin,
+    kCurveDiagStageRetireEnd,
+    kCurveDiagStageRetireCloseOwnedBegin,
+    kCurveDiagStageRetireCloseOwnedEnd,
+    kCurveDiagStageRetireReplacementOpenBegin,
+    kCurveDiagStageRetireReplacementOpenEnd,
+    kCurveDiagStageReplacementKeyClickBegin,
+    kCurveDiagStageReplacementKeyClickEnd,
+    kCurveDiagStageReplacementDeleteBegin,
+    kCurveDiagStageReplacementDeleteEnd,
+    kCurveDiagStageFinalCloseOwnedBegin,
+    kCurveDiagStageFinalCloseOwnedEnd,
+    kCurveDiagStageIterationEnd,
+};
+struct CurveDiagStageEntry {
+    unsigned sequence;
+    int stage;
+    int route, kind, mouse, phase, action, response;
+    std::uintptr_t pointerA;
+    std::uintptr_t pointerB;
+    unsigned reserved;
+    // Commit marker: -1 while a wrapped slot is being overwritten, then the
+    // slot sequence.  The handler emits a slot only when this equals the
+    // sequence it expects, so a partial overwrite is never reported.
+    volatile LONG committed;
+};
+struct CurveDiagStageRing {
+    volatile LONG published;
+    CurveDiagStageEntry entries[kCurveDiagStageCapacity];
+};
+thread_local CurveDiagStageRing g_curveDiagStageRing;
+
+// Small bounded append helpers; the handler must not use printf/snprintf or
+// touch the heap, so it formats into this fixed buffer only.
+struct CurveDiagText {
+    char *data;
+    unsigned capacity;
+    unsigned length;
+    bool truncated;
+};
+void CurveDiagTextInit(CurveDiagText &text, char *data, unsigned capacity) {
+    text.data = data;
+    text.capacity = capacity;
+    text.length = 0;
+    text.truncated = false;
+    if (data != nullptr && capacity != 0) data[0] = '\0';
+}
+void CurveDiagTextChar(CurveDiagText &text, char value) {
+    if (text.data == nullptr || text.length + 1 >= text.capacity) {
+        text.truncated = true;
+        return;
+    }
+    text.data[text.length++] = value;
+    text.data[text.length] = '\0';
+}
+void CurveDiagTextLiteral(CurveDiagText &text, const char *value) {
+    if (value == nullptr) return;
+    for (unsigned index = 0; value[index] != '\0'; ++index) CurveDiagTextChar(text, value[index]);
+}
+void CurveDiagTextLength(CurveDiagText &text, const char *value, unsigned length) {
+    if (value == nullptr) return;
+    for (unsigned index = 0; index < length; ++index) CurveDiagTextChar(text, value[index]);
+}
+void CurveDiagTextUnsigned(CurveDiagText &text, unsigned long long value) {
+    char digits[24];
+    unsigned count = 0;
+    if (value == 0) digits[count++] = '0';
+    while (value != 0) {
+        digits[count++] = static_cast<char>('0' + static_cast<unsigned>(value % 10));
+        value /= 10;
+    }
+    while (count != 0) CurveDiagTextChar(text, digits[--count]);
+}
+void CurveDiagTextSigned(CurveDiagText &text, long long value) {
+    if (value < 0) {
+        CurveDiagTextChar(text, '-');
+        CurveDiagTextUnsigned(text, static_cast<unsigned long long>(-(value + 1)) + 1ULL);
+        return;
+    }
+    CurveDiagTextUnsigned(text, static_cast<unsigned long long>(value));
+}
+void CurveDiagTextHex(CurveDiagText &text, unsigned long long value) {
+    CurveDiagTextLiteral(text, "0x");
+    char digits[16];
+    unsigned count = 0;
+    if (value == 0) digits[count++] = '0';
+    while (value != 0) {
+        const unsigned nibble = static_cast<unsigned>(value & 0xFULL);
+        digits[count++] = static_cast<char>(nibble < 10U ? ('0' + static_cast<int>(nibble))
+                                                        : ('A' + static_cast<int>(nibble - 10U)));
+        value >>= 4;
+    }
+    while (count != 0) CurveDiagTextChar(text, digits[--count]);
+}
+
+// The handler writes only complete bounded buffers; nothing here allocates or
+// formats through printf.
+void CurveDiagWriteText(CurveDiagText &text) {
+    if (text.data == nullptr || text.length == 0) return;
+    if (g_curveDiagStderr == nullptr || g_curveDiagStderr == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    WriteFile(g_curveDiagStderr, text.data, text.length, &written, nullptr);
+}
+
+const char *CurveDiagStageName(int stage) {
+    switch (stage) {
+    case kCurveDiagStageIterationBegin: return "IterationBegin";
+    case kCurveDiagStageInitialOpenBegin: return "InitialOpenBegin";
+    case kCurveDiagStageInitialOpenEnd: return "InitialOpenEnd";
+    case kCurveDiagStageTriggerBegin: return "TriggerBegin";
+    case kCurveDiagStageTriggerEnd: return "TriggerEnd";
+    case kCurveDiagStageProviderCopyEntry: return "ProviderCopyEntry";
+    case kCurveDiagStageProviderCopyAfterRetire: return "ProviderCopyAfterRetire";
+    case kCurveDiagStageRetireBegin: return "RetireBegin";
+    case kCurveDiagStageRetireEnd: return "RetireEnd";
+    case kCurveDiagStageRetireCloseOwnedBegin: return "RetireCloseOwnedBegin";
+    case kCurveDiagStageRetireCloseOwnedEnd: return "RetireCloseOwnedEnd";
+    case kCurveDiagStageRetireReplacementOpenBegin: return "RetireReplacementOpenBegin";
+    case kCurveDiagStageRetireReplacementOpenEnd: return "RetireReplacementOpenEnd";
+    case kCurveDiagStageReplacementKeyClickBegin: return "ReplacementKeyClickBegin";
+    case kCurveDiagStageReplacementKeyClickEnd: return "ReplacementKeyClickEnd";
+    case kCurveDiagStageReplacementDeleteBegin: return "ReplacementDeleteBegin";
+    case kCurveDiagStageReplacementDeleteEnd: return "ReplacementDeleteEnd";
+    case kCurveDiagStageFinalCloseOwnedBegin: return "FinalCloseOwnedBegin";
+    case kCurveDiagStageFinalCloseOwnedEnd: return "FinalCloseOwnedEnd";
+    case kCurveDiagStageIterationEnd: return "IterationEnd";
+    default: return "Unknown";
+    }
+}
+
+void CurveDiagSetCase(int route, int kind, int mouse, int phase, int action, int response) {
+    if (!g_curveDiagEnabled) return;
+    g_curveDiagCase.route = route;
+    g_curveDiagCase.kind = kind;
+    g_curveDiagCase.mouse = mouse;
+    g_curveDiagCase.phase = phase;
+    g_curveDiagCase.action = action;
+    g_curveDiagCase.response = response;
+}
+// Fill the next slot with scalars, commit it, then publish the total.  The
+// wrapped slot is invalidated before it is overwritten, so an AV in the middle
+// of a record leaves at most the previously committed slots visible.
+void CurveDiagStage(CurveDiagStageId stage, std::uintptr_t pointerA = 0, std::uintptr_t pointerB = 0) {
+    if (!g_curveDiagEnabled) return;
+    const LONG published = g_curveDiagStageRing.published;
+    CurveDiagStageEntry &entry =
+        g_curveDiagStageRing.entries[static_cast<unsigned>(published) % kCurveDiagStageCapacity];
+    InterlockedExchange(&entry.committed, -1);
+    entry.sequence = static_cast<unsigned>(published);
+    entry.stage = stage;
+    entry.route = g_curveDiagCase.route;
+    entry.kind = g_curveDiagCase.kind;
+    entry.mouse = g_curveDiagCase.mouse;
+    entry.phase = g_curveDiagCase.phase;
+    entry.action = g_curveDiagCase.action;
+    entry.response = g_curveDiagCase.response;
+    entry.pointerA = pointerA;
+    entry.pointerB = pointerB;
+    entry.reserved = 0;
+    InterlockedExchange(&entry.committed, published);
+    InterlockedIncrement(&g_curveDiagStageRing.published);
+}
+
+// Returns the UTF-8 length, or 0 with *degraded set when the conversion fails
+// or the bounded field is too small.  The cache records that degradation instead
+// of silently presenting an empty name/path as a complete conversion.
+unsigned CurveDiagUtf8FromWide(char *destination, unsigned capacity, const wchar_t *source, unsigned *degraded) {
+    if (destination == nullptr || capacity == 0) {
+        if (degraded != nullptr) *degraded = 1;
+        return 0;
+    }
+    destination[0] = '\0';
+    if (source == nullptr) return 0;
+    const int converted =
+        WideCharToMultiByte(CP_UTF8, 0, source, -1, destination, static_cast<int>(capacity), nullptr, nullptr);
+    if (converted <= 0) {
+        destination[0] = '\0';
+        if (degraded != nullptr) *degraded = 1;
+        return 0;
+    }
+    const unsigned length = static_cast<unsigned>(converted - 1);
+    if (length >= capacity) {
+        destination[capacity - 1] = '\0';
+        if (degraded != nullptr) *degraded = 1;
+        return capacity - 1;
+    }
+    return length;
+}
+
+void CurveDiagBuildModuleCache(CurveDiagModuleCache &cache, unsigned generation, DWORD *failure) {
+    if (failure != nullptr) *failure = ERROR_SUCCESS;
+    cache.ready = 0;
+    cache.count = 0;
+    cache.truncated = 0;
+    cache.partial = 0;
+    cache.unavailable = 0;
+    cache.encodingDegraded = 0;
+    cache.generation = generation;
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        if (failure != nullptr) *failure = GetLastError();
+        cache.unavailable = 1;
+        InterlockedExchange(&cache.ready, 1);
+        return;
+    }
+    MODULEENTRY32W module = {};
+    module.dwSize = sizeof(module);
+    BOOL more = Module32FirstW(snapshot, &module);
+    if (!more) {
+        const DWORD error = GetLastError();
+        if (error != ERROR_NO_MORE_FILES) {
+            cache.partial = 1;
+            if (failure != nullptr) *failure = error;
+        }
+    }
+    while (more) {
+        if (cache.count >= kCurveDiagModuleCapacity) {
+            cache.truncated = 1;
+            break;
+        }
+        CurveDiagModuleEntry &entry = cache.entries[cache.count];
+        entry.base = reinterpret_cast<std::uintptr_t>(module.modBaseAddr);
+        entry.end = entry.base + static_cast<std::uintptr_t>(module.modBaseSize);
+        unsigned encodingDegraded = 0;
+        entry.nameLength = CurveDiagUtf8FromWide(entry.name, kCurveDiagModuleNameChars, module.szModule,
+                                                &encodingDegraded);
+        entry.pathLength = CurveDiagUtf8FromWide(entry.path, kCurveDiagModulePathChars, module.szExePath,
+                                                 &encodingDegraded);
+        if (encodingDegraded != 0) cache.encodingDegraded = 1;
+        ++cache.count;
+        more = Module32NextW(snapshot, &module);
+        if (!more) {
+            const DWORD error = GetLastError();
+            if (error != ERROR_NO_MORE_FILES) {
+                cache.partial = 1;
+                if (failure != nullptr) *failure = error;
+            }
+        }
+    }
+    CloseHandle(snapshot);
+    if (cache.count == 0 && cache.partial == 0) cache.unavailable = 1;
+    // Full barrier: entries are complete before ready flips and before the
+    // published index can point at this slot.
+    InterlockedExchange(&cache.ready, 1);
+}
+
+const CurveDiagModuleEntry *CurveDiagFindModule(const CurveDiagModuleCache &cache, std::uintptr_t address) {
+    if (cache.ready == 0) return nullptr;
+    const unsigned count = cache.count < kCurveDiagModuleCapacity ? cache.count : kCurveDiagModuleCapacity;
+    for (unsigned index = 0; index < count; ++index) {
+        const CurveDiagModuleEntry &entry = cache.entries[index];
+        if (address >= entry.base && address < entry.end) return &entry;
+    }
+    return nullptr;
+}
+
+const char *CurveDiagModuleState(const CurveDiagModuleCache &cache) {
+    if (cache.ready == 0 || cache.unavailable != 0) return "unavailable";
+    if (cache.partial != 0 || cache.encodingDegraded != 0) return "incomplete";
+    if (cache.truncated != 0) return "truncated";
+    return "complete";
+}
+
+// Safe-path warning only (never called from the handler): a degraded cache is
+// reported explicitly instead of pretending module attribution works.
+void CurveDiagWarnModuleCache(const char *when, const CurveDiagModuleCache &cache, DWORD failure) {
+    const bool degraded = failure != ERROR_SUCCESS || cache.unavailable != 0 || cache.partial != 0 ||
+                          cache.truncated != 0 || cache.encodingDegraded != 0;
+    if (!degraded) return;
+    std::fprintf(stderr, "CURVE_CRASH_DIAG warning: %s module cache %s", when,
+                 CurveDiagModuleState(cache));
+    if (failure != ERROR_SUCCESS)
+        std::fprintf(stderr, " (GetLastError=%lu)", static_cast<unsigned long>(failure));
+    std::fprintf(stderr, "; raw addresses without a cached module stay labelled unknown\n");
+    std::fflush(stderr);
+}
+
+void CurveDiagAppendModule(CurveDiagText &text, std::uintptr_t address, const CurveDiagModuleCache *cache,
+                           const CurveDiagModuleEntry **matchOut) {
+    const CurveDiagModuleEntry *match = cache != nullptr ? CurveDiagFindModule(*cache, address) : nullptr;
+    if (matchOut != nullptr) *matchOut = match;
+    if (match == nullptr) {
+        CurveDiagTextLiteral(text, "name=unknown base=unknown end=unknown rva=unknown");
+        return;
+    }
+    CurveDiagTextLiteral(text, "name=");
+    if (match->nameLength != 0)
+        CurveDiagTextLength(text, match->name, match->nameLength);
+    else
+        CurveDiagTextLiteral(text, "unknown");
+    CurveDiagTextLiteral(text, " base=");
+    CurveDiagTextHex(text, match->base);
+    CurveDiagTextLiteral(text, " end=");
+    CurveDiagTextHex(text, match->end);
+    CurveDiagTextLiteral(text, " rva=");
+    CurveDiagTextHex(text, address - match->base);
+}
+
+void CurveDiagReportAccessViolation(PEXCEPTION_POINTERS exceptionInfo) {
+    if (exceptionInfo == nullptr || exceptionInfo->ExceptionRecord == nullptr) return;
+    const EXCEPTION_RECORD &record = *exceptionInfo->ExceptionRecord;
+    const std::uintptr_t exceptionAddress = reinterpret_cast<std::uintptr_t>(record.ExceptionAddress);
+    std::uintptr_t instruction = 0;
+    std::uintptr_t stackPointer = 0;
+    bool haveContext = false;
+    const CONTEXT *context = exceptionInfo->ContextRecord;
+    if (context != nullptr) {
+#if defined(_M_X64)
+        instruction = static_cast<std::uintptr_t>(context->Rip);
+        stackPointer = static_cast<std::uintptr_t>(context->Rsp);
+        haveContext = true;
+#elif defined(_M_IX86)
+        instruction = static_cast<std::uintptr_t>(context->Eip);
+        stackPointer = static_cast<std::uintptr_t>(context->Esp);
+        haveContext = true;
+#endif
+    }
+
+    CurveDiagText text;
+    CurveDiagTextInit(text, g_curveDiagReportBuffer, kCurveDiagReportCapacity);
+    // Raw header first, so a bounded/truncated tail still names the record.
+    CurveDiagTextLiteral(text, "CURVE_CRASH_DIAG FIRST_CHANCE_AV pid=");
+    CurveDiagTextUnsigned(text, GetCurrentProcessId());
+    CurveDiagTextLiteral(text, " tid=");
+    CurveDiagTextUnsigned(text, GetCurrentThreadId());
+    CurveDiagTextLiteral(text, " code=");
+    CurveDiagTextHex(text, record.ExceptionCode);
+    CurveDiagTextLiteral(text, " address=");
+    CurveDiagTextHex(text, exceptionAddress);
+    CurveDiagTextLiteral(text, "\ncontext ip=");
+    if (haveContext)
+        CurveDiagTextHex(text, instruction);
+    else
+        CurveDiagTextLiteral(text, "unknown");
+    CurveDiagTextLiteral(text, " sp=");
+    if (haveContext)
+        CurveDiagTextHex(text, stackPointer);
+    else
+        CurveDiagTextLiteral(text, "unknown");
+    CurveDiagTextLiteral(text, "\naccess=");
+    if (record.NumberParameters >= 1) {
+        const ULONG_PTR operation = record.ExceptionInformation[0];
+        if (operation == 0)
+            CurveDiagTextLiteral(text, "read");
+        else if (operation == 1)
+            CurveDiagTextLiteral(text, "write");
+        else if (operation == 8)
+            CurveDiagTextLiteral(text, "execute");
+        else {
+            CurveDiagTextLiteral(text, "unknown(");
+            CurveDiagTextUnsigned(text, static_cast<unsigned long long>(operation));
+            CurveDiagTextLiteral(text, ")");
+        }
+    } else {
+        CurveDiagTextLiteral(text, "unknown");
+    }
+    CurveDiagTextLiteral(text, " fault=");
+    if (record.NumberParameters >= 2)
+        CurveDiagTextHex(text, static_cast<unsigned long long>(record.ExceptionInformation[1]));
+    else
+        CurveDiagTextLiteral(text, "unknown");
+
+    const LONG published = InterlockedCompareExchange(&g_curveDiagPublishedModuleCache, -1, -1);
+    const CurveDiagModuleCache *cache = nullptr;
+    if (published >= 0 && published < static_cast<LONG>(kCurveDiagModuleCacheCount))
+        cache = &g_curveDiagModuleCaches[published];
+    const CurveDiagModuleEntry *addressModule = nullptr;
+    CurveDiagTextLiteral(text, "\nmodule address: ");
+    CurveDiagAppendModule(text, exceptionAddress, cache, &addressModule);
+    if (addressModule != nullptr && addressModule->pathLength != 0) {
+        CurveDiagTextLiteral(text, " path=");
+        CurveDiagTextLength(text, addressModule->path, addressModule->pathLength);
+    }
+    CurveDiagTextLiteral(text, "\nmodule ip: ");
+    if (haveContext)
+        CurveDiagAppendModule(text, instruction, cache, nullptr);
+    else
+        CurveDiagTextLiteral(text, "name=unknown base=unknown end=unknown rva=unknown");
+    CurveDiagTextLiteral(text, "\nmodule_cache=");
+    if (cache == nullptr) {
+        CurveDiagTextLiteral(text, "unknown");
+    } else {
+        CurveDiagTextLiteral(text, cache->generation == kCurveDiagModuleGenerationComparison ? "comparison"
+                                                                                           : "startup");
+        if (cache->unavailable != 0) CurveDiagTextLiteral(text, " unavailable");
+        if (cache->partial != 0) CurveDiagTextLiteral(text, " incomplete");
+        if (cache->truncated != 0) CurveDiagTextLiteral(text, " truncated");
+        if (cache->encodingDegraded != 0) CurveDiagTextLiteral(text, " encoding-degraded");
+        CurveDiagTextLiteral(text, " count=");
+        CurveDiagTextUnsigned(text, cache->count);
+    }
+
+    CurveDiagTextLiteral(text, "\n");
+    // Raw header first; the bounded recent ring follows as one line per slot.
+    CurveDiagWriteText(text);
+
+    const LONG total = InterlockedCompareExchange(&g_curveDiagStageRing.published, 0, 0);
+    if (total <= 0) {
+        CurveDiagText line;
+        CurveDiagTextInit(line, g_curveDiagStageLineBuffer, kCurveDiagStageLineCapacity);
+        CurveDiagTextLiteral(line, "COMPARISON_RING none (no stage published on this thread)\n");
+        CurveDiagWriteText(line);
+        return;
+    }
+    const LONG first = total > static_cast<LONG>(kCurveDiagStageCapacity)
+                           ? total - static_cast<LONG>(kCurveDiagStageCapacity)
+                           : 0;
+    for (LONG sequence = first; sequence < total; ++sequence) {
+        CurveDiagStageEntry &entry =
+            g_curveDiagStageRing.entries[static_cast<unsigned>(sequence) % kCurveDiagStageCapacity];
+        // Skip a wrapped slot that is being overwritten and is not committed yet;
+        // the expected sequence can only match the last fully published record.
+        const LONG committed = InterlockedCompareExchange(&entry.committed, sequence, sequence);
+        if (committed != sequence) continue;
+        CurveDiagText line;
+        CurveDiagTextInit(line, g_curveDiagStageLineBuffer, kCurveDiagStageLineCapacity);
+        CurveDiagTextLiteral(line, "COMPARISON_RING seq=");
+        CurveDiagTextUnsigned(line, static_cast<unsigned long long>(sequence));
+        CurveDiagTextLiteral(line, " stage=");
+        CurveDiagTextLiteral(line, CurveDiagStageName(entry.stage));
+        CurveDiagTextLiteral(line, " route=");
+        CurveDiagTextSigned(line, entry.route);
+        CurveDiagTextLiteral(line, " kind=");
+        CurveDiagTextSigned(line, entry.kind);
+        CurveDiagTextLiteral(line, " mouse=");
+        CurveDiagTextSigned(line, entry.mouse);
+        CurveDiagTextLiteral(line, " phase=");
+        CurveDiagTextSigned(line, entry.phase);
+        CurveDiagTextLiteral(line, " action=");
+        CurveDiagTextSigned(line, entry.action);
+        CurveDiagTextLiteral(line, " response=");
+        CurveDiagTextSigned(line, entry.response);
+        CurveDiagTextLiteral(line, " ptrA=");
+        CurveDiagTextHex(line, entry.pointerA);
+        CurveDiagTextLiteral(line, " ptrB=");
+        CurveDiagTextHex(line, entry.pointerB);
+        CurveDiagTextChar(line, '\n');
+        CurveDiagWriteText(line);
+    }
+}
+
+// Observe-only handler: no context edits, no resume/translation, no locks, no
+// loader calls, no allocation, no output calls other than WriteFile on the
+// stderr handle cached during safe setup.  Every path continues the search.
+LONG NTAPI CurveDiagVectoredHandler(PEXCEPTION_POINTERS exceptionInfo) {
+    if (InterlockedCompareExchange(&g_curveDiagHandlerBusy, 1, 0) != 0) return EXCEPTION_CONTINUE_SEARCH;
+    const DWORD savedError = GetLastError();
+    if (exceptionInfo != nullptr && exceptionInfo->ExceptionRecord != nullptr &&
+        exceptionInfo->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+        CurveDiagReportAccessViolation(exceptionInfo);
+    }
+    SetLastError(savedError);
+    InterlockedExchange(&g_curveDiagHandlerBusy, 0);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void CurveDiagStartup() {
+    const DWORD savedError = GetLastError();
+    g_curveDiagEnabled = false;
+    char switchValue[8] = {};
+    const DWORD switchLength =
+        GetEnvironmentVariableA("MMS_CURVE_CRASH_DIAGNOSTICS", switchValue, static_cast<DWORD>(sizeof(switchValue)));
+    const bool requested = switchLength == 1 && switchValue[0] == '1' && switchValue[1] == '\0';
+    if (requested) {
+        g_curveDiagStderr = GetStdHandle(STD_ERROR_HANDLE);
+        DWORD enumerationError = ERROR_SUCCESS;
+        CurveDiagBuildModuleCache(g_curveDiagModuleCaches[0], kCurveDiagModuleGenerationStartup, &enumerationError);
+        InterlockedExchange(&g_curveDiagPublishedModuleCache, 0);
+        CurveDiagWarnModuleCache("startup", g_curveDiagModuleCaches[0], enumerationError);
+        if (g_curveDiagStderr == nullptr || g_curveDiagStderr == INVALID_HANDLE_VALUE) {
+            std::fprintf(stderr, "CURVE_CRASH_DIAG warning: STD_ERROR_HANDLE is unavailable; diagnostics stay off\n");
+            std::fflush(stderr);
+        } else {
+            g_curveDiagHandlerHandle = AddVectoredExceptionHandler(1, CurveDiagVectoredHandler);
+            if (g_curveDiagHandlerHandle == nullptr) {
+                const DWORD registrationError = GetLastError();
+                std::fprintf(stderr,
+                             "CURVE_CRASH_DIAG warning: AddVectoredExceptionHandler failed with GetLastError=%lu; "
+                             "diagnostics stay off and no first-chance output will be produced\n",
+                             static_cast<unsigned long>(registrationError));
+                std::fflush(stderr);
+            } else {
+                g_curveDiagEnabled = true;
+                std::fprintf(stderr, "CURVE_CRASH_DIAG armed pid=%lu tid=%lu modules=%u cache=%s\n",
+                             static_cast<unsigned long>(GetCurrentProcessId()),
+                             static_cast<unsigned long>(GetCurrentThreadId()),
+                             g_curveDiagModuleCaches[0].count, CurveDiagModuleState(g_curveDiagModuleCaches[0]));
+                std::fflush(stderr);
+            }
+        }
+    }
+    SetLastError(savedError);
+}
+
+void CurveDiagShutdown() {
+    const DWORD savedError = GetLastError();
+    if (g_curveDiagHandlerHandle != nullptr) {
+        RemoveVectoredExceptionHandler(g_curveDiagHandlerHandle);
+        g_curveDiagHandlerHandle = nullptr;
+    }
+    g_curveDiagEnabled = false;
+    SetLastError(savedError);
+}
+
+// Called once at ComparisonCallbackLifetime entry, before any iteration or
+// callback can fault.  Exactly one refresh is allowed: the startup snapshot is
+// already published and this call builds the other, still invisible slot, then
+// flips the index.  Any later request is a no-op, so a slot the handler may have
+// observed is never rebuilt in place.  A failed refresh keeps the startup
+// snapshot and says so.
+void CurveDiagRefreshModules() {
+    if (!g_curveDiagEnabled) return;
+    const DWORD savedError = GetLastError();
+    const LONG published = InterlockedCompareExchange(&g_curveDiagPublishedModuleCache, -1, -1);
+    if (published < 0 || published >= static_cast<LONG>(kCurveDiagModuleCacheCount)) {
+        SetLastError(savedError);
+        return;
+    }
+    if (InterlockedCompareExchange(&g_curveDiagModuleRefreshDone, 1, 0) != 0) {
+        SetLastError(savedError);
+        return;
+    }
+    const LONG target = (published + 1) % static_cast<LONG>(kCurveDiagModuleCacheCount);
+    DWORD enumerationError = ERROR_SUCCESS;
+    CurveDiagBuildModuleCache(g_curveDiagModuleCaches[target], kCurveDiagModuleGenerationComparison,
+                              &enumerationError);
+    if (g_curveDiagModuleCaches[target].unavailable != 0 && enumerationError != ERROR_SUCCESS) {
+        std::fprintf(stderr,
+                     "CURVE_CRASH_DIAG warning: comparison module snapshot failed (GetLastError=%lu); keeping the "
+                     "startup module cache (stale)\n",
+                     static_cast<unsigned long>(enumerationError));
+        std::fflush(stderr);
+    } else {
+        InterlockedExchange(&g_curveDiagPublishedModuleCache, target);
+        CurveDiagWarnModuleCache("comparison", g_curveDiagModuleCaches[target], enumerationError);
+    }
+    SetLastError(savedError);
+}
+
+struct CurveDiagLifetime {
+    CurveDiagLifetime() { CurveDiagStartup(); }
+    ~CurveDiagLifetime() { CurveDiagShutdown(); }
+    CurveDiagLifetime(const CurveDiagLifetime &) = delete;
+    CurveDiagLifetime &operator=(const CurveDiagLifetime &) = delete;
+};
 
 // ---------------------------------------------------------------------------
 // Host-side stub source.
@@ -1010,6 +1653,45 @@ void LayoutThreeLanguages() {
     Note("three-language layout with minimum size, gaps and padding");
 }
 
+void LiveInterfaceScale() {
+    HostSource host;
+    host.data.push_back(MakeChannel("pos.x", L"Position X", {MakeKey(0, 0), MakeKey(10, 5)}));
+    const auto session = MakeSession(host, 1);
+    const auto rowHeight = [](HWND window) {
+        return TreeView_GetItemHeight(GetDlgItem(window, kIdChannelList));
+    };
+    ce::RefreshInterfaceScale(100);
+    const HWND window = static_cast<HWND>(ce::Open(nullptr, session, false));
+    Check(window != nullptr, "open a hidden native curve editor at 100 percent");
+    const int baselineHeight = rowHeight(window);
+    const auto frame = GetText(window, kIdFrameEdit);
+    const HWND edit = GetDlgItem(window, kIdFrameEdit);
+    const auto font = SendMessageW(edit, WM_GETFONT, 0, 0);
+    RECT initial{};
+    GetWindowRect(window, &initial);
+    for (int percent : {125, 200, 100}) {
+        ce::RefreshInterfaceScale(percent);
+        RECT resized{};
+        GetWindowRect(window, &resized);
+        Check(EqualRect(&initial, &resized) && KeyCount(window) == 2 && GetText(window, kIdFrameEdit) == frame,
+              "live scaling retains the native editor window, key data and frame text");
+        const int height = rowHeight(window);
+        Check(percent == 100 ? height == baselineHeight : height > baselineHeight,
+              "the native tree row height updates immediately and restores at 100 percent");
+        if (percent > 100)
+            Check(SendMessageW(edit, WM_GETFONT, 0, 0) != font,
+                  "the existing numeric edit receives the scaled font");
+    }
+    ce::CloseOwned(nullptr);
+    ce::RefreshInterfaceScale(200);
+    const HWND reopened = static_cast<HWND>(ce::Open(nullptr, session, false));
+    Check(reopened && rowHeight(reopened) > baselineHeight && KeyCount(reopened) == 2,
+          "a newly opened editor adopts the active application scale");
+    ce::CloseOwned(nullptr);
+    ce::RefreshInterfaceScale(100);
+    Note("live interface scale and newly opened curve editor");
+}
+
 // ---------------------------------------------------------------------------
 // 9. Motion callbacks gate their buttons.
 // ---------------------------------------------------------------------------
@@ -1470,7 +2152,7 @@ void RubberBandMultiMove() {
     const POINT to = {right, bottom};
     // Starting on empty canvas clears the old selection and drags a box.
     SendMessageW(canvas, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(from.x, from.y));
-    SendMessageW(canvas, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(to.x, to.y));
+    // The release can be the first delivered position outside the original box.
     SendMessageW(canvas, WM_LBUTTONUP, 0, MAKELPARAM(to.x, to.y));
     const std::wstring rubberStatus = GetText(window, kIdStatus);
     if (rubberStatus.find(L"2") == std::wstring::npos) {
@@ -3092,14 +3774,25 @@ void IndependentValueHandles() {
         const POINT key = AskPoint(window, kHookPointForKey, 1);
         const POINT handle = AskPoint(window, kHookPointForFrame, outSide ? 26 : 14);
         const POINT target = AskPoint(window, kHookPointForFrame, outSide ? 30 : 10);
-        SendMessageW(canvas, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(handle.x, key.y));
-        SendMessageW(canvas, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(target.x, key.y + (outSide ? -20 : 20)));
-        // PREVIEW_CHECK
+        const LPARAM origin = MAKELPARAM(handle.x, key.y);
+        SendMessageW(canvas, WM_LBUTTONDOWN, MK_LBUTTON, origin);
+        SendMessageW(canvas, WM_LBUTTONUP, 0, origin);
+        Check(host.applyCalls == 0, "a value handle click does not create history");
+        SendMessageW(canvas, WM_LBUTTONDOWN, MK_LBUTTON, origin);
+        SendMessageW(canvas, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(target.x, key.y + 20));
+        SendMessageW(canvas, WM_LBUTTONUP, 0, origin);
+        Check(host.applyCalls == 0, "returning the value handle to the press point does not publish a change");
+        Click(window, kIdUndo);
+        Check(host.applyCalls == 0, "returning the value handle to the press point leaves no undo action");
+        SendMessageW(canvas, WM_LBUTTONDOWN, MK_LBUTTON, origin);
+        Check(GetCapture() == canvas, "the value handle owns capture before the unsampled release");
         SendMessageW(canvas, WM_LBUTTONUP, 0, MAKELPARAM(target.x, key.y + (outSide ? -20 : 20)));
         const auto changed = host.data[0].track.keys[1];
         Check(host.applyCalls == 1, "value handle drag commits once");
         Check(std::fabs(outSide ? changed.outSlope : changed.inSlope) > 0.01,
               "the dragged value handle changes slope");
+        Check(std::fabs((outSide ? changed.outWeight : changed.inWeight) - 0.5) < 0.015,
+              "the value handle uses the actual release coordinate without a move message");
         Check((outSide ? changed.inSlope : changed.outSlope) == 0 &&
               (outSide ? changed.inWeight : changed.outWeight) == 0.3,
               "the opposite value handle remains independent with automatic linking on");
@@ -3290,7 +3983,8 @@ void CurveModeButtons() {
         Check(host.data[0].track.keys[0].outSlope==0 &&
               std::fabs(ac::Evaluate(host.data[0].track,10).value-2.5)>0.1,
               "flat preset works on the first key's outgoing interval");
-        Click(window,kIdFitAll);
+        // A valid single-key selection now fits that key only; the initial
+        // all-track Open fit already keeps every key on screen for the box.
         const POINT a=AskPoint(window,kHookPointForKey,1), b=AskPoint(window,kHookPointForKey,2);
         HWND canvas=GetDlgItem(window,kIdCanvas);
         SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(a.x-20,std::min(a.y,b.y)-20));
@@ -3789,7 +4483,12 @@ struct SelectionRetirementState {
         if(inputFrames)Check(*inputFrames==expectedFrames&&inputFrames->data()==inputFrameStorage,
             "selection writer keeps its privately owned frame addresses through window retirement");
     }
-    void Retire(){armed=false;++retireCalls;retire();CheckArguments();}
+    void Trace(const char* stage)const{
+        std::fprintf(stderr,"SELECTION_STAGE %s phase=%d response=%d calls=%d writes=%d retires=%d armed=%d\n",
+            stage,phase,response,calls,writes,retireCalls,int(armed));
+        std::fflush(stderr);
+    }
+    void Retire(){armed=false;++retireCalls;Trace("retire begin");retire();Trace("retire returned");CheckArguments();}
 };
 struct SelectionRetirementProvider {
     SelectionRetirementState* state;
@@ -3855,15 +4554,16 @@ void TriggerSelectionWrite(HWND window,int entry){
 }
 
 void SelectionCallbackLifetime(){
-    // Read entries: initial external creation, local posted refresh, visible
-    // timer, parent/button/canvas authoring, value EDIT and tree activation.
+    // Read entries: initial external/local creation, local posted refresh,
+    // visible timer, parent/button/canvas authoring, value EDIT and tree activation.
     // Write entries: canvas click/deselect, undo/redo, existing-key doubleclick,
     // and owned local/external publication.
-    for(bool writing:{false,true})for(int entry=0;entry!=(writing?7:8);++entry)
+    for(bool writing:{false,true})for(int entry=0;entry!=(writing?7:9);++entry)
     for(int phase=0;phase!=3;++phase)for(int action=0;action!=3;++action)for(int response=0;response!=3;++response){
         std::printf("selection lifetime write=%d entry=%d phase=%d action=%d response=%d\n",writing,entry,phase,action,response);
-        const bool initial=!writing&&entry==0;
-        SelectionLifetimeFixture fixture(initial||(writing&&entry==6));SelectionRetirementState state;
+        std::fflush(stdout);
+        const bool initial=!writing&&(entry==0||entry==8);
+        SelectionLifetimeFixture fixture((!writing&&entry==0)||(writing&&entry==6));SelectionRetirementState state;
         // FitAll places the last key on plot.right, excluded by PtInRect in
         // the doubleclick route. Keep the target key inside the real plot.
         if(writing&&entry==5)fixture.local.data[0].track.keys.push_back(MakeKey(20,9));
@@ -3872,10 +4572,12 @@ void SelectionCallbackLifetime(){
         std::weak_ptr<void> token;std::shared_ptr<void> retained;
         std::wstring replacementStatus;int readsAfter=-1;
         state.retire=[&]{
+            state.Trace("find retired window");
             retiredWindow=OwnedCurveWindow();
             if(retiredWindow){token=ce::CaptureWindowSession(retiredWindow);retained=token.lock();}
-            if(action!=1)ce::CloseOwned(nullptr);
-            if(action!=0){replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(fixture.replacement),false));
+            if(action!=1){state.Trace("close retired window");ce::CloseOwned(nullptr);state.Trace("close returned");}
+            if(action!=0){state.Trace("open replacement");replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(fixture.replacement),false));
+                state.Trace("replacement open returned");
                 Check(IsWindow(replacementWindow),"selection retirement creates a live replacement");
                 replacementStatus=GetText(replacementWindow,kIdStatus);}
             readsAfter=fixture.Reads();
@@ -3884,11 +4586,14 @@ void SelectionCallbackLifetime(){
         if(writing)session.sources[0].writeKeySelection=SelectionRetirementProvider(state);
         else session.sources[0].readKeySelection=SelectionRetirementProvider(state);
         state.armed=initial;
+        state.Trace("fixture open");
         HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        state.Trace("fixture open returned");
         int applies=0,calls=0,writes=0;
         if(initial)Check(window==nullptr,"initial creation does not report a retired selection session as successful");
         else{
             Check(IsWindow(window),"selection callback fixture opens before arming");
+            state.Trace("prepare trigger");
             if(!writing||entry!=0)ClickKey(window,1);
             if(writing&&entry==5){const int priorCalls=state.calls,priorWrites=state.writes,priorApplies=fixture.Applies();
                 TriggerSelectionWrite(window,entry);
@@ -3897,7 +4602,9 @@ void SelectionCallbackLifetime(){
             if(writing&&(entry==2||entry==4)){Click(window,kIdDeleteKey);if(entry==4)Click(window,kIdUndo);}
             if(writing&&(entry==3||entry==6))SetText(window,kIdValueEdit,L"7");
             applies=fixture.Applies();calls=state.calls;writes=state.writes;state.armed=true;
+            state.Trace("trigger");
             if(writing)TriggerSelectionWrite(window,entry);else TriggerSelectionRead(window,entry);
+            state.Trace("trigger returned");
         }
         const bool hostEdit=writing&&(entry==2||entry==3||entry==4||entry==6);
         if(state.retireCalls!=1||state.destroyedDuringCopy!=0||state.calls!=calls+int(phase!=0))
@@ -3913,6 +4620,7 @@ void SelectionCallbackLifetime(){
         if(!initial)Check(bool(retained)&&!ce::IsWindowSessionCurrent(retiredWindow,token),
             "retaining the old token cannot revive a selection continuation");
         if(replacementWindow){
+            state.Trace("check replacement");
             Check(IsWindow(replacementWindow)&&KeyCount(replacementWindow)==2&&
                 GetText(replacementWindow,kIdStatus)==replacementStatus&&fixture.replacement.applyCalls==0,
                 "retired selection results cannot change replacement selection, status or channels");
@@ -3937,7 +4645,7 @@ void SelectionCallbackLifetime(){
             Check(fixture.replacement.applyCalls==1&&recoveryKeys==1,
                 "replacement remains editable after selection callbacks and guards unwind");
         }else Check(OwnedCurveWindow()==nullptr,"closed selection callback leaves no registered window");
-        ce::CloseOwned(nullptr);
+        state.Trace("final close");ce::CloseOwned(nullptr);state.Trace("case complete");
     }
     Note("selection read/write entries protect private arguments and session lifetime through copying, invocation and release");
 }
@@ -4058,6 +4766,32 @@ void SelectionReadSemantics(){
         "a valid empty selection cannot fall through into deleting the previously selected key");
     ce::CloseOwned(nullptr);
     Note("unchanged, changed and empty selection reads preserve numeric-edit refusal semantics");
+
+    // A visible canvas click seeks before mouse-up publishes its selection.
+    // The seek's synchronous timer must not read back the previous host set.
+    for(bool initiallySelected:{false,true}){
+        std::printf("selection visible seek initiallySelected=%d\n",int(initiallySelected));std::fflush(stdout);
+        SelectionLifetimeFixture visible(false);
+        std::vector<int> frames=initiallySelected?std::vector<int>{10}:std::vector<int>{};
+        int frame=3,selectionWrites=0,selectionReads=0;
+        auto selectedSession=visible.Session();
+        selectedSession.currentFrame=[&]{return double(frame);};
+        selectedSession.seek=[&](int value){frame=value;};
+        selectedSession.sources[0].readKeySelection=[&](const std::string&){++selectionReads;return frames;};
+        selectedSession.sources[0].writeKeySelection=[&](const std::string&,const std::vector<int>& values){++selectionWrites;frames=values;};
+        HWND selectedWindow=static_cast<HWND>(ce::Open(nullptr,std::move(selectedSession),false));
+        Check(IsWindow(selectedWindow),"visible seek selection fixture opens");
+        SetWindowLongPtrW(selectedWindow,GWL_STYLE,GetWindowLongPtrW(selectedWindow,GWL_STYLE)|WS_VISIBLE);
+        ClickKey(selectedWindow,0);
+        Check(frame==0&&frames==std::vector<int>{0}&&selectionWrites==1&&GetText(selectedWindow,kIdFrameEdit)==L"0"&&visible.Applies()==0,
+            "visible key click seeks and publishes the new selection once instead of restoring the old host selection");
+        frames={10};const int beforeRead=selectionReads;
+        SendMessageW(selectedWindow,WM_TIMER,kPlayheadTimerId,0);
+        Check(selectionReads==beforeRead+1&&selectionWrites==1&&GetText(selectedWindow,kIdFrameEdit)==L"10",
+            "the next ordinary timer still adopts an independent host selection without writing it back");
+        ce::CloseOwned(nullptr);
+    }
+    Note("visible key selection survives synchronous seek and ordinary timer synchronization remains enabled");
 }
 
 void SelectionDenseStableTick(){
@@ -4141,7 +4875,7 @@ struct ComparisonRetirementState {
     const void* copyingOriginal=nullptr;
     std::wstring* errorOutput=nullptr;
     std::function<void()> retire;
-    void Retire(){armed=false;++retireCalls;retire();
+    void Retire(){armed=false;++retireCalls;CurveDiagStage(kCurveDiagStageRetireBegin);retire();CurveDiagStage(kCurveDiagStageRetireEnd);
         if(errorOutput){*errorOutput=L"comparison callback retired";
             Check(*errorOutput==L"comparison callback retired","comparison writer error output survives retirement");}}
 };
@@ -4150,7 +4884,10 @@ struct ComparisonProviderBase {
     explicit ComparisonProviderBase(ComparisonRetirementState& value):state(&value){}
     ComparisonProviderBase(const ComparisonProviderBase& other):state(other.state),marker(other.marker){
         if(!state->armed||state->phase!=0)return;
+        // Addresses only; the stage ring never dereferences the possibly retired original.
+        CurveDiagStage(kCurveDiagStageProviderCopyEntry,reinterpret_cast<std::uintptr_t>(this),reinterpret_cast<std::uintptr_t>(&other));
         state->copying=true;state->copyingOriginal=&other;state->Retire();
+        CurveDiagStage(kCurveDiagStageProviderCopyAfterRetire,reinterpret_cast<std::uintptr_t>(this),reinterpret_cast<std::uintptr_t>(&other));
         Check(state->destroyedDuringCopy==0&&other.marker==67,
             "comparison and link provider originals stay alive through reentrant callable copying");
         state->copying=false;if(state->response==2)throw std::bad_alloc();
@@ -4181,19 +4918,28 @@ template<int Kind>struct ComparisonRetirementProvider:ComparisonProviderBase {
 };
 
 void ComparisonCallbackLifetime(){
+    // Refresh the unpublished module slot once, before any iteration or
+    // callback can fault; the handler keeps reading the published snapshot.
+    CurveDiagRefreshModules();
     for(int route=0;route!=4;++route)for(int phase=0;phase!=3;++phase)
     for(int action=0;action!=3;++action)for(int response=0;response!=3;++response){
         const int kind=std::min(route,2);
         std::printf("comparison lifetime kind=%d mouse=%d phase=%d action=%d response=%d\n",kind,route==3,phase,action,response);
         std::fflush(stdout);
+        CurveDiagSetCase(route,kind,route==3?1:0,phase,action,response);
+        CurveDiagStage(kCurveDiagStageIterationBegin);
         auto host=ComparisonLifetimeHost(kind==2);HostSource replacement;
         replacement.data.push_back(MakeChannel("replacement",L"Replacement",{MakeKey(0,91),MakeKey(20,99)}));
         ComparisonRetirementState state;state.kind=kind;state.phase=phase;state.response=response;
         HWND retiredWindow=nullptr,replacementWindow=nullptr;std::wstring replacementStatus;
         std::weak_ptr<void> token;std::shared_ptr<void> retained;int readsAfter=-1;
         state.retire=[&]{retiredWindow=OwnedCurveWindow();token=ce::CaptureWindowSession(retiredWindow);retained=token.lock();
-            if(action!=1)ce::CloseOwned(nullptr);
-            if(action!=0){replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+            if(action!=1){CurveDiagStage(kCurveDiagStageRetireCloseOwnedBegin,reinterpret_cast<std::uintptr_t>(retiredWindow));
+                ce::CloseOwned(nullptr);
+                CurveDiagStage(kCurveDiagStageRetireCloseOwnedEnd,reinterpret_cast<std::uintptr_t>(retiredWindow));}
+            if(action!=0){CurveDiagStage(kCurveDiagStageRetireReplacementOpenBegin);
+                replacementWindow=static_cast<HWND>(ce::Open(nullptr,MakeSession(replacement),false));
+                CurveDiagStage(kCurveDiagStageRetireReplacementOpenEnd,reinterpret_cast<std::uintptr_t>(replacementWindow));
                 Check(IsWindow(replacementWindow),"comparison retirement installs a real replacement session");
                 replacementStatus=GetText(replacementWindow,kIdStatus);}
             readsAfter=host.readCalls;
@@ -4203,12 +4949,16 @@ void ComparisonCallbackLifetime(){
         if(kind==1)session.sources[0].writeComparisonMode=ComparisonRetirementProvider<1>(state);
         if(kind==2)session.sources[0].linkAdjacentControls=ComparisonRetirementProvider<2>(state);
         state.armed=kind==0;
+        CurveDiagStage(kCurveDiagStageInitialOpenBegin);
         HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
+        CurveDiagStage(kCurveDiagStageInitialOpenEnd,reinterpret_cast<std::uintptr_t>(window));
         if(kind==0)Check(window==nullptr,"initial comparison read cannot return a retired Open as successful");
         else{Check(IsWindow(window),"comparison lifetime fixture opens before arming");
             if(kind==2){ClickKey(window,2);SetComparisonLinkFields(window);}
             state.armed=true;
+            CurveDiagStage(kCurveDiagStageTriggerBegin,reinterpret_cast<std::uintptr_t>(window));
             if(kind==1)ClickCompareMode(window,ce::kCompareAllGroups);else TriggerComparisonLink(window,route==3);
+            CurveDiagStage(kCurveDiagStageTriggerEnd,reinterpret_cast<std::uintptr_t>(window));
         }
         Check(state.retireCalls==1&&state.calls==int(phase!=0)&&state.destroyedDuringCopy==0,
             "comparison read, write and link callbacks retire exactly once through copying, invocation and release");
@@ -4218,10 +4968,18 @@ void ComparisonCallbackLifetime(){
             "strong old tokens cannot make comparison continuations current");
         if(replacementWindow){Check(KeyCount(replacementWindow)==2&&GetText(replacementWindow,kIdStatus)==replacementStatus&&replacement.applyCalls==0,
                 "comparison results and operation guards leave replacement state untouched");
-            ClickKey(replacementWindow,1);Click(replacementWindow,kIdDeleteKey);
+            CurveDiagStage(kCurveDiagStageReplacementKeyClickBegin,reinterpret_cast<std::uintptr_t>(replacementWindow));
+            ClickKey(replacementWindow,1);
+            CurveDiagStage(kCurveDiagStageReplacementKeyClickEnd,reinterpret_cast<std::uintptr_t>(replacementWindow));
+            CurveDiagStage(kCurveDiagStageReplacementDeleteBegin,reinterpret_cast<std::uintptr_t>(replacementWindow));
+            Click(replacementWindow,kIdDeleteKey);
+            CurveDiagStage(kCurveDiagStageReplacementDeleteEnd,reinterpret_cast<std::uintptr_t>(replacementWindow));
             Check(replacement.applyCalls==1,"replacement stays editable after comparison and link retirement");}
         else Check(OwnedCurveWindow()==nullptr,"closed comparison session is no longer registered");
+        CurveDiagStage(kCurveDiagStageFinalCloseOwnedBegin);
         ce::CloseOwned(nullptr);
+        CurveDiagStage(kCurveDiagStageFinalCloseOwnedEnd);
+        CurveDiagStage(kCurveDiagStageIterationEnd);
     }
     Note("comparison read/write and link callbacks use the shared copy, invocation and release lifetime boundary");
 }
@@ -4385,14 +5143,24 @@ void ComparisonReadAndLinkSemantics(){
         ce::CloseOwned(nullptr);
     }
     for(bool mouse:{false,true})for(int result=0;result!=5;++result){
+        std::printf("comparison link branch mouse=%d result=%d\n",mouse?1:0,result);std::fflush(stdout);
         auto host=ComparisonLifetimeHost(true);ComparisonFailureState state;state.failure=result==2?0:result==3?2:3;
         const ComparisonFailure fault(state);int calls=0;auto session=MakeSession(host);
+        // The playback frame agrees with the selected interval end (20), so the
+        // panel targets interval 10-20 (end 2) instead of 20-30.
+        session.currentFrame=[] { return 20.0; };
         session.sources[0].linkAdjacentControls=[&,fault]{++calls;if(result>=2)fault.Fail();return result==0;};
         HWND window=static_cast<HWND>(ce::Open(nullptr,std::move(session),false));
         Check(IsWindow(window),"link result fixture opens");ClickKey(window,2);
         // Keep a redo branch so a failed flag read cannot silently clear it.
         SetText(window,kIdValueEdit,L"2.5");Click(window,kIdApplyKey);Click(window,kIdUndo);
         Check(calls==0,"ordinary value fields and local undo never query the legacy adjacent-control flag");
+        Check(GetText(window,kIdFrameEdit)==L"20","the link fixture keeps the 20 frame interval end selected");
+        Check(GetText(window,kIdMmdReadout)==L"区间 10\u201320 帧",
+            "the follow-playhead panel names the 10-20 frame target interval");
+        double coords[4]{};
+        Check(SendMessageW(window,kHookMmdControls,0,reinterpret_cast<LPARAM>(coords))!=0,
+            "the displayed 10-20 interval keeps editable MMD controls; identical interval controls cannot identify the target");
         const auto history=LocalWriteHistory(window);const auto before=host.data;const int applies=host.applyCalls;
         std::array<double,4> neighbor{};Check(ce::ReadChannelControls(host.data[0],3,neighbor),"read original adjacent interval");
         if(!mouse)SetComparisonLinkFields(window);state.armed=result>=2;
@@ -7166,8 +7934,83 @@ template<int Kind>void NativeInitialProviderRetirement(){
             "retired initialization never continues reading or writing the old source, even with a retained token");
         if(next){Check(IsWindow(next)&&GetText(next,kIdStatus)==status&&KeyCount(next)==3&&replacement.applyCalls==0,
                 "outer initialization cleanup never changes or destroys a replacement Session");
-            ClickKey(next,1);Click(next,kIdDeleteKey);
-            Check(replacement.applyCalls==1&&KeyCount(next)==2,"replacement remains editable after initial callback retirement unwinds");}
+            // Keep the original input sequence free of diagnostic heap
+            // allocations and extra editor messages. Only fixed-capacity scalar
+            // observations run between the original DOWN/UP/Delete actions;
+            // richer evidence is collected only after the unchanged check has
+            // already failed.
+            const HWND recoveryCanvas=GetDlgItem(next,kIdCanvas);
+            Check(recoveryCanvas!=nullptr,"the canvas exists");
+            const POINT recoveryPoint=AskPoint(next,kHookPointForKey,1);
+            Check(recoveryPoint.x>0&&recoveryPoint.y>0,"the queried key lies inside the canvas");
+            const auto recoveryToken=ce::CaptureWindowSession(next);
+            struct RecoveryObservation {
+                HWND focus=nullptr,capture=nullptr;
+                std::array<SHORT,6> keys{};
+                bool current=false;
+                bool windowEnabled=false,canvasEnabled=false,deleteEnabled=false,applyEnabled=false;
+                int applies=0,reads=0;
+            };
+            const auto observe=[&]{
+                RecoveryObservation observation;
+                observation.focus=GetFocus();observation.capture=GetCapture();
+                observation.keys={GetKeyState(VK_SPACE),GetKeyState(VK_MENU),GetKeyState(VK_CONTROL),GetKeyState(VK_SHIFT),
+                    GetKeyState(VK_LBUTTON),GetKeyState(VK_RBUTTON)};
+                observation.current=ce::IsWindowSessionCurrent(next,recoveryToken);
+                observation.windowEnabled=IsWindowEnabled(next)!=FALSE;
+                observation.canvasEnabled=IsWindowEnabled(recoveryCanvas)!=FALSE;
+                observation.deleteEnabled=IsWindowEnabled(GetDlgItem(next,kIdDeleteKey))!=FALSE;
+                observation.applyEnabled=IsWindowEnabled(GetDlgItem(next,kIdApplyKey))!=FALSE;
+                observation.applies=replacement.applyCalls;observation.reads=replacement.readCalls;return observation;
+            };
+            const auto beforeClick=observe();
+            const LPARAM recoveryPosition=MAKELPARAM(recoveryPoint.x,recoveryPoint.y);
+            SendMessageW(recoveryCanvas,WM_LBUTTONDOWN,MK_LBUTTON,recoveryPosition);
+            const auto afterDown=observe();
+            SendMessageW(recoveryCanvas,WM_LBUTTONUP,0,recoveryPosition);
+            const auto afterUp=observe();
+            Click(next,kIdDeleteKey);
+            const auto afterDelete=observe();
+            const int recoveryKeys=KeyCount(next);
+            const bool recoveryAccepted=replacement.applyCalls==1&&recoveryKeys==2;
+            if(!recoveryAccepted){
+                const auto printText=[](const char* label,const std::wstring& text){
+                    std::fprintf(stderr," %s=\"",label);
+                    for(wchar_t unit:text){
+                        if(unit>=32&&unit<127&&unit!=L'\\'&&unit!=L'\"')std::fputc(int(unit),stderr);
+                        else std::fprintf(stderr,"\\u%04x",unsigned(static_cast<unsigned short>(unit)));
+                    }
+                    std::fputc('"',stderr);
+                };
+                const auto print=[&](const char* stage,const RecoveryObservation& observation){
+                    std::fprintf(stderr,"NATIVE_INIT_RECOVERY kind=%d phase=%d action=%d response=%d stage=%s hwnd=%p canvas=%p point=%ld,%ld focus=%p capture=%p keys_space_alt_ctrl_shift_left_right=%04x,%04x,%04x,%04x,%04x,%04x current=%d windowEnabled=%d canvasEnabled=%d deleteEnabled=%d applyEnabled=%d applies=%d reads=%d\n",
+                        Kind,phase,action,response,stage,next,recoveryCanvas,recoveryPoint.x,recoveryPoint.y,
+                        observation.focus,observation.capture,
+                        unsigned(static_cast<unsigned short>(observation.keys[0])),unsigned(static_cast<unsigned short>(observation.keys[1])),
+                        unsigned(static_cast<unsigned short>(observation.keys[2])),unsigned(static_cast<unsigned short>(observation.keys[3])),
+                        unsigned(static_cast<unsigned short>(observation.keys[4])),unsigned(static_cast<unsigned short>(observation.keys[5])),
+                        observation.current,observation.windowEnabled,observation.canvasEnabled,
+                        observation.deleteEnabled,observation.applyEnabled,observation.applies,observation.reads);
+                };
+                print("before",beforeClick);print("down",afterDown);print("up",afterUp);print("delete",afterDelete);
+                // These messages may measure/sample or allocate. They are
+                // deliberately absent from every successful input sequence.
+                CurveEditorAxisState geometry{};
+                std::array<std::uint64_t,5> history{};std::array<int,12> comparison{};
+                const bool geometryReady=SendMessageW(next,WM_APP+394,0,reinterpret_cast<LPARAM>(&geometry))!=0;
+                const bool historyReady=SendMessageW(next,WM_APP+397,0,reinterpret_cast<LPARAM>(history.data()))!=0;
+                ReadCompare(next,comparison.data());
+                std::fprintf(stderr,"NATIVE_INIT_RECOVERY_FAILURE_ONLY kind=%d phase=%d action=%d response=%d keyCount=%d geometryReady=%d plot=%ld,%ld,%ld,%ld time=%.17g,%.17g value=%.17g,%.17g viewMode=%d historyReady=%d history=%llu,%llu,%llu,%llu,%llu comparison=",
+                    Kind,phase,action,response,recoveryKeys,geometryReady,geometry.plot.left,geometry.plot.top,geometry.plot.right,geometry.plot.bottom,
+                    geometry.timeStart,geometry.timeEnd,geometry.viewLow,geometry.viewHigh,geometry.viewMode,historyReady,
+                    static_cast<unsigned long long>(history[0]),static_cast<unsigned long long>(history[1]),
+                    static_cast<unsigned long long>(history[2]),static_cast<unsigned long long>(history[3]),
+                    static_cast<unsigned long long>(history[4]));
+                for(std::size_t index=0;index<comparison.size();++index)std::fprintf(stderr,index?",%d":"%d",comparison[index]);
+                printText("frame",GetText(next,kIdFrameEdit));printText("value",GetText(next,kIdValueEdit));
+                printText("status",GetText(next,kIdStatus));std::fputc('\n',stderr);std::fflush(stderr);
+            }
+            Check(recoveryAccepted,"replacement remains editable after initial callback retirement unwinds");}
         else Check(OwnedCurveWindow()==nullptr,"closed initialization leaves no registered ghost editor");
         ce::CloseOwned(nullptr);
     }
@@ -7211,12 +8054,1479 @@ void NativeConstructionLifetime(){
     NativeInitialProviderRetirement<3>();NativeInitialProviderRetirement<4>();NativeInitialProviderRetirement<5>();NativeInitialProviderRetirement<6>();
     NativeConstructionAborted();
 }
+
+// ---------------------------------------------------------------------------
+// 26. Rendering after close/reopen and the damage a real handle drag creates.
+//
+// The modeless editor is closed and reopened from the same canonical data three
+// times.  The fixture is a value curve whose native MMD controls are genuinely
+// non-linear and whose interval end key is selected, which is the state a real
+// handle edit leaves behind.  The reported failure keeps the keys and handles
+// but straightens the Bezier into its chord, so pixel presence alone is not
+// enough: the painted row is measured at interior frames and compared with the
+// canonical cubic evaluation, and must differ from the straight key-to-key
+// chord.  The first render after every Open runs before any curve data is
+// written, and both the memory print and the buffered window paint must agree
+// across cycles.
+//
+// Scope note: this is a generic value-curve rendering regression.  The native
+// controls below are canonical non-linear control geometry, not an emulation of
+// the morph/expression host channel: morph persistence and identity live in the
+// host adapter and are deliberately not exercised or judged here.
+//
+// The damage observer clears every update region first, then sends real mouse
+// messages.  A drag may damage only the surface that owns the dragged handle;
+// the editor shell and the unrelated children must stay clean.  The test never
+// invalidates the editor shell itself, so a clean observation cannot be
+// produced by test-side damage.
+// The regression windows are really shown on a private, inactive Win32
+// desktop.  That makes InvalidateRect produce genuine update regions and
+// UpdateWindow deliver a real WM_PAINT with a non-empty dirty rectangle,
+// without showing anything on the user's desktop or changing activation.
+//
+// Both fixtures run in a child process started on that desktop.  A worker
+// thread cannot guarantee that helper windows are gone before the desktop is
+// closed: Windows refuses SetThreadDesktop once the thread owns a window and
+// the reverse switch can fail because of residual IME or helper windows.  The
+// parent keeps its own borrowed desktop handle, creates the private desktop
+// with default (non-inheritable) security, and starts this same executable
+// with STARTUPINFO.lpDesktop set to the private name.  Only duplicated
+// standard handles are inheritable and PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+// restricts inheritance to them.  The child runs the two original fixtures in
+// order on its startup desktop and exits when they finish, so every helper
+// thread it created is gone before the parent closes the desktop.  Neither
+// process switches desktop and nothing uses SwitchDesktop, SendInput,
+// SetForegroundWindow or a window-station change, so the user's foreground
+// desktop is untouched.
+void ReopenPaintRegression();
+void HandleDragInvalidation();
+
+[[noreturn]] void FailIsolatedPaint(const char *operation, DWORD error) {
+    std::fprintf(stderr, "FAIL: %s failed with GetLastError=%lu in the isolated paint fixtures\n",
+                 operation, static_cast<unsigned long>(error));
+    std::fflush(stderr);
+    std::exit(1);
+}
+
+// The evidence stream is narrow (std::printf), so convert each UTF-16 desktop name
+// into a bounded stack UTF-8 buffer.  A failed name query is reported explicitly
+// and is never mislabelled as a CreateDesktopW or SetThreadDesktop failure.
+bool TryDesktopName(HDESK desktop, const char *operation, char (&out)[512]) {
+    wchar_t wide[128] = {};
+    if (GetUserObjectInformationW(desktop, UOI_NAME, wide, static_cast<DWORD>(sizeof(wide)), nullptr) == FALSE) {
+        const DWORD error = GetLastError();
+        std::snprintf(out, sizeof(out), "<name-query-failed>");
+        std::fprintf(stderr, "FAIL: GetUserObjectInformationW(UOI_NAME) for %s failed with GetLastError=%lu\n",
+                     operation, static_cast<unsigned long>(error));
+        std::fflush(stderr);
+        return false;
+    }
+    if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, out, static_cast<int>(sizeof(out)), nullptr, nullptr) == 0) {
+        const DWORD error = GetLastError();
+        std::snprintf(out, sizeof(out), "<name-query-failed>");
+        std::fprintf(stderr, "FAIL: WideCharToMultiByte(UTF-8) for %s failed with GetLastError=%lu\n",
+                     operation, static_cast<unsigned long>(error));
+        std::fflush(stderr);
+        return false;
+    }
+    return true;
+}
+
+// Fails the setup phase before any child exists.  Every handle this function was
+// given is owned by it, so each handle is closed and every close failure is
+// reported in addition to the original failure.
+[[noreturn]] void AbortIsolatedPaintSetup(HDESK desktop, HANDLE (&inherited)[3], const char *failure,
+                                          DWORD error, bool haveError) {
+    if (haveError)
+        std::fprintf(stderr, "FAIL: %s failed with GetLastError=%lu before the isolated paint child started\n",
+                     failure, static_cast<unsigned long>(error));
+    else
+        std::fprintf(stderr, "FAIL: %s before the isolated paint child started\n", failure);
+    for (HANDLE &handle : inherited) {
+        if (handle == nullptr) continue;
+        if (CloseHandle(handle) == FALSE) {
+            const DWORD closeError = GetLastError();
+            std::fprintf(stderr,
+                         "FAIL: CloseHandle(inherited standard handle) failed with GetLastError=%lu after the isolated paint child setup failure\n",
+                         static_cast<unsigned long>(closeError));
+        }
+        handle = nullptr;
+    }
+    if (CloseDesktop(desktop) == FALSE) {
+        const DWORD closeError = GetLastError();
+        std::fprintf(stderr,
+                     "FAIL: CloseDesktop(private desktop) failed with GetLastError=%lu after the isolated paint child setup failure\n",
+                     static_cast<unsigned long>(closeError));
+    }
+    std::fflush(stderr);
+    std::exit(1);
+}
+
+void RunIsolatedPaintFixtures() {
+    // Only the parent runs these checks; the two paint fixtures themselves run
+    // in the child process and report their own actual check count there.  The
+    // allocator fault and measurement flags are thread-local, so a fresh child
+    // would start clean and hide any flag the parent left armed; assert the
+    // parent state instead of resetting it.  A parent-owned editor would likewise
+    // be a leak the full suite left behind: the child has a separate address
+    // space, so this preflight detects the parent's own stale registry entry
+    // rather than sharing it with the child.
+    Check(!g_curveFailNextAllocation, "no curve allocation fault is armed before the isolated paint child");
+    Check(!g_curveMeasureAllocations, "no curve allocation measurement is active before the isolated paint child");
+    Check(OwnedCurveWindow() == nullptr, "no curve editor is registered before the isolated paint child starts");
+    // Retain the borrowed original parent desktop handle and never close it.
+    const HDESK originalDesktop = GetThreadDesktop(GetCurrentThreadId());
+    if (originalDesktop == nullptr) {
+        const DWORD error = GetLastError();
+        std::fprintf(stderr, "FAIL: GetThreadDesktop(original parent desktop) failed with GetLastError=%lu\n",
+                     static_cast<unsigned long>(error));
+        std::fflush(stderr);
+        std::exit(1);
+    }
+    char originalName[512] = {};
+    if (!TryDesktopName(originalDesktop, "original parent desktop", originalName)) std::exit(1);
+    std::printf("DESKTOP_PARENT handle=%p name=%s\n", reinterpret_cast<void *>(originalDesktop), originalName);
+    std::fflush(stdout);
+    wchar_t name[96] = {};
+    swprintf_s(name, L"MMS-curve-paint-isolated-%lu", static_cast<unsigned long>(GetCurrentProcessId()));
+    // Private, inactive desktop.  It is created with default security, so the
+    // handle itself is not inheritable and the child receives only the desktop
+    // name through STARTUPINFO.lpDesktop.
+    const HDESK desktop = CreateDesktopW(name, nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+    if (desktop == nullptr) FailIsolatedPaint("CreateDesktopW", GetLastError());
+    HANDLE inherited[3] = {nullptr, nullptr, nullptr};
+    char createdName[512] = {};
+    if (!TryDesktopName(desktop, "created private desktop", createdName))
+        AbortIsolatedPaintSetup(desktop, inherited, "created private desktop name verification", 0, false);
+    std::printf("DESKTOP_CREATED handle=%p name=%s\n", reinterpret_cast<void *>(desktop), createdName);
+    std::fflush(stdout);
+    // The parent thread must stay on its original desktop; a parent thread on
+    // the private desktop would keep it in use and make the final close fail.
+    HDESK parentDesktop = GetThreadDesktop(GetCurrentThreadId());
+    if (parentDesktop == nullptr)
+        AbortIsolatedPaintSetup(desktop, inherited, "GetThreadDesktop(parent desktop after CreateDesktopW)",
+                                GetLastError(), true);
+    if (parentDesktop != originalDesktop) {
+        if (SetThreadDesktop(originalDesktop) == FALSE)
+            AbortIsolatedPaintSetup(desktop, inherited, "SetThreadDesktop(original parent desktop)", GetLastError(),
+                                    true);
+        parentDesktop = GetThreadDesktop(GetCurrentThreadId());
+        if (parentDesktop == nullptr)
+            AbortIsolatedPaintSetup(desktop, inherited, "GetThreadDesktop(parent desktop after restore)",
+                                    GetLastError(), true);
+        if (parentDesktop != originalDesktop)
+            AbortIsolatedPaintSetup(desktop, inherited, "parent desktop restore verification", 0, false);
+    }
+    // Launch this same executable with an explicit application name and a
+    // writable, quoted command line.  A truncated module path or a malformed
+    // command line would start the wrong program, so both are hard failures.
+    wchar_t executable[32768] = {};
+    const DWORD executableCapacity = static_cast<DWORD>(sizeof(executable) / sizeof(executable[0]));
+    const DWORD executableLength = GetModuleFileNameW(nullptr, executable, executableCapacity);
+    if (executableLength == 0)
+        AbortIsolatedPaintSetup(desktop, inherited, "GetModuleFileNameW", GetLastError(), true);
+    if (executableLength >= executableCapacity)
+        AbortIsolatedPaintSetup(desktop, inherited, "GetModuleFileNameW truncated the executable path", 0, false);
+    std::wstring commandLine = L"\"" + std::wstring(executable) + L"\" --paint-isolated-child " + name;
+    if (g_validateHeap) commandLine += L" --paint-isolated-heap-validate";
+    // CreateProcessW rejects a command line longer than 32767 characters,
+    // including the terminator; the module path check above covers only the
+    // path, so the complete appended line is bounded here.
+    if (commandLine.size() + 1 > 32767U)
+        AbortIsolatedPaintSetup(desktop, inherited, "CreateProcessW command line exceeds 32767 characters", 0, false);
+    std::vector<wchar_t> mutableCommandLine(commandLine.begin(), commandLine.end());
+    mutableCommandLine.push_back(L'\0');
+    // Owned inheritable duplicates of the three standard handles.  The parent's
+    // originals are never closed or made inheritable, and the child's stdout and
+    // stderr must reach this process's log.
+    const DWORD standardHandles[3] = {STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
+    for (int index = 0; index < 3; ++index) {
+        const HANDLE source = GetStdHandle(standardHandles[index]);
+        if (source != nullptr && source != INVALID_HANDLE_VALUE) {
+            if (DuplicateHandle(GetCurrentProcess(), source, GetCurrentProcess(), &inherited[index], 0, TRUE,
+                                DUPLICATE_SAME_ACCESS) == FALSE)
+                AbortIsolatedPaintSetup(desktop, inherited, "DuplicateHandle(inherited standard handle)",
+                                        GetLastError(), true);
+            continue;
+        }
+        if (index != 0)
+            AbortIsolatedPaintSetup(desktop, inherited,
+                                    index == 1 ? "GetStdHandle(STD_OUTPUT_HANDLE) is unavailable"
+                                               : "GetStdHandle(STD_ERROR_HANDLE) is unavailable",
+                                    0, false);
+        // Only an unavailable stdin may fall back to the NUL device; a missing
+        // stdout or stderr is an explicit failure, never a silent discard.
+        SECURITY_ATTRIBUTES inheritable = {};
+        inheritable.nLength = sizeof(inheritable);
+        inheritable.bInheritHandle = TRUE;
+        inherited[index] = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inheritable,
+                                       OPEN_EXISTING, 0, nullptr);
+        if (inherited[index] == INVALID_HANDLE_VALUE) {
+            inherited[index] = nullptr;
+            AbortIsolatedPaintSetup(desktop, inherited, "CreateFileW(NUL input)", GetLastError(), true);
+        }
+    }
+    // Explicit inheritance whitelist: bInheritHandles is TRUE only together with
+    // PROC_THREAD_ATTRIBUTE_HANDLE_LIST, so no other parent handle leaks into the
+    // child.
+    SIZE_T attributeBytes = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeBytes);
+    if (attributeBytes == 0)
+        AbortIsolatedPaintSetup(desktop, inherited, "InitializeProcThreadAttributeList(size query)",
+                                GetLastError(), true);
+    std::vector<unsigned char> attributeStorage(attributeBytes);
+    auto *attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeStorage.data());
+    if (InitializeProcThreadAttributeList(attributes, 1, 0, &attributeBytes) == FALSE)
+        AbortIsolatedPaintSetup(desktop, inherited, "InitializeProcThreadAttributeList", GetLastError(), true);
+    if (UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof(inherited),
+                                  nullptr, nullptr) == FALSE) {
+        const DWORD error = GetLastError();
+        DeleteProcThreadAttributeList(attributes);
+        AbortIsolatedPaintSetup(desktop, inherited, "UpdateProcThreadAttribute(handle list)", error, true);
+    }
+    STARTUPINFOEXW startup = {};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = inherited[0];
+    startup.StartupInfo.hStdOutput = inherited[1];
+    startup.StartupInfo.hStdError = inherited[2];
+    startup.StartupInfo.lpDesktop = name;
+    startup.lpAttributeList = attributes;
+    PROCESS_INFORMATION child = {};
+    std::fflush(stdout);
+    std::fflush(stderr);
+    if (CreateProcessW(executable, mutableCommandLine.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT,
+                       nullptr, nullptr, &startup.StartupInfo, &child) == FALSE) {
+        const DWORD error = GetLastError();
+        DeleteProcThreadAttributeList(attributes);
+        AbortIsolatedPaintSetup(desktop, inherited, "CreateProcessW", error, true);
+    }
+    DeleteProcThreadAttributeList(attributes);
+    std::printf("CHILD_STARTED pid=%lu desktop=%s\n", static_cast<unsigned long>(child.dwProcessId), createdName);
+    std::fflush(stdout);
+    // Nothing in the child needs these duplicates once it has started.
+    bool failed = false;
+    for (HANDLE &handle : inherited) {
+        if (handle == nullptr) continue;
+        if (CloseHandle(handle) == FALSE) {
+            const DWORD error = GetLastError();
+            std::fprintf(stderr,
+                         "FAIL: CloseHandle(inherited standard handle) failed with GetLastError=%lu after the isolated paint child started\n",
+                         static_cast<unsigned long>(error));
+            failed = true;
+        }
+        handle = nullptr;
+    }
+    const DWORD wait = WaitForSingleObject(child.hProcess, INFINITE);
+    if (wait != WAIT_OBJECT_0) {
+        // The child may still be running on the desktop, so neither the child
+        // handles nor the desktop may be closed here.  Only WAIT_FAILED has a
+        // meaningful last-error; any other status is its own diagnosis.
+        if (wait == WAIT_FAILED) {
+            const DWORD error = GetLastError();
+            std::fprintf(stderr,
+                         "FAIL: WaitForSingleObject(isolated paint child) failed with GetLastError=%lu; the child may still be running, so its handles and the private desktop are left open\n",
+                         static_cast<unsigned long>(error));
+        } else {
+            std::fprintf(stderr,
+                         "FAIL: WaitForSingleObject(isolated paint child) returned unexpected status %lu; the child may still be running, so its handles and the private desktop are left open\n",
+                         static_cast<unsigned long>(wait));
+        }
+        std::fflush(stderr);
+        std::exit(1);
+    }
+    DWORD childExit = 0;
+    if (GetExitCodeProcess(child.hProcess, &childExit) == FALSE) {
+        const DWORD error = GetLastError();
+        std::fprintf(stderr, "FAIL: GetExitCodeProcess(isolated paint child) failed with GetLastError=%lu\n",
+                     static_cast<unsigned long>(error));
+        failed = true;
+    }
+    if (CloseHandle(child.hThread) == FALSE) {
+        const DWORD error = GetLastError();
+        std::fprintf(stderr, "FAIL: CloseHandle(isolated paint child thread) failed with GetLastError=%lu\n",
+                     static_cast<unsigned long>(error));
+        failed = true;
+    }
+    if (CloseHandle(child.hProcess) == FALSE) {
+        const DWORD error = GetLastError();
+        std::fprintf(stderr, "FAIL: CloseHandle(isolated paint child process) failed with GetLastError=%lu\n",
+                     static_cast<unsigned long>(error));
+        failed = true;
+    }
+    // The child has terminated, so the parent thread must still be on the
+    // original desktop before the private desktop is closed exactly once.
+    const HDESK afterChild = GetThreadDesktop(GetCurrentThreadId());
+    if (afterChild == nullptr) {
+        const DWORD error = GetLastError();
+        std::fprintf(stderr,
+                     "FAIL: GetThreadDesktop(parent desktop after the isolated paint child) failed with GetLastError=%lu\n",
+                     static_cast<unsigned long>(error));
+        failed = true;
+    } else if (afterChild != originalDesktop) {
+        std::fprintf(stderr,
+                     "FAIL: parent desktop after the isolated paint child differs from the original desktop (expected %p, observed %p)\n",
+                     reinterpret_cast<void *>(originalDesktop), reinterpret_cast<void *>(afterChild));
+        failed = true;
+    }
+    if (CloseDesktop(desktop) == FALSE) {
+        const DWORD error = GetLastError();
+        std::fprintf(stderr,
+                     "FAIL: CloseDesktop(private desktop) failed with GetLastError=%lu after the isolated paint child\n",
+                     static_cast<unsigned long>(error));
+        failed = true;
+    }
+    if (childExit != 0) {
+        std::fprintf(stderr, "FAIL: the isolated paint child exited with code %lu\n",
+                     static_cast<unsigned long>(childExit));
+        failed = true;
+    }
+    if (failed) {
+        std::fflush(stderr);
+        std::exit(1);
+    }
+}
+
+int RunIsolatedPaintChild(const char *expectedDesktopName, bool validateHeap) {
+    g_validateHeap = validateHeap;
+    const HDESK desktop = GetThreadDesktop(GetCurrentThreadId());
+    if (desktop == nullptr) {
+        const DWORD error = GetLastError();
+        std::fprintf(stderr, "FAIL: GetThreadDesktop in the isolated paint child failed with GetLastError=%lu\n",
+                     static_cast<unsigned long>(error));
+        std::fflush(stderr);
+        return 1;
+    }
+    Check(desktop != nullptr, "the curve paint regression owns a private Win32 desktop");
+    char actualName[512] = {};
+    if (!TryDesktopName(desktop, "isolated paint child startup desktop", actualName)) return 1;
+    // The parent names the desktop with an ASCII string, so the narrow argument
+    // and the UOI_NAME UTF-8 conversion compare byte for byte.
+    if (expectedDesktopName == nullptr || std::strcmp(actualName, expectedDesktopName) != 0) {
+        std::fprintf(stderr,
+                     "FAIL: the isolated paint child runs on desktop '%s' but the parent created '%s'\n",
+                     actualName, expectedDesktopName == nullptr ? "<missing>" : expectedDesktopName);
+        std::fflush(stderr);
+        return 1;
+    }
+    std::printf("CHILD_DESKTOP handle=%p name=%s\n", reinterpret_cast<void *>(desktop), actualName);
+    std::fflush(stdout);
+    bool failure = false;
+    try {
+        ReopenPaintRegression();
+        HandleDragInvalidation();
+    } catch (const std::exception &error) {
+        std::fprintf(stderr, "FAIL: the isolated paint fixtures threw: %s\n", error.what());
+        failure = true;
+    } catch (...) {
+        std::fprintf(stderr, "FAIL: the isolated paint fixtures threw a non-standard exception\n");
+        failure = true;
+    }
+    // A Check failure inside the fixtures exits immediately, exactly as before.
+    // On the exception path the fixtures' stack-local hosts are already gone, so
+    // this only releases the window and session and cannot re-enter callbacks.
+    bool editorLeft = false;
+    try {
+        if (OwnedCurveWindow() != nullptr) ce::CloseOwned(nullptr);
+        editorLeft = OwnedCurveWindow() != nullptr;
+    } catch (const std::exception &error) {
+        editorLeft = true;
+        if (!failure) {
+            std::fprintf(stderr, "FAIL: the isolated paint child editor cleanup threw: %s\n", error.what());
+            failure = true;
+        }
+    } catch (...) {
+        editorLeft = true;
+        if (!failure) {
+            std::fprintf(stderr, "FAIL: the isolated paint child editor cleanup threw a non-standard exception\n");
+            failure = true;
+        }
+    }
+    if (failure) {
+        if (editorLeft)
+            std::fprintf(stderr, "FAIL: the isolated paint child also left an editor registered to its thread\n");
+        std::fflush(stderr);
+        return 1;
+    }
+    Check(!editorLeft, "the isolated paint child leaves no editor registered to its thread");
+    std::printf("curve isolated paint child passed: %d checks\n", g_checks);
+    std::fflush(stdout);
+    return 0;
+}
+
+void ShowOwnedEditor(HWND window) {
+    ShowWindow(window, SW_SHOWNOACTIVATE);
+    Check(IsWindowVisible(window) != FALSE, "the regression editor is really shown on the private desktop");
+}
+
+// ---------------------------------------------------------------------------
+struct CurveEditorSurfaces {
+    HWND window = nullptr;
+    HWND canvas = nullptr;
+    HWND mmd = nullptr;
+    HWND tree = nullptr;
+    HWND view = nullptr;
+    HWND status = nullptr;
+    HWND add = nullptr;
+    HWND frame = nullptr;
+};
+
+CurveEditorSurfaces CurveEditorSurfacesOf(HWND window) {
+    CurveEditorSurfaces surfaces;
+    surfaces.window = window;
+    surfaces.canvas = GetDlgItem(window, kIdCanvas);
+    surfaces.mmd = GetDlgItem(window, kIdMmdPanel);
+    surfaces.tree = GetDlgItem(window, kIdChannelList);
+    surfaces.view = GetDlgItem(window, kIdViewCombo);
+    surfaces.status = GetDlgItem(window, kIdStatus);
+    surfaces.add = GetDlgItem(window, kIdAddKey);
+    surfaces.frame = GetDlgItem(window, kIdFrameEdit);
+    return surfaces;
+}
+
+bool AllCurveEditorSurfacesLive(const CurveEditorSurfaces &surfaces) {
+    return IsWindow(surfaces.window) && IsWindow(surfaces.canvas) && IsWindow(surfaces.mmd) &&
+           IsWindow(surfaces.tree) && IsWindow(surfaces.view) && IsWindow(surfaces.status) &&
+           IsWindow(surfaces.add) && IsWindow(surfaces.frame);
+}
+
+struct PaintMessageObserver {
+    struct Entry {
+        HWND window = nullptr;
+        unsigned paints = 0;
+    };
+    std::array<Entry, 8> entries{};
+    std::size_t count = 0;
+    static LRESULT CALLBACK Observe(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR,
+                                    DWORD_PTR data) {
+        if (message == WM_PAINT) ++reinterpret_cast<Entry *>(data)->paints;
+        return DefSubclassProc(hwnd, message, wparam, lparam);
+    }
+    void Add(HWND window) {
+        Check(window != nullptr && IsWindow(window), "the paint observer binds a live editor surface");
+        Check(count < entries.size(), "the paint observer covers the editor's complete surface set");
+        entries[count].window = window;
+        Check(SetWindowSubclass(window, &PaintMessageObserver::Observe, 0x73d1,
+                                 reinterpret_cast<DWORD_PTR>(&entries[count])) != FALSE,
+              "observe only the editor's own hidden windows");
+        ++count;
+    }
+    explicit PaintMessageObserver(const CurveEditorSurfaces &surfaces) {
+        Add(surfaces.window);
+        Add(surfaces.canvas);
+        Add(surfaces.mmd);
+        Add(surfaces.tree);
+        Add(surfaces.view);
+        Add(surfaces.status);
+        Add(surfaces.add);
+        Add(surfaces.frame);
+    }
+    ~PaintMessageObserver() {
+        for (std::size_t index = 0; index < count; ++index)
+            if (IsWindow(entries[index].window))
+                RemoveWindowSubclass(entries[index].window, &PaintMessageObserver::Observe, 0x73d1);
+    }
+    unsigned Paints(HWND window) const {
+        for (std::size_t index = 0; index < count; ++index)
+            if (entries[index].window == window) return entries[index].paints;
+        return 0;
+    }
+    void ValidateAll() const {
+        for (std::size_t index = 0; index < count; ++index)
+            if (IsWindow(entries[index].window)) ValidateRect(entries[index].window, nullptr);
+    }
+    bool AnyPending() const {
+        for (std::size_t index = 0; index < count; ++index)
+            if (IsWindow(entries[index].window) &&
+                GetUpdateRect(entries[index].window, nullptr, FALSE) != FALSE) return true;
+        return false;
+    }
+    // Paints exactly the windows a gesture damaged through the real
+    // BeginPaint/EndPaint path, and returns how many of them painted.
+    unsigned PaintPending() const {
+        unsigned painted = 0;
+        for (std::size_t index = 0; index < count; ++index) {
+            HWND window = entries[index].window;
+            if (!IsWindow(window) || GetUpdateRect(window, nullptr, FALSE) == FALSE) continue;
+            // The window is shown on the private desktop, so this delivers a
+            // real WM_PAINT with the actual dirty rectangle.
+            UpdateWindow(window);
+            ++painted;
+        }
+        return painted;
+    }
+};
+
+// The "x" channel curve is RGB(222, 76, 104).  The interior of its stroke stays red
+// dominant; the neutral grid and paper, the gold selected key, the grey handles
+// and the blue playhead stay outside this band, so a hit inside the clean strip
+// can only be the curve itself.
+bool IsCurveColourPixel(unsigned pixel) {
+    const int red = static_cast<int>((pixel >> 16) & 255);
+    const int green = static_cast<int>((pixel >> 8) & 255);
+    const int blue = static_cast<int>(pixel & 255);
+    return red >= 150 && red - green >= 60 && red - blue >= 50;
+}
+
+int CurveColourPixelsInRect(const std::vector<unsigned> &image, int width, int height, const RECT &area) {
+    if (width <= 0 || height <= 0) return 0;
+    const int left = std::max(0, std::min(width, static_cast<int>(area.left)));
+    const int right = std::max(0, std::min(width, static_cast<int>(area.right)));
+    const int top = std::max(0, std::min(height, static_cast<int>(area.top)));
+    const int bottom = std::max(0, std::min(height, static_cast<int>(area.bottom)));
+    int count = 0;
+    for (int y = top; y < bottom; ++y) {
+        for (int x = left; x < right; ++x) {
+            const unsigned pixel = image[static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
+                                        static_cast<std::size_t>(x)];
+            if (IsCurveColourPixel(pixel)) ++count;
+        }
+    }
+    return count;
+}
+
+// The canvas transforms read back through the axis hook, so the printed curve
+// can be compared with the canonical track instead of trusting red pixels.
+CurveEditorAxisState ReadEditorAxis(HWND window) {
+    CurveEditorAxisState axis = {};
+    Check(SendMessageW(window, WM_APP + 394, 0, reinterpret_cast<LPARAM>(&axis)) != 0,
+          "the editor publishes its canvas geometry");
+    return axis;
+}
+
+double AxisValueToY(const CurveEditorAxisState &axis, double value) {
+    const double span = axis.viewHigh - axis.viewLow;
+    if (!(span > 0.0)) return std::numeric_limits<double>::quiet_NaN();
+    return static_cast<double>(axis.plot.bottom) -
+           (value - axis.viewLow) / span * static_cast<double>(axis.plot.bottom - axis.plot.top);
+}
+
+double AxisFrameToX(const CurveEditorAxisState &axis, double frame) {
+    const double span = axis.timeEnd - axis.timeStart;
+    const double width = static_cast<double>(axis.plot.right - axis.plot.left);
+    if (!(span > 0.0) || !(width > 0.0)) return std::numeric_limits<double>::quiet_NaN();
+    return static_cast<double>(axis.plot.left) + (frame - axis.timeStart) / span * width;
+}
+
+double AxisXToFrame(const CurveEditorAxisState &axis, double x) {
+    const double span = axis.timeEnd - axis.timeStart;
+    const double width = static_cast<double>(axis.plot.right - axis.plot.left);
+    if (!(span > 0.0) || !(width > 0.0)) return std::numeric_limits<double>::quiet_NaN();
+    return axis.timeStart + (x - static_cast<double>(axis.plot.left)) / width * span;
+}
+
+// Mean painted row of the single red stroke in the column nearest the
+// requested frame. The drawn polyline joins integer columns, so the column
+// midpoint frame is the sample the stroke mean row corresponds to.
+bool MeasurePaintedCurveY(const std::vector<unsigned> &image, int width, int height,
+                          const CurveEditorAxisState &axis, double frame, double &measuredY,
+                          double &sampleFrame) {
+    const double x = AxisFrameToX(axis, frame);
+    if (!std::isfinite(x) || width <= 0 || height <= 0) return false;
+    const int column = static_cast<int>(std::lround(x));
+    if (column < axis.plot.left || column >= axis.plot.right || column < 0 || column >= width) return false;
+    const int top = std::max<int>(axis.plot.top, 0);
+    const int bottom = std::min<int>(axis.plot.bottom, height);
+    int found = 0;
+    double sum = 0;
+    for (int row = top; row < bottom; ++row) {
+        const unsigned pixel = image[static_cast<std::size_t>(row) * static_cast<std::size_t>(width) +
+                                    static_cast<std::size_t>(column)];
+        if (!IsCurveColourPixel(pixel)) continue;
+        sum += static_cast<double>(row);
+        ++found;
+    }
+    if (found < 1) return false;
+    measuredY = sum / static_cast<double>(found);
+    sampleFrame = AxisXToFrame(axis, static_cast<double>(column) + 0.5);
+    return std::isfinite(sampleFrame);
+}
+
+// A straightened Bezier still paints a red line, so pixel presence alone is
+// not evidence. The painted height must match the canonical cubic at interior
+// frames and must differ from the straight key-to-key chord.
+void CheckReopenedCurveGeometry(const std::vector<unsigned> &image, int width, int height,
+                                const CurveEditorAxisState &axis, const ac::Track &canonical,
+                                int cycle, const char *state) {
+    Check(canonical.keys.size() >= 2, "the canonical reopen fixture holds two keys");
+    const ac::Key &first = canonical.keys.front();
+    const ac::Key &last = canonical.keys.back();
+    const double frames[3] = {5.0, 10.0, 15.0};
+    bool offChordAtMid = false;
+    for (int index = 0; index < 3; ++index) {
+        const double frame = frames[index];
+        double measuredY = 0, sampleFrame = 0;
+        const bool found = MeasurePaintedCurveY(image, width, height, axis, frame, measuredY, sampleFrame);
+        const double expectedValue = found ? ac::Evaluate(canonical, sampleFrame).value : 0.0;
+        const double expectedY = AxisValueToY(axis, expectedValue);
+        const double chordValue = first.value + (sampleFrame - first.frame) /
+            static_cast<double>(last.frame - first.frame) * (last.value - first.value);
+        const double chordY = AxisValueToY(axis, chordValue);
+        std::printf("REOPEN_GEOMETRY cycle=%d state=%s frame=%.0f sample_frame=%.3f measured=%.2f "
+                    "expected=%.2f chord=%.2f expected_off_chord=%.2f found=%d\n",
+                    cycle, state, frame, sampleFrame, measuredY, expectedY, chordY,
+                    std::fabs(expectedY - chordY), found ? 1 : 0);
+        std::fflush(stdout);
+        Check(found, "the reopened print contains the coloured curve at an interior sample");
+        Check(std::fabs(measuredY - expectedY) <= 3.0,
+              "the reopened curve follows the canonical Bezier height at an interior sample");
+        Check(std::fabs(measuredY - chordY) > 4.0,
+              "the reopened curve is not the straight chord between its keys");
+        if (frame == 10.0 && std::fabs(expectedY - chordY) >= 8.0) offChordAtMid = true;
+    }
+    Check(offChordAtMid, "the canonical fixture is genuinely curved at the mid interior sample");
+}
+
+// Generic value-curve fixture for the reopen paint oracle.  The non-linear
+// native controls only supply canonical curved geometry; this is NOT an actual
+// morph/expression channel and says nothing about morph host persistence.
+HostSource ReopenPaintHost() {
+    HostSource host;
+    // ChannelColour matches the last slash-separated axis, so a bare "x" id is
+    // the documented red axis colour the pixel matcher expects.  A dotted id
+    // such as "pos.x" hashes to an unrelated hue.
+    auto channel = MakeChannel("x", L"Position X",
+        {MakeKey(0, 0.0, ac::Interpolation::Bezier, ac::Tangent::Free),
+         MakeKey(20, 5.0, ac::Interpolation::Bezier, ac::Tangent::Free)});
+    channel.nativeControls.resize(2);
+    channel.controlGeometry.resize(2);
+    std::string error;
+    Check(ce::SetChannelControls(channel, 1, {20, 80, 107, 20}, error),
+          "the reopen fixture keeps its canonical non-linear native controls");
+    host.data.push_back(std::move(channel));
+    return host;
+}
+
+void ReopenPaintRegression() {
+    std::vector<unsigned> baselineOpened, baseline;
+    int baselineOpenedCurve = -1, baselineCurvePixels = -1;
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        std::printf("REOPEN_PAINT cycle=%d\n", cycle);
+        std::fflush(stdout);
+        HostSource host = ReopenPaintHost();
+        ce::Session session = MakeSession(host);
+        HWND window = static_cast<HWND>(ce::Open(nullptr, std::move(session), false));
+        Check(IsWindow(window), "a closed editor reopens from the canonical non-linear native controls");
+        const CurveEditorSurfaces surfaces = CurveEditorSurfacesOf(window);
+        Check(AllCurveEditorSurfacesLive(surfaces), "the reopened editor owns every native surface");
+        ShowOwnedEditor(window);
+        Check(host.readCalls == 1 && host.applyCalls == 0, "the fresh reopen reads once and writes nothing");
+        Check(KeyCount(window) == 2, "the reopen adopts the canonical two-key track");
+        RECT client = {};
+        GetClientRect(surfaces.canvas, &client);
+        const int width = static_cast<int>(client.right - client.left);
+        const int height = static_cast<int>(client.bottom - client.top);
+        const CurveEditorAxisState axis = ReadEditorAxis(window);
+        const POINT middle = AskPoint(window, kHookPointForFrame, 10);
+        Check(middle.x > 0 && middle.y > 0 && PtInRect(&axis.plot, middle),
+              "the canonical curve crosses the clean middle strip");
+        // Between the keys and away from every handle and key marker: the only
+        // coloured pixels in this rectangle belong to the curve stroke.
+        const RECT strip = {middle.x - 6, axis.plot.top, middle.x + 7, axis.plot.bottom};
+        // The very first print after Open, before any interaction at all, must
+        // already show the curved geometry; a straightened chord is still red,
+        // so the oracle compares painted height with the canonical Bezier.
+        const auto opened = RenderPixels(surfaces.canvas);
+        Check(width > 0 && height > 0 &&
+                  opened.size() == static_cast<std::size_t>(width) * static_cast<std::size_t>(height),
+              "the reopened canvas prints a complete client-sized image");
+        const int openedCurve = CurveColourPixelsInRect(opened, width, height, strip);
+        Check(openedCurve >= 5, "the first print after Open paints the curve before any interaction");
+        CheckReopenedCurveGeometry(opened, width, height, axis, host.data[0].track, cycle, "opened");
+        // Selecting the canonical interval end key is a UI action, not a curve
+        // edit; it reveals the handles the report mentions without writing data.
+        ClickKey(window, 1);
+        Check(host.applyCalls == 0, "selecting the canonical end key is not a curve edit");
+        Check(GetText(window, kIdFrameEdit) == L"20", "the selected key is the interval end key");
+        double controls[4] = {};
+        Check(SendMessageW(window, kHookMmdControls, 0, reinterpret_cast<LPARAM>(controls)) != FALSE &&
+                  controls[0] == 20.0 && controls[1] == 80.0 && controls[2] == 107.0 && controls[3] == 20.0,
+              "the reopened editor still exposes the canonical non-linear controls");
+        const CurveEditorAxisState selectedAxis = ReadEditorAxis(window);
+        const POINT selectedMiddle = AskPoint(window, kHookPointForFrame, 10);
+        Check(selectedMiddle.x > 0 && PtInRect(&selectedAxis.plot, selectedMiddle),
+              "the selected-key print still crosses the clean middle strip");
+        const RECT selectedStrip = {selectedMiddle.x - 6, selectedAxis.plot.top, selectedMiddle.x + 7,
+                                    selectedAxis.plot.bottom};
+        const auto pixels = RenderPixels(surfaces.canvas);
+        Check(pixels.size() == opened.size(), "the selected end key does not change the canvas size");
+        const int curvePixels = CurveColourPixelsInRect(pixels, width, height, selectedStrip);
+        Check(curvePixels >= 5, "the reopened editor paints its coloured curve with the end key selected");
+        CheckReopenedCurveGeometry(pixels, width, height, selectedAxis, host.data[0].track, cycle, "selected");
+        PaintMessageObserver paints(surfaces);
+        paints.ValidateAll();
+        Check(!paints.AnyPending(), "the shown reopen window starts from clean native update regions");
+        InvalidateRect(surfaces.canvas, nullptr, FALSE);
+        RECT damage = {};
+        Check(GetUpdateRect(surfaces.canvas, &damage, FALSE) != FALSE &&
+                  damage.right > damage.left && damage.bottom > damage.top,
+              "a real visible-window repaint request creates non-empty canvas damage");
+        const unsigned canvasPaints = paints.Paints(surfaces.canvas);
+        UpdateWindow(surfaces.canvas);
+        Check(paints.Paints(surfaces.canvas) > canvasPaints && !paints.AnyPending(),
+              "the real WM_PAINT runs for the visible window and validates its dirty region");
+        Check(paints.Paints(surfaces.window) == 0 && paints.Paints(surfaces.mmd) == 0 &&
+                  paints.Paints(surfaces.tree) == 0 && paints.Paints(surfaces.view) == 0 &&
+                  paints.Paints(surfaces.status) == 0 && paints.Paints(surfaces.add) == 0 &&
+                  paints.Paints(surfaces.frame) == 0,
+              "the real canvas repaint paints only the canvas");
+        Check(RenderPixels(surfaces.canvas) == pixels,
+              "the real window paint leaves the printed curve image unchanged");
+        std::printf("REOPEN_PAINT_RESULT cycle=%d opened_pixels=%d selected_pixels=%d client=%dx%d\n", cycle,
+                    openedCurve, curvePixels, width, height);
+        std::fflush(stdout);
+        if (cycle == 0) {
+            baselineOpened = opened;
+            baselineOpenedCurve = openedCurve;
+            baseline = pixels;
+            baselineCurvePixels = curvePixels;
+        } else {
+            Check(opened == baselineOpened, "every close/reopen cycle prints the same first-paint image");
+            Check(openedCurve == baselineOpenedCurve,
+                  "every close/reopen cycle paints the same number of first-paint curve pixels");
+            Check(pixels == baseline, "every close/reopen cycle prints the same selected-key curve image");
+            Check(curvePixels == baselineCurvePixels,
+                  "every close/reopen cycle paints the same number of selected-key curve pixels");
+        }
+        Check(host.applyCalls == 0, "the reopen paint path never edits curve data");
+        ce::CloseOwned(nullptr);
+    }
+    Note("close/reopen paints the generic canonical non-linear value curve before any edit, deterministically");
+}
+
+// Shared oracle for both real handle drags: exactly one surface may be
+// damaged, the shell and every unrelated child stay clean, and only that
+// surface receives the real BeginPaint/EndPaint message.
+void CheckHandleDamage(const PaintMessageObserver &paints, const CurveEditorSurfaces &surfaces, bool valueHandle) {
+    HWND relevant = valueHandle ? surfaces.canvas : surfaces.mmd;
+    HWND other = valueHandle ? surfaces.mmd : surfaces.canvas;
+    RECT damage = {};
+    const BOOL damaged = GetUpdateRect(relevant, &damage, FALSE);
+    RECT client = {};
+    GetClientRect(relevant, &client);
+    const BOOL shellDamage = GetUpdateRect(surfaces.window, nullptr, FALSE);
+    const BOOL otherDamage = GetUpdateRect(other, nullptr, FALSE);
+    const BOOL unrelatedDamage =
+        GetUpdateRect(surfaces.tree, nullptr, FALSE) || GetUpdateRect(surfaces.view, nullptr, FALSE) ||
+        GetUpdateRect(surfaces.status, nullptr, FALSE) || GetUpdateRect(surfaces.add, nullptr, FALSE) ||
+        GetUpdateRect(surfaces.frame, nullptr, FALSE);
+    const unsigned before = paints.Paints(relevant);
+    const unsigned painted = paints.PaintPending();
+    const unsigned after = paints.Paints(relevant);
+    std::printf("HANDLE_DAMAGE surface=%s damaged=%ld,%ld,%ld,%ld client=%ld,%ld shell=%u other=%u "
+                "unrelated=%u before=%u painted=%u after=%u\n",
+                valueHandle ? "canvas" : "mmd", damage.left, damage.top, damage.right, damage.bottom,
+                client.right, client.bottom, unsigned(shellDamage != FALSE), unsigned(otherDamage != FALSE),
+                unsigned(unrelatedDamage != FALSE), before, painted, after);
+    std::fflush(stdout);
+    Check(damaged != FALSE && damage.right > damage.left && damage.bottom > damage.top &&
+              damage.left >= client.left && damage.top >= client.top && damage.right <= client.right &&
+              damage.bottom <= client.bottom,
+          valueHandle ? "the dragged value handle damages only its own canvas client"
+                      : "the dragged miniature handle damages only its own panel client");
+    Check(shellDamage == FALSE, "a handle drag never damages the editor shell");
+    Check(otherDamage == FALSE, valueHandle ? "a value handle drag never damages the MMD panel"
+                                            : "a miniature handle drag never damages the curve canvas");
+    Check(unrelatedDamage == FALSE, "a handle drag leaves every unrelated child control clean");
+    Check(before == 0 && painted == 1 && after == 1 && !paints.AnyPending() &&
+              paints.Paints(surfaces.window) == 0 && paints.Paints(other) == 0 &&
+              paints.Paints(surfaces.tree) == 0 && paints.Paints(surfaces.view) == 0 &&
+              paints.Paints(surfaces.status) == 0 && paints.Paints(surfaces.add) == 0 &&
+              paints.Paints(surfaces.frame) == 0,
+          "only the surface that owns the dragged handle receives the real WM_PAINT");
+}
+
+// Drags one real canvas value handle (each curved side) with the real mouse
+// messages the control receives.  CanvasMouseMove is the code under measure:
+// it invalidates via InvalidateCanvas, so this oracle shows exactly which
+// native windows that reaches.
+enum class DragInterruption { None, Resize, Cancel };
+
+void InterruptCurveDrag(HWND window, HWND surface, DragInterruption interruption) {
+    if (interruption == DragInterruption::Resize) {
+        RECT bounds{};
+        Check(GetWindowRect(window, &bounds) && SetWindowPos(window, nullptr, 0, 0,
+            bounds.right - bounds.left + 123, bounds.bottom - bounds.top + 77,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE), "resize the real curve editor during a drag");
+    } else {
+        SendMessageW(surface, WM_CANCELMODE, 0, 0);
+    }
+    Check(GetCapture() != surface, "interruption releases curve drag capture");
+}
+
+void KeyDragInterruption() {
+    HostSource host;
+    host.data.push_back(MakeChannel("pos.x", L"Position X",
+        {MakeKey(0, 0.0), MakeKey(10, 5.0), MakeKey(20, 9.0)}));
+    const auto window = static_cast<HWND>(ce::Open(nullptr, MakeSession(host), false));
+    Check(IsWindow(window), "open the editor for interrupted key movement");
+    ShowOwnedEditor(window);
+    const HWND canvas = GetDlgItem(window, kIdCanvas);
+    const auto from = AskPoint(window, kHookPointForKey, 1);
+    const auto to = AskPoint(window, kHookPointForFrame, 15);
+    Check(from.x > 0 && from.y > 0 && to.x > 0, "key movement endpoints are visible");
+    SendMessageW(canvas, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(from.x, from.y));
+    Check(GetCapture() == canvas, "the key movement owns canvas capture");
+    SendMessageW(canvas, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(to.x, from.y));
+    InterruptCurveDrag(window, canvas, DragInterruption::Resize);
+    SendMessageW(canvas, WM_LBUTTONUP, 0, MAKELPARAM(to.x, from.y));
+    Click(window, kIdUndo);
+    Check(host.applyCalls == 0 && FindKey(host.data, 0, 10), "interrupted movement leaves the key at frame 10");
+    DragKeyToFrame(window, 1, 15);
+    Check(host.applyCalls == 1 && FindKey(host.data, 0, 15), "new movement lands at frame 15");
+    Click(window, kIdUndo);
+    Check(host.applyCalls == 2 && FindKey(host.data, 0, 10), "one undo restores the original frame");
+    ce::CloseOwned(nullptr);
+}
+
+void CanvasDragButtonOwnership() {
+    HostSource host;
+    auto channel = MakeChannel("pos.x", L"Position X", {
+        MakeKey(0, 0.0, ac::Interpolation::Bezier, ac::Tangent::Free),
+        MakeKey(10, 5.0, ac::Interpolation::Bezier, ac::Tangent::Free),
+        MakeKey(20, 9.0, ac::Interpolation::Bezier, ac::Tangent::Free)});
+    channel.track.keys[1].outWeight = 0.3;
+    channel.track.keys[1].outSlope = 0.0;
+    host.data.push_back(std::move(channel));
+    const auto window = static_cast<HWND>(ce::Open(nullptr, MakeSession(host), false));
+    Check(IsWindow(window), "open the editor for overlapping mouse buttons");
+    ShowOwnedEditor(window);
+    const HWND canvas = GetDlgItem(window, kIdCanvas);
+    const auto key = AskPoint(window, kHookPointForKey, 1);
+    const auto frame = AskPoint(window, kHookPointForFrame, 15);
+    const auto handle = AskPoint(window, kHookPointForFrame, 13);
+    Check(key.x > 0 && key.y > 0 && frame.x > 0 && handle.x > 0,
+          "the key, handle and drag target are visible");
+    const LPARAM keyPoint = MAKELPARAM(key.x, key.y);
+    const LPARAM movedKey = MAKELPARAM(frame.x, key.y);
+    const LPARAM handlePoint = MAKELPARAM(handle.x, key.y);
+    const LPARAM movedHandle = MAKELPARAM(frame.x, key.y - 16);
+
+    SendMessageW(canvas, WM_LBUTTONDOWN, MK_LBUTTON, keyPoint);
+    Check(GetCapture() == canvas, "the left button owns the key drag");
+    SendMessageW(canvas, WM_MOUSEMOVE, MK_LBUTTON, movedKey);
+    SendMessageW(canvas, WM_RBUTTONDOWN, MK_LBUTTON | MK_RBUTTON, movedKey);
+    SendMessageW(canvas, WM_RBUTTONUP, MK_LBUTTON, movedKey);
+    Check(GetCapture() == canvas && host.applyCalls == 0 && FindKey(host.data, 0, 10),
+          "releasing the right button cannot commit a left-button key drag");
+    SendMessageW(canvas, WM_LBUTTONUP, 0, movedKey);
+    Check(GetCapture() != canvas && host.applyCalls == 1 && FindKey(host.data, 0, 15),
+          "the left release commits the key drag once");
+    Click(window, kIdUndo);
+    Check(host.applyCalls == 2 && FindKey(host.data, 0, 10), "undo restores the original key frame");
+
+    ClickKey(window, 1);
+    SendMessageW(canvas, WM_LBUTTONDOWN, MK_LBUTTON, handlePoint);
+    SendMessageW(canvas, WM_MOUSEMOVE, MK_LBUTTON, movedHandle);
+    SendMessageW(canvas, WM_MBUTTONDOWN, MK_LBUTTON | MK_MBUTTON, movedHandle);
+    SendMessageW(canvas, WM_MBUTTONUP, MK_LBUTTON, movedHandle);
+    Check(GetCapture() == canvas && host.applyCalls == 2,
+          "middle-button input does not replace or finish a left-button handle drag");
+    SetCapture(window);
+    Check(GetCapture() == window, "the canvas loses capture to another window");
+    ReleaseCapture();
+    SendMessageW(canvas, WM_LBUTTONUP, 0, movedHandle);
+    Check(host.applyCalls == 2 && host.data[0].track.keys[1].outSlope == 0.0,
+          "capture loss cancels the preview and a stale left release writes nothing");
+    SendMessageW(canvas, WM_LBUTTONDOWN, MK_LBUTTON, handlePoint);
+    SendMessageW(canvas, WM_LBUTTONUP, 0, movedHandle);
+    Check(host.applyCalls == 3 && std::abs(host.data[0].track.keys[1].outSlope) > 0.01,
+          "a fresh handle drag can commit after cancellation");
+    Click(window, kIdUndo);
+    Check(host.applyCalls == 4 && host.data[0].track.keys[1].outSlope == 0.0,
+          "one undo restores the pre-drag handle");
+
+    SendMessageW(canvas, WM_MBUTTONDOWN, MK_MBUTTON, keyPoint);
+    Check(GetCapture() == canvas, "the middle button owns the pan");
+    SendMessageW(canvas, WM_LBUTTONDOWN, MK_LBUTTON | MK_MBUTTON, keyPoint);
+    SendMessageW(canvas, WM_LBUTTONUP, MK_MBUTTON, movedKey);
+    Check(GetCapture() == canvas && host.applyCalls == 4,
+          "a left click during middle-button pan does not start editing");
+    SendMessageW(canvas, WM_MBUTTONUP, 0, movedKey);
+    Check(GetCapture() != canvas && host.applyCalls == 4, "the middle release finishes the pan without editing");
+    ce::CloseOwned(nullptr);
+}
+
+void ValueHandleDragInvalidation(bool outSide, DragInterruption interruption = DragInterruption::None) {
+    HostSource host;
+    auto channel = MakeChannel("pos.x", L"Position X",
+        {MakeKey(0, 0.0, ac::Interpolation::Bezier, ac::Tangent::Free),
+         MakeKey(10, 5.0, ac::Interpolation::Bezier, ac::Tangent::Free),
+         MakeKey(20, 9.0, ac::Interpolation::Bezier, ac::Tangent::Free)});
+    channel.track.keys[1].inWeight = channel.track.keys[1].outWeight = 0.3;
+    channel.track.keys[1].inSlope = channel.track.keys[1].outSlope = 0.0;
+    host.data.push_back(std::move(channel));
+    ce::Session session = MakeSession(host);
+    HWND window = static_cast<HWND>(ce::Open(nullptr, std::move(session), false));
+    Check(IsWindow(window), "the value handle drag fixture opens for the private desktop");
+    const CurveEditorSurfaces surfaces = CurveEditorSurfacesOf(window);
+    Check(AllCurveEditorSurfacesLive(surfaces), "the value handle drag fixture owns every native surface");
+    ShowOwnedEditor(window);
+    ClickKey(window, 1);
+    Check(GetText(window, kIdFrameEdit) == L"10", "the value handle fixture selects the middle key");
+    const POINT key = AskPoint(window, kHookPointForKey, 1);
+    const POINT handle = AskPoint(window, kHookPointForFrame, outSide ? 13 : 7);
+    const POINT target1 = AskPoint(window, kHookPointForFrame, outSide ? 15 : 5);
+    const POINT target2 = AskPoint(window, kHookPointForFrame, outSide ? 16 : 4);
+    Check(key.x > 0 && key.y > 0 && handle.x > 0 && target1.x > 0 && target2.x > 0,
+          "the queried value handle and drag targets lie inside the canvas");
+    SetFocus(surfaces.canvas);
+    PaintMessageObserver paints(surfaces);
+    paints.ValidateAll();
+    Check(!paints.AnyPending(), "the value handle drag starts from clean native update regions");
+    SendMessageW(surfaces.canvas, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(handle.x, key.y));
+    Check(GetCapture() == surfaces.canvas, "the real value handle press owns the canvas capture");
+    Check(!GetUpdateRect(surfaces.canvas, nullptr, FALSE),
+          "pressing a value handle without moving paints nothing");
+    SendMessageW(surfaces.canvas, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(target1.x, key.y - 12));
+    SendMessageW(surfaces.canvas, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(target2.x, key.y - 16));
+    Check(host.applyCalls == 0, "an in-flight value handle drag has not published curve data");
+    if (interruption != DragInterruption::None) {
+        InterruptCurveDrag(window, surfaces.canvas, interruption);
+        SendMessageW(surfaces.canvas, WM_LBUTTONUP, 0, MAKELPARAM(target2.x, key.y - 16));
+        Click(window, kIdUndo);
+        Check(host.applyCalls == 0 && host.data.front().track.keys[1].outSlope == 0.0 &&
+            host.data.front().track.keys[1].inSlope == 0.0, "stale value-handle release does not write or create history");
+        DragKeyToFrame(window, 1, 12);
+        Check(host.applyCalls == 1 && FindKey(host.data, 0, 12), "fresh drag uses the current canvas geometry");
+        ce::CloseOwned(nullptr);
+        return;
+    }
+    CheckHandleDamage(paints, surfaces, true);
+    SendMessageW(surfaces.canvas, WM_LBUTTONUP, 0, MAKELPARAM(target2.x, key.y - 16));
+    Check(host.applyCalls == 1, "the value handle drag commits exactly one curve write");
+    ce::CloseOwned(nullptr);
+    Note(outSide ? "the outgoing value handle damages only its own curve canvas"
+                 : "the incoming value handle damages only its own curve canvas");
+}
+
+// Drags one real MMD panel control handle.  MmdMouseMove owns the separate
+// miniature redraw path; it must damage its own panel only.
+void MmdHandleDragInvalidation(int handle, DragInterruption interruption = DragInterruption::None) {
+    HostSource host;
+    auto channel = MakeChannel("pos.x", L"Position X",
+        {MakeKey(0, 0.0, ac::Interpolation::Bezier, ac::Tangent::Free),
+         MakeKey(20, 5.0, ac::Interpolation::Bezier, ac::Tangent::Free)});
+    channel.nativeControls.resize(2);
+    channel.controlGeometry.resize(2);
+    std::string error;
+    Check(ce::SetChannelControls(channel, 1, {20, 80, 107, 20}, error),
+          "the miniature handle fixture keeps canonical non-linear controls");
+    host.data.push_back(std::move(channel));
+    ce::Session session = MakeSession(host);
+    HWND window = static_cast<HWND>(ce::Open(nullptr, std::move(session), false));
+    Check(IsWindow(window), "the miniature handle drag fixture opens for the private desktop");
+    const CurveEditorSurfaces surfaces = CurveEditorSurfacesOf(window);
+    Check(AllCurveEditorSurfacesLive(surfaces), "the miniature handle drag fixture owns every native surface");
+    ShowOwnedEditor(window);
+    ClickKey(window, 1);
+    Check(GetText(window, kIdFrameEdit) == L"20", "the miniature handle fixture selects the interval end key");
+    double controls[4] = {};
+    Check(SendMessageW(window, kHookMmdControls, 0, reinterpret_cast<LPARAM>(controls)) != FALSE &&
+              controls[0] == 20.0 && controls[1] == 80.0 && controls[2] == 107.0 && controls[3] == 20.0,
+          "the miniature panel exposes the canonical non-linear native controls");
+    // The panel maps the 0..127 controls onto its square.  Reproduce the same
+    // client point the editor itself would draw for the dragged control.
+    const auto getDpi = reinterpret_cast<UINT(WINAPI *)(HWND)>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+    UINT dpi = getDpi ? getDpi(surfaces.mmd) : 0;
+    if (!dpi) {
+        HDC dc = GetDC(surfaces.mmd);
+        dpi = dc ? static_cast<UINT>(GetDeviceCaps(dc, LOGPIXELSX)) : 96;
+        if (dc) ReleaseDC(surfaces.mmd, dc);
+    }
+    RECT panel = {};
+    GetClientRect(surfaces.mmd, &panel);
+    const int margin = MulDiv(6, dpi ? static_cast<int>(dpi) : 96, 96);
+    const int side = std::min(static_cast<int>(panel.right), static_cast<int>(panel.bottom)) - 2 * margin;
+    Check(side > 0, "the miniature panel owns a drawable control square");
+    const auto panelPoint = [&](double u, double v) {
+        return MAKELPARAM(margin + static_cast<int>(std::lround(u * side / 127.0)),
+                          margin + side - static_cast<int>(std::lround(v * side / 127.0)));
+    };
+    const LPARAM pressed = panelPoint(controls[handle * 2], controls[handle * 2 + 1]);
+    const LPARAM target1 = handle == 0 ? panelPoint(40.0, 100.0) : panelPoint(100.0, 40.0);
+    const LPARAM target2 = handle == 0 ? panelPoint(45.0, 105.0) : panelPoint(95.0, 35.0);
+    const LPARAM released = handle == 0 ? panelPoint(50.0, 112.0) : panelPoint(88.0, 29.0);
+    SetFocus(surfaces.mmd);
+    PaintMessageObserver paints(surfaces);
+    paints.ValidateAll();
+    Check(!paints.AnyPending(), "the miniature handle drag starts from clean native update regions");
+    SendMessageW(surfaces.mmd, WM_LBUTTONDOWN, MK_LBUTTON, pressed);
+    SendMessageW(surfaces.mmd, WM_LBUTTONUP, 0, pressed);
+    Check(host.applyCalls == 0, "a miniature handle click does not create history");
+    SendMessageW(surfaces.mmd, WM_LBUTTONDOWN, MK_LBUTTON, pressed);
+    SendMessageW(surfaces.mmd, WM_MOUSEMOVE, MK_LBUTTON, target1);
+    SendMessageW(surfaces.mmd, WM_LBUTTONUP, 0, pressed);
+    Check(host.applyCalls == 0, "returning the miniature handle to the press point does not publish a change");
+    Click(window, kIdUndo);
+    Check(host.applyCalls == 0, "returning the miniature handle to the press point leaves no undo action");
+    paints.ValidateAll();
+    SendMessageW(surfaces.mmd, WM_LBUTTONDOWN, MK_LBUTTON, pressed);
+    Check(GetCapture() == surfaces.mmd, "the real miniature handle press owns the panel capture");
+    Check(!GetUpdateRect(surfaces.mmd, nullptr, FALSE),
+          "pressing a miniature handle without moving paints nothing");
+    SendMessageW(surfaces.mmd, WM_MOUSEMOVE, MK_LBUTTON, target1);
+    SendMessageW(surfaces.mmd, WM_MOUSEMOVE, MK_LBUTTON, target2);
+    Check(host.applyCalls == 0, "an in-flight miniature drag has not published native controls");
+    if (interruption != DragInterruption::None) {
+        InterruptCurveDrag(window, surfaces.mmd, interruption);
+        SendMessageW(surfaces.mmd, WM_LBUTTONUP, 0, released);
+        Click(window, kIdUndo);
+        double restored[4]{};
+        Check(host.applyCalls == 0 &&
+            SendMessageW(window, kHookMmdControls, 0, reinterpret_cast<LPARAM>(restored)) != FALSE &&
+            std::equal(std::begin(controls), std::end(controls), std::begin(restored)),
+            "interrupted miniature drag restores native controls and leaves no undo action");
+        ce::CloseOwned(nullptr);
+        return;
+    }
+    CheckHandleDamage(paints, surfaces, false);
+    SendMessageW(surfaces.mmd, WM_LBUTTONUP, 0, released);
+    Check(host.applyCalls == 1, "the miniature handle drag commits exactly one native control write");
+    double after[4]{};
+    Check(SendMessageW(window,kHookMmdControls,0,reinterpret_cast<LPARAM>(after)) != FALSE &&
+          after[handle*2] == std::lround((double(LOWORD(released))-margin)*127.0/side) &&
+          after[handle*2+1] == std::lround((margin+side-double(HIWORD(released)))*127.0/side) &&
+          after[(1-handle)*2] == controls[(1-handle)*2] &&
+          after[(1-handle)*2+1] == controls[(1-handle)*2+1],
+          "the miniature uses the release coordinate and preserves the opposite handle");
+    Click(window,kIdUndo);
+    double restored[4]{};
+    Check(SendMessageW(window,kHookMmdControls,0,reinterpret_cast<LPARAM>(restored)) != FALSE &&
+          std::equal(std::begin(restored),std::end(restored),std::begin(controls)),
+          "one undo restores the previous miniature control bytes");
+    Click(window,kIdRedo);
+    Check(SendMessageW(window,kHookMmdControls,0,reinterpret_cast<LPARAM>(restored)) != FALSE &&
+          std::equal(std::begin(restored),std::end(restored),std::begin(after)),
+          "redo restores the miniature control at the release point");
+    ce::CloseOwned(nullptr);
+    Note(handle == 0 ? "the first miniature control damages only the MMD panel"
+                     : "the second miniature control damages only the MMD panel");
+}
+
+void HandleDragInvalidation() {
+    ValueHandleDragInvalidation(true);
+    ValueHandleDragInvalidation(false);
+    MmdHandleDragInvalidation(0);
+    MmdHandleDragInvalidation(1);
+    Note("value and miniature handle drags damage only the surface that owns the handle");
+}
+
+// Selected-key fitting and the morph 0..1 display default.
+// The status line is the only exact count of the key selection ("... N"); a
+// fit never writes one, so it still describes the selection afterwards.
+int SelectionCount(HWND window) {
+    const std::wstring text = GetText(window, kIdStatus);
+    std::size_t begin = text.size();
+    while (begin > 0 && text[begin - 1] >= L'0' && text[begin - 1] <= L'9') --begin;
+    if (begin == text.size()) return -1;
+    return static_cast<int>(std::wcstol(text.c_str() + begin, nullptr, 10));
+}
+
+void SelectionFitRegressions() {
+    HostSource host;
+    host.compareEnabled = true; host.hasModeCallbacks = true;
+    host.storedMode = ce::kCompareFree; host.initialMain = "main";
+    // Only frames 20 and 40 get selected; the free slopes overshoot above both
+    // endpoint values, so the fitted Y needs the original sampler on the span.
+    host.data.push_back(MakeGroupChannel("main", L"Main", 0,
+        {MakeKey(0, 0.0), MakeShapeKey(20, 4.0, 0.0, 0.35),
+         MakeShapeKey(40, 8.0, -0.35, 0.0), MakeKey(100, 12.0)}));
+    host.data.push_back(MakeGroupChannel("compare", L"Compare", 0,
+        {MakeKey(0, -500.0), MakeKey(100, 500.0)}, false));
+    ce::Session session = MakeSession(host);
+    HWND window = static_cast<HWND>(ce::Open(nullptr, session, false));
+    Check(IsWindow(window) && KeyCount(window) == 4, "the selected-fit fixture opens four keys");
+    const auto setSpeedView = [&](bool speed) {
+        HWND viewCombo = GetDlgItem(window, kIdViewCombo);
+        SendMessageW(viewCombo, CB_SETCURSEL, speed ? 1 : 0, 0);
+        SendMessageW(window, WM_COMMAND, MAKEWPARAM(kIdViewCombo, CBN_SELCHANGE),
+                     reinterpret_cast<LPARAM>(viewCombo));
+    };
+    const auto speedBounds = [&](double bounds[2]) {
+        setSpeedView(true);
+        const CurveEditorAxisState axis = ReadEditorAxis(window);
+        bounds[0] = axis.viewLow; bounds[1] = axis.viewHigh;
+        setSpeedView(false);
+    };
+    ClickKey(window, 1);
+    Check(GetText(window, kIdFrameEdit) == L"20" && SelectionCount(window) == 1,
+          "a real click selects frame 20 as the only key");
+    ClickKeyAdditive(window, 2);
+    double span[3] = {}, view[4] = {};
+    Check(SelectionCount(window) == 2 && ReadCompareSpan(window, span) && span[2] == 1 &&
+              span[0] == 20.0 && span[1] == 40.0,
+          "the additive click leaves exactly the frames 20 and 40 selected");
+    ClickChannelOnce(window, 1);
+    const int applies = host.applyCalls; const auto history = LocalWriteHistory(window);
+    const std::wstring selectionStatus = GetText(window, kIdStatus);
+    Click(window, kIdFitAll); ReadView(window, view);
+    Check(view[0] == 20.0 && view[1] == 40.0,
+          "Fit all takes the horizontal span from the selected key frames");
+    Check(view[2] > 3.0 && view[2] < 4.0 && view[3] > 8.05 && view[3] < 11.0,
+          "Fit all keeps the sampler overshoot inside the selection and excludes outside keys and the comparison lane");
+    double speedFit[2] = {}; speedBounds(speedFit);
+    Check(speedFit[0] < 0.0 && speedFit[1] > 0.0, "the selection fit covers the derivative range too");
+    // Move the time view away so Fit time has to restore the selected span.
+    ClickBar(window, 1, 0); PressKey(window, VK_LEFT);
+    ReadView(window, view);
+    Check(view[0] < 20.0, "the time bar moved the view before Fit time");
+    double before[4] = {}, fitted[4] = {};
+    ReadView(window, before);
+    Click(window, kIdFitRange); ReadView(window, fitted);
+    Check(fitted[0] == 20.0 && fitted[1] == 40.0, "Fit time restores the selected span");
+    Check(fitted[2] == before[2] && fitted[3] == before[3],
+          "Fit time leaves both value bounds unchanged");
+    double speedAfter[2] = {}; speedBounds(speedAfter);
+    Check(speedAfter[0] == speedFit[0] && speedAfter[1] == speedFit[1],
+          "Fit time leaves both speed bounds unchanged");
+    Check(host.applyCalls == applies && LocalWriteHistory(window) == history && KeyCount(window) == 4 &&
+              GetText(window, kIdStatus) == selectionStatus,
+          "neither fit writes data, history, keys or the selection status");
+    Check(ReadCompareSpan(window, span) && span[2] == 1 && span[0] == 20.0 && span[1] == 40.0,
+          "the key selection survives both fits unchanged");
+    // A real trivial press on empty canvas clears the whole selection.
+    const CurveEditorAxisState clearedAxis = ReadEditorAxis(window);
+    HWND clearCanvas = GetDlgItem(window, kIdCanvas);
+    const LPARAM empty = MAKELPARAM((clearedAxis.plot.left + clearedAxis.plot.right) / 2,
+                                    clearedAxis.plot.top + 6);
+    SendMessageW(clearCanvas, WM_LBUTTONDOWN, MK_LBUTTON, empty);
+    SendMessageW(clearCanvas, WM_LBUTTONUP, 0, empty);
+    Check(SelectionCount(window) == -1 && GetText(window, kIdStatus).find(L"\u6e05\u9664") != std::wstring::npos,
+          "an empty canvas click clears the key selection");
+    Click(window, kIdFitAll); ReadView(window, view);
+    Check(view[0] == 0.0 && view[1] == 100.0 && view[2] < -100.0 && view[3] > 100.0,
+          "without a valid selection Fit all keeps the visible all-track fallback");
+    ClickKey(window, 0);
+    Check(SelectionCount(window) == 1 && GetText(window, kIdFrameEdit) == L"0",
+          "the frame 0 key is selected alone");
+    ReadView(window, before);
+    Click(window, kIdFitRange); ReadView(window, fitted);
+    Check(std::isfinite(fitted[0]) && std::isfinite(fitted[1]) && fitted[0] == 0.0 && fitted[1] == 2.0 &&
+              fitted[2] == before[2] && fitted[3] == before[3],
+          "one selected frame at zero fits a finite non-zero [0,2] window and keeps Y");
+    ce::CloseOwned(nullptr);
+    // A single selected key at the maximum frame slides the +-1 window back.
+    HostSource edge;
+    edge.data.push_back(MakeChannel("edge", L"Edge", {MakeKey(0, 0.0), MakeKey(2147483647, 0.0)}));
+    ce::Session edgeSession = MakeSession(edge);
+    window = static_cast<HWND>(ce::Open(nullptr, edgeSession, false));
+    Check(IsWindow(window) && KeyCount(window) == 2, "the maximum-frame fixture opens");
+    const POINT edgePoint = AskPoint(window, kHookPointForKey, 1);
+    HWND canvas = GetDlgItem(window, kIdCanvas);
+    Check(edgePoint.x > 3 && edgePoint.y > 0, "the maximum-frame key lies inside the canvas");
+    const LPARAM edgeHit = MAKELPARAM(edgePoint.x - 3, edgePoint.y);
+    SendMessageW(canvas, WM_LBUTTONDOWN, MK_LBUTTON, edgeHit);
+    SendMessageW(canvas, WM_LBUTTONUP, 0, edgeHit);
+    Check(SelectionCount(window) == 1, "the maximum-frame key is selected alone");
+    Click(window, kIdFitRange); ReadView(window, fitted);
+    Check(fitted[0] == 2147483645.0 && fitted[1] == 2147483647.0,
+          "one selected frame at the maximum frame fits the clamped [max-2,max] window");
+    ce::CloseOwned(nullptr);
+}
+
+void MorphDefaultRange() {
+    HostSource morph, plain;
+    morph.data.push_back(MakeChannel("morph.weight", L"Weight", {MakeKey(0, -3.0), MakeKey(40, 7.0)}));
+    plain.data.push_back(MakeChannel("plain", L"Plain", {MakeKey(0, 0.0), MakeKey(40, 1.0)}));
+    ce::Session session;
+    session.id = "morph-defaults"; session.language = 2;
+    session.sources.push_back(morph.Make("morph", L"Morph"));
+    session.sources.push_back(plain.Make("plain", L"Plain"));
+    HWND window = static_cast<HWND>(ce::Open(nullptr, session, false));
+    Check(IsWindow(window) && KeyCount(window) == 2, "the morph source opens on its two keys");
+    double view[4] = {};
+    ReadView(window, view);
+    Check(view[2] == 0.0 && view[3] == 1.0, "a fresh morph source opens on exactly the 0..1 weight window");
+    Check(ce::Open(nullptr, session, false) == window, "the morph editor is reused");
+    ReadView(window, view);
+    Check(view[2] == 0.0 && view[3] == 1.0, "a reused Open keeps the morph 0..1 window");
+    HWND combo = GetDlgItem(window, kIdSourceCombo);
+    const auto switchSource = [&](int index) {
+        SendMessageW(combo, CB_SETCURSEL, index, 0);
+        SendMessageW(window, WM_COMMAND, MAKEWPARAM(kIdSourceCombo, CBN_SELCHANGE),
+                     reinterpret_cast<LPARAM>(combo));
+    };
+    switchSource(1); ReadView(window, view);
+    Check(view[2] < -0.01 && view[3] > 1.01,
+          "a non-morph source bounded to 0..1 is fitted from its data, not mistaken for morph");
+    switchSource(0); ReadView(window, view);
+    Check(view[2] == 0.0 && view[3] == 1.0,
+          "switching back to the loaded morph source restores the 0..1 window");
+    ce::CloseOwned(nullptr);
+    window = static_cast<HWND>(ce::Open(nullptr, session, false));
+    ReadView(window, view);
+    Check(IsWindow(window) && view[2] == 0.0 && view[3] == 1.0,
+          "a close/reopen keeps the morph 0..1 window");
+    const int applies = morph.applyCalls;
+    Click(window, kIdFitAll); ReadView(window, view);
+    Check(view[2] < -1.0 && view[3] > 1.0,
+          "an explicit Fit all after the morph entry exposes the real values below 0 and above 1");
+    const double fitY0 = view[2], fitY1 = view[3];
+    Click(window, kIdFitRange); ReadView(window, view);
+    Check(view[2] == fitY0 && view[3] == fitY1, "Fit time keeps the explicit morph Y window");
+    Check(morph.applyCalls == applies && KeyCount(window) == 2,
+          "the morph display default and both fits never edit or write keys");
+    ce::CloseOwned(nullptr);
+}
+
+class PrivateTestDesktop {
+    // GetThreadDesktop returns a borrowed handle; only CreateDesktopW's handle
+    // belongs to this scope. Never close a thread's borrowed desktop handle.
+    HDESK original_ = nullptr;
+    HDESK owned_ = nullptr;
+    void Require(bool ok, const char* operation) const {
+        const DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+        if (!ok) {
+            std::fprintf(stderr, "PRIVATE_DESKTOP failure=%s error=%lu pid=%lu tid=%lu original=%p owned=%p current=%p\n",
+                         operation, error, GetCurrentProcessId(), GetCurrentThreadId(),
+                         static_cast<void*>(original_), static_cast<void*>(owned_),
+                         static_cast<void*>(GetThreadDesktop(GetCurrentThreadId())));
+            // A snapshot is evidence at failure time, not proof that no thread
+            // could have exited or changed desktops during enumeration.
+            HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if (snapshot != INVALID_HANDLE_VALUE) {
+                THREADENTRY32 entry{sizeof(entry)};
+                if (Thread32First(snapshot, &entry)) do {
+                    if (entry.th32OwnerProcessID != GetCurrentProcessId()) continue;
+                    SetLastError(ERROR_SUCCESS);
+                    HDESK desktop = GetThreadDesktop(entry.th32ThreadID);
+                    const DWORD lookupError = GetLastError();
+                    wchar_t name[256]{};
+                    if (desktop) GetUserObjectInformationW(desktop, UOI_NAME, name, sizeof(name), nullptr);
+                    std::fprintf(stderr, "PRIVATE_DESKTOP thread=%lu desktop=%p lookupError=%lu name=%ls\n",
+                                 entry.th32ThreadID, static_cast<void*>(desktop), lookupError, name);
+                    // Diagnostic only: dynamically query the Win32 start address
+                    // and resolve its containing module without suspending threads.
+                    using QueryThread = LONG (WINAPI*)(HANDLE, ULONG, void*, ULONG, ULONG*);
+                    auto query = reinterpret_cast<QueryThread>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"));
+                    HANDLE thread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, entry.th32ThreadID);
+                    void* start = nullptr;
+                    const LONG status = thread && query ? query(thread, 9, &start, sizeof(start), nullptr) : -1;
+                    HMODULE module = nullptr;
+                    wchar_t path[MAX_PATH]{};
+                    if (status >= 0 && start && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(start), &module))
+                        GetModuleFileNameW(module, path, MAX_PATH);
+                    std::fprintf(stderr, "PRIVATE_DESKTOP thread=%lu start=%p queryStatus=%ld module=%ls offset=%llu\n",
+                                 entry.th32ThreadID, start, status, path,
+                                 static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(start) - reinterpret_cast<std::uintptr_t>(module)));
+                    if (thread) CloseHandle(thread);
+                } while (Thread32Next(snapshot, &entry));
+                CloseHandle(snapshot);
+            } else {
+                std::fprintf(stderr, "PRIVATE_DESKTOP snapshotError=%lu\n", GetLastError());
+            }
+        }
+        Check(ok, operation);
+    }
+public:
+    static bool Enabled() {
+        wchar_t enabled[2]{};
+        return GetEnvironmentVariableW(L"MMS_CURVE_PRIVATE_DESKTOP", enabled, 2) == 1 && enabled[0] == L'1';
+    }
+    explicit PrivateTestDesktop(const char* childDesktop = nullptr) {
+        if (!childDesktop) return;
+        original_ = GetThreadDesktop(GetCurrentThreadId());
+        Require(original_ != nullptr, "get borrowed regression desktop");
+        char name[256]{};
+        Require(GetUserObjectInformationA(original_, UOI_NAME, name, sizeof(name), nullptr) != FALSE,
+                "query inherited regression desktop name");
+        Check(std::strcmp(name, childDesktop) == 0, "regression child uses the requested desktop");
+        BOOL input = TRUE;
+        DWORD needed = 0;
+        Require(GetUserObjectInformationW(original_, UOI_IO, &input, sizeof(input), &needed) != FALSE,
+                "query inherited regression desktop input state");
+        Check(!input, "curve regression uses a non-input desktop");
+    }
+    static int RunChild() {
+        // Focus/edit operations can start process-lifetime MSCTF workers bound
+        // to this desktop. Window teardown cannot retire those OS workers.
+        // Keep the owning handle in a supervisor that never joins the desktop;
+        // wait for normal process exit before asserting CloseDesktop succeeds.
+        PrivateTestDesktop desktop;
+        desktop.original_ = GetThreadDesktop(GetCurrentThreadId());
+        desktop.Require(desktop.original_ != nullptr, "get supervisor desktop");
+        wchar_t name[96]{};
+        swprintf_s(name, L"MMS-CurveRegression-%lu-%llu", GetCurrentProcessId(), GetTickCount64());
+        desktop.owned_ = CreateDesktopW(name, nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+        desktop.Require(desktop.owned_ != nullptr, "create owned regression desktop");
+        wchar_t executable[32768]{};
+        const DWORD length = GetModuleFileNameW(nullptr, executable, 32768);
+        Check(length > 0 && length < 32768, "get regression child executable path");
+        auto quote = [](const wchar_t* value) {
+            std::wstring result = L"\"";
+            unsigned slashes = 0;
+            for (; *value; ++value) {
+                if (*value == L'\\') { ++slashes; continue; }
+                result.append(*value == L'"' ? slashes * 2 + 1 : slashes, L'\\');
+                result += *value;
+                slashes = 0;
+            }
+            result.append(slashes * 2, L'\\');
+            return result + L'"';
+        };
+        int count = 0;
+        LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+        desktop.Require(arguments != nullptr, "parse regression child arguments");
+        std::wstring command = quote(executable) + L" --private-desktop-child " + quote(name);
+        for (int index = 1; index < count; ++index) command += L" " + quote(arguments[index]);
+        LocalFree(arguments);
+        HANDLE inherited[3]{};
+        const DWORD ids[] = {STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
+        for (int index = 0; index < 3; ++index) {
+            HANDLE source = GetStdHandle(ids[index]);
+            if (source && source != INVALID_HANDLE_VALUE) {
+                desktop.Require(DuplicateHandle(GetCurrentProcess(), source, GetCurrentProcess(), &inherited[index],
+                                0, TRUE, DUPLICATE_SAME_ACCESS) != FALSE, "duplicate regression child standard handle");
+            } else {
+                Check(index == 0, "regression child requires stdout and stderr");
+                SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+                inherited[index] = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                               &security, OPEN_EXISTING, 0, nullptr);
+                desktop.Require(inherited[index] != INVALID_HANDLE_VALUE, "open regression child null input");
+            }
+        }
+        SIZE_T bytes = 0;
+        InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+        Check(bytes != 0, "size regression child handle whitelist");
+        std::vector<unsigned char> storage(bytes);
+        auto attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+        desktop.Require(InitializeProcThreadAttributeList(attributes, 1, 0, &bytes) != FALSE,
+                        "initialize regression child handle whitelist");
+        desktop.Require(UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                        inherited, sizeof(inherited), nullptr, nullptr) != FALSE, "set regression child handle whitelist");
+        STARTUPINFOEXW startup{};
+        startup.StartupInfo.cb = sizeof(startup);
+        startup.StartupInfo.lpDesktop = name;
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = inherited[0];
+        startup.StartupInfo.hStdOutput = inherited[1];
+        startup.StartupInfo.hStdError = inherited[2];
+        startup.lpAttributeList = attributes;
+        PROCESS_INFORMATION child{};
+        std::fflush(stdout); std::fflush(stderr);
+        const BOOL started = CreateProcessW(executable, &command[0], nullptr, nullptr, TRUE,
+                                           EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &startup.StartupInfo, &child);
+        const DWORD startError = started ? ERROR_SUCCESS : GetLastError();
+        DeleteProcThreadAttributeList(attributes);
+        for (HANDLE handle : inherited)
+            desktop.Require(CloseHandle(handle) != FALSE, "close supervisor standard handle duplicate");
+        SetLastError(startError);
+        desktop.Require(started != FALSE, "start private desktop regression child");
+        std::printf("PRIVATE_DESKTOP child=%lu desktop=%ls\n", child.dwProcessId, name);
+        std::fflush(stdout);
+        Check(WaitForSingleObject(child.hProcess, INFINITE) == WAIT_OBJECT_0,
+              "wait for regression child and all its threads to exit");
+        DWORD exitCode = 1;
+        desktop.Require(GetExitCodeProcess(child.hProcess, &exitCode) != FALSE, "get regression child exit code");
+        desktop.Require(CloseHandle(child.hThread) != FALSE, "close regression child thread handle");
+        desktop.Require(CloseHandle(child.hProcess) != FALSE, "close regression child process handle");
+        Check(GetThreadDesktop(GetCurrentThreadId()) == desktop.original_, "supervisor stays on original desktop");
+        desktop.Require(CloseDesktop(desktop.owned_) != FALSE, "release private regression desktop");
+        desktop.owned_ = nullptr;
+        std::printf("PRIVATE_DESKTOP released after child exit=%lu\n", exitCode);
+        std::fflush(stdout);
+        return static_cast<int>(exitCode);
+    }
+    ~PrivateTestDesktop() {
+        if (!owned_) return;
+        Check(GetThreadDesktop(GetCurrentThreadId()) == original_, "supervisor stays on original desktop during cleanup");
+        Require(CloseDesktop(owned_) != FALSE, "release private regression desktop");
+    }
+    PrivateTestDesktop(const PrivateTestDesktop&) = delete;
+    PrivateTestDesktop& operator=(const PrivateTestDesktop&) = delete;
+};
+
 } // namespace
 
 int main(int argc,char** argv) {
+    const char* childDesktop = nullptr;
+    if (argc > 1 && std::strcmp(argv[1], "--private-desktop-child") == 0) {
+        Check(argc >= 3 && PrivateTestDesktop::Enabled(), "validate private desktop child arguments");
+        childDesktop = argv[2];
+        argc -= 2; argv += 2;
+    } else if (PrivateTestDesktop::Enabled() &&
+               !(argc > 1 && std::strcmp(argv[1], "--paint-isolated-child") == 0)) {
+        return PrivateTestDesktop::RunChild();
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--drag-button-ownership") == 0) {
+        PrivateTestDesktop desktop(childDesktop);
+        CanvasDragButtonOwnership();
+        std::puts("PASS curve drag button ownership and capture loss");
+        return 0;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--drag-layout-interruption") == 0) {
+        PrivateTestDesktop desktop(childDesktop);
+        for (auto interruption : {DragInterruption::Resize, DragInterruption::Cancel}) {
+            ValueHandleDragInvalidation(true, interruption);
+            MmdHandleDragInvalidation(0, interruption);
+        }
+        KeyDragInterruption();
+        std::puts("PASS curve drag layout interruption and retry");
+        return 0;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--interface-scale") == 0) {
+        LiveInterfaceScale();
+        std::puts("PASS curve editor interface scale");
+        return 0;
+    }
+    if (argc == 2 && (std::strcmp(argv[1], "--private-desktop-only") == 0 ||
+                      std::strcmp(argv[1], "--private-desktop-window") == 0 ||
+                      std::strcmp(argv[1], "--private-desktop-selection-read") == 0 ||
+                      std::strcmp(argv[1], "--private-desktop-failure-probe") == 0 ||
+                      std::strcmp(argv[1], "--private-desktop-editor") == 0)) {
+        wchar_t enabled[2]{};
+        Check(GetEnvironmentVariableW(L"MMS_CURVE_PRIVATE_DESKTOP", enabled, 2) == 1 && enabled[0] == L'1',
+              "desktop micro probe requires MMS_CURVE_PRIVATE_DESKTOP=1");
+        {
+            PrivateTestDesktop desktop(childDesktop);
+            Check(std::strcmp(argv[1], "--private-desktop-failure-probe") != 0,
+                  "intentional child failure verifies supervisor exit propagation");
+            if (std::strcmp(argv[1], "--private-desktop-selection-read") == 0) {
+                KeyboardModifiers keyboard; keyboard.Set();
+                SelectionReadSemantics();
+            }
+            if (std::strcmp(argv[1], "--private-desktop-window") == 0) {
+                // Hidden stock control only: no editor, message loop or input.
+                HWND window = CreateWindowExW(0, L"STATIC", L"", WS_POPUP, 0, 0, 1, 1,
+                                               nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+                Check(window != nullptr, "create hidden desktop micro probe window");
+                Check(DestroyWindow(window) != FALSE, "destroy hidden desktop micro probe window");
+            }
+            if (std::strcmp(argv[1], "--private-desktop-editor") == 0) {
+                HostSource host;
+                host.data.push_back(MakeChannel("x", L"X", {MakeKey(0, 0), MakeKey(10, 5)}));
+                Check(ce::Open(nullptr, MakeSession(host), false) != nullptr,
+                      "open one hidden editor for desktop micro probe");
+                ce::CloseOwned(nullptr);
+            }
+        }
+        std::printf("PASS private desktop micro probe body (supervisor release pending): %d checks\n", g_checks);
+        return 0;
+    }
+    PrivateTestDesktop privateDesktop(childDesktop);
     // Synthetic clicks use this thread's GetKeyState. Start from an explicit
     // baseline and restore it on exit; never inject or alter global input.
     KeyboardModifiers keyboardBaseline;keyboardBaseline.Set();
+    // Optional observe-only first-chance diagnostics; inert unless the exact
+    // MMS_CURVE_CRASH_DIAGNOSTICS=1 switch is present.  The scope removes the
+    // handler on every normal return, including the internal paint child.
+    CurveDiagLifetime curveDiagLifetime;(void)curveDiagLifetime;
+    if(argc>1&&std::string(argv[1])=="--paint-isolated-child"){
+        // Internal child launch from RunIsolatedPaintFixtures.  It runs only the
+        // two original paint fixtures and never reaches the ordinary dispatch
+        // below, so it cannot recurse into RunIsolatedPaintFixtures.  Any
+        // malformed internal invocation is rejected here as well.
+        const bool validArguments=argc==3||(argc==4&&std::string(argv[3])=="--paint-isolated-heap-validate");
+        if(!validArguments){
+            std::fprintf(stderr,"FAIL: --paint-isolated-child requires exactly one desktop name and optionally --paint-isolated-heap-validate\n");
+            std::fflush(stderr);
+            return 1;
+        }
+        return RunIsolatedPaintChild(argv[2],argc==4);
+    }
     // Optional same-order diagnostic for a prior 0xC0000374 full-suite exit.
     // It retains every assertion and validates the process heap at group ends.
     g_validateHeap=argc>1&&std::string(argv[1])=="--heap-validate-all";
@@ -7250,6 +9560,11 @@ int main(int argc,char** argv) {
         NativeConstructionLifetime();
         std::printf("curve native construction lifetime: %d checks\n",g_checks);return 0;
     }
+    if(argc>1&&std::string(argv[1])=="--native-initialization-reentry"){
+        NativeInitialProviderRetirement<0>();NativeInitialProviderRetirement<1>();NativeInitialProviderRetirement<2>();
+        NativeInitialProviderRetirement<3>();NativeInitialProviderRetirement<4>();NativeInitialProviderRetirement<5>();NativeInitialProviderRetirement<6>();
+        std::printf("curve native initialization reentry: %d checks\n",g_checks);return 0;
+    }
     if(argc>1&&std::string(argv[1])=="--transport-query-lifetime"){
         TransportCallbackLifetime();TransportFailuresAndMissing();TransportNestedAndSessionCache();TransportInvalidFramesAndMmdSource();TransportPaintStateAndDenseTicks();
         std::printf("curve transport query lifetime: %d checks\n",g_checks);return 0;
@@ -7282,6 +9597,14 @@ int main(int argc,char** argv) {
     if(argc>1&&std::string(argv[1])=="--external-history"){
         ExternalHistoryChecks();std::printf("external curve history: %d checks\n",g_checks);return 0;
     }
+    if(argc>1&&std::string(argv[1])=="--reopen-paint-only"){
+        RunIsolatedPaintFixtures();
+        std::printf("curve editor reopen paint and handle drag: %d parent-only checks (isolated paint child checks reported separately)\n",g_checks);return 0;
+    }
+    if(argc>1&&std::string(argv[1])=="--selection-fit-only"){
+        SelectionFitRegressions();MorphDefaultRange();
+        std::printf("curve selection fit and morph default: %d checks\n",g_checks);return 0;
+    }
 
     if(argc>1&&std::string(argv[1])=="--native-subdivision"){
         NativeSubdivisionRoute();NativeSampleBake();
@@ -7290,6 +9613,13 @@ int main(int argc,char** argv) {
     if(argc>1&&std::string(argv[1])=="--timeline-input"){
         TimelineRulerNavigation();AuthoringKeyboardShortcuts();
         std::printf("curve timeline/input regressions: %d checks\n",g_checks);return 0;
+    }
+    if(argc>1&&std::string(argv[1])=="--key-operations"){
+        HiddenLifecycle();AddDeleteUndoRedo();DragKey();RubberBandMultiMove();RefusedApply();
+        IndependentValueHandles();AlignedValueHandles();AdjacentHandleLinking();
+        TimelineRulerNavigation();AuthoringKeyboardShortcuts();RangeBarKeyboard();
+        CurveModeButtons();TabNavigation();BakeSelectedChannels();
+        std::printf("curve editing gestures: %d checks\n",g_checks);return 0;
     }
     if(argc>1&&std::string(argv[1])=="--native-sync"){
         PendingNativeChangesBeforeWrite(false);NativeSelectionBeforeDelete();NativeSelectionBeforeDelete(false);
@@ -7368,6 +9698,9 @@ int main(int argc,char** argv) {
     HoverHints();
     ComparisonModeRestoresMainCurve();
     AdjacentHandleLinking();
-    std::printf("Animation curve editor regressions passed (%d checks)\n", g_checks);
+    SelectionFitRegressions();
+    MorphDefaultRange();
+    RunIsolatedPaintFixtures();
+    std::printf("Animation curve editor regressions passed (%d parent-only checks; isolated paint child checks reported separately)\n", g_checks);
     return 0;
 }

@@ -17,6 +17,7 @@
 #include "mikumikustudio/interpolation_link.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/bottom_panel_resize.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 
 namespace mikumikustudio {
@@ -171,10 +172,16 @@ void DragInterpolationControlPoint(MMDApp* app) {  // was Sub416280, VA 0x004162
 
     RECT client{};
     GetClientRect(window, &client);                              // 0x4162F4
+#if MMD_ORIGINAL_PROFILE
     int x = app->MouseX() - 8;                                   // 0x4162FD
     if (x < 0) x = 0; else if (x > 127) x = 127;
     int y = client.bottom - app->MouseY() - 8;                   // 0x416317
     if (y < 0) y = 0; else if (y > 127) y = 127;
+#else
+    const POINT design = BottomCurveDesignPoint(BottomCurveRect(app, client.bottom),
+        {app->MouseX(), app->MouseY()});
+    const int x = design.x, y = 127 - design.y;
+#endif
 
     Curve drawn{};  // (x1, y1, x2, y2) fed to both draw helpers
     const int selected = static_cast<int>(SendMessageA(
@@ -295,7 +302,7 @@ void DragInterpolationControlPoint(MMDApp* app) {  // was Sub416280, VA 0x004162
     DrawCurve(app, drawn);                                       // 0x41684F
     DrawControlPoints(app, drawn);                               // 0x41686C
     GetClientRect(window, &client);                              // 0x41687D
-    RECT dirty{8, client.bottom - 135, 137, client.bottom - 6};
+    const RECT dirty = BottomCurveRect(app, client.bottom);
     InvalidateRect(window, &dirty, FALSE);                       // 0x4168BC
 }
 

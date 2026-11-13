@@ -1,13 +1,13 @@
 #include "native_model_vmd_source.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../model/vmd_read_guard.hpp"
+#include "../model/vmd_prepare.hpp"
 #include "mikumikustudio/bone_curve.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/morph_curve.hpp"
-#include "mikumikustudio/text_encoding.hpp"
 #include <cerrno>
 #include <algorithm>
 #include <array>
@@ -128,23 +128,36 @@ MmsResult DecodeModelVmdSource(const char* ansi,const wchar_t* wide,std::uint32_
         decoded.modelName.assign(name,strnlen_s(name,nameSize));
         constexpr char cameraName[]="\x83\x4a\x83\x81\x83\x89\x81\x45\x8f\xc6\x96\xbe";
         if(decoded.modelName==cameraName)return MMS_E_ARGUMENT;
-        auto at=std::size_t(30+nameSize+4);decoded.source.bones.reserve(input.boneCount);
+        const auto boneStart = std::size_t(30 + nameSize + 4);
+        const auto morphStart = boneStart + std::size_t(input.boneCount) * 111 + 4;
+        decoded.source.bones.resize(input.boneCount);
         constexpr unsigned curveOffsets[]={0,16,32,48,4,20,36,52,8,24,40,56,12,28,44,60};
-        for(unsigned i=0;i<input.boneCount;++i,at+=111){
-            const auto* bytes=input.Data(at);if(!ModelVmdFinite(bytes+19,7))return MMS_E_ARGUMENT;
-            ModelBonePasteRecord record;auto& key=record.key;ModelVmdName(key.name,sizeof(key.name),bytes,15);
-            key.frame=ModelVmdValue<std::uint32_t>(bytes+15);std::memcpy(key.position,bytes+19,sizeof(key.position));
-            std::memcpy(key.rotation,bytes+31,sizeof(key.rotation));
-            key.physicsDisabled=ModelVmdValue<std::uint16_t>(bytes+49)==3939;
-            for(unsigned channel=0;channel<16;++channel){key.interpolation[channel]=bytes[47+curveOffsets[channel]];if(key.interpolation[channel]>127)return MMS_E_ARGUMENT;}
-            decoded.source.bones.push_back(record);
-        }
-        at+=4;decoded.source.morphs.reserve(input.morphCount);
-        for(unsigned i=0;i<input.morphCount;++i,at+=23){const auto* bytes=input.Data(at);ModelMorphPasteRecord record;
-            ModelVmdName(record.key.name,sizeof(record.key.name),bytes,15);record.key.frame=ModelVmdValue<std::uint32_t>(bytes+15);
-            record.key.value=ModelVmdValue<float>(bytes+19);if(!std::isfinite(record.key.value))record.key.value=0;
-            decoded.source.morphs.push_back(record);
-        }
+        if (!vmd_read::PrepareRecords(decoded.source.bones.size(), [&](std::size_t i) noexcept {
+            const auto* bytes = input.Data(boneStart + i * 111);
+            if (!ModelVmdFinite(bytes + 19, 7)) return false;
+            auto& key = decoded.source.bones[i].key;
+            ModelVmdName(key.name, sizeof(key.name), bytes, 15);
+            key.frame = ModelVmdValue<std::uint32_t>(bytes + 15);
+            std::memcpy(key.position, bytes + 19, sizeof(key.position));
+            std::memcpy(key.rotation, bytes + 31, sizeof(key.rotation));
+            key.physicsDisabled = ModelVmdValue<std::uint16_t>(bytes + 49) == 3939;
+            for (unsigned channel = 0; channel < 16; ++channel) {
+                key.interpolation[channel] = bytes[47 + curveOffsets[channel]];
+                if (key.interpolation[channel] > 127) return false;
+            }
+            return true;
+        })) return MMS_E_ARGUMENT;
+        decoded.source.morphs.resize(input.morphCount);
+        vmd_read::PrepareRecords(decoded.source.morphs.size(), [&](std::size_t i) noexcept {
+            const auto* bytes = input.Data(morphStart + i * 23);
+            auto& key = decoded.source.morphs[i].key;
+            ModelVmdName(key.name, sizeof(key.name), bytes, 15);
+            key.frame = ModelVmdValue<std::uint32_t>(bytes + 15);
+            key.value = ModelVmdValue<float>(bytes + 19);
+            if (!std::isfinite(key.value)) key.value = 0.f;
+            return true;
+        });
+        std::size_t at = 0;
         decoded.source.displays.reserve(input.displayCount);
         if(input.displayOffset!=vmd_read::Input::absent){at=input.displayOffset+4;
             for(unsigned i=0;i<input.displayCount;++i){ModelDisplayPasteRecord record;const auto* bytes=input.Data(at);
@@ -186,11 +199,9 @@ MmsResult ResolveModelVmdTargets(MMDApp& app,unsigned slot,ModelVmdSource& sourc
         auto resolved=source;const auto& model=*mdl::Mdl(app.ModelSlot(slot));
         if((model.boneCount&&!model.boneTable)||(model.morphCount&&!model.morphs))return MMS_E_ARGUMENT;
         if(!source.hasUnicodeNames){if(auto result=ResolveModelVmdScales(model,resolved,nullptr))return result;source=std::move(resolved);return MMS_OK;}
-        std::vector<std::wstring> names;names.reserve(model.boneCount);
-        for(unsigned i=0;i<model.boneCount;++i)names.push_back(text_encoding::BoneName(model.boneTable[i],false));
-        const auto bones=extended_names::MatchNames(resolved.names.bones,names);names.clear();names.reserve(model.morphCount);
-        for(unsigned i=0;i<model.morphCount;++i)names.push_back(text_encoding::MorphName(model.morphs[i],false));
-        const auto morphs=extended_names::MatchNames(resolved.names.morphs,names);
+        const auto targets = extended_names::ResolveMotionTargets(resolved.names, model);
+        const auto& bones = targets.bones;
+        const auto& morphs = targets.morphs;
         resolved.source.curveTargetsResolved=true;
         resolved.source.boneCurveTargets=bones;resolved.source.morphCurveTargets=morphs;
         if(resolved.names.boneOwners.size()!=resolved.source.bones.size()||resolved.names.morphOwners.size()!=resolved.source.morphs.size())return MMS_E_ARGUMENT;

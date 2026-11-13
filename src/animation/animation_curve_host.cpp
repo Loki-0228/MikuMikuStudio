@@ -5,6 +5,7 @@
 #include "mikumikustudio/animation_curve_host.hpp"
 #include "mikumikustudio/animation_curve_motion.hpp"
 #include "native_curve_sample.hpp"
+#include "native_camera_sampling.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
@@ -13,6 +14,7 @@
 #include "../plugins/native_curve_commands.hpp"
 #include "../plugins/native_pose_scope.hpp"
 #include "../plugins/native_accessory_parent_history.hpp"
+#include "../plugins/native_global_key_delete.hpp"
 #endif
 #include <algorithm>
 #include <cmath>
@@ -141,61 +143,12 @@ template<class K> bool Native(K* pool,Kind kind,std::vector<Channel>& out){
         i=pool[i].next;
     }return false;
 }
-// Match the native camera's single-precision, 12-step time inversion.
-float CameraCurveTime(const std::array<double,4>& control,float t,bool transport=false){
-    if(transport&&std::abs(control[0]-control[1])<=1e-12&&std::abs(control[2]-control[3])<=1e-12)return t;
-    if(control[0]==control[1]&&control[2]==control[3])return t;
-    const float x1=float(control[0])/127.0f,x2=float(control[2])/127.0f;
-    float u=0.5f,half=0.25f;
-    for(int i=0;i<12;++i){
-        const float v=1.0f-u,v3=v*3.0f;
-        const float x=(v3*v*u)*x1+(v3*u*u)*x2+u*u*u;
-        if(x==t)break;
-        u=x>=t?u-half:u+half;half*=0.5f;
-    }
-    const float v=1.0f-u,v3=v*3.0f;
-    return (v3*v*u)*float(control[1])/127.0f+(v3*u*u)*float(control[3])/127.0f+u*u*u;
-}
 #include "native_camera_intervals.inc"
 bool NativeGeometry(const Channel& channel,std::size_t end){
-    if(end==0||end>=channel.track.keys.size()||end>=channel.nativeControls.size()||end>=channel.controlGeometry.size())return false;
-    const auto&a=channel.track.keys[end-1];const auto&b=channel.track.keys[end];
-    return b.interpolation==ac::Interpolation::Bezier&&
-        channel.controlGeometry[end]==std::array<double,4>{a.outWeight,a.outSlope,b.inWeight,b.inSlope};
-}
-ac::Sample CameraSampleImpl(const Channel& channel,double frame,bool interpolateAdjacent){
-    ac::Sample preserved;
-    if(SamplePreservedInterval(channel,frame,preserved))return preserved;
-    const auto&keys=channel.track.keys;
-    if(keys.size()<2)return ac::Evaluate(channel.track,frame);
-    const auto value=[&](double at){
-        if(at<=keys.front().frame)return keys.front().value;
-        if(at>=keys.back().frame)return keys.back().value;
-        const auto bound=std::upper_bound(keys.begin(),keys.end(),at,[](double f,const ac::Key&k){return f<k.frame;});
-        const auto end=std::size_t(bound-keys.begin());
-        if(!NativeGeometry(channel,end))return ac::Evaluate(channel.track,at).value;
-        const auto&a=keys[end-1];const auto&b=keys[end];
-        // Match the native player's exact-key branch. The fixed-step Bezier
-        // inverse only approximates t=0 and must not perturb keys on commit.
-        if(at==a.frame)return a.value;
-        const double span=double(b.frame)-a.frame;
-        if(span==1.0&&!interpolateAdjacent)return a.value;
-        return a.value+(b.value-a.value)*CameraCurveTime(channel.nativeControls[end],float((at-a.frame)/span));
-    };
-    double derivative=0;
-    if(frame>=keys.front().frame&&frame<=keys.back().frame){
-        auto bound=std::upper_bound(keys.begin(),keys.end(),frame,[](double f,const ac::Key& k){return f<k.frame;});
-        const auto end=std::min(std::size_t(bound-keys.begin()),keys.size()-1);
-        if(end&&NativeGeometry(channel,end)){
-            const auto&a=keys[end-1];const auto&b=keys[end];const double span=double(b.frame)-a.frame;
-            if(span>1.0||interpolateAdjacent)derivative=(b.value-a.value)/span*
-                native_curve_sample::Evaluate(channel.nativeControls[end],(frame-a.frame)/span).slope;
-        }else derivative=ac::Evaluate(channel.track,frame).derivative;
-    }
-    return {value(frame),derivative};
+    return native_camera_sampling::detail::NativeGeometry(channel,end);
 }
 ac::Sample CameraSample(const Channel& channel,double frame){
-    return CameraSampleImpl(channel,frame,false);
+    return native_camera_sampling::Sample(channel,frame);
 }
 double SampleValue(const Channel&channel,double frame){
     return channel.sample?channel.sample(channel,frame).value:ac::Evaluate(channel.track,frame).value;
@@ -934,7 +887,8 @@ void Apply(MMDApp*app,Kind kind,double frame,int slot){
         const auto& channel = s->channels[c];
         const auto sampler = channel.sample.target<ac::Sample(*)(const Channel&,double)>();
         v[c] = continuousCamera && sampler && *sampler == CameraSample
-            ? CameraSampleImpl(channel, frame, true).value : SampleValue(channel, frame);
+            ? native_camera_sampling::Sample(channel, frame, false, true).value
+            : SampleValue(channel, frame);
 #if !MMD_ORIGINAL_PROFILE
         if(!attachment.CanApply())return;
 #endif
@@ -1474,18 +1428,26 @@ std::vector<Channel> TargetChannels(const NativeKeyView& view,Kind kind) {
     default:return TargetChannels<mdl::AccessoryKey>(view,kind);
     }
 }
-std::uint64_t RetainedChannelsBytes(const std::vector<Channel>& channels) noexcept {
+std::uint64_t RetainedChannelPayloadBytes(const Channel& c) noexcept {
     std::uint64_t bytes=0;
     const auto add=[&](std::uint64_t n,std::uint64_t stride){bytes=stride&&n>(UINT64_MAX-bytes)/stride?UINT64_MAX:bytes+n*stride;};
     const auto string=[&](const auto& s){add(s.capacity()+1,sizeof(typename std::decay_t<decltype(s)>::value_type));};
-        add(channels.capacity(),sizeof(Channel));
-        for(const auto& c:channels){string(c.id);string(c.label);string(c.unit);string(c.interpolationGroup);
-            add(c.track.keys.capacity(),sizeof(ac::Key));add(c.nativeControls.capacity(),sizeof(std::array<double,4>));
-            add(c.controlGeometry.capacity(),sizeof(std::array<double,4>));add(c.collections.capacity(),sizeof(curve_editor::Collection));
-            add(c.preservedCameraIntervals.capacity(),sizeof(PreservedCameraInterval));
-            for(const auto& group:c.collections){string(group.id);string(group.label);}
-            if(c.sample){const auto p=c.sample.target<ac::Sample(*)(const Channel&,double)>();if(!p||*p!=CameraSample)return UINT64_MAX;}
-        }
+    string(c.id);string(c.label);string(c.unit);string(c.interpolationGroup);
+    add(c.track.keys.capacity(),sizeof(ac::Key));add(c.nativeControls.capacity(),sizeof(std::array<double,4>));
+    add(c.controlGeometry.capacity(),sizeof(std::array<double,4>));add(c.collections.capacity(),sizeof(curve_editor::Collection));
+    add(c.preservedCameraIntervals.capacity(),sizeof(PreservedCameraInterval));
+    for(const auto& group:c.collections){string(group.id);string(group.label);}
+    if(c.sample){const auto p=c.sample.target<ac::Sample(*)(const Channel&,double)>();if(!p||*p!=CameraSample)return UINT64_MAX;}
+    return bytes;
+}
+std::uint64_t RetainedChannelsBytes(const std::vector<Channel>& channels) noexcept {
+    if(channels.capacity()>UINT64_MAX/sizeof(Channel))return UINT64_MAX;
+    std::uint64_t bytes=channels.capacity()*sizeof(Channel);
+    for(const auto& channel:channels) {
+        const auto amount=RetainedChannelPayloadBytes(channel);
+        if(amount>UINT64_MAX-bytes)return UINT64_MAX;
+        bytes+=amount;
+    }
     return bytes;
 }
 std::uint64_t RetainedStateBytes(const State& state) noexcept {
@@ -1495,6 +1457,7 @@ std::uint64_t RetainedStateBytes(const State& state) noexcept {
     }return bytes;
 }
 }
+#include "global_copy_authoring.inc"
 struct AuthoredReplacement::Impl {
     MMDApp& app;Kind kind;int slot;Address address;std::uint64_t poolIdentity,generation=1;
     void* object;bool beforePresent=false,changed=false,published=false,forwardState=false;
@@ -1981,6 +1944,122 @@ std::uint64_t TrackAuthoring::RetainedBytes() const noexcept {
     const auto bytes=impl_->authored?RetainedStateBytes(impl_->seed):0;
     const std::uint64_t overhead=sizeof(*this)+sizeof(Impl)+4*sizeof(void*);
     return bytes>UINT64_MAX-overhead?UINT64_MAX:bytes+overhead;
+}
+namespace {
+struct DeletionRetimeBytes {
+    std::uint64_t value=0;
+    void Add(std::uint64_t count,std::uint64_t width=1) {
+        value=plugins::resource_budget::Collector::Sum(value,
+            plugins::resource_budget::Collector::Product(count,width));
+    }
+    // MSVC's geometric vector growth is below 2*n. Count both the new buffer
+    // and the old buffer during reallocation; this is a peak payload bound.
+    void Growing(std::uint64_t count,std::uint64_t width) { Add(count,width);Add(count,width);Add(count,width); }
+    template<class T>void Nodes(std::uint64_t count) {Add(count,sizeof(T)+4*sizeof(void*));Add(1,sizeof(T)+4*sizeof(void*));}
+};
+template<class K>bool CountDeletionNative(const NativeKeyView& view,std::size_t& count) noexcept {
+    if(!view.key||!view.capacity)return false;
+    unsigned index=0,previous=0,last=0;
+    for(std::size_t n=0;n<view.capacity;++n) {
+        if(index>=view.capacity)return false;
+        const auto* key=static_cast<const K*>(view.key(view.context,index));
+        if(!key||key->frame>frame_limits::maximum||(!n&&key->frame)||
+            (n&&(key->previous!=previous||key->frame<=last)))return false;
+        if(!key->next){count=n+1;return true;}
+        previous=index;last=key->frame;index=key->next;
+    }
+    return false;
+}
+}
+MmsResult MeasureGlobalDeletionRetimingPreparation(const TrackAuthoring& authoring,
+    const NativeKeyView& view,const std::vector<std::pair<int,int>>& frameMap,
+    bool forward,std::uint32_t resetRootChannels,std::uint64_t& bytes) noexcept {
+    try {
+        const auto& source=*authoring.impl_;
+        if(!source.Current())return MMS_E_STALE;
+        if(!source.retimingCaptured)return MMS_E_NOT_READY;
+        // Only DELETE's identity-or-removed mapping is bounded here. General
+        // retiming may insert a replacement root and has a different peak.
+        int previous=-1;
+        for(const auto& item:frameMap) {
+            if(item.first<=previous||item.first>frame_limits::maximum||
+                (item.second!=-1&&item.second!=item.first))return MMS_E_ARGUMENT;
+            previous=item.first;
+        }
+        if(frameMap.empty()||frameMap.front()!=std::pair<int,int>{0,0})return MMS_E_ARGUMENT;
+        std::size_t nativeCount=0,nativeWidth=0;
+        switch(source.kind) {
+        case Kind::Camera:if(!CountDeletionNative<mdl::CameraKey>(view,nativeCount))return MMS_E_ARGUMENT;nativeWidth=sizeof(mdl::CameraKey);break;
+        case Kind::Light:if(!CountDeletionNative<mdl::LightKey>(view,nativeCount))return MMS_E_ARGUMENT;nativeWidth=sizeof(mdl::LightKey);break;
+        case Kind::Shadow:if(!CountDeletionNative<mdl::SelfShadowKey>(view,nativeCount))return MMS_E_ARGUMENT;nativeWidth=sizeof(mdl::SelfShadowKey);break;
+        case Kind::Gravity:if(!CountDeletionNative<mdl::GravityKey>(view,nativeCount))return MMS_E_ARGUMENT;nativeWidth=sizeof(mdl::GravityKey);break;
+        case Kind::Accessory:if(!CountDeletionNative<mdl::AccessoryKey>(view,nativeCount))return MMS_E_ARGUMENT;nativeWidth=sizeof(mdl::AccessoryKey);break;
+        default:return MMS_E_ARGUMENT;
+        }
+        const auto& fields=Fields(source.kind);
+        DeletionRetimeBytes native;
+        native.Add(fields.size(),sizeof(Channel));
+        for(const auto& field:fields) {
+            // String allocation rounding/growth plus its terminator. SSO is
+            // already in Channel; counting it again is conservative.
+            native.Add(2*(std::strlen(field.id)+1)+sizeof(std::string));
+            native.Growing(nativeCount,sizeof(ac::Key));
+        }
+        if(source.kind==Kind::Camera) {
+            native.Add(nativeCount,8*2*sizeof(std::array<double,4>));
+            native.Add(3,2*sizeof("camera/rotation")+sizeof(std::string));
+        }
+        DeletionRetimeBytes total;
+        total.Add(sizeof(TrackAuthoring::Target)+sizeof(TrackAuthoring::Target::Impl));
+        total.Add(native.value); // TargetChannels retained result.
+        total.Growing(nativeCount,nativeWidth); // Its native traversal scratch.
+        if(forward) {
+            total.Nodes<RetimeMap::value_type>(frameMap.size()); // ValidateRetimeMap.
+            total.Nodes<int>(frameMap.size()); // Unique target set.
+        }
+        if(source.authored) {
+            const auto seed=RetainedStateBytes(source.seed);
+            if(seed==UINT64_MAX)return MMS_E_NOT_READY; // Unknown callback ownership.
+            total.Add(seed); // Initial target State copy.
+            total.Nodes<decltype(states)::value_type>(1); // Detached target + map sentinel.
+            if(forward) {
+                if(source.seed.channels.size()!=fields.size()||source.seed.baseline.size()!=fields.size())return MMS_E_ARGUMENT;
+                total.Nodes<RetimeMap::value_type>(frameMap.size()); // ReconcileRetimed inverse map.
+                total.Add(native.value); // Target baseline replacement while old baseline still exists.
+                for(std::size_t c=0;c<source.seed.channels.size();++c) {
+                    const auto& channel=source.seed.channels[c];
+                    if(channel.track.keys.empty()||channel.track.keys.front().frame!=0)return MMS_E_ARGUMENT;
+                    const auto channelBytes=RetainedChannelPayloadBytes(channel);
+                    total.Add(channelBytes); // RetimedChannel's source-channel copy.
+                    // Reconciliation can add at most one key per native row.
+                    const auto count=plugins::resource_budget::Collector::Sum(channel.track.keys.size(),nativeCount);
+                    // RetimedChannel's working track, surviving-key buffer,
+                    // old-frame indices and remapped interval/control arrays.
+                    total.Add(channel.track.keys.capacity(),sizeof(ac::Key));
+                    total.Growing(count,sizeof(ac::Key));
+                    total.Growing(count,sizeof(int));
+                    total.Growing(count,sizeof(PreservedCameraInterval));
+                    total.Growing(count,2*sizeof(std::array<double,4>));
+                    // A missing authored native frame keeps a before-channel
+                    // copy during insertion/remapping. Copy only this channel's
+                    // strings/collections/arrays, then allow for grown arrays.
+                    total.Add(channelBytes);
+                    total.Growing(count,sizeof(ac::Key));
+                    total.Growing(count,2*sizeof(std::array<double,4>));
+                    total.Growing(count,sizeof(PreservedCameraInterval));
+                    // Automatic tangent scratch in reconciliation and root
+                    // reset. Sampling the admitted native callback allocates no
+                    // storage; unknown callbacks were rejected above.
+                    total.Add(count,sizeof(ac::Key));
+                    if(c<32&&(resetRootChannels&(std::uint32_t(1)<<c)))total.Add(count,sizeof(ac::Key));
+                }
+            }
+        }
+        bytes=total.value;return MMS_OK;
+    }catch(const std::bad_alloc&){return MMS_E_MEMORY;}
+    catch(const std::length_error&){return MMS_E_MEMORY;}
+    catch(const std::invalid_argument&){return MMS_E_ARGUMENT;}
+    catch(...){return MMS_E_FAILED;}
 }
 #endif
 }

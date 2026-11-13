@@ -14,3 +14,10 @@ EXPORTS
     ProbeLayoutQuery
     ProbeEnqueueLayoutNormal
     ProbeLayoutSetVisible
+    ProbeUiContext
+    ProbeLayoutSessionApi
+    ProbeLayoutSessionRoundtrip
+    ProbeLayoutSessionSdkRoundtrip
+    ProbeLayoutWorkspaceVersion
+    ProbeSetLayoutParentObserver
+    ProbeLayoutParentRoundtrip

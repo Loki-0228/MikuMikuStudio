@@ -31,8 +31,9 @@
 //     +0x40/+0x44/+0x48, "%3.2f" echo to edits 715/716/717 (0x2CB..0x2CD);
 //   otherwise: records at app+658480, stride 0x8C, fields +0x30/+0x34/+0x38,
 //     echo to edits 754/755/756 (0x2F2..0x2F4).
-// The multi-selection propagation loop is ported below from
-// 0x476E42..0x477257, including its selected-root filter.
+// Movable selection roots retain the propagation from 0x476E42..0x477257.
+// Rotation-only selections rotate at their own joints, including selected
+// parent/child pairs, using each bone's coordinate axes and constraints.
 // =========================================================================//
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -45,6 +46,7 @@
 #include "../plugins/native_model_physics.hpp"
 
 #include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/bone_edit_axes.hpp"
 #include "mikumikustudio/globals.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/mmd_app.hpp"
@@ -160,19 +162,27 @@ void ApplyRotation(float rotation[4], const float delta[4]) {
 }
 
 unsigned char* CurrentModel(MMDApp* app) {
-    return app->ModelSlot(app->state.slotIdx);
+    return app->SelectedModelSlot() < kModelSlotCount ? app->SelectedModel() : nullptr;
+}
+
+bool BoneHudAllows(const mdl::ModelRecord& model, const mdl::BoneRecord& bone,
+                   bool rotation) noexcept {
+    if (model.physicsMode == 2)
+        return (bone.flags & (rotation ? mdl::kBoneFlagRotatable : mdl::kBoneFlagMovable)) != 0;
+    const bool moveControl = bone.type == mdl::BoneType::Move || bone.type == mdl::BoneType::Ik;
+    return moveControl || (rotation && BoneRotatesInPlace(bone.type));
 }
 
 bool IsSelectedRoot(unsigned char* model, int index, bool excludeSelected) {
-    const auto* selected = static_cast<const unsigned char*>(
-        mikumikustudio::mdl::Mdl(model)->boneSelection);
+    const auto& record = *mdl::Mdl(model);
+    const auto* selected = record.boneSelection;
     if (selected == nullptr || selected[index] == 0)
         return false;
-    if (excludeSelected && index == mikumikustudio::mdl::Mdl(model)->selectedBone)
+    if (excludeSelected && index == record.selectedBone)
         return false;
     auto* bones = mikumikustudio::mdl::Bones(model);
     const mdl::BoneRecord& bone = bones[index];
-    if (bone.type != mdl::BoneType::Move && bone.type != mdl::BoneType::Ik)
+    if (!BoneHudAllows(record, bone, false))
         return false;
     const int parent = bone.parent;
     return parent == -1 || selected[parent] == 0;
@@ -410,23 +420,35 @@ void ApplyLocalAxisBoneMove(MMDApp* app, unsigned char* model, int mode) {
 
 }  // namespace
 
+bool SelectedBoneHudAllows(MMDApp* app, bool rotation) noexcept {
+    // The same axis cells also operate on the physics editor's own records.
+    if (app->state.frameCopyDialog) return true;
+    auto* model = CurrentModel(app);
+    if (!model) return false;
+    const auto& record = *mdl::Mdl(model);
+    const int index = record.selectedBone;
+    return record.boneTable && index >= 0 && static_cast<unsigned>(index) < record.boneCount &&
+        BoneHudAllows(record, record.boneTable[index], rotation);
+}
+
 // VA 0x0040E670 - local-axis basis matrix of the selected bone.
 // Fills a 16-float matrix: identity, unless the selected bone carries local
 // axes (bone+520..528 non-zero and model physicsMode==2 -> orthonormalized
 // basis from bone+520 and bone+532) or its name matches one of the arm
 // prefixes (memcmp/strstr above) -> 2D basis from the bone->parent(+460)
 // direction (bone+308/+312).
-void BoneLocalAxes(MMDApp* app, float out[16]) {
+void BoneLocalAxesForBone(unsigned char* model, int index, float out[16]) {
     for (int i = 0; i < 16; ++i)
         out[i] = 0.0f;
     out[0] = out[5] = out[10] = out[15] = 1.0f;
 
-    unsigned char* model = app->SelectedModel();
-    if (model == nullptr || mikumikustudio::mdl::Mdl(model)->selectedBone < 0)
+    if (model == nullptr || index < 0 ||
+        static_cast<unsigned>(index) >= mdl::Mdl(model)->boneCount)
         return;
     auto* bones = mikumikustudio::mdl::Bones(model);
-    const mdl::BoneRecord& bone =
-        bones[mikumikustudio::mdl::Mdl(model)->selectedBone];
+    if (bones == nullptr)
+        return;
+    const mdl::BoneRecord& bone = bones[index];
 
     const bool hasAxes = !(bone.localAxes[0] == 0.0f &&
                            bone.localAxes[1] == 0.0f &&
@@ -460,6 +482,8 @@ void BoneLocalAxes(MMDApp* app, float out[16]) {
         out[10] = e[2];
     } else {
         const char* name = bone.name;
+        if (!std::memchr(name, 0, sizeof(bone.name)))
+            return;
         if (std::memcmp(name, kNameR1, 7) == 0 ||
             std::memcmp(name, kNameR2, 7) == 0 ||
             std::memcmp(name, kNameR3, 5) == 0 ||
@@ -467,16 +491,25 @@ void BoneLocalAxes(MMDApp* app, float out[16]) {
             std::memcmp(name, kNameL2, 7) == 0 ||
             std::memcmp(name, kNameL3, 5) == 0 ||
             std::strstr(name, kNeedleStrstr) != nullptr) {
+            if (bone.tailBone < 0 ||
+                static_cast<unsigned>(bone.tailBone) >= mdl::Mdl(model)->boneCount)
+                return;
             const mdl::BoneRecord& p = bones[bone.tailBone];
             const float dx = p.position[0] - bone.position[0];
             const float dy = p.position[1] - bone.position[1];
             const float len = std::sqrt(dx * dx + dy * dy);
+            if (!std::isfinite(len) || len <= 0.0f)
+                return;
             out[0] = dx / len;
             out[1] = dy / len;
             out[4] = -out[1];
             out[5] = out[0];
         }
     }
+}
+void BoneLocalAxes(MMDApp* app, float out[16]) {
+    unsigned char* model = app ? app->SelectedModel() : nullptr;
+    BoneLocalAxesForBone(model, model ? mdl::Mdl(model)->selectedBone : -1, out);
 }
 
 // Convert a world-space direction into the parent-local frame used by a
@@ -531,32 +564,11 @@ void ViewWorldAxis(MMDApp* app, int axis, float out[3]) {
         out[2] /= length;
     }
 }
-// VA region 0x475A6E..0x477220 - modes 1..6 of the bone-drag stage.
-void BoneEditModes(MMDApp* app) {
-    const int mode = static_cast<int>(app->state.interactionDragMode);
-    if (mode <= 0 || mode > 12)
-        return;
-
-    if ((mode <= 6 || mode >= 10) && app->state.frameCopyDialog != nullptr) {
-        EditModeRecord(app, mode);
-        return;
-    }
-
-    unsigned char* model = CurrentModel(app);
-    if (model == nullptr)
-        return;
-    const int sel = mikumikustudio::mdl::Mdl(model)->selectedBone;
-    if (sel < 0)
-        return;
-
-    if (mode >= 7 && mode <= 9) {
-        ApplyScreenPlaneBoneMove(app, model, mode);
-        return;
-    }
-    if (mode >= 10) {
-        ApplyLocalAxisBoneMove(app, model, mode);
-        return;
-    }
+namespace {
+// Compute from the target bone without changing the active selection or
+// evaluating the hierarchy mid-drag. Every joint sees the same starting pose.
+bool BoneRotationParameters(MMDApp* app, unsigned char* model, int sel, int mode,
+                            float axis[3], float& ang) {
     auto* bones = mikumikustudio::mdl::Bones(model);
     mdl::BoneRecord& bone = bones[sel];
 
@@ -570,8 +582,8 @@ void BoneEditModes(MMDApp* app) {
         return base;
     };
 
-    float ang = 0.0f;
-    float axis[3] = {0.0f, 0.0f, 0.0f};
+    ang = 0.0f;
+    axis[0] = axis[1] = axis[2] = 0.0f;
     const float* matInit = bone.matInit;
     const float* matWorld = bone.matWorld;
 
@@ -660,7 +672,7 @@ void BoneEditModes(MMDApp* app) {
             Vec3Normalize(axis);
         } else {
             float basis[16];
-            BoneLocalAxes(app, basis);
+            BoneLocalAxesForBone(model, sel, basis);
             const std::size_t r = static_cast<std::size_t>(mode - 4) * 4;
             const float mx = basis[r];
             const float my = basis[r + 1];
@@ -686,6 +698,9 @@ void BoneEditModes(MMDApp* app) {
                 axis[1] = bone.axis[1];
                 axis[2] = bone.axis[2];
             } else {
+                if (bone.tailBone < 0 ||
+                    static_cast<unsigned>(bone.tailBone) >= mdl::Mdl(model)->boneCount)
+                    return false;
                 const mdl::BoneRecord& p = bones[bone.tailBone];
                 axis[0] = p.position[0] - bone.position[0];
                 axis[1] = p.position[1] - bone.position[1];
@@ -700,32 +715,108 @@ void BoneEditModes(MMDApp* app) {
         // leave authored bone stretch and the world matrices untouched.
         const double axisLength2 = double(axis[0]) * axis[0] +
             double(axis[1]) * axis[1] + double(axis[2]) * axis[2];
-        if (!std::isfinite(ang) || ang == 0.0f ||
-            !std::isfinite(axisLength2) || axisLength2 == 0.0)
-            return;
+        if (!std::isfinite(axisLength2) || axisLength2 == 0.0)
+            return false;
         const double inverseAxisLength = 1.0 / std::sqrt(axisLength2);
         for (int i = 0; i < 3; ++i)
             axis[i] = static_cast<float>(double(axis[i]) * inverseAxisLength);
-        unsigned char* dirty =
-            mikumikustudio::mdl::Mdl(model)->bonePhysicsState;
-        if (dirty != nullptr)
-            dirty[sel] = 1;
+        return true;
+    }
+}
 
-        // 0x476D6D/0x476DA3: sin/cos of the FULL drag angle (the 0.5
-        // half-angle multiplication does NOT exist in the instruction
-        // stream; var_14D4 already carries the scaled full angle)
-        float dq[4] = {OriginalSinTimes(ang, axis[0]),
-                       OriginalSinTimes(ang, axis[1]),
-                       OriginalSinTimes(ang, axis[2]),
-                       OriginalCos(ang)};
-        NormalizeRotation(dq);
-        ApplyRotation(bone.rotQuat, dq);
+bool ApplyBoneRotation(MMDApp* app, unsigned char* model, int sel, int mode,
+                       float dq[4]) {
+    if (!BoneHudAllows(*mdl::Mdl(model), mdl::Bones(model)[sel], true))
+        return false;
+    float axis[3]{}, ang = 0.0f;
+    if (!BoneRotationParameters(app, model, sel, mode, axis, ang) ||
+        !std::isfinite(ang) || ang == 0.0f)
+        return false;
+    auto* dirty = mdl::Mdl(model)->bonePhysicsState;
+    if (dirty != nullptr)
+        dirty[sel] = 1;
 
-        // child-bone propagation loop (0x476E42..0x477257, lifted from
-        // disassembly): every type-1/2 bone of the marked wave whose
-        // parent is also marked rotates about the selected bone's world
-        // position; kinematic pose slots +320/+332 are updated so the
-        // transform chain picks the change up.
+    // 0x476D6D/0x476DA3: sin/cos of the FULL drag angle (the 0.5
+    // half-angle multiplication does NOT exist in the instruction stream).
+    dq[0] = OriginalSinTimes(ang, axis[0]);
+    dq[1] = OriginalSinTimes(ang, axis[1]);
+    dq[2] = OriginalSinTimes(ang, axis[2]);
+    dq[3] = OriginalCos(ang);
+    NormalizeRotation(dq);
+    ApplyRotation(mdl::Bones(model)[sel].rotQuat, dq);
+    return true;
+}
+}  // namespace
+
+bool BoneRotationAxisWorld(MMDApp* app, unsigned char* model, int index,
+                           int axis, float out[3], float* parentAxis) {
+    out[0] = out[1] = out[2] = 0.0f;
+    if (parentAxis != nullptr)
+        parentAxis[0] = parentAxis[1] = parentAxis[2] = 0.0f;
+    if (app == nullptr || model == nullptr || index < 0 || axis < 0 || axis > 2 ||
+        static_cast<unsigned>(index) >= mdl::Mdl(model)->boneCount ||
+        mdl::Bones(model) == nullptr)
+        return false;
+    const auto& bone = mdl::Bones(model)[index];
+    if (!BoneHudAllows(*mdl::Mdl(model), bone, true))
+        return false;
+    float editAxis[3]{}, angle = 0.0f;
+    if (!BoneRotationParameters(app, model, index, axis + 4, editAxis, angle))
+        return false;
+    TransformBoneVector(bone, bone.matWorld, editAxis, out);
+    const double length2 = double(out[0]) * out[0] + double(out[1]) * out[1] +
+        double(out[2]) * out[2];
+    if (!std::isfinite(length2) || length2 == 0.0) {
+        out[0] = out[1] = out[2] = 0.0f;
+        return false;
+    }
+    const double inverseLength = 1.0 / std::sqrt(length2);
+    for (int i = 0; i < 3; ++i)
+        out[i] = static_cast<float>(double(out[i]) * inverseLength);
+    if (parentAxis != nullptr)
+        std::memcpy(parentAxis, editAxis, sizeof(editAxis));
+    return true;
+}
+
+// VA region 0x475A6E..0x477220 - bone-drag stage.
+void BoneEditModes(MMDApp* app) {
+    const int mode = static_cast<int>(app->state.interactionDragMode);
+    if (mode <= 0 || mode > 12)
+        return;
+
+    if ((mode <= 6 || mode >= 10) && app->state.frameCopyDialog != nullptr) {
+        EditModeRecord(app, mode);
+        return;
+    }
+
+    unsigned char* model = CurrentModel(app);
+    if (model == nullptr)
+        return;
+    auto* record = mdl::Mdl(model);
+    const int sel = record->selectedBone;
+    auto* bones = mdl::Bones(model);
+    if (bones == nullptr || sel < 0 ||
+        static_cast<unsigned>(sel) >= record->boneCount)
+        return;
+    if (!BoneHudAllows(*record, bones[sel], mode <= 6))
+        return;
+
+    if (mode >= 7 && mode <= 9) {
+        ApplyScreenPlaneBoneMove(app, model, mode);
+        return;
+    }
+    if (mode >= 10) {
+        ApplyLocalAxisBoneMove(app, model, mode);
+        return;
+    }
+
+    float dq[4]{};
+    if (ApplyBoneRotation(app, model, sel, mode, dq)) {
+        const mdl::BoneRecord& bone = bones[sel];
+        auto* dirty = record->bonePhysicsState;
+
+        // Preserve the existing Move/Ik root orbit around the active bone.
+        // Selected children inherit this movement through their parents.
         {
             float piv[3]{};
             BoneWorldPoint(bone, piv);
@@ -748,10 +839,26 @@ void BoneEditModes(MMDApp* app) {
                 ch.trans[0] += r2[0] - off[0];
                 ch.trans[1] += r2[1] - off[1];
                 ch.trans[2] += r2[2] - off[2];
-                ApplyRotation(ch.rotQuat, dq);      // 0x4771EB
+                if (BoneHudAllows(*record, ch, true))
+                    ApplyRotation(ch.rotQuat, dq);  // 0x4771EB
             }
         }
+    }
+
+    const auto* selected = record->boneSelection;
+    if (selected == nullptr)
         return;
+    for (unsigned i = 0; i < record->boneCount; ++i) {
+        if (i == static_cast<unsigned>(sel) || selected[i] == 0)
+            continue;
+        const auto type = bones[i].type;
+        if (!BoneRotatesInPlace(type))
+            continue;
+        // Unlike movable roots, rotation-only bones have individual pivots.
+        // Include selected children so several finger joints can curl in one
+        // drag; do not write their position channels or reuse the active axis.
+        float jointDelta[4]{};
+        ApplyBoneRotation(app, model, static_cast<int>(i), mode, jointDelta);
     }
 }
 

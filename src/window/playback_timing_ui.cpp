@@ -5,6 +5,7 @@
 #include <Windows.h>
 
 #include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/ui_language.hpp"
@@ -35,6 +36,7 @@ constexpr int kSubsteps = 103;
 constexpr int kMultiplier = 104;
 constexpr int kBaseRate = 105;
 constexpr int kFollowPhysics = 106;
+constexpr int kResetPhysics = 107;
 
 struct Text {
     const wchar_t* zh;
@@ -100,6 +102,22 @@ std::wstring Number(float value) {
     char text[32];
     const auto result = std::to_chars(text, text + sizeof text, value);
     return std::wstring(text, result.ptr);
+}
+
+void RefreshBaseRate(HWND window) {
+    EnableWindow(GetDlgItem(window, kBaseRate),
+                 IsDlgButtonChecked(window, kFollowPhysics) != BST_CHECKED);
+}
+
+void SetPhysicsFields(HWND window, const playback_timing::Settings& settings) {
+    const auto& physics = settings.physics;
+    SetDlgItemTextW(window, kErp, Number(physics.erp).c_str());
+    SetDlgItemTextW(window, kCfm, Number(physics.cfm).c_str());
+    SetDlgItemInt(window, kSubsteps, physics.substeps, FALSE);
+    SetDlgItemInt(window, kMultiplier, physics.rateMultiplier, FALSE);
+    SetDlgItemInt(window, kBaseRate, physics.baseRateHz, FALSE);
+    CheckDlgButton(window, kFollowPhysics, settings.followPlaybackFps ? BST_CHECKED : BST_UNCHECKED);
+    RefreshBaseRate(window);
 }
 
 bool ReadInteger(HWND dialog, int id, int minimum, int maximum, int& value) {
@@ -173,26 +191,28 @@ void Init(HWND window, Dialog& dialog) {
     const auto& settings = app.PlaybackTiming();
     SetWindowTextW(window, Tr(app, dialog.physics ? kPhysicsTitle : kPlaybackTitle));
     if (dialog.physics) {
-        const auto& physics = settings.physics;
         Edit(window, kErp, Tr(app, {L"误差修正（ERP）", L"Error reduction (ERP)", L"誤差補正（ERP）"}),
-             Number(physics.erp).c_str(), 10, false);
+             L"", 10, false);
         Edit(window, kCfm, Tr(app, {L"约束柔化（CFM）", L"Constraint softness (CFM)", L"拘束の柔らかさ（CFM）"}),
-             Number(physics.cfm).c_str(), 29, false);
+             L"", 29, false);
         Edit(window, kSubsteps, Tr(app, {L"物理子步数", L"Physics substeps", L"物理サブステップ数"}),
-             std::to_wstring(physics.substeps).c_str(), 48, true);
+             L"", 48, true);
         Edit(window, kMultiplier, Tr(app, {L"内部计算倍率", L"Simulation rate multiplier", L"内部計算倍率"}),
-             std::to_wstring(physics.rateMultiplier).c_str(), 67, true);
+             L"", 67, true);
         Edit(window, kBaseRate, Tr(app, {L"基准频率（Hz）", L"Base rate (Hz)", L"基本周波数（Hz）"}),
-             std::to_wstring(physics.baseRateHz).c_str(), 86, true);
+             L"", 86, true);
         Control(window, L"BUTTON", Tr(app, {L"跟随播放帧率", L"Follow playback frame rate", L"再生フレームレートに従う"}),
                 WS_TABSTOP | BS_AUTOCHECKBOX, kFollowPhysics, 10, 105, 200, 13);
-        CheckDlgButton(window, kFollowPhysics, settings.followPlaybackFps ? BST_CHECKED : BST_UNCHECKED);
-        EnableWindow(GetDlgItem(window, kBaseRate), !settings.followPlaybackFps);
+        SetPhysicsFields(window, settings);
     } else {
         Edit(window, kFps, Tr(app, {L"播放帧率（FPS）", L"Playback frame rate (FPS)", L"再生フレームレート（FPS）"}),
              std::to_wstring(settings.playbackFps).c_str(), 10, true);
     }
     const int buttonY = dialog.physics ? 127 : 33;
+    if (dialog.physics) {
+        Control(window, L"BUTTON", Tr(app, {L"恢复默认", L"Restore defaults", L"既定値に戻す"}),
+                WS_TABSTOP | BS_PUSHBUTTON, kResetPhysics, 10, buttonY, 86, 15);
+    }
     Control(window, L"BUTTON", Tr(app, {L"确定", L"OK", L"OK"}),
             WS_TABSTOP | BS_DEFPUSHBUTTON, IDOK, 102, buttonY, 50, 15);
     Control(window, L"BUTTON", Tr(app, {L"取消", L"Cancel", L"キャンセル"}),
@@ -217,8 +237,11 @@ INT_PTR CALLBACK DialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         EndDialog(window, IDCANCEL);
         return TRUE;
     case kFollowPhysics:
-        EnableWindow(GetDlgItem(window, kBaseRate),
-                     IsDlgButtonChecked(window, kFollowPhysics) != BST_CHECKED);
+        RefreshBaseRate(window);
+        return TRUE;
+    case kResetPhysics:
+        if (!dialog->physics || HIWORD(wParam) != BN_CLICKED) return FALSE;
+        SetPhysicsFields(window, playback_timing::Settings{});
         return TRUE;
     default:
         return FALSE;
@@ -243,7 +266,7 @@ void ShowDialog(MMDApp& app, bool physics) {
         if (app.Renderer() && app.PanelDC()) PanelPaint(&app);
         if (app.WaveEnabled() && app.Audio() && app.Audio()->timelineDC) {
             TimelineDrawTicks(app.TimelineStartFrame(), app.SidebarWidth());
-            const RECT strip{6, 95, app.SidebarWidth() - 3, 146};
+            const RECT strip = TimelineRulerDamage(&app);
             InvalidateRect(app.MainWindow(), &strip, FALSE);
         }
     }

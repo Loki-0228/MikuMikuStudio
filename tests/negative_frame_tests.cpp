@@ -162,7 +162,62 @@ void CheckSelectionPersistence() {
           "empty negative tracks remove both payload and selection metadata");
     bone_scale::Forget(model);g_Block=previous;
 }
-int main() {
+static void CheckAccessorySlotIdentity(bool sameFrame) {
+    auto app=std::make_unique<MMDApp>();
+    // Keep both objects alive: switching the slot back must recover A's keys.
+    mdl::AccessoryRecord a{},b{};
+    a.scale=b.scale=a.opacity=b.opacity=1;
+    a.parentModel=b.parentModel=-1;
+    a.visible=1;b.shadowEnabled=1;
+    auto* previous=g_Block;g_Block=app.get();
+    app->CameraFov()=40;app->CameraParentModel()=-1;
+    app->CameraPositionX()=300;
+    Check(negative_frames::RegisterGlobal(app.get(),negative_frames::Global::Camera,-30),"identity fixture first camera key registers");
+    app->CameraPositionX()=340;
+    Check(negative_frames::RegisterGlobal(app.get(),negative_frames::Global::Camera,-10),"identity fixture second camera key registers");
+    const int firstA=sameFrame?-30:-25,lastA=sameFrame?-10:-15;
+    app->AccessorySlot(0)=&a;a.position[0]=10;
+    Check(negative_frames::RegisterAccessory(app.get(),0,firstA),"identity fixture first A key registers");
+    a.position[0]=30;
+    Check(negative_frames::RegisterAccessory(app.get(),0,lastA),"identity fixture second A key registers");
+    app->AccessorySlot(0)=&b;b.position[0]=100;
+    Check(negative_frames::RegisterAccessory(app.get(),0,-30),"identity fixture first B key registers");
+    b.position[0]=200;
+    Check(negative_frames::RegisterAccessory(app.get(),0,-10),"identity fixture second B key registers");
+    Check(negative_frames::Count(app.get())==6,"slot reuse retains both accessory identities and camera keys");
+    const auto evaluate=[&](int frame,float expected,const char* message) {
+        auto* active=app->AccessorySlot(0);
+        auto* inactive=active==&a?&b:&a;
+        const float inactivePosition=inactive->position[0];
+        active->position[0]=-999;app->CameraPositionX()=-999;
+        negative_frames::EvaluateGlobals(app.get(),frame);
+        Check(std::abs(active->position[0]-expected)<1e-5f,message);
+        Check(active->visible==(active==&a) && active->shadowEnabled==(active==&b),
+              "slot evaluation uses discrete flags from the current accessory only");
+        Check(inactive->position[0]==inactivePosition,"slot evaluation leaves detached accessory pose untouched");
+        const float camera=frame<=-30?300.0f:300.0f+2.0f*(frame+30);
+        Check(std::abs(app->CameraPositionX()-camera)<1e-5f,"accessory slot reuse leaves camera exact keys and interpolation intact");
+        Check(negative_frames::Count(app.get())==6,"evaluation retains dormant accessory keys for restoration");
+    };
+    for(int frame:{-40,-30,-25,-20,-15,-10})
+        evaluate(frame,frame<=-30?100.0f:100.0f+5.0f*(frame+30),
+                 sameFrame?"same-frame slot reuse evaluates B without A keys":"different-frame slot reuse evaluates B without A keys");
+    app->AccessorySlot(0)=&a;
+    evaluate(-40,10,"restored A clamps to its own first key without B keys");
+    evaluate(firstA,10,"restored A recovers its first exact key");
+    evaluate(-20,20,"restored A interpolates only its retained keys");
+    evaluate(lastA,30,"restored A recovers its last exact key");
+    app->AccessorySlot(0)=&b;
+    evaluate(-20,150,"switching back to B recovers its unchanged track");
+    negative_frames::Reset(app.get());g_Block=previous;
+}
+int main(int argc,char** argv) {
+    if(argc==2 && (std::strcmp(argv[1],"--accessory-identity-same-frame")==0 ||
+                   std::strcmp(argv[1],"--accessory-identity-different-frame")==0)) {
+        CheckAccessorySlotIdentity(std::strcmp(argv[1],"--accessory-identity-same-frame")==0);
+        std::printf("PASS accessory identity checks=%u\n",checks);
+        return 0;
+    }
     int first=0,last=0,value=0;
     Check(frame_limits::ParseSigned("-1",value)&&value==-1,"signed cursor accepts negative frame");
     Check(!frame_limits::Parse("-1",value),"native key parser remains nonnegative");
@@ -317,5 +372,7 @@ int main() {
     negative_frames::Reset(app.get());bone_scale::Forget(model);g_Block=previous;
     DuplicateCrossModelNegativePaste();
     CheckSelectionPersistence();
+    CheckAccessorySlotIdentity(true);
+    CheckAccessorySlotIdentity(false);
     std::printf("PASS negative frames checks=%u\n",checks);
 }

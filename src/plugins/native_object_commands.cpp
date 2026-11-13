@@ -5,6 +5,7 @@
 #include "native_camera_follow_ui.hpp"
 #include "native_global_commands.hpp"
 #include "native_audio_history.hpp"
+#include "native_picture_history.hpp"
 #include "native_morph_commands.hpp"
 #include "native_model_names.hpp"
 #include "native_model_source.hpp"
@@ -18,6 +19,7 @@
 #include "mikumikustudio/bake_ui_lock.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
+#include "mikumikustudio/model_order_projection.hpp"
 #include "mikumikustudio/physics_scene.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
@@ -291,6 +293,17 @@ bool RefreshPublishedUi(MMDApp& app, SharedHistory& history, const SelectionToke
     if (result != MMS_OK) ScheduleUi(app, &selection);
     return result == MMS_OK;
 }
+int ResolveSelectedModel(MMDApp& app, HWND window) noexcept {
+    const auto combo = GetDlgItem(window, panel::kMainComboModel);
+    const auto row = SendMessageW(combo, CB_GETCURSEL, 0, 0);
+    if (row <= 0 || row > kModelSlotCount) return -1;
+    const auto order = model_order::Project<kModelSlotCount>([&](std::size_t slot) noexcept {
+        const auto* model = mdl::Mdl(app.ModelSlot(static_cast<int>(slot)));
+        return model ? int(model->comboSelIndex) : -1;
+    });
+    return model_order::Resolve(order, static_cast<int>(row), SendMessageW(combo, CB_GETCOUNT, 0, 0),
+        [&](std::size_t index) noexcept { return SendMessageW(combo, CB_GETITEMDATA, index, 0); });
+}
 bool TryDelete(MMDApp* app, HWND window, bool model) noexcept {
     if (!app) return false;
     auto* history = BoundNativePoseHistory(app);
@@ -299,18 +312,24 @@ bool TryDelete(MMDApp* app, HWND window, bool model) noexcept {
     // Check callback/pending-transaction admission before displaying a modal.
     if (history->Enter() != MMS_OK) return true;
     history->Leave();
+    const auto binding = BoundNativePoseGeneration(app);
     const auto result = Boundary([&]() -> MmsResult {
         Operation scope(*app);
         if (!ValidOrder(*app)) return MMS_E_STALE;
         for (int id : {436, 471, 449, 474, 450, 475, 434})
             if (!GetDlgItem(app->MainWindow(), id)) return MMS_E_NOT_READY;
-        const auto selected = SendDlgItemMessageW(window, model ? 436 : 471, CB_GETCURSEL, 0, 0);
-        if (selected < (model ? 1 : 0)) return MMS_E_NOT_FOUND;
         unsigned slot = kModelSlotCount;
-        for (unsigned i = 0; i < kModelSlotCount; ++i) {
-            const bool match = model ? (app->ModelSlot(i) && mdl::Mdl(app->ModelSlot(i))->comboSelIndex == selected) :
-                (app->AccessorySlot(i) && app->AccessorySlot(i)->order == selected);
-            if (match) { if (slot != kModelSlotCount) return MMS_E_STALE; slot = i; }
+        if (model) {
+            const int resolved = ResolveSelectedModel(*app, window);
+            if (resolved < 0) return MMS_E_STALE;
+            slot = static_cast<unsigned>(resolved);
+        } else {
+            const auto selected = SendDlgItemMessageW(window, panel::kAccessoryCombo, CB_GETCURSEL, 0, 0);
+            if (selected < 0) return MMS_E_NOT_FOUND;
+            for (unsigned i = 0; i < kModelSlotCount; ++i) {
+                const auto* accessory = app->AccessorySlot(i);
+                if (accessory && accessory->order == selected) { slot = i; break; }
+            }
         }
         if (slot == kModelSlotCount) return MMS_E_NOT_FOUND;
         const void* pointer = model ? static_cast<void*>(app->ModelSlot(slot)) : static_cast<void*>(app->AccessorySlot(slot));
@@ -320,6 +339,8 @@ bool TryDelete(MMDApp* app, HWND window, bool model) noexcept {
         const auto flags = MB_OKCANCEL | (app->FloatingWindow() ? MB_TOPMOST : 0);
         if (ShowUiMessage(app, window, model ? UiMessage::DeleteModelWithHistory : UiMessage::DeleteAccessoryWithHistory, flags, name.c_str()) != IDOK)
             return MMS_OK;
+        if (model && ResolveSelectedModel(*app, window) != static_cast<int>(slot)) return MMS_E_STALE;
+        if (BoundNativePoseHistory(app) != history || BoundNativePoseGeneration(app) != binding) return MMS_E_STALE;
         const void* current = model ? static_cast<void*>(app->ModelSlot(slot)) : static_cast<void*>(app->AccessorySlot(slot));
         if (current != pointer || !SceneObjectPresent(pointer, identity.id) ||
             SceneObjectIdentity(pointer).generation != identity.generation || EditorsOpen(*app) || !ValidOrder(*app)) return MMS_E_STALE;
@@ -660,6 +681,9 @@ bool RefreshBoundObjectUi(MMDApp& app, SharedHistory& history) noexcept {
     }) == MMS_OK;
 }
 bool RefreshBoundHistoryUi(MMDApp& app, SharedHistory& history, HistoryEffects effects) noexcept {
+    // Also consumes picture-only publications, including the deferred plugin
+    // history path that deliberately skips the scene/readout consumer.
+    if (!RefreshBoundPictureUi(app)) return false;
     // The scene/readout mask keeps the original full object, list and readout
     // consumer exactly once. It owns its Ready guard, Operation and selection
     // retry; a refusal stays retryable by the host's existing queue.

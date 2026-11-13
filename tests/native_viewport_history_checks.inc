@@ -269,7 +269,14 @@ void ViewportWheelMessageAdmission(){
     }
     f.app->CameraMode()=1;f.app->state.followCameraEnabled=0;f.app->CameraParentModel()=-1;
     const auto owner=CreateWindowExW(0,L"STATIC",L"wheel capture fixture",WS_OVERLAPPED,0,0,200,100,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
-    Check(owner!=nullptr,"wheel capture fixture owns a hidden window");SetCapture(owner);
+    Check(owner!=nullptr,"wheel capture fixture owns a hidden window");
+    POINT overTimeline{100, 40};
+    Check(ClientToScreen(owner, &overTimeline) != FALSE, "map the timeline wheel point to screen coordinates");
+    Check(!plugins::HandleBoundViewportMessage(*f.app, owner, WM_MOUSEWHEEL, MAKEWPARAM(0, 120),
+              MAKELPARAM(overTimeline.x, overTimeline.y)) &&
+          ViewportEqual(ViewportRead(*f.app), before) && !f.history.UndoCount(),
+        "the bound viewport leaves a wheel over the timeline to the sidebar despite a stale viewport pointer");
+    SetCapture(owner);
     bool changed=true;
     Check(GetCapture()==owner&&plugins::AdjustViewportCameraWheel(*f.app,f.history,120,false,changed)==MMS_E_BUSY&&!changed&&ViewportEqual(ViewportRead(*f.app),before),
         "captured layout or control drag prevents wheel camera authoring");

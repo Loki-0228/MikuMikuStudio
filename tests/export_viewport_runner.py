@@ -33,11 +33,13 @@ if effects and not args.mme_dir:
     parser.error('--effect requires --mme-dir')
 root = args.output.resolve() / str(time.time_ns())
 root.mkdir(parents=True)
+# Vertex coordinates in the text .x must be float tokens: a bare integer
+# token is read as its raw 32-bit pattern, so "-10" would load as NaN/denormal.
 fixture = '''xof 0303txt 0032
 Mesh Cube {
 8;
--10;0;-10;,10;0;-10;,10;20;-10;,-10;20;-10;,
--10;0;10;,10;0;10;,10;20;10;,-10;20;10;;
+-10.0;0.0;-10.0;,10.0;0.0;-10.0;,10.0;20.0;-10.0;,-10.0;20.0;-10.0;,
+-10.0;0.0;10.0;,10.0;0.0;10.0;,10.0;20.0;10.0;,-10.0;20.0;10.0;;
 12;
 3;0,2,1;,3;0,3,2;,3;4,5,6;,3;4,6,7;,
 3;0,1,5;,3;0,5,4;,3;3,7,6;,3;3,6,2;,
@@ -80,6 +82,11 @@ for name, dpi, overrides in cases:
     env.update(LOCALAPPDATA=str(directory / 'Local'), APPDATA=str(directory / 'Roaming'),
                MIKUMIKUSTUDIO_AUTOSAVE_CONFIG=str(directory / 'autosave.ini'),
                MMS_ANTIALIAS_CONFIG=str(directory / 'antialias.ini'), **overrides)
+    if (name == 'ordinary' and not args.mme_dir and not effects
+            and not args.aa and not args.scale):
+        # The fitted geometry probe belongs to the plain export fixture; MME,
+        # AA and scale runs keep their existing scene setup.
+        env['PROBE_RESTORE_GEOMETRY'] = 'fitted'
     if args.mme_dir:
         env['PROBE_REQUIRE_MME'] = '1'
     if args.aa:

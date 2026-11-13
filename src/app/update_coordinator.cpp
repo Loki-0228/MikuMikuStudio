@@ -4,9 +4,11 @@
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
 #include "device_lost_wait.hpp"
 #include <native_ui/update.hpp>
 #include <algorithm>
@@ -69,9 +71,9 @@ void Wake() {
 LRESULT CALLBACK WakeProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     if (message == kWake || message == WM_TIMER) {
         if (message == kWake) state.posted = false;
-        // Timer dispatch also occurs inside move/size and modal loops. Only
-        // the OS move/size loop is allowed to bypass the outer dispatch scope.
-        SafePoint(state.app);
+        // The outer pump handles ordinary wakes after processing queued input.
+        // During native move/size, the OS owns the pump.
+        if (state.sizeMove) SafePoint(state.app);
         return 0;
     }
     return DefWindowProcW(hwnd, message, wp, lp);
@@ -131,6 +133,15 @@ void ObserveMessage(MMDApp* app, UINT message, WPARAM wp, LPARAM lp) {
         (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST) ||
         message == WM_HSCROLL || message == WM_VSCROLL || message == WM_DROPFILES ||
         (message == WM_TIMER && (wp == 100 || wp == 101));
+    if (message == WM_MOUSEMOVE) {
+        const HWND capture = GetCapture();
+        changed = (wp & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) ||
+            (capture && (capture == app->MainWindow() || capture == app->FloatingWindow())) ||
+            app->PendingTimelineSelectionRow() != TimelineSelectionRow::None;
+    }
+    if (message == WM_VSCROLL && lp &&
+        reinterpret_cast<HWND>(lp) == GetDlgItem(app->MainWindow(), panel::kTimelineVScroll))
+        changed = false;
     if (message == WM_COMMAND) {
         const auto id = LOWORD(wp), notification = HIWORD(wp);
         // Model-file/source saving (263) and texture reload (278) do not edit
@@ -146,7 +157,11 @@ void ObserveMessage(MMDApp* app, UINT message, WPARAM wp, LPARAM lp) {
     if (changed) app->MessageSeen() = 1;
 }
 void SafePoint(MMDApp* app) {
-    if (!app || state.app != app) return;
+    if (!app) return;
+#if !MMD_ORIGINAL_PROFILE
+    RetryDeferredSceneCloses(*app);
+#endif
+    if (state.app != app) return;
     // WM_TIMER is the modal-loop fallback. Re-arm according to the same
     // deadline as the outer pump, including blocked/hidden backoff.
     struct TimerGuard { MMDApp* app; ~TimerGuard() {
@@ -184,7 +199,12 @@ void SafePoint(MMDApp* app) {
         runtime_log::SetPhase("message loop");
         if (state.app != app) return native_ui::UpdateOutcome{native_ui::UpdateResult::Done, request.flags};
         runtime_log::Heartbeat(app->CurrentFrame());
-        state.nextTick = now + Period(app);
+        const auto period = Period(app);
+        // Skip missed slots without moving the cadence after a late wake.
+        // Rebasing each tick on a coarse Windows timeout can alternate between
+        // one and two timer quanta even when the frame itself is fast.
+        const auto lateness = now >= state.nextTick ? (now - state.nextTick) % period : 0;
+        state.nextTick = now + period - lateness;
         if (device_lost_wait::Pending(app) || (state.repaintOnly && app->frameRate.presentedFrames == presentedBefore))
             return native_ui::UpdateOutcome{native_ui::UpdateResult::Retry, 0, state.nextTick};
         return native_ui::UpdateOutcome{native_ui::UpdateResult::Done, request.flags};

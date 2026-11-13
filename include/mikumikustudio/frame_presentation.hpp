@@ -13,7 +13,10 @@ struct MMDAppState;
 RECT FramePresentationRect(MMDApp* app);
 // Insufficient editor space suspends rendering/presentation. Recording keeps
 // its independent output target, and hidden windows with real clients work.
-bool FrameViewportRenderable(MMDApp* app);
+// When requested, return the same presentation rectangle used for validation.
+bool FrameViewportRenderable(MMDApp* app, RECT* presentation = nullptr);
+// Render the current pose for an explicitly requested modal settings preview.
+bool PresentViewportPreview(MMDApp* app);
 // A successful native viewport publication supersedes borrowed geometry, even
 // when its coordinates match the temporary rectangle byte for byte.
 void FrameViewportPublished(MMDApp* app) noexcept;
@@ -51,7 +54,7 @@ class FrameSceneOutputScope {
     FrameSceneOutputScope* previous_=nullptr;
     RECT saved_{},borrowed_{};
     bool ready_=false,entered_=false,borrowedViewport_=false,restoreViewport_=false;
-    friend bool FrameViewportRenderable(MMDApp* app);
+    friend bool FrameViewportRenderable(MMDApp* app, RECT* presentation);
     friend void FrameViewportPublished(MMDApp* app) noexcept;
     friend void FrameEditorViewportRefreshed(MMDApp* app) noexcept;
     friend bool FrameSceneRenderable(MMDApp* app);

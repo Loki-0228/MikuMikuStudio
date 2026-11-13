@@ -21,8 +21,18 @@
 #include "mikumikustudio/display_motion_snapshot.hpp"
 #include "mikumikustudio/bone_curve.hpp"
 #include "mikumikustudio/morph_curve.hpp"
-#include "negative_track_sampling.hpp"
+#include "negative_key_sampling.hpp"
+#include "negative_key_data.hpp"
 #include "negative_history.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "negative_copy_source.hpp"
+#include "mikumikustudio/plugin_scene.hpp"
+#include "../plugins/native_global_key_delete.hpp"
+#include "../plugins/native_model_keys.hpp"
+#include "../plugins/native_key_commands.hpp"
+#include "../plugins/native_object_commands.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#endif
 #include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
 #include "mikumikustudio/animation_curve_editor.hpp"
@@ -33,6 +43,7 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <new>
 #include <stdexcept>
 #include <set>
 #include <tuple>
@@ -50,16 +61,13 @@ void RegisterAccessoryKey(MMDApp*,int,int);
 namespace mikumikustudio::negative_frames {
 namespace {
 using Values=std::array<double,16>;
-struct Key {
-    unsigned char* model=nullptr;
-    const void* identity=nullptr;
-    int target=0,frame=0;
-    bool morph=false,selected=false;
-    Values values{};
-    std::int64_t clipboardOffset=0;
-};
+using Key=detail::Key;
+sampling::Family GlobalFamily(int kind) noexcept {
+    return kind==2?sampling::Family::Camera:kind==3?sampling::Family::Light:
+        kind==4?sampling::Family::Shadow:kind==5?sampling::Family::Gravity:sampling::Family::Accessory;
+}
 bool InActiveTimeline(MMDApp& app,const Key& key) noexcept {
-    return app.CameraMode()?!key.model:key.model==app.SelectedModel();
+    return app.CameraMode()?!key.model:key.model && key.model==app.SelectedModel();
 }
 struct State {
     std::shared_ptr<const char> lifetime=std::make_shared<const char>(0);
@@ -275,17 +283,33 @@ void Changed(MMDApp* app) {app->SceneModified()=1;if(app->MainWindow()){PanelPai
 void U32(std::vector<std::uint8_t>& bytes,std::uint32_t value) {
     for(int i=0;i<4;++i)bytes.push_back(std::uint8_t(value>>(8*i)));
 }
+bool SameAuthoredKey(const Key& a,const Key& b) noexcept {
+    // Selection and clipboard offsets are UI state, not authored key data.
+    return detail::SameKeyData(a,b);
+}
 bool SameKeys(const std::vector<Key>& left,const std::vector<Key>& right) noexcept {
     if(left.size()!=right.size())return false;
     for(std::size_t i=0;i<left.size();++i) {
         const auto& a=left[i];const auto& b=right[i];
-        // Selection and clipboard offsets are UI state, not authored key data.
-        if(a.model!=b.model || a.identity!=b.identity || a.target!=b.target || a.frame!=b.frame ||
-            a.morph!=b.morph || a.values!=b.values)return false;
+        if(!SameAuthoredKey(a,b))return false;
     }
     return true;
 }
 #if !MMD_ORIGINAL_PROFILE
+// A retained scene object can be absent while unrelated tracks are edited.
+// Its dormant keys must survive unchanged, but cannot themselves be edited.
+// Comparing the dormant subsequences also handles active inserts/removals
+// without allocating or dereferencing an absent object's storage.
+bool SameDormantKeys(const MMDApp& app,const std::vector<Key>& a,const std::vector<Key>& b) noexcept {
+    std::size_t i=0,j=0;
+    for(;;) {
+        while(i<a.size() && Current(app,a[i]))++i;
+        while(j<b.size() && Current(app,b[j]))++j;
+        if(i==a.size() || j==b.size())return i==a.size() && j==b.size();
+        if(!SameAuthoredKey(a[i],b[j]))return false;
+        ++i;++j;
+    }
+}
 const void* GlobalPool(MMDApp* app,int kind) noexcept {
     if(kind==2)return app->CameraKeys();if(kind==3)return app->LightKeys();
     if(kind==4)return app->ShadowKeys();if(kind==5)return app->GravityKeys();
@@ -301,49 +325,110 @@ struct GlobalPosePublication {
     }
     void Publish()const noexcept {ApplyGlobal(app,kind,after);}
 };
+bool SameChannel(const Key& a,const Key& b) noexcept {
+    return a.model==b.model&&a.identity==b.identity&&a.target==b.target&&a.morph==b.morph;
+}
+const Key* TargetZero(const std::vector<Key>& zeros,const Key& key) noexcept {
+    const auto found=std::find_if(zeros.begin(),zeros.end(),[&](const Key& value){return SameChannel(value,key);});
+    return found==zeros.end()?nullptr:&*found;
+}
+std::vector<Key> CaptureDeletionZeros(MMDApp& app,const DeletionTargets& targets,std::uint64_t& budget) {
+    if((targets.globals&&!targets.globals->IsCurrent())||(targets.model&&!targets.model->IsCurrent()))
+        throw std::invalid_argument("stale positive deletion target");
+    std::size_t count=targets.globals?targets.globals->ZeroTargets().size():0;
+    if(targets.model) {
+        if(targets.modelSlot>=kModelSlotCount||!app.ModelSlot(targets.modelSlot)||targets.model->ModelObject()!=app.ModelSlot(targets.modelSlot))
+            throw std::invalid_argument("negative deletion target model mismatch");
+        count+=targets.model->BoneZeroTargets().size()+targets.model->MorphZeroTargets().size();
+        if(const auto* display=targets.model->DisplayZeroTarget())count+=1+display->ik.size()+display->selectors.size();
+    }
+    if(count>budget/(2*sizeof(Key)))throw std::length_error("negative deletion zero target budget");
+    budget-=count*2*sizeof(Key);std::vector<Key> result;result.reserve(count);
+    const auto add=[&](Key key) {
+        if(!Current(app,key)||TargetZero(result,key))throw std::invalid_argument("invalid duplicate deletion zero target");
+        if(key.model?(key.target>=0&&!Valid(key.values,key.morph)):!GlobalValid(key.values,key.target))
+            throw std::invalid_argument("invalid deletion zero values");
+        result.push_back(std::move(key));
+    };
+    if(targets.globals)for(const auto& target:targets.globals->ZeroTargets()) {
+        using Kind=curve_host::Kind;Key key;key.identity=&app;
+        switch(target.kind) {
+        case Kind::Camera:key.target=2;break;case Kind::Light:key.target=3;break;
+        case Kind::Shadow:key.target=4;break;case Kind::Gravity:key.target=5;break;
+        case Kind::Accessory:
+            if(target.slot>=255)throw std::invalid_argument("negative accessory target slot");
+            key.target=1000+int(target.slot);key.identity=target.object;break;
+        default:throw std::invalid_argument("negative global target kind");
+        }
+        std::copy(target.zeroPose.begin(),target.zeroPose.end(),key.values.begin());
+        // Negative keys own the enabled byte, not the native gravity word's
+        // upper reserved bytes, which remain owned by the positive participant.
+        if(key.target==5) {
+            if(!Integer(key.values[5],0,UINT32_MAX))throw std::invalid_argument("negative gravity target word");
+            key.values[5]=std::uint32_t(key.values[5])&0xffu;
+        }
+        add(std::move(key));
+    }
+    if(targets.model) {
+        auto* model=app.ModelSlot(targets.modelSlot);const auto& r=*mdl::Mdl(model);
+        const auto make=[&](int index,bool morph) {Key key;key.model=model;key.identity=morph?static_cast<const void*>(r.morphs):r.boneTable;key.target=index;key.morph=morph;return key;};
+        for(const auto& target:targets.model->BoneZeroTargets()) {
+            if(target.bone>=r.boneCount||!target.zeroPose.writePose)throw std::invalid_argument("negative bone target");
+            auto key=make(int(target.bone),false);
+            std::copy(target.zeroPose.position.begin(),target.zeroPose.position.end(),key.values.begin());
+            std::copy(target.zeroPose.rotation.begin(),target.zeroPose.rotation.end(),key.values.begin()+3);
+            std::copy(target.zeroPose.scale.v.begin(),target.zeroPose.scale.v.end(),key.values.begin()+7);add(std::move(key));
+        }
+        for(const auto& target:targets.model->MorphZeroTargets()) {
+            if(target.morph>=r.morphCount)throw std::invalid_argument("negative morph target");
+            auto key=make(int(target.morph),true);key.values[0]=target.zeroWeight;add(std::move(key));
+        }
+        if(const auto* display=targets.model->DisplayZeroTarget()) {
+            if(display->ik.size()!=r.ikChainCount||display->selectors.size()!=r.boneOrderCount)
+                throw std::invalid_argument("negative display target extent");
+            auto key=make(-1,false);key.values[0]=display->visible;add(std::move(key));
+            for(unsigned i=0;i<r.ikChainCount;++i){auto value=make(-2-int(i),false);value.values[0]=display->ik[i];add(std::move(value));}
+            for(unsigned i=0;i<r.boneOrderCount;++i){auto value=make(-1000000-int(i),false);value.values[0]=display->selectors[i].linkedModel;value.values[1]=display->selectors[i].linkedBone;add(std::move(value));}
+        }
+    }
+    return result;
+}
 bool SameGlobalTrack(const std::vector<Key>& a,const std::vector<Key>& b,int kind,const void* identity) noexcept {
     std::size_t i=0,j=0;
     for(;;) {
         while(i<a.size()&&(a[i].model||a[i].target!=kind||a[i].identity!=identity))++i;
         while(j<b.size()&&(b[j].model||b[j].target!=kind||b[j].identity!=identity))++j;
         if(i==a.size()||j==b.size())return i==a.size()&&j==b.size();
-        if(a[i].frame!=b[j].frame||a[i].values!=b[j].values)return false;
+        if(!SameAuthoredKey(a[i],b[j]))return false;
         ++i;++j;
     }
 }
-std::vector<GlobalPosePublication> PrepareGlobalPoses(MMDApp* app,const std::vector<Key>& source,const std::vector<Key>& target) {
+std::vector<GlobalPosePublication> PrepareGlobalPoses(MMDApp* app,const std::vector<Key>& source,const std::vector<Key>& target,
+    const std::vector<Key>& zeros,std::uint64_t& budget) {
     std::vector<GlobalPosePublication> result;
     if(app->CurrentFrame()>=0)return result;
-    for(const auto* list:{&source,&target})for(const auto& changed:*list) {
-        if(changed.model || !Current(*app,changed) || SameGlobalTrack(source,target,changed.target,changed.identity))continue;
+    for(const auto* list:{&source,&target,&zeros})for(const auto& changed:*list) {
+        if(changed.model || !Current(*app,changed) || (!TargetZero(zeros,changed)&&SameGlobalTrack(source,target,changed.target,changed.identity)))continue;
         if(std::any_of(result.begin(),result.end(),[&](const auto& pose){return pose.kind==changed.target&&pose.identity==changed.identity;}))continue;
         const int kind=changed.target,frame=app->CurrentFrame();
         const auto* pool=GlobalPool(app,kind);
         if(!pool)throw std::invalid_argument("negative history requires a native zero-frame baseline");
-        const auto zero=GlobalZero(app,kind);
+        const auto sourceZero=GlobalZero(app,kind);
+        const auto* replacement=TargetZero(zeros,changed);
+        const auto zero=replacement?replacement->values:sourceZero;
         if(!GlobalValid(zero,kind))throw std::invalid_argument("invalid negative history baseline");
-        const Key* first=nullptr;const Key* previous=nullptr;const Key* next=nullptr;
         for(const auto& key:target)if(!key.model&&key.target==kind&&key.identity==changed.identity&&Current(*app,key)) {
             if(!GlobalValid(key.values,kind))throw std::invalid_argument("invalid negative history values");
-            if(!first||key.frame<first->frame)first=&key;
-            if(key.frame<=frame&&(!previous||key.frame>previous->frame))previous=&key;
-            if(key.frame>frame&&(!next||key.frame<next->frame))next=&key;
         }
-        Values after=zero;
-        if(first) {
-            if(!previous)previous=first;
-            after=previous->values;
-            if(frame>previous->frame) {
-                const auto& end=next?next->values:zero;
-                const int endFrame=next?next->frame:0;
-                const double t=double(std::int64_t(frame)-previous->frame)/(std::int64_t(endFrame)-previous->frame);
-                const int continuous=kind>=1000?8:kind==2?8:kind==3?6:kind==4?0:4;
-                for(int n=0;n<continuous;++n)after[n]=float(after[n]+t*(double(end[n])-after[n]));
-                if(kind==4)after[1]=float(after[1]+t*(double(end[1])-after[1]));
-            }
-        }
+        Key zeroKey;zeroKey.values=zero;if(replacement)zeroKey.author=replacement->author;
+        sampling::Result sampled;
+        if(!sampling::Track(target,GlobalFamily(kind),frame,zeroKey,sampled,[&](const Key& key){
+            return !key.model&&key.target==kind&&key.identity==changed.identity&&Current(*app,key);}))
+            throw std::invalid_argument("invalid negative history author sample");
+        const auto& after=sampled.values;
         if(!GlobalValid(after,kind))throw std::invalid_argument("invalid negative history sample");
-        result.push_back({app,kind,frame,changed.identity,pool,GlobalPose(app,kind),after,zero});
+        if(2*sizeof(GlobalPosePublication)>budget)throw std::length_error("negative global pose budget");budget-=2*sizeof(GlobalPosePublication);
+        result.push_back({app,kind,frame,changed.identity,pool,GlobalPose(app,kind),after,sourceZero});
     }
     return result;
 }
@@ -381,6 +466,7 @@ struct ModelPosePublication {
     mdl::BoneRecord* bones=nullptr;mdl::MorphRecord* morphs=nullptr;
     unsigned boneCount=0,morphCount=0;unsigned char* flags=nullptr;
     std::vector<Channel> channels;
+    std::vector<mdl::BoneOrderEntry> targetSelectors;
     FrozenPool bonePool,morphPool,displayPool,orderPool,ikPool;
     std::vector<FrozenPool> displayNested;
     std::size_t orderCount=0,ikCount=0;
@@ -419,6 +505,9 @@ struct ModelPosePublication {
     void Publish()noexcept {
         if(hasBones)bone_scale::ExchangePoseValues(model,afterScales);
         auto& r=*mdl::Mdl(model);
+        // Native negative seek first samples registered frame zero, then
+        // overlays negative parent references. Preserve that window baseline.
+        if(!targetSelectors.empty())std::copy(targetSelectors.begin(),targetSelectors.end(),mdl::BoneOrder(model));
         for(const auto& c:channels) {
             if(c.key.morph)r.morphs[c.key.target].value=float(c.after[0]);
             else if(c.key.target<0)Apply(model,c.key.target,false,c.after);
@@ -436,19 +525,21 @@ bool SameModelTrack(const std::vector<Key>& a,const std::vector<Key>& b,const Ke
     for(const auto& k:a)if(matches(k)) {
         ++n;
         const auto found=std::find_if(b.begin(),b.end(),[&](const Key& other){return matches(other)&&other.frame==k.frame;});
-        if(found==b.end() || found->values!=k.values)return false;
+        if(found==b.end() || !SameAuthoredKey(*found,k))return false;
     }
     for(const auto& k:b)if(matches(k))++m;
     return n==m;
 }
 std::vector<ModelPosePublication> PrepareModelPoses(MMDApp* app,const std::vector<Key>& source,
-    const std::vector<Key>& target,const PhysicsFlags* physics,bool forward,std::uint64_t budget) {
+    const std::vector<Key>& target,const PhysicsFlags* physics,bool forward,const std::vector<Key>& zeros,std::uint64_t& budget,
+    const DeletionTargets* deletionTargets) {
     std::vector<ModelPosePublication> result;
     const auto charge=[&](std::uint64_t bytes){if(bytes>budget)throw std::length_error("negative pose transaction budget");budget-=bytes;};
     const auto chargeCopies=[&](std::uint64_t bytes,unsigned copies){if(bytes>budget/copies)throw std::length_error("negative pose source copies budget");charge(bytes*copies);};
     if(app->CurrentFrame()>=0)return result;
-    for(const auto* list:{&source,&target})for(const auto& changed:*list) {
-        if(!changed.model || SameModelTrack(source,target,changed))continue;
+    for(const auto* list:{&source,&target,&zeros})for(const auto& changed:*list) {
+        if(!changed.model || (!TargetZero(zeros,changed)&&SameModelTrack(source,target,changed)))continue;
+        if(!Current(*app,changed))throw std::invalid_argument("negative target model is absent");
         auto pose=std::find_if(result.begin(),result.end(),[&](const auto& p){return p.model==changed.model;});
         if(pose==result.end()) {
             charge(2*sizeof(ModelPosePublication));
@@ -465,6 +556,11 @@ std::vector<ModelPosePublication> PrepareModelPoses(MMDApp* app,const std::vecto
     }
     for(auto& p:result) {
         const auto& r=*mdl::Mdl(p.model);
+        if(deletionTargets&&deletionTargets->model&&deletionTargets->model->ModelObject()==p.model)
+            if(const auto* display=deletionTargets->model->DisplayZeroTarget()) {
+                chargeCopies(display->selectors.size()*sizeof(mdl::BoneOrderEntry),2);
+                p.targetSelectors=display->selectors;
+            }
         std::unique_ptr<BoneMotionSnapshot> bones;
         std::unique_ptr<morph_curve::SamplingState> morphs;
         for(auto& c:p.channels) {
@@ -482,6 +578,7 @@ std::vector<ModelPosePublication> PrepareModelPoses(MMDApp* app,const std::vecto
             // Charge owned pose maps conservatively before allocating their nodes.
             charge(std::uint64_t(r.boneCount)*384+sizeof(ModelPosePublication));
             p.lease=bone_scale::PoseStorageLease::Prepare(p.model);
+            charge(p.lease->RetainedBytes());
             p.beforeScales=bone_scale::PoseValues(p.model);p.afterScales=p.beforeScales;
             for(unsigned i=0;i<r.boneCount;++i)p.metadata.emplace_back(r.boneTable[i].type,r.boneTable[i].slotIndex);
         }
@@ -524,12 +621,14 @@ std::vector<ModelPosePublication> PrepareModelPoses(MMDApp* app,const std::vecto
                 index=k.next;
             }while(index);
         };
-        if(p.zeroDisplay)ensureDisplay();
+        if(p.zeroDisplay||!p.targetSelectors.empty())ensureDisplay();
         for(auto& c:p.channels) {
             // Keep unregistered drafts unless this transaction clears their flag.
             if(!c.key.morph && c.key.target>=0 && c.targetDirty)continue;
             Values zero{};
-            if(c.needsZero && c.key.morph) {
+            const auto* replacement=TargetZero(zeros,c.key);
+            if(c.needsZero && replacement)zero=replacement->values;
+            else if(c.needsZero && c.key.morph) {
                 float value=0;if(!morphs->Sample(c.key.target,0,value))throw std::invalid_argument("negative morph baseline sample");zero[0]=value;
             } else if(c.needsZero && c.key.target<0) {
                 if(c.key.target<=-1000000) {
@@ -552,8 +651,15 @@ std::vector<ModelPosePublication> PrepareModelPoses(MMDApp* app,const std::vecto
                 std::copy(value.rotation.begin(),value.rotation.end(),zero.begin()+3);
                 std::copy(value.scale.v.begin(),value.scale.v.end(),zero.begin()+7);
             }
-            c.after=negative_sampling::Sample(target,app->CurrentFrame(),zero,c.key.target>=0,!c.key.morph&&c.key.target>=0,[&](const Key& k){
-                return k.model==p.model&&k.identity==c.key.identity&&k.target==c.key.target&&k.morph==c.key.morph;});
+            const auto matches=[&](const Key& k){return k.model==p.model&&k.identity==c.key.identity&&k.target==c.key.target&&k.morph==c.key.morph;};
+            if(c.key.target<0)c.after=sampling::Step(target,app->CurrentFrame(),zero,matches);
+            else {
+                Key zeroKey;zeroKey.values=zero;if(replacement)zeroKey.author=replacement->author;
+                sampling::Result sampled;
+                if(!sampling::Track(target,c.key.morph?sampling::Family::Morph:sampling::Family::Bone,
+                    app->CurrentFrame(),zeroKey,sampled,matches))throw std::invalid_argument("invalid negative model author sample");
+                c.after=sampled.values;
+            }
             if(c.key.target>=0 && !Valid(c.after,c.key.morph))throw std::invalid_argument("invalid prepared negative model pose");
             if(!c.key.morph && c.key.target>=0) {
                 bone_scale::Matrix scale;std::copy_n(c.after.begin()+7,9,scale.v.begin());
@@ -564,10 +670,11 @@ std::vector<ModelPosePublication> PrepareModelPoses(MMDApp* app,const std::vecto
     }
     return result;
 }
-class NegativeChange final:public plugins::HistoryChange {
+class NegativeChange final:public SelectedDeletion {
     MMDApp* app_;std::shared_ptr<const char> lifetime_;
     std::vector<Key> before_,after_;
     std::shared_ptr<PhysicsFlags> flags_;
+    bool publishKeys_=true;
     struct InitialTimeline {
         bool enabled=false,camera=false;unsigned slot=0;unsigned char* model=nullptr;
         bool Matches(MMDApp& app)const noexcept {
@@ -580,13 +687,14 @@ class NegativeChange final:public plugins::HistoryChange {
         // data and stay in the key vectors; only the transient selection is
         // part of this snapshot.
         struct SelectionStamp {
-            unsigned char* model;const void* identity;int target,frame;bool morph,selected;
+            unsigned char* model;const void* identity;int target,frame;bool morph,selected,current;
             bool Matches(const Key& key)const noexcept {
                 return model==key.model && identity==key.identity && target==key.target && frame==key.frame && morph==key.morph;
             }
         };
         MMDApp* app;std::shared_ptr<const char> lifetime;int frame=0;
-        std::uint64_t generation;std::vector<Key> keys;InitialTimeline timeline;
+        std::uint64_t generation=0;std::vector<Key> keys;InitialTimeline timeline;
+        bool statePresent=false,publishKeys=true,consumed=false;
         std::shared_ptr<PhysicsFlags> flags;bool forward=true;
         std::vector<GlobalPosePublication> poses;
         std::vector<ModelPosePublication> modelPoses;
@@ -596,23 +704,25 @@ class NegativeChange final:public plugins::HistoryChange {
         std::vector<SelectionStamp> selection;
         bool IsCurrent()const noexcept override {
             const auto found=states.find(app);
-            if(!timeline.Matches(*app) || app->CurrentFrame()!=frame || found==states.end() || found->second.lifetime!=lifetime ||
-                found->second.keysGeneration!=generation || (flags && !flags->Current(forward)))return false;
-            const auto& live=found->second.keys;
+            if(consumed || !timeline.Matches(*app) || app->CurrentFrame()!=frame || (flags && !flags->Current(forward)))return false;
+            if(statePresent?(found==states.end() || found->second.lifetime!=lifetime || found->second.keysGeneration!=generation):found!=states.end())return false;
+            static const std::vector<Key> empty;
+            const auto& live=statePresent?found->second.keys:empty;
             if(live.size()!=selection.size())return false;
             for(std::size_t i=0;i<selection.size();++i) {
                 const auto& stamp=selection[i];const auto& key=live[i];
-                if(!stamp.Matches(key) || stamp.selected!=key.selected)return false;
+                if(!stamp.Matches(key) || stamp.selected!=key.selected || stamp.current!=Current(*app,key))return false;
             }
-            return std::all_of(poses.begin(),poses.end(),[](const auto& pose){return pose.IsCurrent();}) &&
+            return SameDormantKeys(*app,live,keys) &&
+                std::all_of(poses.begin(),poses.end(),[](const auto& pose){return pose.IsCurrent();}) &&
                 std::all_of(modelPoses.begin(),modelPoses.end(),[](const auto& pose){return pose.IsCurrent();});
         }
         void Publish()noexcept override {
-            auto& state=states.find(app)->second;
-            state.keys.swap(keys);++state.keysGeneration;
+            if(publishKeys) {auto& state=states.find(app)->second;state.keys.swap(keys);++state.keysGeneration;}
             if(flags)flags->Publish(forward);
             for(const auto& pose:poses)pose.Publish();
             for(auto& pose:modelPoses)pose.Publish();
+            consumed=true;
         }
     };
     static bool Measure(std::size_t count,std::size_t width,std::uint64_t& bytes)noexcept {
@@ -623,14 +733,15 @@ class NegativeChange final:public plugins::HistoryChange {
     // keeps the planned after-state selection. Replay copies the target keys and
     // keeps the live selection of keys that still exist; restored keys keep the
     // selection recorded by the snapshot.
-    MmsResult PrepareCandidate(bool forward,bool initial,std::unique_ptr<plugins::PreparedHistoryChange>& out) {
+    MmsResult PrepareCandidate(bool forward,bool initial,std::unique_ptr<plugins::PreparedHistoryChange>& out,
+        const DeletionTargets* targets=nullptr,std::uint64_t* remaining=nullptr) {
         out.reset();const auto found=states.find(app_);
-        if((initial && !initialTimeline_.Matches(*app_)) || found==states.end() || found->second.lifetime!=lifetime_ ||
-            (!SameKeys(found->second.keys,forward?before_:after_) || (flags_ && !flags_->Current(forward))))return MMS_E_STALE;
-        for(const auto& list:{&before_,&after_})for(const auto& key:*list)if(!Current(*app_,key))return MMS_E_STALE;
-        auto next=std::make_unique<Prepared>();next->app=app_;next->lifetime=lifetime_;next->frame=app_->CurrentFrame();
-        next->generation=found->second.keysGeneration;next->flags=flags_;next->forward=forward;
-        if(initial)next->timeline=initialTimeline_;
+        static const std::vector<Key> empty;
+        const auto& live=found==states.end()?empty:found->second.keys;
+        if((initial && !initialTimeline_.Matches(*app_)) ||
+            (lifetime_?(found==states.end() || found->second.lifetime!=lifetime_):!live.empty()) ||
+            (!SameKeys(live,forward?before_:after_) || (flags_ && !flags_->Current(forward))))return MMS_E_STALE;
+        if(!SameDormantKeys(*app_,before_,after_))return MMS_E_STALE;
         const auto* history=plugins::BoundNativePoseHistory(app_);
         const auto limit=history?history->MaxBytes():256ull*1024*1024;
         const auto retained=RetainedBytes();
@@ -639,8 +750,15 @@ class NegativeChange final:public plugins::HistoryChange {
         // already granted to pose preparation. RetainedBytes stays the record
         // charge; these candidates are transient and never enter it.
         std::uint64_t budget=std::min<std::uint64_t>(64ull*1024*1024,limit-retained);
+        if(remaining)budget=std::min(budget,*remaining);
+        const auto granted=budget;
         const auto charge=[&](std::uint64_t bytes){if(bytes>budget)return false;budget-=bytes;return true;};
-        const auto& live=found->second.keys;
+        if(!charge(sizeof(Prepared)))return MMS_E_MEMORY;
+        auto next=std::make_unique<Prepared>();next->app=app_;next->lifetime=lifetime_;next->frame=app_->CurrentFrame();
+        next->statePresent=found!=states.end();next->publishKeys=publishKeys_;
+        if(next->statePresent){next->lifetime=found->second.lifetime;next->generation=found->second.keysGeneration;}
+        next->flags=flags_;next->forward=forward;
+        if(initial)next->timeline=initialTimeline_;
         const auto& target=forward?after_:before_;
         std::uint64_t bytes=0;
         if(!Measure(target.size(),sizeof(Key),bytes) || !charge(bytes))return MMS_E_MEMORY;
@@ -651,18 +769,21 @@ class NegativeChange final:public plugins::HistoryChange {
         next->selection.reserve(live.size());
         if(next->selection.capacity()>live.size() &&
             (!Measure(next->selection.capacity()-live.size(),sizeof(Prepared::SelectionStamp),bytes) || !charge(bytes)))return MMS_E_MEMORY;
-        for(const auto& key:live)next->selection.push_back({key.model,key.identity,key.target,key.frame,key.morph,key.selected});
+        for(const auto& key:live)next->selection.push_back({key.model,key.identity,key.target,key.frame,key.morph,key.selected,Current(*app_,key)});
         if(!initial)for(auto& key:next->keys) {
             const auto match=std::find_if(next->selection.begin(),next->selection.end(),
                 [&](const Prepared::SelectionStamp& stamp){return stamp.Matches(key);});
             if(match!=next->selection.end())key.selected=match->selected;
         }
-        next->poses=PrepareGlobalPoses(app_,found->second.keys,next->keys);
-        next->modelPoses=PrepareModelPoses(app_,found->second.keys,next->keys,flags_.get(),forward,budget);
+        std::vector<Key> zeros;if(targets)zeros=CaptureDeletionZeros(*app_,*targets,budget);
+        next->poses=PrepareGlobalPoses(app_,live,next->keys,zeros,budget);
+        next->modelPoses=PrepareModelPoses(app_,live,next->keys,flags_.get(),forward,zeros,budget,targets);
+        if(!next->IsCurrent())return MMS_E_STALE;
+        if(remaining)*remaining-=granted-budget;
         out=std::move(next);return MMS_OK;
     }
 public:
-    NegativeChange(MMDApp& app,const State& state,std::vector<Key> next,unsigned char* model,bool trackTimeline=false):app_(&app),lifetime_(state.lifetime),before_(state.keys),after_(std::move(next)){
+    NegativeChange(MMDApp& app,const State& state,std::vector<Key> next,unsigned char* model,bool trackTimeline=false,bool publishKeys=true):app_(&app),lifetime_(state.lifetime),before_(state.keys),after_(std::move(next)),publishKeys_(publishKeys){
         if(trackTimeline){initialTimeline_.enabled=true;initialTimeline_.camera=app.CameraMode()!=0;
             if(!initialTimeline_.camera){initialTimeline_.slot=app.SelectedModelSlot();initialTimeline_.model=app.SelectedModel();}}
         if(model && mdl::Mdl(model)->bonePhysicsState) {
@@ -671,15 +792,33 @@ public:
             for(unsigned bone=0;bone<record.boneCount;++bone)if(record.boneSelection[bone])flags_->before.emplace_back(bone,record.bonePhysicsState[bone]);
         }
     }
+    explicit NegativeChange(MMDApp& app):app_(&app),publishKeys_(false) {
+        initialTimeline_.enabled=true;initialTimeline_.camera=app.CameraMode()!=0;
+        if(!initialTimeline_.camera){initialTimeline_.slot=app.SelectedModelSlot();initialTimeline_.model=app.SelectedModel();}
+    }
     MmsResult Prepare(bool forward,std::unique_ptr<plugins::PreparedHistoryChange>& out)override {
         return PrepareCandidate(forward,false,out);
     }
     MmsResult PrepareInitial(plugins::SharedHistory&,bool,std::unique_ptr<plugins::PreparedHistoryChange>& out)override {
         return PrepareCandidate(true,true,out);
     }
+    MmsResult PrepareSigned(bool forward,bool initial,const DeletionTargets& targets,std::uint64_t& remaining,
+        std::unique_ptr<plugins::PreparedHistoryChange>& out) noexcept override {
+        out.reset();
+        if(app_->CurrentFrame()<frame_limits::minimum||app_->CurrentFrame()>frame_limits::maximum||(!forward&&initial))return MMS_E_ARGUMENT;
+        if((targets.globals&&targets.globals->OwnerApp()!=app_)||(targets.model&&targets.model->OwnerApp()!=app_))return MMS_E_ARGUMENT;
+        if((targets.globals&&!targets.globals->IsCurrent())||(targets.model&&!targets.model->IsCurrent()))return MMS_E_STALE;
+        try {return PrepareCandidate(forward,initial,out,&targets,&remaining);}
+        catch(const std::bad_alloc&){return MMS_E_MEMORY;}
+        catch(const std::length_error&){return MMS_E_MEMORY;}
+        catch(const std::invalid_argument&){return MMS_E_ARGUMENT;}
+        catch(...){return MMS_E_FAILED;}
+    }
     uint64_t RetainedBytes()const noexcept override {
-        return sizeof(*this)+256+(uint64_t(before_.capacity())+after_.capacity())*sizeof(Key)+
-            (flags_?sizeof(PhysicsFlags)+256+flags_->before.capacity()*sizeof(flags_->before[0]):0);
+        auto bytes=detail::AddBytes(sizeof(*this)+256,detail::RetainedKeyBytes(before_));
+        bytes=detail::AddBytes(bytes,detail::RetainedKeyBytes(after_));
+        return detail::AddBytes(bytes,flags_?sizeof(PhysicsFlags)+256+
+            flags_->before.capacity()*sizeof(flags_->before[0]):0);
     }
 };
 #endif
@@ -715,20 +854,11 @@ void EvaluateGlobalsImpl(MMDApp* app,int frame) {
     for(const auto& key:found->second.keys)if(!key.model && Current(*app,key) && std::find(kinds.begin(),kinds.end(),key.target)==kinds.end())kinds.push_back(key.target);
     for(int kind:kinds) {
         std::vector<const Key*> keys;
-        for(const auto& key:found->second.keys)if(!key.model && key.target==kind)keys.push_back(&key);
+        for(const auto& key:found->second.keys)if(!key.model && key.target==kind && Current(*app,key))keys.push_back(&key);
         if(keys.empty())continue;
-        std::sort(keys.begin(),keys.end(),[](const Key* a,const Key* b){return a->frame<b->frame;});
-        auto upper=std::upper_bound(keys.begin(),keys.end(),frame,[](int f,const Key* key){return f<key->frame;});
-        const Key* previous=upper==keys.begin()?keys.front():*(upper-1);auto result=previous->values;
-        if(frame>previous->frame) {
-            const auto end=upper==keys.end()?GlobalZero(app,kind):(*upper)->values;
-            const int endFrame=upper==keys.end()?0:(*upper)->frame;
-            const double t=double(std::int64_t(frame)-previous->frame)/(std::int64_t(endFrame)-previous->frame);
-            const int continuous=kind>=1000?8:kind==2?8:kind==3?6:kind==4?0:4;
-            for(int i=0;i<continuous;++i)result[i]=float(result[i]+t*(double(end[i])-result[i]));
-            if(kind==4)result[1]=float(result[1]+t*(double(end[1])-result[1]));
-        }
-        ApplyGlobal(app,kind,result);
+        Key zero;zero.values=GlobalZero(app,kind);sampling::Result sampled;
+        if(sampling::Track(keys,GlobalFamily(kind),frame,zero,sampled,[](const Key&){return true;}))
+            ApplyGlobal(app,kind,sampled.values);
     }
 }
 std::uint32_t Read32(const std::uint8_t* bytes) {
@@ -902,14 +1032,47 @@ int NativeSelectionFirst(MMDApp* app,bool* any=nullptr) {
 #include "negative_bound_commands.inc"
 }
 #if !MMD_ORIGINAL_PROFILE
+bool DeletionInteractionReady(MMDApp& app,bool historyTraversal) noexcept try {
+    const auto found=states.find(&app);
+    const State* state=found==states.end()?nullptr:&found->second;
+    return NegativeInteractionReady(app,state,historyTraversal) &&
+        app.CurrentFrame()>=frame_limits::minimum && app.CurrentFrame()<=frame_limits::maximum &&
+        DeletionSelectionPoolsReady(app);
+} catch(...) {
+    return false;
+}
+MmsResult QueryDeletionSelection(MMDApp& app,plugins::SharedHistory& history,DeletionSelection& out) noexcept {
+    return plugins::Boundary([&]() -> MmsResult {
+        if(plugins::BoundNativePoseHistory(&app)!=&history)return MMS_E_NOT_READY;
+        if(const auto result=history.CheckNativeEdit())return result;
+        if(!DeletionInteractionReady(app))return MMS_E_NOT_READY;
+        const auto found=states.find(&app);
+        const State* state=found==states.end()?nullptr:&found->second;
+        DeletionSelection selection;
+        selection.negative=state && std::any_of(state->keys.begin(),state->keys.end(),
+            [&](const Key& key){return key.selected && InActiveTimeline(app,key) && Current(app,key);});
+        // maximum is a valid selected frame as well as the search sentinel.
+        NativeSelectionFirst(&app,&selection.positive);
+        out=selection;
+        return MMS_OK;
+    });
+}
 MmsResult PlanSelectedDeletion(MMDApp& app,std::shared_ptr<plugins::HistoryChange>& out) noexcept {
+    out.reset();std::shared_ptr<SelectedDeletion> change;
+    const auto result=PlanSignedSelectedDeletion(app,change);
+    if(!result)out=std::move(change);return result;
+}
+MmsResult PlanSignedSelectedDeletion(MMDApp& app,std::shared_ptr<SelectedDeletion>& out,bool includeUnchanged) noexcept {
     out.reset();
     return plugins::Boundary([&]() -> MmsResult {
-        const auto found=states.find(&app);if(found==states.end())return MMS_OK;
+        const auto found=states.find(&app);
+        if(found==states.end()) {if(includeUnchanged)out=std::make_shared<NegativeChange>(app);return MMS_OK;}
         const auto& state=found->second;
+        if(!state.dragging.empty())return MMS_E_NOT_READY;
         auto keys=state.keys;
         keys.erase(std::remove_if(keys.begin(),keys.end(),[&](const Key& k){return k.selected && InActiveTimeline(app,k) && Current(app,k);}),keys.end());
-        if(keys.size()!=state.keys.size())out=std::make_shared<NegativeChange>(app,state,std::move(keys),nullptr,true);
+        const bool changed=keys.size()!=state.keys.size();
+        if(changed||includeUnchanged)out=std::make_shared<NegativeChange>(app,state,std::move(keys),nullptr,true,changed);
         return MMS_OK;
     });
 }
@@ -979,26 +1142,26 @@ void EvaluateModel(unsigned char* model,int frame) {
     for(const auto& key:found->second.keys)if(key.model==model && Current(*app,key))tracks[{key.morph,key.target}].push_back(&key);
     for(auto& pair:tracks) {
         auto& keys=pair.second;
-        std::sort(keys.begin(),keys.end(),[](const Key* a,const Key* b){return a->frame<b->frame;});
-        auto upper=std::upper_bound(keys.begin(),keys.end(),frame,[](int f,const Key* key){return f<key->frame;});
-        const Key* previous=upper==keys.begin() ? keys.front() : *(upper-1);
-        Values result=previous->values;
-        if(frame>previous->frame && previous->target>=0) {
-            const auto end=upper==keys.end() ? Pose(model,previous->target,previous->morph) : (*upper)->values;
-            const int endFrame=upper==keys.end() ? 0 : (*upper)->frame;
-            const double t=double(std::int64_t(frame)-previous->frame)/(std::int64_t(endFrame)-previous->frame);
-            for(std::size_t i=0;i<result.size();++i)result[i]=float(result[i]+t*(double(end[i])-result[i]));
-            if(!previous->morph) {
-                double dot=0;for(int i=3;i<7;++i)dot+=double(previous->values[i])*end[i];
-                double norm=0;
-                for(int i=3;i<7;++i) {result[i]=float((1-t)*previous->values[i]+t*(dot<0 ? -end[i] : end[i]));norm+=double(result[i])*result[i];}
-                if(norm>1e-20)for(int i=3;i<7;++i)result[i]=float(result[i]/std::sqrt(norm));
-            }
+        const int target=pair.first.second;const bool morph=pair.first.first;
+        const auto zeroValues=Pose(model,target,morph);
+        if(target<0)Apply(model,target,morph,sampling::Step(keys,frame,zeroValues,[](const Key&){return true;}));
+        else {
+            Key zero;zero.values=zeroValues;sampling::Result sampled;
+            if(sampling::Track(keys,morph?sampling::Family::Morph:sampling::Family::Bone,frame,zero,sampled,[](const Key&){return true;}))
+                Apply(model,target,morph,sampled.values);
         }
-        Apply(model,previous->target,previous->morph,result);
     }
 }
-void Reset(MMDApp* app) {states.erase(app);}
+void Reset(MMDApp* app) {
+#if !MMD_ORIGINAL_PROFILE
+    if(app)app->RetireFrameCopies();
+#endif
+    states.erase(app);
+}
+void ClearClipboard(MMDApp* app) noexcept {
+    const auto found=states.find(app);
+    if(found!=states.end())std::vector<Key>().swap(found->second.clipboard);
+}
 void ForgetModel(unsigned char* model) {
     for(auto& pair:states) {
         AbortDrag(pair.second);
@@ -1014,11 +1177,15 @@ void RefreshControls(MMDApp* app) {
     if(!app || !app->MainWindow())return;auto found=states.find(app);if(found==states.end())return;
     const auto& state=found->second;
     const bool selected=std::any_of(state.keys.begin(),state.keys.end(),[&](const Key& key){return key.selected && Current(*app,key);});
-    if(selected){EnableWindow(GetDlgItem(app->MainWindow(),420),TRUE);EnableWindow(GetDlgItem(app->MainWindow(),423),TRUE);}
-    if(!state.clipboard.empty())EnableWindow(GetDlgItem(app->MainWindow(),421),TRUE);
-    if(app->CurrentFrame()<0 || (!state.undo.empty() && state.undo.back().drag) || (!state.redo.empty() && state.redo.back().drag)) {
-        if(!state.undo.empty())EnableWindow(GetDlgItem(app->MainWindow(),400),TRUE);
-        if(!state.redo.empty())EnableWindow(GetDlgItem(app->MainWindow(),401),TRUE);
+    const bool pasted=!state.clipboard.empty(),undo=!state.undo.empty(),redo=!state.redo.empty();
+    const bool history=app->CurrentFrame()<0 || (undo && state.undo.back().drag) || (redo && state.redo.back().drag);
+    const auto window=app->MainWindow();
+    // EnableWindow sends synchronous messages: callbacks may replace State.
+    if(selected){EnableWindow(GetDlgItem(window,420),TRUE);EnableWindow(GetDlgItem(window,423),TRUE);}
+    if(pasted)EnableWindow(GetDlgItem(window,421),TRUE);
+    if(history) {
+        if(undo)EnableWindow(GetDlgItem(window,400),TRUE);
+        if(redo)EnableWindow(GetDlgItem(window,401),TRUE);
     }
 }
 std::size_t Count(const MMDApp* app) {auto found=states.find(app);return found==states.end()?0:found->second.keys.size();}
@@ -1123,7 +1290,11 @@ bool Load(MMDApp& app,const pmm_extension::Document& document) {
         Key key{model,kind ? static_cast<const void*>(record.morphs) : record.boneTable,int(target),frame,kind!=0,selected,values};
         const auto before=pending.keys.size();Upsert(pending,key);if(pending.keys.size()==before)return false;
     }
-    states[&app]=std::move(pending);RestoreMetadata(app,document);return true;
+    states[&app]=std::move(pending);
+#if !MMD_ORIGINAL_PROFILE
+    app.RetireFrameCopies();
+#endif
+    RestoreMetadata(app,document);return true;
 }
 void SelectRange(MMDApp* app,int first,int last) {
     auto found=states.find(app);if(found==states.end())return;
@@ -1149,7 +1320,37 @@ void SelectRange(MMDApp* app,int first,int last) {
         }
     }
 }
+CopyResult CopySelected(MMDApp* app, bool refreshControls) noexcept try {
+    if(!app)return CopyResult::Failed;
+    const auto found=states.find(app);
+    if(found==states.end())return CopyResult::Empty;
+    auto& state=found->second;
+    const bool selected=std::any_of(state.keys.begin(),state.keys.end(),[&](const Key& key){
+        return key.selected && InActiveTimeline(*app,key) && Current(*app,key);
+    });
+    if(!selected){state.clipboard.clear();return CopyResult::Empty;}
+    // Preserve the legacy adapter here. It is not a lossless signed source.
+    auto clipboard=NativeClipboard(app);
+    if(!clipboard.empty()) {
+        const int first=NativeSelectionFirst(app);
+        for(auto& key:clipboard)key.frame+=first;
+    }
+    for(auto key:state.keys)
+        if(key.selected && InActiveTimeline(*app,key) && Current(*app,key))clipboard.push_back(key);
+    int first=0;for(const auto& key:clipboard)first=std::min(first,key.frame);
+    for(auto& key:clipboard)key.clipboardOffset=std::int64_t(key.frame)-first;
+    state.clipboard.swap(clipboard);
+    if(refreshControls)RefreshControls(app);
+    return CopyResult::Copied;
+} catch(const std::bad_alloc&) {
+    ClearClipboard(app);
+    return CopyResult::Memory;
+} catch(...) {
+    ClearClipboard(app);
+    return CopyResult::Failed;
+}
 bool Command(MMDApp* app,unsigned id) try {
+    if(id==420)return CopySelected(app)!=CopyResult::Empty;
 #if !MMD_ORIGINAL_PROFILE
     if(TryBoundNegativeCommand(app,id))return true;
 #endif
@@ -1161,18 +1362,6 @@ bool Command(MMDApp* app,unsigned id) try {
     }
     auto found=states.find(app);if(found==states.end())return false;auto& state=found->second;
     const bool selected=std::any_of(state.keys.begin(),state.keys.end(),[&](const Key& k){return k.selected && InActiveTimeline(*app,k) && Current(*app,k);});
-    if(id==420 && !selected){state.clipboard.clear();return false;}
-    if(id==420 && selected) {
-        auto clipboard=NativeClipboard(app);
-        if(!clipboard.empty()) {
-            const int first=NativeSelectionFirst(app);
-            for(auto& key:clipboard)key.frame+=first;
-        }
-        for(auto key:state.keys)if(key.selected && InActiveTimeline(*app,key) && Current(*app,key))clipboard.push_back(key);
-        int first=0;for(const auto& key:clipboard)first=std::min(first,key.frame);
-        for(auto& key:clipboard)key.clipboardOffset=std::int64_t(key.frame)-first;
-        state.clipboard.swap(clipboard);RefreshControls(app);return true;
-    }
     if(id==421 && !state.clipboard.empty()) {
         auto pasted=state.clipboard;
         for(auto& key:pasted)if(!PasteTarget(app,key))return true;
@@ -1328,4 +1517,5 @@ void SelectColumns(MMDApp* app) {
     for(const auto& key:found->second.keys)if(active(key) && key.selected)frames.push_back(key.frame);
     for(auto& key:found->second.keys)if(active(key) && std::find(frames.begin(),frames.end(),key.frame)!=frames.end())key.selected=true;
 }
+#include "negative_copy_source.inc"
 }

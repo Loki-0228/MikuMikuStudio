@@ -1,5 +1,8 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include "mikumikustudio/cache_manager.hpp"
+#include <MinHook.h>
+#include <cwchar>
 #include "mikumikustudio/texture_prepare_cache.hpp"
 #include <wrl/client.h>
 #include <algorithm>
@@ -8,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 using Microsoft::WRL::ComPtr;
@@ -19,6 +23,92 @@ struct Info { UINT width, height, depth, levels, format, type, fileFormat; };
 void Check(bool value, const char* message) {
     if (!value) { std::fprintf(stderr, "FAIL %s error=%lu\n", message, GetLastError()); std::exit(1); }
 }
+// These hooks surround only synchronous calls of the real cache producer.
+namespace producer_fault {
+namespace fs = std::filesystem;
+enum class Mode { None, Commit, Track, Replacement };
+thread_local Mode mode = Mode::None;
+thread_local unsigned payloadRenames = 0, failures = 0;
+std::wstring indexPath, publishedPath, replacedPath, retainedPath;
+std::vector<unsigned char> blockedIndexBytes;
+using MoveFn = BOOL(WINAPI*)(LPCWSTR,LPCWSTR,DWORD);
+using CreateFn = HANDLE(WINAPI*)(LPCWSTR,DWORD,DWORD,LPSECURITY_ATTRIBUTES,DWORD,DWORD,HANDLE);
+MoveFn moveOriginal = nullptr;
+CreateFn createOriginal = nullptr;
+bool PayloadTemporary(LPCWSTR name) {
+    return name && (std::wcsstr(name,L".fxb.tmp-") || std::wcsstr(name,L".mtc.tmp-"));
+}
+BOOL WINAPI Move(LPCWSTR from,LPCWSTR to,DWORD flags) {
+    if (mode == Mode::Commit && payloadRenames && to && indexPath == to) {
+        if(!failures){
+            std::ifstream index(indexPath,std::ios::binary);
+            blockedIndexBytes.assign(std::istreambuf_iterator<char>(index),{});
+        }
+        ++failures; SetLastError(ERROR_ACCESS_DENIED); return FALSE;
+    }
+    if (mode != Mode::None && PayloadTemporary(from)) {
+        if (mode == Mode::Replacement) {
+            // Preserve our own candidate at another fixture name, then install
+            // a different file at its old name before the producer sees failure.
+            replacedPath = from; retainedPath = replacedPath + L".retained";
+            if (!moveOriginal(from,retainedPath.c_str(),MOVEFILE_WRITE_THROUGH)) return FALSE;
+            HANDLE replacement=createOriginal(from,GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+            Check(replacement!=INVALID_HANDLE_VALUE,"create independent replacement at temporary name");
+            const unsigned char marker=0x6d; DWORD written=0;
+            Check(WriteFile(replacement,&marker,1,&written,nullptr)&&written==1,"write replacement ownership marker");
+            CloseHandle(replacement); ++failures;
+            SetLastError(ERROR_ACCESS_DENIED); return FALSE;
+        }
+        const auto result=moveOriginal(from,to,flags);
+        if(result){++payloadRenames;publishedPath=to;}
+        return result;
+    }
+    return moveOriginal(from,to,flags);
+}
+HANDLE WINAPI Create(LPCWSTR name,DWORD access,DWORD share,LPSECURITY_ATTRIBUTES security,
+                     DWORD creation,DWORD attributes,HANDLE templateFile) {
+    if(mode==Mode::Track && access==FILE_READ_ATTRIBUTES && PayloadTemporary(name)){
+        ++failures;SetLastError(ERROR_ACCESS_DENIED);return INVALID_HANDLE_VALUE;
+    }
+    return createOriginal(name,access,share,security,creation,attributes,templateFile);
+}
+struct Hooks {
+    Hooks(){
+        Check(MH_Initialize()==MH_OK,"initialize producer fault hooks");
+        Check(MH_CreateHook(reinterpret_cast<void*>(&MoveFileExW),reinterpret_cast<void*>(&Move),
+            reinterpret_cast<void**>(&moveOriginal))==MH_OK,"hook exact producer publication boundary");
+        Check(MH_CreateHook(reinterpret_cast<void*>(&CreateFileW),reinterpret_cast<void*>(&Create),
+            reinterpret_cast<void**>(&createOriginal))==MH_OK,"hook temporary metadata observation");
+        Check(MH_EnableHook(reinterpret_cast<void*>(&MoveFileExW))==MH_OK &&
+              MH_EnableHook(reinterpret_cast<void*>(&CreateFileW))==MH_OK,"enable producer fault hooks");
+    }
+    ~Hooks(){
+        mode=Mode::None;
+        MH_DisableHook(reinterpret_cast<void*>(&MoveFileExW));
+        MH_DisableHook(reinterpret_cast<void*>(&CreateFileW));
+        MH_RemoveHook(reinterpret_cast<void*>(&MoveFileExW));
+        MH_RemoveHook(reinterpret_cast<void*>(&CreateFileW));
+        MH_Uninitialize();
+    }
+};
+void Start(Mode next){payloadRenames=failures=0;publishedPath.clear();replacedPath.clear();retainedPath.clear();blockedIndexBytes.clear();mode=next;}
+void Configure(const fs::path& root){
+    Check(SetEnvironmentVariableW(L"MMS_CACHE_MANAGER_DIR",root.c_str())!=FALSE,"isolate managed producer root");
+    Check(SetEnvironmentVariableW(L"MMS_CACHE_MANAGER_SETTINGS",(root.parent_path()/L"settings.json").c_str())!=FALSE,"isolate producer settings");
+    mikumikustudio::cache_manager::Settings settings;
+    settings.limitBytes=64ull*1024*1024;settings.automaticCleanup=false;
+    std::wstring error;
+    Check(mikumikustudio::cache_manager::Configure(settings,error),"configure managed producer budget");
+    indexPath=(root/L"Management"/L"index.bin").wstring();
+}
+void Finish(){
+    mode=Mode::None;
+    (void)mikumikustudio::cache_manager::Inspect(); // Settle the intentional registration failure.
+    SetEnvironmentVariableW(L"MMS_CACHE_MANAGER_DIR",nullptr);
+    SetEnvironmentVariableW(L"MMS_CACHE_MANAGER_SETTINGS",nullptr);
+}
+}
+
 void Write(const fs::path& path, const Bytes& bytes) {
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     Check(bool(stream.write(reinterpret_cast<const char*>(bytes.data()), bytes.size())), "write owned fixture");
@@ -109,6 +199,59 @@ std::vector<fs::path> Entries(const fs::path& root) {
     for(const auto& f:fs::recursive_directory_iterator(root))if(f.path().extension()==L".mtc")files.push_back(f.path());
     return files;
 }
+void ManagedProducer(const fs::path& output,Fn fn,IDirect3DDevice9* device) {
+    producer_fault::Hooks faults;
+    const auto managed=output/L"managed-producer"/L"Cache";
+    producer_fault::Configure(managed);
+    SetEnvironmentVariableW(L"MMS_TEXTURE_CACHE_DIR",(managed/L"Textures").c_str());
+    const auto source=output/L"managed-producer.tga";Write(source,Tga());
+    auto native=Load(fn,device,source,false,0);
+    const auto before=cache::GetStatistics();
+    auto cold=Load(fn,device,source,true,0);Equivalent(device,native,cold);
+    const auto seeded=cache::GetStatistics();
+    Check(seeded.stores==before.stores+1 && seeded.nativeCalls==before.nativeCalls+1,
+          "managed cold texture registers one real payload");
+    auto warm=Load(fn,device,source,true,0);Equivalent(device,native,warm);
+    Check(cache::GetStatistics().hits==seeded.hits+1,"managed warm texture uses disk cache");
+    auto bytes=Tga();bytes[31]^=0x53;Write(source,bytes);
+    native=Load(fn,device,source,false,0);
+    const auto priorFailure=cache::GetStatistics();
+    producer_fault::Start(producer_fault::Mode::Commit);
+    auto pending=Load(fn,device,source,true,0);
+    producer_fault::mode=producer_fault::Mode::None;
+    Equivalent(device,native,pending);
+    Check(producer_fault::payloadRenames==1 && producer_fault::failures>0 &&
+          cache::GetStatistics().stores==priorFailure.stores,
+          "texture Commit fails after real publication without stores increment or object failure");
+    Check(!producer_fault::blockedIndexBytes.empty() &&
+          Read(producer_fault::indexPath)==producer_fault::blockedIndexBytes &&
+          fs::exists(producer_fault::publishedPath),"texture publication survives unchanged persistent index");
+    (void)mikumikustudio::cache_manager::Inspect();
+    const auto priorRecovery=cache::GetStatistics();
+    auto recovered=Load(fn,device,source,true,0);Equivalent(device,native,recovered);
+    Check(cache::GetStatistics().hits==priorRecovery.hits+1,
+          "published texture is reusable after failed registration");
+    bytes[32]^=0x71;Write(source,bytes);native=Load(fn,device,source,false,0);
+    const auto priorTrack=cache::GetStatistics();
+    producer_fault::Start(producer_fault::Mode::Track);
+    auto untracked=Load(fn,device,source,true,0);
+    producer_fault::mode=producer_fault::Mode::None;
+    Equivalent(device,native,untracked);
+    Check(producer_fault::failures>0 && producer_fault::payloadRenames==0 &&
+          cache::GetStatistics().stores==priorTrack.stores,
+          "texture tracking rejection keeps native result without cache success");
+    bytes[33]^=0x19;Write(source,bytes);native=Load(fn,device,source,false,0);
+    producer_fault::Start(producer_fault::Mode::Replacement);
+    auto replaced=Load(fn,device,source,true,0);
+    producer_fault::mode=producer_fault::Mode::None;
+    Equivalent(device,native,replaced);
+    Check(producer_fault::failures==1 && Read(producer_fault::replacedPath)==Bytes{0x6d} &&
+          fs::exists(producer_fault::retainedPath),
+          "texture cleanup retains foreign replacement after failed rename");
+    producer_fault::Finish();
+    std::puts("PASS managed texture producer cold/hot, tracking, registration and cleanup");
+}
+
 int wmain(int argc,wchar_t** argv) {
     Check(argc>=3,"usage: output-root D3DX-DLL [real textures]");
     std::setvbuf(stdout,nullptr,_IONBF,0);
@@ -341,6 +484,8 @@ int wmain(int argc,wchar_t** argv) {
             Check(SUCCEEDED(texture.result),"real texture timing load");std::printf("mode=%c ms=%.3f\n",mode,ms);
         }
     }
+    ManagedProducer(root,fn,device.Get());
+    SetEnvironmentVariableW(L"MMS_TEXTURE_CACHE_DIR",cacheRoot.c_str());
     const auto stats=cache::GetStatistics();std::printf("PASS texture cache hits=%llu native=%llu stores=%llu\n",stats.hits,stats.nativeCalls,stats.stores);
     device.Reset();DestroyWindow(window);return 0;
 }

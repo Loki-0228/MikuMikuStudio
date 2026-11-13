@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/effect_api.hpp"
 #include "mikumikustudio/mmd_app.hpp"
@@ -38,6 +39,7 @@ std::vector<fs::path> pending;
 std::vector<fs::path> removed;
 DWORD uiThread = 0;
 fs::path root;
+fs::path blockedRotation, externalEffect;
 decltype(&GetModuleHandleW) realModule = nullptr;
 decltype(&CreateFileW) realCreate = nullptr;
 decltype(&DeleteFileW) realDelete = nullptr;
@@ -97,6 +99,16 @@ BOOL WINAPI Delete(LPCWSTR path) {
     const BOOL result = realDelete(path);
     const DWORD error = GetLastError();
     if (result && mockPresent && path) removed.emplace_back(path);
+    if (!result && path && !blockedRotation.empty() && blockedRotation == path) {
+        const auto candidates = as::Backups(blockedRotation.parent_path());
+        Check(candidates.size() == 2, "observe the newly published backup before rotation rollback");
+        const auto candidate = std::find_if(candidates.begin(), candidates.end(), [](const auto& backup) {
+            return backup != blockedRotation;
+        });
+        Check(candidate != candidates.end(), "find the unnotified backup candidate");
+        externalEffect = Emm(*candidate);
+        Text(externalEffect, "external assignment created while the backup was writing\n");
+    }
     SetLastError(error); return result;
 }
 void WINAPI Time(LPSYSTEMTIME time) {
@@ -238,8 +250,9 @@ int main() {
     const Identity identity(*app);
     as::Settings settings; settings.enabled = true; settings.maxBackups = 1;
     settings.overwriteOldest = true; settings.directory = (root / L"backups").wstring();
+    settings.backupPattern = L"[/NAME]_autosave_[/YYYY][/MM][/DD]_[/hh][/mm][/ss]_[/N]";
     Configure(*app, settings);
-    const auto orphan = fs::path(settings.directory) / L"scene_autosave_20261019_012345_678.emm";
+    const auto orphan = fs::path(settings.directory) / L"scene_autosave_20261019_012345_001.emm";
     Text(orphan, "unrelated-orphan-emm\n");
     const auto unrelated = fs::path(settings.directory) / L"user_autosave_20261019_012345_678.pmm";
     Text(unrelated, "ordinary user file\n"); Text(Emm(unrelated), "unrelated-user-emm\n");
@@ -249,7 +262,7 @@ int main() {
     auto before = notifications;
     Check(as::BackupNow(app) == as::Result::Saved, "retained automatic PMM backup sends its native notification");
     auto first = SoleBackup(settings); QueueNames(first, before); identity.Match(*app);
-    Check(first.stem() == L"scene_autosave_20261019_012345_678_1" && Bytes(orphan) == "unrelated-orphan-emm\n",
+    Check(first.stem() == L"scene_autosave_20261019_012345_002" && Bytes(orphan) == "unrelated-orphan-emm\n",
         "a preexisting orphan EMM forces a new basename and is never overwritten");
     consume();
     Check(pending.empty() && Bytes(Emm(first)) == "original-mock-live-assignment\n",
@@ -275,6 +288,34 @@ int main() {
         Bytes(second) == keptPmm && Bytes(Emm(second)) == keptEmm &&
         std::find(removed.begin(), removed.end(), Emm(second)) == removed.end(),
         "failed PMM deletion keeps its EMM and does not queue an abandoned candidate");
+    for (bool queued : {false, true}) {
+        lock = CreateFileW(second.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Check(lock != INVALID_HANDLE_VALUE, "hold the retained PMM while a new EMM appears independently");
+        blockedRotation = second;
+        externalEffect.clear();
+        if (queued) {
+            const bool accepted = as::QueueBackup(app);
+            background_save::Wait(app);
+            Check(accepted, "queue backup with a blocked rotation");
+            Check(std::wstring(background_save::StatusText(app)) == as::Text(app,
+                L"备份数量已满，未覆盖旧备份。", L"Backup limit reached; no backup replaced",
+                L"バックアップ先が上限に達しました。"), "report the full directory for queued backup");
+        } else {
+            Check(as::BackupNow(app) == as::Result::Full, "report the full directory for immediate backup");
+        }
+        blockedRotation.clear();
+        CloseHandle(lock);
+        Check(notifications == before && pending.empty() && SoleBackup(settings) == second &&
+            Bytes(second) == keptPmm && Bytes(Emm(second)) == keptEmm,
+            "withdraw only the new PMM and its plugin data without notifying MME");
+        Check(!externalEffect.empty() && Bytes(externalEffect) == "external assignment created while the backup was writing\n",
+            "preserve the EMM created by another writer beside an unnotified backup");
+#if !MMD_ORIGINAL_PROFILE
+        auto rejected = externalEffect;
+        rejected.replace_extension(L".pmm");
+        Check(!fs::exists(plugins::PluginSidecar(rejected)), "withdraw the rejected backup's plugin sidecar");
+#endif
+    }
     failCommit = true; before = notifications;
     Check(as::BackupNow(app) == as::Result::Failed, "a real PMM commit failure cannot publish a backup");
     failCommit = false;
@@ -293,6 +334,8 @@ int main() {
     Check(as::BackupNow(app) == as::Result::Saved, "native autosave-disabled configuration still retains the PMM");
     auto disabled = SoleBackup(settings); QueueNames(disabled, before); consume();
     Check(pending.empty() && !fs::exists(Emm(disabled)), "the live native autosave policy is not forced on by host notification");
+    Check(Emm(disabled) != externalEffect && Bytes(externalEffect) == "external assignment created while the backup was writing\n",
+        "retry after releasing the retained PMM skips and preserves the occupied EMM name");
     mockAutoSave = true; mockPresent = false; before = notifications;
     Check(as::BackupNow(app) == as::Result::Saved && notifications == before && pending.empty(),
         "backup and rotation remain usable with no optional MME module loaded");

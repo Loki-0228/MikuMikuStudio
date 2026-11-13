@@ -17,6 +17,12 @@ bool RegisterSelectedBones(unsigned char* model,int frame);
 bool RegisterMorph(unsigned char* model,int morph,int frame,float value);
 void EvaluateModel(unsigned char* model,int frame);
 void Reset(MMDApp* app);
+// A failed native copy invalidates the whole source batch, not live keys/history.
+void ClearClipboard(MMDApp* app) noexcept;
+enum class CopyResult { Empty, Copied, Memory, Failed };
+// Explicit outcome for the side clipboard. Command's bool only means handled.
+// Failure invalidates the old side clipboard without changing keys/history.
+CopyResult CopySelected(MMDApp* app, bool refreshControls = true) noexcept;
 void ForgetModel(unsigned char* model);
 void RefreshControls(MMDApp* app);
 void Capture(const MMDApp& app,pmm_extension::Document& document);

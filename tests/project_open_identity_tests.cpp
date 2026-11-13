@@ -1,9 +1,11 @@
 // MAINTENANCE: regression-keep; rejected PMM candidates never become save targets.
 // The shell, dialogs, recent-menu dispatch, HDROP, project-pair store and bound
-// journal are real. Only modal dialogs, the final save call, effect/localization
-// callbacks and accepted native bodies are intercepted. Accepted-body probes
+// journal are real. Only modal dialogs, the background-save request (where a
+// quick save captures its destination), effect/localization callbacks and
+// accepted native bodies are intercepted. Accepted-body probes
 // model the destructive boundary; they are not native PMM parser round trips.
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
 #include "mikumikustudio/plugin_storage.hpp"
@@ -29,18 +31,22 @@
 #include <cwchar>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace mikumikustudio;
 namespace fs = std::filesystem;
 namespace {
 unsigned checks = 0, messages = 0, browsers = 0, saves = 0, effects = 0, localized = 0;
+unsigned nativeLoads = 0;
 MMDApp* app = nullptr;
 fs::path root, currentPath, browserPath;
 std::wstring savedPath;
 bool cancelBrowser = false, cancelConfirmation = false, reenter = false;
+std::function<void()> confirmationAction, browserAction;
 enum class NativeMode { RefuseBoundary, ThrowMemory, ThrowShortRead, ThrowRecord, Accept, CancelAfterBoundary };
 NativeMode nativeMode = NativeMode::RefuseBoundary;
 using Body = bool (*)(MMDApp*, pmm_io::Input&, bool&);
@@ -128,34 +134,48 @@ void Pair(const fs::path& path, const std::string& bytes, const char*) { Write(p
 void CheckPluginIdentity() {}
 #endif
 
+int ConfirmationResult(UINT flags) {
+    if ((flags & MB_TYPEMASK) != MB_OKCANCEL) return IDOK;
+    if (auto action = std::exchange(confirmationAction, {})) action();
+    return cancelConfirmation ? IDCANCEL : IDOK;
+}
 int WINAPI DialogW(HWND, LPCWSTR, LPCWSTR, UINT flags) {
     ++messages;
     if (reenter) {
         reenter = false;
         Check(!LoadSceneFile(currentPath.c_str()), "a modal-error callback cannot reenter project open");
     }
-    return cancelConfirmation && (flags & MB_OKCANCEL) == MB_OKCANCEL ? IDCANCEL : IDOK;
+    return ConfirmationResult(flags);
 }
 int WINAPI DialogA(HWND, LPCSTR, LPCSTR, UINT flags) {
     ++messages;
-    return cancelConfirmation && (flags & MB_OKCANCEL) == MB_OKCANCEL ? IDCANCEL : IDOK;
+    return ConfirmationResult(flags);
 }
 BOOL Browser(LPOPENFILENAMEW parameters) {
     ++browsers;
     Check(parameters && parameters->hwndOwner == app->MainWindow() &&
         parameters->lpstrDefExt && !std::wcscmp(parameters->lpstrDefExt, L"pmm"),
         "actual Open menu reaches the PMM browser");
+    if (auto action = std::exchange(browserAction, {})) action();
     if (cancelBrowser) return FALSE;
     Check(browserPath.native().size() < parameters->nMaxFile, "browser fixture fits the native buffer");
     wcscpy_s(parameters->lpstrFile, parameters->nMaxFile, browserPath.c_str()); return TRUE;
 }
-void Save(MMDApp* value) { ++saves; savedPath = value->EnvFileName(); }
+// Command 207 routes its stored project through background_save::Request,
+// which captures the destination before any scene snapshot or worker write.
+// Record exactly the destination passed in and accept without saving for real.
+bool SaveRequest(MMDApp*, const wchar_t* destination, background_save::Options) {
+    ++saves;
+    savedPath = destination != nullptr ? destination : L"";
+    return true;
+}
 void Effect(const wchar_t*) { ++effects; }
 void Localize(MMDApp*) { ++localized; }
 bool BeginReplacement(MMDApp* value) {
     return nativeMode == NativeMode::RefuseBoundary ? false : originalBegin(value);
 }
 bool LoadBody(Body original, MMDApp* value, pmm_io::Input& input, bool& replaced) {
+    ++nativeLoads;
     if (nativeMode == NativeMode::RefuseBoundary) {
 #if MMD_ORIGINAL_PROFILE
         // Original's BeginProjectSceneReplacement is a constant true stub and
@@ -284,7 +304,8 @@ int main() {
     INITCOMMONCONTROLSEX controls{sizeof controls, ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES}; InitCommonControlsEx(&controls);
     Check(MH_Initialize() == MH_OK, "initialize isolated function interception");
     Hook(&MessageBoxW, &DialogW); Hook(&MessageBoxA, &DialogA); Hook(&GetUiOpenFileNameW, &Browser);
-    Hook(&SaveSceneFile, &Save); Hook(&NotifyEffectFileOpen, &Effect); Hook(&LocalizeUI, &Localize);
+    Hook(&background_save::Request, &SaveRequest);
+    Hook(&NotifyEffectFileOpen, &Effect); Hook(&LocalizeUI, &Localize);
 #if !MMD_ORIGINAL_PROFILE
     Hook(&plugins::BeginProjectSceneReplacement, &BeginReplacement, reinterpret_cast<void**>(&originalBegin));
 #else
@@ -332,18 +353,24 @@ int main() {
         before.Same(); Released(candidate);
     }
     nativeMode = NativeMode::RefuseBoundary;
-    for (unsigned entry = 0; entry != 3; ++entry) {
-        const Identity before; browserPath = unsupported;
-        if (entry == 0) CmdOpenScene(app);
-        else if (entry == 1) Drop(unsupported);
+    const auto openFrom = [&](unsigned entry, const fs::path& candidate) {
+        if (entry == 0) {
+            browserPath = candidate;
+            CmdOpenScene(app);
+        }
+        else if (entry == 1) Drop(candidate);
         else {
 #if !MMD_ORIGINAL_PROFILE
-            recent_projects::Record(app, unsupported.c_str());
+            recent_projects::Record(app, candidate.c_str());
             recent_projects::HandleMessage(app, WM_ENTERMENULOOP, 0, 0);
             Check(recent_projects::HandleMessage(app, WM_COMMAND, 34800, 0), "actual recent-project item consumes the selected candidate");
             recent_projects::HandleMessage(app, WM_EXITMENULOOP, 0, 0);
 #endif
         }
+    };
+    for (unsigned entry = 0; entry != 3; ++entry) {
+        const Identity before;
+        openFrom(entry, unsupported);
         before.Same(); Released(unsupported);
     }
     { const Identity before; cancelBrowser = true; CmdOpenScene(app); cancelBrowser = false; before.Same(); }
@@ -383,6 +410,64 @@ int main() {
     Check(Bytes(plugins::PluginSidecar(currentPath)) == originalSide && Bytes(plugins::PluginSidecar(unsupported)) == rejectedSide,
         "failed opens preserve original and candidate sidecars byte-for-byte");
 #endif
+    std::puts("STAGE File > Open modal edits, replacement and reentry");
+    nativeMode = NativeMode::Accept;
+    const auto editWhileOpening = [&](unsigned entry, bool editInBrowser, const char* noLoad) {
+        Identity expected;
+        const auto oldBrowsers = browsers, oldLoads = nativeLoads;
+        const auto generation = app->SceneGeneration(), revision = app->SceneRevision();
+        expected.camera -= 10.0f;
+        const float fov = app->CameraFov() + 5.0f;
+        Check(expected.dirty == 1, "the modal edit starts with an already dirty scene");
+        auto& action = editInBrowser ? browserAction : confirmationAction;
+        action = [&] {
+            app->CameraDistance() = expected.camera;
+            app->CameraFov() = fov;
+            app->SceneModified() = 1;
+        };
+        openFrom(entry, v2);
+        Check(!action, "the edit ran inside the requested modal hook");
+        Check(browsers == oldBrowsers + unsigned(editInBrowser),
+            editInBrowser ? "the same-project edit runs inside one PMM browser" :
+                "IDOK after editing the dirty scene never opens the PMM browser");
+        Check(nativeLoads == oldLoads, noLoad);
+        Check(app->SceneGeneration() == generation && app->SceneRevision() == revision + 1 && app->CameraFov() == fov,
+            "the modal edit preserves the new scene revision and camera payload");
+        expected.Same();
+    };
+    editWhileOpening(0, false, "a stale File > Open confirmation never loads the V2 candidate");
+    editWhileOpening(0, true, "a same-project edit inside the PMM browser prevents loading its stale candidate");
+    editWhileOpening(1, false, "a stale Drop confirmation never loads the V2 candidate");
+#if !MMD_ORIGINAL_PROFILE
+    editWhileOpening(2, false, "a stale Recent confirmation never loads the V2 candidate");
+#endif
+    {
+        const auto oldBrowsers = browsers, oldLoads = nativeLoads;
+        const auto generation = app->SceneGeneration();
+        const std::wstring rememberedDirectory = app->DirUser();
+        browserAction = [&] {
+            Check(LoadSceneFile(v1.c_str()), "the PMM browser callback directly loads the V1 project");
+        };
+        CmdOpenScene(app);
+        Check(!browserAction && browsers == oldBrowsers + 1, "the replacement runs inside the one PMM browser");
+        Check(nativeLoads == oldLoads + 1, "the browser's direct V1 load is the only load after it returns the stale V2 choice");
+        wchar_t title[512]{}; GetWindowTextW(window, title, 512);
+        Check(app->SceneGeneration() == generation + 1 && !std::wcscmp(app->EnvFileName(), v1.c_str()) &&
+            !std::wcscmp(title, v1.c_str()) && app->SceneModified() == 0 && rememberedDirectory == app->DirUser(),
+            "the direct V1 load keeps its identity, title and clean state without accepting the stale choice's directory");
+    }
+    {
+        const auto oldBrowsers = browsers, oldLoads = nativeLoads;
+        // The browser consumes its callback before invoking it, so a missing
+        // command guard would visit the hook twice and still return normally.
+        browserAction = [] { CmdOpenScene(app); };
+        cancelBrowser = true;
+        CmdOpenScene(app);
+        cancelBrowser = false;
+        Check(!browserAction && browsers == oldBrowsers + 1 && nativeLoads == oldLoads,
+            "a reentrant Open command does not open another PMM browser");
+    }
+
     std::puts("STAGE accepted boundary and destructive cancellation policy");
     nativeMode = NativeMode::Accept; browserPath = v2;
     CmdOpenScene(app);

@@ -59,6 +59,21 @@ public:
         else report_.missing |= reason;
     }
     const Report& Result() const noexcept { return report_; }
+    // Storage owned by this temporary ledger, excluding sizeof(Collector).
+    // Coordinators charge it in addition to the resources it describes.
+    // The tree nodes and sentinel hold no separately allocated payload.
+    std::uint64_t StorageBytes() const {
+#if defined(_MSVC_STL_VERSION) && _MSVC_STL_VERSION == 143 && _MSVC_STL_UPDATE == 202503L && !_HAS_CXX23
+        using Node=std::_Tree_node<decltype(allocations_)::value_type,void*>;
+        auto bytes=Product(Sum(allocations_.size(),1),sizeof(Node));
+#if _ITERATOR_DEBUG_LEVEL != 0
+        bytes=Sum(bytes,sizeof(std::_Container_proxy));
+#endif
+        return bytes;
+#else
+        throw std::bad_alloc();
+#endif
+    }
     // Reuse the prepared identity/capacity ledger without inserting nodes.
     // Removed or smaller allocations remain conservatively charged. New or
     // larger allocations and incomplete queries invalidate the candidate.

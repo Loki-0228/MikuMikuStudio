@@ -7,7 +7,7 @@
 #include <mutex>
 
 namespace mikumikustudio::plugins {
-struct IdLess { bool operator()(MmsId a, MmsId b) const { return a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo); } };
+struct IdLess { bool operator()(MmsId a, MmsId b) const noexcept { return a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo); } };
 inline bool Same(MmsId a, MmsId b) { return a.lo == b.lo && a.hi == b.hi; }
 inline bool Empty(MmsId a) { return !a.lo && !a.hi; }
 inline bool Same(MmsObjectRef a, MmsObjectRef b) { return Same(a.id, b.id) && a.generation == b.generation; }
@@ -30,7 +30,9 @@ struct SceneData {
     }
 };
 class SceneStore;
-struct SceneClient { SceneStore* store = nullptr; std::atomic<bool> stopping{false}; };
+// Querying a table may coincide with worker-thread reads/releases. Atomic
+// binding removes that pointer race; it does not own or extend either object.
+struct SceneClient { std::atomic<SceneStore*> store{nullptr}; std::atomic<bool> stopping{false}; };
 class SceneStore {
     struct Lease { SceneClient* owner; std::shared_ptr<const SceneData> data; uint64_t channels; std::vector<MmsObjectV1> objects; };
     DWORD thread_ = GetCurrentThreadId();
@@ -43,7 +45,7 @@ class SceneStore {
 public:
     using Capture = std::function<MmsResult(const MmsSceneQueryV1&, std::shared_ptr<const SceneData>&)>;
     explicit SceneStore(Capture capture, std::function<bool(MmsId)> known = {}) : capture_(std::move(capture)), known_(std::move(known)) {}
-    MmsSceneApiV1 Api(SceneClient&);
+    MmsResult Api(SceneClient&, MmsSceneApiV1&);
     bool HasLeases(SceneClient&);
 private:
     Capture capture_;

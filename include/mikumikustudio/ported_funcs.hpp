@@ -23,6 +23,7 @@ namespace mikumikustudio {
 class MMDApp;
 struct PathResolutionWorkspace;
 struct DShowRecorder;
+namespace recording_output_path { struct Selection; }
 class D3DRenderer;  // d3d_wrapper.hpp (the "0x1D574" render/locale object)
 class PhysicsScene;  // physics_scene.hpp (the "0x48" physics scene wrapper)
 
@@ -247,6 +248,8 @@ void HandleWindowPaint(MMDApp*);                            // VA 0x0047C0A0
 LRESULT HandleNotify(HWND, UINT, WPARAM, LPARAM);           // VA 0x004398B0
 void InstallPanelCheckboxPaint(HWND control);               // MMS themed-panel labels
 void HandlePaletteChanged(HDC);                             // VA 0x0042CEB0
+void PaintBottomPanelBackground(MMDApp*, HDC, const RECT& client);
+bool PaintBottomControlBackground(HWND control, HDC dc);
 void HandlePaletteChanged2(HDC);                            // VA 0x0042C140
 void HandleDropFiles(HDROP);                                // VA 0x00461300
 
@@ -256,8 +259,9 @@ void HandleDropFiles(HDROP);                                // VA 0x00461300
 void AviBgOverlayRefresh(MMDApp*);            // VA 0x004168D0 (was Sub4168D0)
 void AviBgPlacementRefresh(MMDApp*);          // Refresh geometry without decoding a frame.
 void PicBgOverlayRefresh(MMDApp*);            // VA 0x00417130 (was Sub417130)
-void StartAviRecordWindow(MMDApp*);           // VA 0x0045E820 (stub twin Sub45E820)
-void StartAviRecordFullscreen(MMDApp*);       // VA 0x00464760 (stub twin Sub464760)
+bool TryPicBgOverlayRefresh(MMDApp*);         // False retains the caller's pending geometry refresh.
+void StartAviRecordWindow(MMDApp*, const recording_output_path::Selection* approved = nullptr);
+void StartAviRecordFullscreen(MMDApp*, const recording_output_path::Selection* approved = nullptr);
 void ApplyFullscreenWindowState(MMDApp*, bool exclusive = false);  // was Sub4629D0, VA 0x004629D0
                                           // (fullscreen enter/restore window mgr)
 void KickRecordPhysics(MMDApp*);  // was Sub401BD0, VA 0x00401BD0 physics kick
@@ -271,6 +275,7 @@ void HandleLButtonUp(MMDApp*);                              // VA 0x0044A9A0
 void HandleLButtonDblClk(MMDApp*);                          // VA 0x0044AAA0
 void HandleMouseActivate(MMDApp*);                          // VA 0x004632F0
 void HandleMouseWheel(int wheelDelta);                      // VA 0x0044BD70
+void HandleMouseWheel(int wheelDelta, int clientX);
 void PostLanguageSweep(MMDApp*);                            // VA 0x0042F1E0
 void PostLanguageSweep2(MMDApp*);                           // VA 0x0040D070
 
@@ -384,12 +389,11 @@ bool PostDeviceReset(MMDApp*);                    // VA 0x00440DB0; false on res
 void UpdateBoneFrames(MMDApp*);                   // VA 0x00433A40
 void RenderFrameScene(MMDApp*);                   // VA 0x0046DC00..0x0046E787
 bool RecordingReadbackPass(MMDApp*);              // VA 0x0046E787..0x0046EFB7
-ULONG DownsampleCaptureSurface(MMDApp*);          // VA 0x00425970
-// Recreates the lockable recording render target released by PostDeviceReset
-// and points render target 0 back at it
-// false means callers must use the back-buffer path instead.
-// Defect RB-04.
-bool EnsureCaptureRenderTarget(MMDApp* app);
+bool DownsampleCaptureSurface(MMDApp*);           // VA 0x00425970
+// Recreate and bind the lockable export target after a reset. At export
+// startup, rebind an existing target as the editor may be using the backbuffer.
+bool EnsureCaptureRenderTarget(MMDApp* app, bool rebindExisting = false);
+void CancelExportAfterCaptureTargetFailure(MMDApp* app);
 void DrawAccessoryDebug(MMDApp*);                 // VA 0x00420F30
 void DrawPhysicsCollisionDebug(PhysicsScene*);    // VA 0x00406950
 void DrawBoneOperationAxis(MMDApp*, const float[16],
@@ -455,7 +459,7 @@ void PostViewRefresh(MMDApp*);                    // VA 0x0040D130
 // ---- file loaders reached from the command dialogs ------------------------
 void LoadVpdFile(const wchar_t* path);            // VA 0x00418A10 (src/io/vpd_file.cpp)
 void SaveVpdFile(const wchar_t* path);            // VA 0x00418750 (src/io/vpd_file.cpp)
-void ResetAppState(MMDApp*);                      // VA 0x0044E540
+bool ResetAppState(MMDApp*);                      // VA 0x0044E540
 // Real bodies (src/media/): __thiscall(app) like the original - the path is
 // read from app storage (+0xD0 WAV, +0x9E1EC AVI, +0x9E448 picture).
 void LoadWaveFile(MMDApp* app);                   // VA 0x00418500 (real)
@@ -468,6 +472,7 @@ void LoadSceneV1(MMDApp* app, int fd);            // VA 0x0045916D..0x45E7F7 (v1
 void LoadVmdFile(const wchar_t* path);            // wide-path wrapper of
                                                   //  LoadVmdMotion (VA 0x00434B60)
 int LoadVmdMotion(MMDApp* app, const char* fileName);  // VA 0x00434B60, was Sub434B60
+bool ImportVmdFile(MMDApp*, const wchar_t* path);   // true when an edit was published
 void PanelPaint(MMDApp* app);                     // VA 0x00414610 (ui_panel_paint.cpp)
 int ResetMorphKeyCursor(unsigned char* model);    // VA 0x004A49A0, was Sub4A49A0
 bool RegisterBoneKey(unsigned char* model, unsigned char* rec,
@@ -585,12 +590,16 @@ bool RegisterDisplayKeyFromRecord(unsigned char* model, int frame,
 void RegisterDisplayKeyCurrent(unsigned char* model, int frame);  // was Sub49F480, 0x0049F480
 void RegisterAccessoryKey(MMDApp* app, int frame, int slot);  // was Sub413CB0, 0x00413CB0
 void DeleteMarkedKeyframes(MMDApp* app);         // was Sub4316B0, VA 0x004316B0
-void SaveVmdFile(const wchar_t* path);            // VA 0x00419370 (src/io/vmd_save.cpp)
+bool SaveVmdFile(const wchar_t* path);            // VA 0x00419370 (src/io/vmd_save.cpp)
+bool TryReplaceBackgroundVideo(MMDApp* app, const wchar_t* path);
 void LoadAviFile(MMDApp* app);                    // VA 0x00433250 (real, src/media/media_load.cpp)
 void LoadBackgroundPicture(MMDApp* app);          // VA 0x004337A0 (real; the
                                                   //  was-Sub4337A0 stub decl
                                                   //  above was superseded and
                                                   //  removed)
+#if !MMD_ORIGINAL_PROFILE
+bool TryReplaceBackgroundPicture(MMDApp* app, const wchar_t* path);
+#endif
 void CopyPathW(wchar_t* dest, const wchar_t* src);  // VA 0x0042AE40 (real; the
                                                     //  Sub42AE40 stub decl in
                                                     //  stubs.cpp is unreferenced)

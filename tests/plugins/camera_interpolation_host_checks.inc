@@ -277,7 +277,7 @@ void Run(MMDApp* app) {
     const auto pending = reinterpret_cast<std::uint64_t(*)()>(GetProcAddress(library, "GetProbePending"));
     Check(value && flags && pending && (flags() & 1) && !(flags() & 2), "actual camera probe DLL negotiates controlled edit service");
     Check(RefreshBoundObjectUi(*app, *history), "camera fixture synchronizes real object and scope lists before measured commands");
-    auto scene = CreateSceneStore(app); SceneClient client; Context c(*app, *history, scene->Api(client), value, pending);
+    auto scene = CreateSceneStore(app); SceneClient client; Context c(*app, *history, ([&]{ MmsSceneApiV1 value{}; if (scene->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }()), value, pending);
     ChannelsAndHistory(c); Rejections(c);
     std::puts("PASS actual camera 431/432, six channels/all, real DLL mixed undo/redo, no-op and blocked requests");
 }

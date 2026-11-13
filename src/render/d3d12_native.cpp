@@ -5,6 +5,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/gpu_model.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
@@ -430,7 +431,7 @@ bool WaitD3D12Native(){
 }
 void ShutdownD3D12Native(){native.reset();}
 bool RenderD3D12Native(MMDApp* app,const float world[16]) {
-    if(!enabled)return false;
+    if(!enabled || !FrameViewportRenderable(app))return false;
     // The native preview submits the authored index order, so it mirrors the
     // renderer only while transparent sorting is off.  Any other policy,
     // including an unknown stored value, belongs to the D3D9 path.  Release

@@ -196,8 +196,16 @@ inline void VisitPublicationChecks(MMDApp& app,DeviceProbe& probe,SceneInvariant
                 RefreshMainWindowViewport(&app);renderer->device=device;
                 Require(IsRectEmpty(&app.ViewportRect())&&probe.viewports==sets,"editor refresh with unavailable device publishes empty geometry inside Visit");
             }else{
-                // Enter through the production sidebar press/move/release path,
-                // without showing the host, taking capture or synthesizing UI.
+                // WM_LBUTTONDOWN normally owns capture before it calls the
+                // resize handler. Establish the same prerequisite in this host.
+                Require(!GetCapture(),"hidden Visit begins without a captured window");
+                const HWND window=app.MainWindow();
+                SetCapture(window);
+                struct ReleaseOwnCapture {
+                    HWND window;
+                    ~ReleaseOwnCapture(){if(GetCapture()==window)ReleaseCapture();}
+                } release{window};
+                Require(GetCapture()==window,"hidden host owns capture for the native divider press");
                 app.MouseX()=app.SidebarWidth()+2;app.MouseY()=100;
                 HandleLButtonDown(&app);
                 Require(app.sidebarSizing.active&&app.SidebarResizeDragging(),"real sidebar press enters its native resize operation");

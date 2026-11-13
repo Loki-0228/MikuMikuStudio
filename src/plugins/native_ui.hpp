@@ -44,6 +44,8 @@ public:
     // stacks are active, then posts one WM_CLOSE after the outermost return.
     // PopupActive reports popup tracking only, not general native work.
     bool PopupActive() const noexcept;
+    // Read-only safe-point query; unlike DeferClose it does not post a close.
+    bool Busy() const noexcept;
     bool DeferClose(WPARAM, LPARAM) noexcept;
     bool DialogMessage(MSG*);
 };

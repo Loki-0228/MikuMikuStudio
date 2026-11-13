@@ -71,6 +71,83 @@ inline NativeShadowBounds VisibleShadowReceivers(const NativeShadowBounds& scene
     }
     return receivers;
 }
+// Exact intersection of a mesh AABB and the final six camera clip planes.
+// Return its light-space bounds directly: a world-space AABB of the clipped
+// frustum would grow again and include unrelated off-screen stage geometry.
+inline NativeShadowBounds VisibleShadowLightBounds(const NativeShadowBounds& scene,
+    const float clip[16],const float light[16]) {
+    if(!scene.Valid())return {};
+    using Plane=std::array<double,4>;
+    std::array<Plane,12> planes{};
+    for(int axis=0;axis<3;++axis) {
+        planes[2*axis][axis]=1;planes[2*axis][3]=-scene.minimum[axis];
+        planes[2*axis+1][axis]=-1;planes[2*axis+1][3]=scene.maximum[axis];
+    }
+    for(int row=0;row<4;++row) {
+        for(int axis=0;axis<2;++axis) {
+            planes[6+2*axis][row]=clip[row*4+3]+clip[row*4+axis];
+            planes[7+2*axis][row]=clip[row*4+3]-clip[row*4+axis];
+        }
+        planes[10][row]=clip[row*4+2];
+        planes[11][row]=clip[row*4+3]-clip[row*4+2];
+    }
+    const auto cross=[](const Plane& a,const Plane& b) {
+        return std::array<double,3>{a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};
+    };
+    NativeShadowBounds result;
+    for(unsigned i=0;i<planes.size();++i)for(unsigned j=i+1;j<planes.size();++j)for(unsigned k=j+1;k<planes.size();++k) {
+        const auto& a=planes[i];const auto& b=planes[j];const auto& c=planes[k];
+        const auto bc=cross(b,c),ca=cross(c,a),ab=cross(a,b);
+        const double det=a[0]*bc[0]+a[1]*bc[1]+a[2]*bc[2];
+        if(std::abs(det)<1e-12)continue;
+        double p[3]{};for(int axis=0;axis<3;++axis)p[axis]=(-a[3]*bc[axis]-b[3]*ca[axis]-c[3]*ab[axis])/det;
+        bool inside=true;
+        for(const auto& plane:planes) {
+            const double value=plane[3]+plane[0]*p[0]+plane[1]*p[1]+plane[2]*p[2];
+            const double tolerance=1e-7*(1+std::abs(plane[3])+std::abs(plane[0]*p[0])+std::abs(plane[1]*p[1])+std::abs(plane[2]*p[2]));
+            if(value < -tolerance){inside=false;break;}
+        }
+        if(inside) {
+            float q[3]{};
+            for(int a=0;a<3;++a)q[a]=float(light[12+a]+p[0]*light[a]+p[1]*light[4+a]+p[2]*light[8+a]);
+            result.Include(q);
+        }
+    }
+    return result;
+}
+// All receivers share one square light-space coverage box. Preserve the full
+// scene Z mapping so an off-screen caster on their light ray remains present.
+inline std::array<float,16> FitVisibleShadowBox(std::array<float,16> coverage,
+    const NativeShadowBounds& visible) {
+    if(!visible.Valid())return coverage;
+    const float half=(std::max)(visible.maximum[0]-visible.minimum[0],
+        visible.maximum[1]-visible.minimum[1])*.5f;
+    const float extent=(std::max)(1e-6f,half*1.02f);
+    for(int axis=0;axis<2;++axis) {
+        const float centre=visible.minimum[axis]*.5f+visible.maximum[axis]*.5f;
+        for(int row=0;row<4;++row)coverage[row*4+axis]=(coverage[row*4+axis]-(row==3?centre:0.f))/extent;
+    }
+    return coverage;
+}
+
+// Fixed per-model receiver box. Keep the coverage map's light basis and Z so
+// every scene caster can still shadow this model. Padding puts all receivers
+// inside the detail shader's fully weighted core, with no camera-depth fade.
+inline std::array<float,16> FixedModelShadowProjection(
+    const std::array<float,16>& coverage, const NativeShadowBounds& model) {
+    NativeShadowBounds light;
+    if(!model.Valid())return coverage;
+    for(unsigned corner=0;corner<8;++corner) {
+        const auto p=model.Corner(corner);float q[3]{};
+        for(unsigned axis=0;axis<3;++axis)
+            q[axis]=coverage[12+axis]+p[0]*coverage[axis]+p[1]*coverage[4+axis]+p[2]*coverage[8+axis];
+        light.Include(q);
+    }
+    auto result=FitVisibleShadowBox(coverage,light);
+    for(unsigned row=0;row<4;++row)for(unsigned axis=0;axis<2;++axis)result[row*4+axis]*=.8f;
+    return result;
+}
+
 // Read every position from the already locked vertex buffer. SIMD compares
 // preserve the scalar Include rule: ignore the whole non-finite vertex and
 // keep the earlier bit pattern for equal coordinates (including signed zero).
@@ -257,6 +334,81 @@ inline std::array<float, 16> NativeShadowProjection(
     return matrix;
 }
 
+struct NativeShadowShape {
+    std::array<float,3> direction{};
+    float lateral=1.f, centreW=1.f;
+};
+// Original minimal-build mode parameters evaluated with the world light.
+// Both X/Y derivatives at the original box centre equal lateral/(1-a*b).
+inline NativeShadowShape NativeShadowModeShape(const float direction[3], int mode) {
+    NativeShadowShape shape;
+    auto& z=shape.direction;
+    std::copy_n(direction,3,z.begin());
+    float length=std::sqrt(z[0]*z[0]+z[1]*z[1]+z[2]*z[2]);
+    if(!std::isfinite(length) || length<1e-6f) {
+        z[0]=0;z[1]=-1;z[2]=0;length=1;
+    }
+    for(float& value:z)value/=length;
+    const float slope=-z[2];
+    float a,b;
+    if(slope<-.9f || slope>.9f) {
+        a=1.f-std::fabs(slope);b=-a;
+    } else if(slope<-.8f) {
+        shape.lateral=mode==1 ? 10.f*slope+10.f : 20.f*slope+19.f;
+        a=mode==1 ? 4.f*slope+3.7f : 9.f*slope+8.2f;
+        b=-9.f*slope-8.2f;
+    } else if(slope>.8f) {
+        shape.lateral=mode==1 ? 10.f-10.f*slope : 19.f-20.f*slope;
+        a=mode==1 ? 3.7f-4.f*slope : 8.2f-9.f*slope;
+        b=9.f*slope-8.2f;
+    } else {
+        shape.lateral=mode==1 ? 2.f : 3.f;
+        a=mode==1 ? .5f : 1.f;b=-1.f;
+    }
+    shape.centreW=1.f-a*b;
+    return shape;
+}
+inline float NativeShadowSamplingDensity(const float direction[3],float range,int mode,unsigned referenceSize) {
+    const auto shape=NativeShadowModeShape(direction,mode);
+    const float base=(std::clamp)(std::isfinite(range)?range:.01125f,.00001f,.1f);
+    return referenceSize*base*shape.lateral/(2.f*shape.centreW);
+}
+
+// Calibrate the original comparison at texture v=.5 (Y=-b, W=1-a*b),
+// without restoring the old projective pole or camera-dependent direction.
+inline std::array<float,16> NativeShadowComparisonProjection(const float direction[3], int mode) {
+    const auto shape=NativeShadowModeShape(direction,mode);
+    // Original reset/default range (reset_app_state.cpp), deliberately fixed:
+    // the full build's precision slider changes sampling, not shadow thickness.
+    constexpr float referenceRange=.01125f;
+    const float scale=.15f*referenceRange/shape.centreW;
+    std::array<float,16> result{};
+    for(int row=0;row<3;++row)result[row*4+2]=shape.direction[row]*scale;
+    result[14]=.5f;result[15]=1.f; // Y=0 means texture v=.5 in the native shader.
+    return result;
+}
+
+// Resource size is not quality: absorb the minimum allocation and power-of-two
+// rounding by adding empty coverage, so a small box cannot increase texels/unit.
+// Keep at least a half-texel margin for snapping without cropping the input box.
+inline std::array<float,16> FitShadowSamplingDensity(std::array<float,16> projection,
+                                                   float density,unsigned size) {
+    if(!size || !std::isfinite(density) || density<=0)return projection;
+    float scale=0;
+    for(int column=0;column<2;++column) {
+        float length=0;for(int row=0;row<3;++row)length+=projection[row*4+column]*projection[row*4+column];
+        scale=(std::max)(scale,std::sqrt(length));
+    }
+    if(!(scale>0) || !std::isfinite(scale))return projection;
+    const float ratio=(std::min)((std::max)(.01f,1.f-1.f/size),2.f*density/(size*scale));
+    const float grid=size*.5f;
+    for(int column=0;column<2;++column) {
+        for(int row=0;row<4;++row)projection[row*4+column]*=ratio;
+        projection[12+column]=std::round(projection[12+column]*grid)/grid;
+    }
+    return projection;
+}
+
 // A finite shadow map cannot fit an arbitrarily large stage without losing
 // nearby detail. Keep the native grid/full-object fit while its sampling loss
 // fits the extra 2x resolution tier. Beyond that, cover the view's focus region
@@ -347,6 +499,7 @@ struct CameraShadowRegion {
     float radius = 0;
     float farDepth = 0;
     bool valid = false;
+    float nearDepth = 0;
 };
 
 // The detail region follows the camera picture: the visible view volume comes
@@ -359,7 +512,7 @@ struct CameraShadowRegion {
 // a narrower lens. Build the bounding sphere in view space and transform it back
 // to scene space; it therefore does not change when the camera merely rotates.
 inline CameraShadowRegion CameraDepthShadowRegion(const float inverseView[16],
-    const float inverseProjection[16], float focusDepth) {
+    const float inverseProjection[16], float focusDepth, bool includeNearPlane = false) {
     using Point = std::array<float,3>;
     const auto transform=[](const Point& p,const float m[16],Point& result) {
         double q[4]{};
@@ -399,7 +552,7 @@ inline CameraShadowRegion CameraDepthShadowRegion(const float inverseView[16],
         halfSlab=std::hypot(std::fabs(nearCorner[0][0]-nearCorner[1][0])*.5f,
             std::fabs(nearCorner[0][1]-nearCorner[2][1])*.5f);
     }
-    const float start=(std::max)(nearDepth,focusDepth-halfSlab);
+    const float start=includeNearPlane ? nearDepth : (std::max)(nearDepth,focusDepth-halfSlab);
     const float end=(std::min)(clipFar,focusDepth+halfSlab);
     if(!std::isfinite(end) || end<=start)return {};
     std::array<Point,8> corners{};Point centre{};
@@ -425,18 +578,195 @@ inline CameraShadowRegion CameraDepthShadowRegion(const float inverseView[16],
     // floor must stay small: clamping it to a few world units would stop the
     // density from improving once the camera is close to the receiver.
     region.radius=(std::max)(.0001f,region.radius/0.75f);
-    region.farDepth=end;region.valid=std::isfinite(region.radius);
+    region.nearDepth=start;region.farDepth=end;region.valid=std::isfinite(region.radius);
     return region;
 }
 
+// A separate close layer must begin at the real near clip plane, even when
+// the orbit target is far away. Limit its world extent by the density budget,
+// never by a slider-dependent focus slab. Wider views are explicitly reported
+// by the returned radius, rather than pretending a capped texture met demand.
+inline CameraShadowRegion CameraNearShadowRegion(const float inverseView[16],
+    const float inverseProjection[16],float maximumRadius) {
+    if(!std::isfinite(maximumRadius) || maximumRadius<=0)return {};
+    using Point=std::array<float,3>;
+    const auto transform=[](const Point& p,const float m[16]) {
+        Point out{};double w=m[15]+p[0]*double(m[3])+p[1]*double(m[7])+p[2]*double(m[11]);
+        for(int a=0;a<3;++a)out[a]=float((m[12+a]+p[0]*double(m[a])+p[1]*double(m[4+a])+p[2]*double(m[8+a]))/w);
+        return out;
+    };
+    std::array<Point,4> start{},ray{};float nearZ=0;
+    for(int i=0;i<4;++i) {
+        const float x=i&1?1.f:-1.f,y=i&2?1.f:-1.f;
+        start[i]=transform({x,y,0},inverseProjection);
+        const auto middle=transform({x,y,.5f},inverseProjection);
+        const float dz=middle[2]-start[i][2];
+        if(!(dz>0) || !std::isfinite(dz))return {};
+        for(int a=0;a<3;++a)ray[i][a]=(middle[a]-start[i][a])/dz;
+        nearZ=(std::max)(nearZ,start[i][2]);
+    }
+    const auto slab=[&](float end) {
+        std::array<Point,8> points{};CameraShadowRegion r;
+        for(int i=0;i<8;++i) {
+            const int j=i%4;Point p{};
+            for(int a=0;a<3;++a)p[a]=start[j][a]+ray[j][a]*((i<4?nearZ:end)-start[j][2]);
+            points[i]=transform(p,inverseView);
+            for(int a=0;a<3;++a)r.centre[a]+=points[i][a]/8;
+        }
+        for(const auto& p:points)r.radius=(std::max)(r.radius,std::sqrt(
+            (p[0]-r.centre[0])*(p[0]-r.centre[0])+(p[1]-r.centre[1])*(p[1]-r.centre[1])+
+            (p[2]-r.centre[2])*(p[2]-r.centre[2])));
+        r.radius=(std::max)(1e-4f,r.radius/.80f);r.nearDepth=nearZ;r.farDepth=end;
+        r.valid=std::isfinite(r.radius) && std::isfinite(r.centre[0]) &&
+            std::isfinite(r.centre[1]) && std::isfinite(r.centre[2]);
+        return r;
+    };
+    float lo=nearZ,hi=nearZ+(std::max)(1.f,maximumRadius*4);
+    for(int i=0;i<28;++i) {const float mid=(lo+hi)*.5f;if(slab(mid).radius<=maximumRadius)lo=mid;else hi=mid;}
+    return slab((std::max)(lo,nearZ+.001f));
+}
+
+struct CameraShadowBox {
+    std::array<float,16> projection{};
+    float nearDepth = 0, farDepth = 0;
+    bool valid = false;
+};
+
+// Pack a camera slab into an existing light-plane square by translation only.
+// The nearer maps already cover the start of the view. Using the remaining
+// square directly avoids wasting its corners around a camera bounding sphere.
+// Always pass the nominal projection, before density fitting: texture padding
+// differs by quality and must not move the common depth boundaries.
+inline CameraShadowBox FitCameraShadowBox(const float inverseView[16],
+    const float inverseProjection[16],const std::array<float,16>& nominalProjection,
+    float nearDepth) {
+    CameraShadowBox result;
+    result.projection=nominalProjection;
+    if(!inverseView || !inverseProjection || !std::isfinite(nearDepth))return result;
+    for(int i=0;i<16;++i)if(!std::isfinite(inverseView[i]) ||
+        !std::isfinite(inverseProjection[i]) || !std::isfinite(nominalProjection[i]))return result;
+    // World/view and directional-light transforms must be affine. Do not
+    // silently approximate a projective transform or divide by a missing W.
+    if(inverseView[3]!=0 || inverseView[7]!=0 || inverseView[11]!=0 ||
+        std::abs(double(inverseView[15]))<1e-12 || nominalProjection[3]!=0 ||
+        nominalProjection[7]!=0 || nominalProjection[11]!=0 ||
+        std::abs(double(nominalProjection[15]))<1e-12)return result;
+    double xx=0,yy=0,xy=0;
+    for(int row=0;row<3;++row) {
+        const double x=nominalProjection[row*4],y=nominalProjection[row*4+1];
+        xx+=x*x;yy+=y*y;xy+=x*y;
+    }
+    if(!(xx>0) || !(yy>0) || xx*yy-xy*xy<=1e-12*xx*yy)return result;
+    double rowNorm[3]{};
+    for(int row=0;row<3;++row)for(int column=0;column<3;++column)
+        rowNorm[row]+=double(inverseView[row*4+column])*inverseView[row*4+column];
+    const double determinant=double(inverseView[0])*(double(inverseView[5])*inverseView[10]-double(inverseView[6])*inverseView[9])-
+        double(inverseView[1])*(double(inverseView[4])*inverseView[10]-double(inverseView[6])*inverseView[8])+
+        double(inverseView[2])*(double(inverseView[4])*inverseView[9]-double(inverseView[5])*inverseView[8]);
+    if(std::abs(determinant)<=1e-12*std::sqrt(rowNorm[0]*rowNorm[1]*rowNorm[2]))return result;
+    using Point=std::array<double,3>;
+    const auto unproject=[&](double x,double y,double z,Point& point) {
+        double q[4]{};
+        for(int a=0;a<4;++a)q[a]=inverseProjection[12+a]+x*inverseProjection[a]+
+            y*inverseProjection[4+a]+z*inverseProjection[8+a];
+        if(!std::isfinite(q[3]) || std::abs(q[3])<1e-12)return false;
+        for(int a=0;a<3;++a) {
+            point[a]=q[a]/q[3];
+            if(!std::isfinite(point[a]))return false;
+        }
+        return true;
+    };
+    std::array<Point,4> nearCorner{},farCorner{};
+    double clipNear=-INFINITY,clipFar=INFINITY;
+    for(int i=0;i<4;++i) {
+        const double x=i&1?1.0:-1.0,y=i&2?1.0:-1.0;
+        if(!unproject(x,y,0,nearCorner[i]) || !unproject(x,y,1,farCorner[i]) ||
+            !(farCorner[i][2]>nearCorner[i][2]))return result;
+        clipNear=(std::max)(clipNear,nearCorner[i][2]);
+        clipFar=(std::min)(clipFar,farCorner[i][2]);
+    }
+    const double requestedStart=(std::max)(double(nearDepth),clipNear);
+    float storedStart=float(requestedStart);
+    if(double(storedStart)<requestedStart)storedStart=std::nextafter(storedStart,INFINITY);
+    const double start=storedStart;
+    if(!std::isfinite(start) || !std::isfinite(clipFar) || !(clipFar>start))return result;
+
+    // The four light-space corner rays are affine functions of view depth.
+    // This handles shifted lenses and orthographic cameras without assuming
+    // that screen centre is on the optical axis or that rays diverge.
+    std::array<std::array<double,2>,4> origin{},slope{};
+    const double viewW=inverseView[15],lightW=nominalProjection[15];
+    for(int i=0;i<4;++i) {
+        Point ray{},base{},worldRay{},worldBase{};
+        for(int a=0;a<3;++a) {
+            ray[a]=(farCorner[i][a]-nearCorner[i][a])/(farCorner[i][2]-nearCorner[i][2]);
+            base[a]=nearCorner[i][a]-ray[a]*nearCorner[i][2];
+        }
+        for(int a=0;a<3;++a) {
+            worldBase[a]=inverseView[12+a];
+            for(int b=0;b<3;++b) {
+                worldBase[a]+=base[b]*inverseView[b*4+a];
+                worldRay[a]+=ray[b]*inverseView[b*4+a];
+            }
+            worldBase[a]/=viewW;worldRay[a]/=viewW;
+        }
+        for(int axis=0;axis<2;++axis) {
+            for(int a=0;a<3;++a) {
+                origin[i][axis]+=worldBase[a]*nominalProjection[a*4+axis]/lightW;
+                slope[i][axis]+=worldRay[a]*nominalProjection[a*4+axis]/lightW;
+            }
+            if(!std::isfinite(origin[i][axis]) || !std::isfinite(slope[i][axis]))return result;
+        }
+    }
+    const auto fits=[&](double end,std::array<float,2>* translation=nullptr) {
+        double minimum[2]{INFINITY,INFINITY},maximum[2]{-INFINITY,-INFINITY};
+        for(int i=0;i<4;++i)for(double depth:{start,end})for(int axis=0;axis<2;++axis) {
+            const double value=origin[i][axis]+slope[i][axis]*depth;
+            if(!std::isfinite(value))return false;
+            minimum[axis]=(std::min)(minimum[axis],value);
+            maximum[axis]=(std::max)(maximum[axis],value);
+        }
+        std::array<float,2> offset{};
+        for(int axis=0;axis<2;++axis) {
+            offset[axis]=float(-(minimum[axis]+maximum[axis])*.5*lightW);
+            if(!std::isfinite(offset[axis]))return false;
+            // Include float translation rounding in the fit. The existing
+            // .8 guard still leaves room for final texel snapping and fades.
+            const double translated=double(offset[axis])/lightW;
+            if(minimum[axis]+translated<-.8 || maximum[axis]+translated>.8)return false;
+        }
+        if(translation)*translation=offset;
+        return true;
+    };
+    if(!fits(start))return result;
+    double lo=start,hi=clipFar;
+    if(fits(hi))lo=hi;
+    else for(int i=0;i<40;++i) {
+        const double mid=lo+(hi-lo)*.5;
+        if(fits(mid))lo=mid;else hi=mid;
+    }
+    float end=float(lo);
+    if(!std::isfinite(end))return result;
+    if(double(end)>lo)end=std::nextafter(end,-INFINITY);
+    std::array<float,2> translation{};
+    if(!(double(end)>start) || !fits(end,&translation))return result;
+    result.projection[12]=translation[0];result.projection[13]=translation[1];
+    result.nearDepth=float(start);result.farDepth=end;result.valid=true;
+    return result;
+}
+
 inline std::array<float,16> CameraDetailShadowProjection(const CameraShadowRegion& region,
-    const float direction[3],const std::array<float,16>& coverage) {
+    const float direction[3],const std::array<float,16>& coverage,unsigned mapSize=8192) {
     auto result=NativeShadowProjection(region.centre.data(),direction,.1f,1);
     const float ratio=5.f/region.radius;
     for(int column=0;column<2;++column) {
         for(int row=0;row<4;++row)result[row*4+column]*=ratio;
-        // One shared grid across quality tiers; slider changes cannot move it.
-        result[12+column]=std::round(result[12+column]*4096.f)/4096.f;
+        // Align to the texture actually sampled, including lower quality tiers.
+        // Snapping to a nominal 8192 grid lets a 1024 map slide by eighth-texels.
+        if(mapSize) {
+            const float grid=mapSize*.5f;
+            result[12+column]=std::round(result[12+column]*grid)/grid;
+        }
     }
     for(int row=0;row<4;++row)result[row*4+2]=coverage[row*4+2];
     return result;

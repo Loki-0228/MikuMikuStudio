@@ -42,16 +42,42 @@ void H264EncodedOrientation(const std::filesystem::path& root) {
     for(bool nv12:{false,true}){
         const auto path=root/(nv12?L"nv12-input.mp4":L"rgb32-input.mp4");
         Check(!std::filesystem::exists(path),"encode only fresh owned output files");
-        DShowRecorder recorder{};auto recording=std::make_unique<Recording>();
-        recording->width=width;recording->height=height;recording->frameBytes=pixels.size();
-        recording->frameDuration=333333;recording->nv12Input=nv12;
-        // Exercise exactly the NV12 payload used by hardware, through the
-        // system software encoder so this test does not require an AMD GPU.
-        Check(SUCCEEDED(OpenH264SinkWriterGuarded(&recording->writer,path.c_str(),false,width,height,
-            30,1000000,nv12,&recording->videoStream)),"create real MP4 encoder with RGB32 or NV12 input");
-        Check(SUCCEEDED(recording->writer->BeginWriting()),"start real orientation encoding");
-        gRecordings.emplace(&recorder,std::move(recording));
-        for(int frame=0;frame<3;++frame)Check(WriteBuiltInH264Frame(&recorder,pixels.data(),pixels.size()),"encode asymmetric colour frame");
+        const auto oldOutput = std::string("previous video bytes");
+        if (!nv12) {
+            std::ofstream old(path, std::ios::binary);
+            old << oldOutput;
+            Check(old.good(), "create an owned prior video for the real replacement");
+        }
+        DShowRecorder recorder{};
+        const auto encode = [&] {
+            auto recording=std::make_unique<Recording>();
+            recording->width=width;recording->height=height;recording->frameBytes=pixels.size();
+            recording->frameDuration=333333;recording->nv12Input=nv12;
+            // Use software encoding for both the RGB32 and NV12 input paths.
+            Check(SUCCEEDED(PrepareRecordingOutput(*recording,path.c_str(),nullptr,nullptr)), "reserve a real temporary MP4");
+            Check(SUCCEEDED(OpenH264SinkWriterGuarded(&recording->writer,recording->temporary.c_str(),false,width,height,
+                30,1000000,nv12,&recording->videoStream)),"create real MP4 encoder with RGB32 or NV12 input");
+            Check(SUCCEEDED(recording->writer->BeginWriting()),"start real orientation encoding");
+            gRecordings.emplace(&recorder,std::move(recording));
+            for(int frame=0;frame<3;++frame)Check(WriteBuiltInH264Frame(&recorder,pixels.data(),pixels.size()),"encode asymmetric colour frame");
+        };
+        encode();
+        if (!nv12) {
+            const auto read = [&] {
+                std::ifstream file(path, std::ios::binary);
+                return std::string(std::istreambuf_iterator<char>(file), {});
+            };
+            Check(read() == oldOutput, "the previous output remains readable during real encoding");
+            const auto changed = oldOutput + " edited while encoding";
+            { std::ofstream file(path, std::ios::binary | std::ios::trunc); file << changed; Check(file.good(), "change the existing file before finalization"); }
+            std::int32_t failure = 0;
+            Check(!FinishBuiltInH264Recording(&recorder, 3, &failure) &&
+                  failure == HRESULT_FROM_WIN32(ERROR_FILE_EXISTS) && read() == changed &&
+                  std::distance(std::filesystem::directory_iterator(root), std::filesystem::directory_iterator()) == 1,
+                  "real MP4 publication preserves the edited destination and retires the temporary output");
+            encode();
+            std::puts("PASS real H264 refuses changed destination and restarts at the same path");
+        }
         Check(FinishBuiltInH264Recording(&recorder,3),"finalize real orientation MP4");
 
         IMFAttributes* attributes=nullptr;IMFSourceReader* reader=nullptr;

@@ -166,7 +166,7 @@ void AccessorySettingsFailures() {
 void AccessorySettingsSnapshots() {
     AccessorySettingsFixture x; auto& f = x.f; plugins::NativePoseTestBinding binding(*f.app,f.history);
     auto scene=plugins::CreateSceneStore(f.app.get()); plugins::SceneClient client{scene.get()};
-    auto api=scene->Api(client); const auto object=plugins::SceneObjectIdentity(f.app->AccessorySlot(1));
+    auto api=([&]{ MmsSceneApiV1 value{}; if (scene->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }()); const auto object=plugins::SceneObjectIdentity(f.app->AccessorySlot(1));
     const auto acquire=[&]() {
         MmsSceneQueryV1 query{};query.h=plugins::Header<MmsSceneQueryV1>();
         query.flags=MMS_SCENE_CURRENT_TIME;query.channels=MMS_CHANNEL_BONES;

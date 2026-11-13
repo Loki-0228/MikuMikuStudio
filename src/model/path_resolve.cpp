@@ -41,6 +41,7 @@
 #include <sys/stat.h>
 
 #include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/accessory_import.hpp"
 #include "mikumikustudio/d3d_wrapper.hpp"
 #include "mikumikustudio/model_alpha_pass.hpp"
 #include "mikumikustudio/path_workspace.hpp"
@@ -50,6 +51,7 @@
 #include "mikumikustudio/texture_lookup.hpp"
 #include "mikumikustudio/texture_prepare_cache.hpp"
 #include "mikumikustudio/import_texture_cache.hpp"
+#include "project_model_path.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -137,44 +139,158 @@ const wchar_t* ResolveUserFilePath(PathResolutionWorkspace& workspace,
     return out;
 }
 
-bool ResolveAnsiUserFile(unsigned char* sub, const char* mbName,
-                         wchar_t* wideOut, rsize_t sizeWords,
-                         PathResolutionWorkspace& paths) {     // 0x407BA0
-    wcscpy_s(wideOut, sizeWords, L"");
-    if (mbName == nullptr || mbName[0] == '\0')
-        return false;
-    wchar_t candidate[512] = {};
-    auto resolve = [&]() {
-        const wchar_t* value = ResolveUserFilePath(paths, candidate);
-        if (value[0] == L'\0')
-            return false;
-        wcsncpy_s(wideOut, sizeWords, value, _TRUNCATE);
-        return true;
-    };
-    (void)sub;
+template<class Visit>
+static bool VisitDecodedUserPaths(const char* mbName, size_t sizeWords, Visit visit) {
+    if (!mbName || !*mbName) return false;
 #if MMD_ORIGINAL_PROFILE
     std::wstring decoded;
     if (text_encoding::HasUtf8Bom(mbName) ||
         !text_encoding::Decode(mbName, 932, decoded) ||
         decoded.size() >= 256 || decoded.size() >= sizeWords) return false;
-    wcscpy_s(candidate, decoded.c_str());
-    return resolve();
+    return visit(decoded);
 #else
     const bool utf8 = text_encoding::HasUtf8Bom(mbName);
-    for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
+    for (const auto cp : text_encoding::PathDecodingOrder()) {
         std::wstring decoded;
         if (!text_encoding::Decode(utf8 ? mbName + 3 : mbName,
                                    utf8 ? CP_UTF8 : cp, decoded))
             continue;
         if (decoded.size() >= 256 || decoded.size() >= sizeWords)
             continue;
-        wcscpy_s(candidate, decoded.c_str());
-        if (resolve())
+        if (visit(decoded))
             return true;
         if (utf8) break;
     }
     return false;
 #endif
+}
+
+bool ResolveAnsiUserFile(unsigned char*, const char* mbName, wchar_t* wideOut,
+                         rsize_t sizeWords, PathResolutionWorkspace& paths) {
+    wcscpy_s(wideOut, sizeWords, L"");
+    return VisitDecodedUserPaths(mbName, sizeWords, [&](const std::wstring& decoded) {
+        const auto value = ResolveUserFilePath(paths, decoded.c_str());
+        if (!*value) return false;
+        wcsncpy_s(wideOut, sizeWords, value, _TRUNCATE);
+        return true;
+    });
+}
+
+bool accessory_import::ResolveVacMeshPath(const char* reference, const wchar_t* descriptorDirectory,
+                                          wchar_t* output, std::size_t capacity,
+                                          PathResolutionWorkspace& workspace) {
+    if (VisitDecodedUserPaths(reference, capacity, [&](const std::wstring& decoded) {
+        std::filesystem::path mesh(decoded);
+        if (!mesh.is_absolute()) {
+            if (mesh.has_root_path()) return false;
+            mesh = std::filesystem::path(descriptorDirectory) / mesh;
+        }
+        mesh = mesh.lexically_normal().make_preferred();
+        return mesh.native().size() < capacity && WsOpenOk(mesh.c_str()) &&
+            wcscpy_s(output, capacity, mesh.c_str()) == 0;
+    })) return true;
+
+    wchar_t legacy[kPathFieldCapacity]{};
+    if (!ResolveAnsiUserFile(nullptr, reference, legacy, std::size(legacy), workspace)) return false;
+    const auto length = GetFullPathNameW(legacy, static_cast<DWORD>(capacity), output, nullptr);
+    return length != 0 && length < capacity;
+}
+
+namespace {
+enum class FilePresence { File, Missing, Uncertain };
+
+FilePresence ProbeFileReference(const std::wstring& path) {
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES)
+        return (attributes & FILE_ATTRIBUTE_DIRECTORY) ? FilePresence::Uncertain : FilePresence::File;
+    switch (GetLastError()) {
+    case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND:
+    case ERROR_INVALID_DRIVE: case ERROR_BAD_NETPATH: case ERROR_BAD_NET_NAME:
+        return FilePresence::Missing;
+    default:
+        return FilePresence::Uncertain;
+    }
+}
+} // namespace
+
+bool accessory_import::ResolveProjectReference(const char* storedPath, wchar_t* output,
+        std::size_t capacity, PathResolutionWorkspace& workspace) {
+    if (VisitDecodedUserPaths(storedPath, capacity, [&](const std::wstring& decoded) {
+        const std::filesystem::path path(decoded);
+        return path.is_absolute() && ProbeFileReference(decoded) == FilePresence::File &&
+            wcscpy_s(output, capacity, decoded.c_str()) == 0;
+    })) return true;
+    return ResolveAnsiUserFile(nullptr, storedPath, output, capacity, workspace);
+}
+
+bool project_model::Reference::Confirm(project_relocation::RootMappings& roots, std::wstring_view loaded) const {
+    if (missingSpellings.size() == 1)
+        return roots.AddConfirmedFile(missingSpellings.front(), loaded);
+    const auto leaf = [](std::wstring_view path) {
+        const auto separator = path.find_last_of(L"/\\");
+        return separator == path.npos ? path : path.substr(separator + 1);
+    };
+    const auto selectedName = leaf(loaded);
+    const std::wstring* match = nullptr;
+    for (const auto& original : missingSpellings) {
+        if (!project_relocation::detail::Equal(leaf(original), selectedName)) continue;
+        if (match) return false;
+        match = &original;
+    }
+    return match && roots.AddConfirmedFile(*match, loaded);
+}
+
+project_model::Reference project_model::Locate(const char* wirePath,
+        const std::filesystem::path& projectDirectory, const project_relocation::RootMappings& roots) {
+    using namespace project_relocation;
+    Reference result;
+    std::vector<std::wstring> missing;
+    bool uncertain = false;
+    VisitDecodedUserPaths(wirePath, kPathFieldCapacity, [&](const std::wstring& decoded) {
+        std::filesystem::path path(decoded);
+        if (!path.has_root_path() && projectDirectory.is_absolute()) path = projectDirectory / path;
+        auto original = NormalizeFile(path.native());
+        if (original.empty()) return false; // ordinary resolver still supports legacy relative references
+        if (std::find(missing.begin(), missing.end(), original) != missing.end()) return false;
+        const auto presence = ProbeFileReference(original);
+        if (presence == FilePresence::File) {
+            result.tryLegacy = false;
+            result.exactPath = std::move(original);
+            return true;
+        }
+        if (presence == FilePresence::Missing)
+            missing.push_back(std::move(original));
+        else uncertain = true;
+        return false;
+    });
+    if (!result.tryLegacy) return result;
+    if (uncertain) { result.tryLegacy = false; return result; }
+    result.missingSpellings = std::move(missing);
+    std::vector<std::wstring> candidates;
+    for (const auto& original : result.missingSpellings) {
+        const auto inferred = roots.Infer(original, kPathFieldCapacity);
+        if (inferred.status == Status::NoMatch) continue;
+        result.tryLegacy = false;
+        if (inferred.status != Status::Candidate) return result;
+        if (std::find(candidates.begin(), candidates.end(), inferred.path) == candidates.end())
+            candidates.push_back(inferred.path);
+    }
+    if (candidates.size() == 1) {
+        result.exactPath = std::move(candidates.front());
+    } else {
+        // Different code pages can describe different files under the same
+        // confirmed root. Only a single existing, accessible spelling can win.
+        for (const auto& candidate : candidates) {
+            const auto presence = ProbeFileReference(candidate);
+            if (presence == FilePresence::Missing) continue;
+            if (presence == FilePresence::Uncertain || !result.exactPath.empty()) {
+                result.exactPath.clear();
+                break;
+            }
+            result.exactPath = candidate;
+        }
+    }
+    return result;
 }
 
 errno_t ConvertMaterialName(unsigned char* sub, const char* mbName,

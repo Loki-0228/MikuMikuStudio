@@ -37,6 +37,8 @@
 #include "mikumikustudio/update_coordinator.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/cache_manager.hpp"
+#include "mikumikustudio/ui_scale.hpp"
 
 // Ask hybrid graphics drivers to prefer the high-performance adapter.
 // On the tested Intel/NVIDIA laptop, D3D9 exposes only the integrated GPU
@@ -57,21 +59,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     // The logger keeps its prepared default if settings cannot be read.
     try { autosave::Current(); }
     catch (...) { runtime_log::Write("BACKUP settings unavailable during startup; using default error log folder"); }
-    // The legacy UI uses fixed 96-DPI coordinates for both GDI drawing and
-    // child controls. Keep Windows bitmap scaling active before any window
-    // or screen metric is created/read. The manifest sets the process default;
-    // the thread setting also handles a launcher/compatibility DPI override.
-    // Do not restore the old context while this UI thread is running.
-    using SetThreadDpiContext = HANDLE(WINAPI*)(HANDLE);
-    const auto setThreadDpiContext = reinterpret_cast<SetThreadDpiContext>(
-        GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext"));
-    if (setThreadDpiContext) {
-        const HANDLE previous = setThreadDpiContext(
-            reinterpret_cast<HANDLE>(static_cast<INT_PTR>(-1))); // DPI_AWARENESS_CONTEXT_UNAWARE
-        const DWORD error = previous ? ERROR_SUCCESS : GetLastError();
-        runtime_log::Write("UI DPI: Windows scaling, thread context set=%d error=%lu",
-                           previous != nullptr, error);
-    }
+    // Read the application scale before creating native controls.
+    ui_scale::ApplyAtStartup();
     // Global processor policy (per Windows user): read and freeze once here,
     // before any device exists.  The legacy Data\skinning.ini is not read; the
     // frozen Vertices choice becomes the skinning start preference inside
@@ -99,6 +88,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     }
     app->state = MMDAppState{};  // original: memset(p, 0, 0xA4530)
     app->InitDefaults();                                          // 0x40A730
+    // The initial untitled scene can be saved without ever opening another
+    // project or invoking File > New. Its cache uses belong to this scene.
+    const auto initialScene = cache_manager::AcceptScene(cache_manager::SceneOperation::Reset);
+    cache_manager::FinishScene(initialScene, cache_manager::SceneOutcome::ResetComplete);
 
     // WinMain's ANSI command line has already lost characters outside ACP.
     // Parse the original UTF-16 command line, including quoted paths/spaces.
@@ -154,12 +147,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     DWORD statsT0 = timeGetTime();
     std::uint64_t statsLoops = 0, statsMsgs = 0, statsPumps = 0;
     double statsSleepMs = 0.0, statsPumpMs = 0.0;
+    constexpr unsigned kMessagesPerFrame = 16;
+    unsigned queuedMessages = 0;
     while (msg.message != WM_QUIT) {       // 18
         runtime_log::SetPhase("message loop");
-        // One dispatch between safe points bounds message-producer starvation.
-        // The timer uses this same entry during the native move/size loop.
-        if (!build_profile::original) updates::SafePoint(app);
+        // Drain input in batches. A slow scene can miss every display deadline,
+        // so a safe point per message can interleave a render with each input.
+        if (!build_profile::original && queuedMessages == kMessagesPerFrame) {
+            queuedMessages = 0;
+            updates::SafePoint(app);
+        }
         if (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (!build_profile::original) ++queuedMessages;
             runtime_log::SetPhase("dispatch window message");
             if (msg.message == WM_CLOSE || msg.message == WM_QUIT)
                 runtime_log::Write("EXIT_MESSAGE message=0x%04X code=%llu", msg.message,
@@ -183,6 +182,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             if (pumpStats != nullptr) ++statsMsgs;
         } else {
             if (!build_profile::original) {
+                queuedMessages = 0;
+                updates::SafePoint(app);
                 MsgWaitForMultipleObjectsEx(0, nullptr, updates::WaitMilliseconds(app), QS_ALLINPUT, MWMO_INPUTAVAILABLE);
                 continue;
             }
@@ -268,6 +269,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         runtime_log::SetPhase("ShutdownCleanup");
         MMDApp* victim = g_Block;
         ShutdownCleanup(g_Block);                            // 0x462C40
+        cache_manager::Shutdown();
         runtime_log::Write("SHUTDOWN cleanup complete");
         runtime_log::SetPhase("delete application");
         delete victim;

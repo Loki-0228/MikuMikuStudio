@@ -1,4 +1,6 @@
 // Actual integration. No substitute NativeUi, geometry hook or global input.
+#include "mikumikustudio/main_panel_layout.hpp"
+
 namespace side_mount_host_checks {
 namespace fs=std::filesystem;
 using small_viewport_host_checks::Require;
@@ -192,9 +194,12 @@ static Geometry Bounds(MMDApp& app,const Fixture& fixture) {
     RECT client{};Require(GetClientRect(main,&client),"read actual docked client");
     const int left=plugins::LeftAreaWidth(&app),right=plugins::RightAreaWidth(&app),property=plugins::PropertyAreaHeight(&app);
     Require(left>0&&right>0&&property>0,"all three production mount reservations are nonempty");
+    const auto nativePanels=MainPanelLayout(&app,client.bottom);
+    const auto rows=FitViewportToolbarRows(nativePanels.bottomTop,ui_scale::Percent());
     FrameViewportGeometry geometry;
     Require(CalculateFrameViewport(client,app.SidebarWidth(),plugins::ToolbarHeight(&app),FrameViewportMode::Docked,
-        app.RenderWidth(),app.RenderHeight(),geometry,property,left,right),"calculate the declared production reservation contract");
+        app.RenderWidth(),app.RenderHeight(),geometry,property,left,right,nativePanels.bottomExtra,rows),
+        "calculate the declared production reservation contract");
     Require(EqualRect(&geometry.scene,&app.ViewportRect()),"actual published scene matches the common reservation geometry");
     const auto present=FramePresentationRect(&app),overlay=FrameOverlayRect(&app);const auto panels=FramePanelLayout(&app);
     Require(FrameRectWithin(present,geometry.presentationBounds)&&FrameRectWithin(overlay,geometry.presentationBounds)&&
@@ -336,6 +341,9 @@ static void Modes(MMDApp& app,const Fixture& fixture,const Geometry& original) {
     InitFlagSubsystem(&app);Require(app.FloatingWindow()&&IsWindow(app.FloatingWindow()),"create the actual separate render window");
     plugins::Layout(&app);Settle(app);RefreshSeparateWindowViewport(&app);LayoutViewportPanels(&app);
     Require(!plugins::LeftAreaWidth(&app)&&!plugins::RightAreaWidth(&app),"floating mode ignores both side reservations");
+    const auto floating=FramePanelLayout(&app);
+    Require(floating.topRowHeight==MulDiv(25,ui_scale::Percent(),100)&&
+        FrameRectWithin(app.ViewportRect(),floating.overlay),"floating viewport uses the current toolbar scale");
     for(auto child:original.buttons)Require(!ShownWithin(app.MainWindow(),child),"floating mode hides extension mount controls");
     Require(!IsWindowVisible(app.FloatingWindow()),"own floating top-level window remains hidden");
     SaveFlagSubsystem(&app);HandleWindowSize(&app);Settle(app);
@@ -366,6 +374,17 @@ static void Run(MMDApp& app,bool bound) {
     Require(!plugins::LeftAreaWidth(&app)&&!plugins::RightAreaWidth(&app)&&!plugins::PropertyAreaHeight(&app),"hidden mounts reserve zero space");
     const auto empty=app.ViewportRect(),emptyPresent=FramePresentationRect(&app);
     fixture.Command(app,1,7);auto objects=Bounds(app,fixture);
+    Require(ui_scale_popup_fixture::Choose(app.MainWindow(),125),"confirm 125 percent in the actual scale popup");
+    Settle(app);
+    const auto scaled=FramePanelLayout(&app);
+    Require(ui_scale::Percent()==125&&scaled.topRowHeight==31,"Help scale updates the native toolbar beside real plugin mounts");
+    SameObjects(objects,Bounds(app,fixture));
+    OverlayHit(app,objects);
+    Modes(app,fixture,objects);
+    Require(ui_scale_popup_fixture::Choose(app.MainWindow(),100),"restore 100 percent in the actual scale popup");
+    Settle(app);
+    Require(ui_scale::Percent()==100,"Help restores the original toolbar scale with plugins mounted");
+    SameObjects(objects,Bounds(app,fixture));
     small_viewport_host_checks::SceneInvariant invariant(app);
     const auto dirty=app.SceneModified();const auto physicsReset=app.PhysicsResetPending();const auto registered=app.RecordedFrameCountByte1();
     const auto scene=ui_metrics::counts[ui_metrics::Scene].load(),physics=ui_metrics::counts[ui_metrics::Physics].load();

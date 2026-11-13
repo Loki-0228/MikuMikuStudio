@@ -139,7 +139,8 @@ UINT HardwareLimit(IDirect3DDevice9* device) {
     D3DCAPS9 caps{}; Hr(device->GetDeviceCaps(&caps), "read actual device limits");
     return (std::min)({8192u, UINT(caps.MaxTextureWidth), UINT(caps.MaxTextureHeight)});
 }
-UINT FineSize(UINT coarse, UINT cap) { return (std::min)(cap, (std::max)(4096u, coarse * 2)); }
+// Prefiltering preserves the coverage grid; it must not override slider density.
+UINT SharedSize(UINT coarse, UINT) { return coarse; }
 D3DSURFACE_DESC TextureDesc(IDirect3DTexture9* texture) {
     D3DSURFACE_DESC desc{};
     Check(texture != nullptr, "texture exists");
@@ -249,7 +250,7 @@ struct CoarseFixture {
         }
         renderer->hdrTexture=texture.Get();renderer->shadowSurface=surface.Get();
         renderer->shadowDepthSurface=depth.Get();renderer->renderTargetWidth=renderer->renderTargetHeight=size;
-        probeSize=FineSize(size,HardwareLimit(device));probeAllocations=true;
+        probeSize=SharedSize(size,HardwareLimit(device));probeAllocations=true;
     }
     ~CoarseFixture() {
         probeAllocations=false;
@@ -261,6 +262,8 @@ struct CoarseFixture {
 
 std::array<float,4> EffectSize() {
     sf::ConfigureEffect(host,host->Renderer()->effect);
+    // Match a real receiving draw after the frame-wide neutral setup.
+    sf::ConfigureDetailReceiver(host,host->Renderer()->effect,true);
     std::array<float,4> result{};
     using GetArray=HRESULT(WINAPI*)(void*,const char*,float*,UINT);
     Hr(EffectMethod<GetArray,33>(host->Renderer()->effect)(host->Renderer()->effect,
@@ -269,11 +272,16 @@ std::array<float,4> EffectSize() {
 }
 void CheckSize(UINT sample,UINT coarse) {
     const auto size=EffectSize();
+    if(size[0]!=float(sample)||size[1]!=float(sample)||size[2]!=float(coarse)||size[3]!=float(coarse))
+        std::printf("SIZE expected=%u,%u,%u,%u actual=%.9g,%.9g,%.9g,%.9g enhanced=%d mode=%d caps=%d\n",
+            sample,sample,coarse,coarse,size[0],size[1],size[2],size[3],int(host->ShadowFilterEnhanced()),int(host->ShadowMode()),host->Renderer()->shaderModelCaps);
     Check(size[0]==float(sample)&&size[1]==float(sample)&&
           size[2]==float(coarse)&&size[3]==float(coarse), "effect dimensions match actual textures and fallback mode");
 }
 bool EffectEnabled() {
     sf::ConfigureEffect(host,host->Renderer()->effect);
+    // Match a real receiving draw after the frame-wide neutral setup.
+    sf::ConfigureDetailReceiver(host,host->Renderer()->effect,true);
     BOOL value=FALSE;
     using GetBool=HRESULT(WINAPI*)(void*,const char*,BOOL*);
     Hr(EffectMethod<GetBool,25>(host->Renderer()->effect)(host->Renderer()->effect,
@@ -326,91 +334,148 @@ void ScopeTests(sf::FineDepthTarget* fine) {
     expected.Restore();original.Restore();
 }
 
+void FixedModelTests() {
+    auto* renderer=host->Renderer();
+    host->ShadowFilterEnhanced()=false;host->ShadowMode()=1;
+    host->AdaptiveShadowResolution()=false;
+    CoarseFixture fixture(512);
+    probeSize=1024;
+    unsigned char owner{},other{}; // Opaque identities; the API must not dereference them.
+    std::array<float,16> coverage{},projection{},result{};
+    coverage[0]=coverage[5]=coverage[10]=coverage[15]=1;
+    projection=coverage;projection[0]=projection[5]=2;
+    const auto plan=[&]{sf::PlanModel(host,&owner,projection,coverage,1024,1024);};
+    const auto binding=[&](unsigned char* model,bool receives) {
+        sf::ConfigureDetailReceiver(host,renderer->effect,receives,model);
+        ComPtr<IDirect3DBaseTexture9> texture;
+        Hr(ownedDevice->GetTexture(3,&texture),"read fixed receiver binding");
+        return texture;
+    };
+    sf::Invalidate(host);plan();
+    Check(!sf::PrepareModel(host,&owner,false,result),"failed coverage pass cannot allocate a model map");
+    auto* target=sf::PrepareModel(host,&owner,true,result);
+    Check(target&&target->Size()==1024&&result==projection,"fixed model allocates requested projection");
+    auto died=Life(target->Texture());
+    Check(!binding(&owner,true),"unrendered fixed map cannot be sampled");
+    sf::MarkModelRendered(host,&owner,true);
+    Check(SameObject(binding(&owner,true).Get(),target->Texture()),"owning receiver uses its fixed map");
+    Check(!binding(&other,true)&&!binding(nullptr,true)&&!binding(&owner,false),
+        "other models, accessories and unshadowed materials do not inherit the map");
+    const auto attempts=allocationAttempts;
+    sf::Invalidate(host);plan();
+    Check(!sf::ReadModelInfo(host,&owner).valid,"next frame invalidates fixed contents");
+    target=sf::PrepareModel(host,&owner,true,result);
+    Check(target&&allocationAttempts==attempts,"next frame reuses fixed allocation");
+    sf::MarkModelRendered(host,&owner,false);
+    Check(!binding(&owner,true),"failed model caster pass falls back to coverage");
+    sf::MarkModelRendered(host,&owner,true);binding(&owner,true);
+    host->AdaptiveShadowResolution()=true;sf::Invalidate(host);
+    Check(died->load()&&!sf::ReadModelInfo(host,&owner).valid,"dynamic mode releases fixed maps and bindings");
+    plan();Check(!sf::PrepareModel(host,&owner,true,result),"dynamic mode rejects fixed map planning");
+    host->AdaptiveShadowResolution()=false;sf::Invalidate(host);plan();
+    target=sf::PrepareModel(host,&owner,true,result);Check(target!=nullptr,"fixed mode restores allocation");
+    died=Life(target->Texture());sf::Invalidate(host);
+    Check(sf::PlannedModels(host).empty()&&died->load(),"unloaded or no longer needed models release their maps");
+    plan();target=sf::PrepareModel(host,&owner,true,result);Check(target!=nullptr,"replan after removal");
+    died=Life(target->Texture());sf::MarkModelRendered(host,&owner,true);binding(&owner,true);
+    sf::ReleaseRenderer(renderer);
+    Check(died->load()&&!sf::ReadModelInfo(host,&owner).valid,"device reset releases bound fixed resources");
+    plan();failOneAllocation=true;const auto before=allocationAttempts;
+    Check(!sf::PrepareModel(host,&owner,true,result)&&!failOneAllocation,"fixed allocation failure falls back");
+    sf::Invalidate(host);plan();
+    Check(!sf::PrepareModel(host,&owner,true,result)&&allocationAttempts==before+1,"failure does not retry every frame");
+    sf::ReleaseRenderer(renderer);plan();
+    target=sf::PrepareModel(host,&owner,true,result);Check(target!=nullptr,"device recovery clears failed request");
+    died=Life(target->Texture());host->ShadowMode()=0;sf::Invalidate(host);
+    Check(died->load(),"shadow off releases fixed maps");
+    host->ShadowMode()=1;
+    summary<<"fixed-model,lifecycle-and-receiver-isolation,passed\n";
+}
+
+void FinalizeShared(const char* reason) {
+    Hr(ownedDevice->BeginScene(),reason);
+    sf::FinalizeDepth(host,true);
+    Hr(ownedDevice->EndScene(),"complete shared depth pass");
+}
+void CheckSharedSampling(UINT size) {
+    const auto shared=sf::ReadSamplingState(host);
+    const auto native=sf::ReadNativeSamplingState(host);
+    Check(shared.prefiltered&&!shared.enhanced&&shared.texture!=host->Renderer()->hdrTexture,
+          "shared receiver uses prefiltered depth without applying another kernel");
+    Check(shared.mapSize[0]==size&&shared.mapSize[1]==size&&shared.mapSize[2]==0&&shared.mapSize[3]==0,
+          "shared output preserves actual coverage dimensions");
+    Check(native.enhanced&&native.texture==host->Renderer()->hdrTexture&&!native.prefiltered,
+          "native receiver keeps raw coverage for its reconstruction kernel");
+    CheckSize(size,0);
+    Check(EffectEnabled(),"native effect keeps its own raw-depth reconstruction enabled");
+}
 void ApiTests() {
     auto* renderer=host->Renderer();const UINT cap=HardwareLimit(ownedDevice);
     Check(cap>=8192, "acceptance device supports all requested 512..8192 size cases");
     host->ShadowFilterEnhanced()=true;host->ShadowMode()=2;
+    // TargetScope is also used by camera layers and per-model maps. Its state
+    // restoration remains required even though shared filtering has no fine pass.
+    {
+        sf::FineDepthTarget target;
+        Hr(target.Ensure(ownedDevice,1,1024),"allocate independent detail scope fixture");
+        ScopeTests(&target);
+    }
     for(UINT coarse:{512u,1024u,2048u,4096u,8192u}) {
         CoarseFixture fixture(coarse);
-        const UINT expected=FineSize(coarse,cap);
         const auto before=allocationAttempts;
         sf::Invalidate(host);
-        Check(sf::VisibleTexture(host)==renderer->hdrTexture, "new frame starts on coarse texture");
-        auto* fine=sf::Prepare(host,true);
-        if(expected<=coarse) {
-            Check(!fine&&allocationAttempts==before, "large coarse map avoids redundant pass/allocation");
-            CheckSize(coarse,coarse);
-        } else {
-            Check(fine&&fine->Size()==expected, "coarse size selects real requested fine allocation");
-            const auto desc=TextureDesc(fine->Texture());
-            Check(desc.Width==expected&&desc.Height==expected&&desc.Format==D3DFMT_R32F, "allocated fine R32F has expected size");
-            Check(allocationAttempts==before+1, "exactly one allocation for a new key");
-            Check(sf::VisibleTexture(host)==renderer->hdrTexture, "unrendered fine texture stays invisible");
-            auto died=Life(fine->Texture());
-            if(coarse==512)ScopeTests(fine);
-            ClearFine(fine);
-            Check(sf::VisibleTexture(host)==fine->Texture(), "successful current fine render becomes visible");
-            CheckSize(expected,coarse);
-            Check(EffectEnabled(), "user-enabled filter remains enabled");
-            sf::Invalidate(host);
-            Check(sf::VisibleTexture(host)==renderer->hdrTexture, "invalidation never reuses last frame's fine image");
-            CheckSize(coarse,0);
-            fine=sf::Prepare(host,true);
-            Check(fine&&allocationAttempts==before+1, "invalidation reuses allocation but not contents");
-            sf::MarkRendered(host,false);
-            Check(died->load(), "failed fine render releases its texture");
-            Check(sf::VisibleTexture(host)==renderer->hdrTexture, "failed fine render falls back immediately");
-            CheckSize(coarse,0);
-            Check(EffectEnabled(), "optional failure retains user-enabled dynamic spline fallback");
-            sf::Invalidate(host);
-            Check(!sf::Prepare(host,true)&&allocationAttempts==before+1, "failed pass caches attempt for unchanged key");
-            sf::ReleaseRenderer(renderer);
-            fine=sf::Prepare(host,true);
-            Check(fine&&allocationAttempts==before+2, "reset release clears failed-attempt cache");
-            died=Life(fine->Texture());ClearFine(fine);
-            host->ShadowFilterEnhanced()=false;sf::Invalidate(host);
-            Check(died->load()&&sf::VisibleTexture(host)==renderer->hdrTexture, "toggle off releases fine resource and invalidates image");
-            CheckSize(coarse,0);
-            Check(!EffectEnabled(), "toggle off selects original shader branch");
-            host->ShadowFilterEnhanced()=true;
-            fine=sf::Prepare(host,true);Check(fine!=nullptr, "toggle on permits a fresh allocation");
-            died=Life(fine->Texture());ClearFine(fine);
-            sf::ReleaseRenderer(renderer,true);
-            Check(died->load()&&sf::VisibleTexture(host)==renderer->hdrTexture, "shutdown-style release forgets state and destroys fine texture");
-        }
-        sf::Invalidate(host);
-        const auto noNative=allocationAttempts;
-        Check(!sf::Prepare(host,false)&&allocationAttempts==noNative, "failed native pass never allocates a fine map");
-        Check(sf::VisibleTexture(host)==renderer->hdrTexture, "failed native pass cannot expose old fine contents");
+        Check(sf::VisibleTexture(host)==renderer->hdrTexture,"new frame starts on current raw coverage");
+        Check(!sf::Prepare(host,true)&&allocationAttempts==before,
+              "coverage preparation neither reallocates density nor adds a caster pass");
         CheckSize(coarse,0);
-        summary<<"api,"<<coarse<<','<<expected<<",passed\n";
+        DeviceSnapshot saved(ownedDevice);
+        FinalizeShared("filter initialized current-frame coverage");
+        saved.Verify();
+        CheckSharedSampling(coarse);
+        const auto desc=TextureDesc(sf::VisibleTexture(host));
+        Check(desc.Width==coarse&&desc.Height==coarse&&desc.Format==D3DFMT_R32F,
+              "shared R32F allocation has exactly the coverage grid");
+        Check(allocationAttempts==before+2,"new shared key allocates only scratch and output textures");
+        auto died=Life(sf::VisibleTexture(host));
+        sf::Invalidate(host);
+        Check(sf::VisibleTexture(host)==renderer->hdrTexture,"invalidation never publishes last frame's filtered image");
+        Check(!sf::Prepare(host,true),"next frame still requires no redundant caster target");
+        FinalizeShared("filter next frame using retained allocation");
+        Check(allocationAttempts==before+2,"unchanged frame reuses resources but regenerates contents");
+        CheckSharedSampling(coarse);
+        sf::Invalidate(host);
+        Check(!sf::Prepare(host,false),"failed native pass cannot prepare filtered contents");
+        FinalizeShared("verify failed native pass cannot publish a filtered frame");
+        Check(sf::VisibleTexture(host)==renderer->hdrTexture&&allocationAttempts==before+2,
+              "failed native pass keeps raw fallback and performs no allocation");
+        sf::Prepare(host,true);FinalizeShared("recover current contents before toggle-off lifetime check");
+        died=Life(sf::VisibleTexture(host));
+        host->ShadowFilterEnhanced()=false;sf::Invalidate(host);
+        Check(died->load()&&sf::VisibleTexture(host)==renderer->hdrTexture,
+              "toggle off releases optional shared resources");
+        Check(!EffectEnabled(),"toggle off selects original shader branch");
+        host->ShadowFilterEnhanced()=true;sf::Prepare(host,true);
+        FinalizeShared("restore shared resources after toggle");
+        died=Life(sf::VisibleTexture(host));
+        sf::ReleaseRenderer(renderer,true);
+        Check(died->load()&&sf::VisibleTexture(host)==renderer->hdrTexture,
+              "shutdown-style release forgets state and destroys shared output");
+        summary<<"api,"<<coarse<<','<<coarse<<",passed\n";
     }
     {
         CoarseFixture fixture(512);
-        const auto before=allocationAttempts,failures=injectedFailures;
-        failOneAllocation=true;
-        Check(!sf::Prepare(host,true), "one injected owned-device allocation failure falls back");
-        Check(allocationAttempts==before+1&&injectedFailures==failures+1&&!failOneAllocation, "injection hit exactly one matching fine allocation");
-        for(int i=0;i<3;++i){sf::Invalidate(host);Check(!sf::Prepare(host,true), "allocation failure remains cached across frames");}
-        Check(allocationAttempts==before+1, "cached failure does not allocate every frame");CheckSize(512,0);
-        // Change the actual coarse identity/dimensions without clearing module state.
-        probeAllocations=false;
-        ComPtr<IDirect3DTexture9> replacement;
-        Hr(ownedDevice->CreateTexture(1024,1024,1,D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,&replacement,nullptr), "create different coarse key");
-        renderer->hdrTexture=replacement.Get();probeAllocations=true;
-        auto* fine=sf::Prepare(host,true);
-        Check(fine&&allocationAttempts==before+2, "changed coarse key retries a previously failed allocation");
-        auto died=Life(fine->Texture());ClearFine(fine);
+        sf::Prepare(host,true);FinalizeShared("prepare resource for capability checks");
+        auto died=Life(sf::VisibleTexture(host));
         host->ShadowMode()=0;sf::Invalidate(host);
-        Check(died->load()&&!sf::Prepare(host,true), "shadow mode zero releases and bypasses optional resources");
-        Check(!EffectEnabled(), "shadow mode zero disables enhancement parameter");
-        host->ShadowMode()=2;
-        fine=sf::Prepare(host,true);Check(fine!=nullptr, "shadow mode restore retries");died=Life(fine->Texture());
+        Check(died->load()&&!sf::Prepare(host,true)&&!EffectEnabled(),
+              "shadow off releases shared resources and bypasses enhancement");
+        host->ShadowMode()=2;sf::Prepare(host,true);
+        FinalizeShared("restore resources after shadow mode change");
+        died=Life(sf::VisibleTexture(host));
         const int caps=renderer->shaderModelCaps;renderer->shaderModelCaps=2;sf::Invalidate(host);
-        Check(died->load()&&!sf::Prepare(host,true), "SM2 capability bypasses optional resources");
-        Check(!EffectEnabled(), "SM2 capability disables enhancement parameter");
+        Check(died->load()&&!sf::Prepare(host,true)&&!EffectEnabled(),
+              "SM2 capability bypasses optional resources and shader parameters");
         renderer->shaderModelCaps=caps;
-        renderer->hdrTexture=fixture.texture.Get();
     }
     probeAllocations=false;failOneAllocation=false;
 }
@@ -419,7 +484,7 @@ using Draw=HRESULT(WINAPI*)(IDirect3DDevice9*,D3DPRIMITIVETYPE,INT,UINT,UINT,UIN
 Draw realDraw=nullptr;
 bool observingFrame=false;
 std::string frameTag;
-struct Counts { unsigned shadowCoarse=0,shadowFine=0,visible=0,bad=0,fine=0,accessory=0; } counts;
+struct Counts { unsigned shadowCoarse=0,shadowFine=0,visible=0,bad=0,fine=0,accessory=0,raw=0; } counts;
 struct ShaderInfo { unsigned id=0; bool nativeShadow=false; };
 std::unordered_map<IDirect3DPixelShader9*,ShaderInfo> shaders;
 unsigned shaderSerial=0;
@@ -478,9 +543,14 @@ HRESULT WINAPI ObserveDraw(IDirect3DDevice9* device,D3DPRIMITIVETYPE type,INT ba
     if(nativeVisible) {
         ++counts.visible;
         if(host->ActiveRenderObject()==host->AccessorySlot(0))++counts.accessory;
-        const UINT desired=host->ShadowFilterEnhanced()?FineSize(coarse.Width,deviceLimit):coarse.Width;
-        const bool fine=sample.Width>coarse.Width;
+        const UINT desired=host->ShadowFilterEnhanced()?SharedSize(coarse.Width,deviceLimit):coarse.Width;
+        const bool fine=texture&&!SameObject(texture.Get(),renderer->hdrTexture);
         counts.fine+=fine;
+        ComPtr<IDirect3DBaseTexture9> raw;
+        const HRESULT rawResult=device->GetTexture(6,&raw);
+        const bool rawBound=SUCCEEDED(rawResult)&&SameObject(raw.Get(),renderer->hdrTexture);
+        counts.raw+=rawBound;
+        if(FAILED(rawResult)||(host->ShadowFilterEnhanced()? !rawBound : raw!=nullptr))++counts.bad;
         if(FAILED(result)||sample.Format!=D3DFMT_R32F||sample.Width!=expected.Width||
            sample.Height!=expected.Height||sample.Width!=desired)++counts.bad;
     }
@@ -509,8 +579,9 @@ void Frame(bool enhanced,int mode,const char* tag) {
     Check(counts.visible>0, "actual visible native shadow shader draws were observed");
     Check(counts.accessory>0, "receiving X accessory uses the same correctly sized shadow map");
     Check(counts.bad==0, "actual visible DrawIndexedPrimitive sampled the expected production texture");
-    if(enhanced)Check(counts.shadowFine>0&&counts.fine>0, "same frame produced and visibly sampled fine depth");
-    else Check(counts.shadowFine==0&&counts.fine==0, "disabled filter neither renders nor samples a sidecar");
+    if(enhanced)Check(counts.fine==counts.visible&&counts.raw==counts.visible,
+        "same frame shares filtered depth on sampler 0 and raw native coverage on sampler 6");
+    else Check(counts.fine==0&&counts.raw==0,"disabled filter uses raw shared map and clears private native sampler");
     std::printf("FRAME %s shadow_coarse=%u shadow_fine=%u visible=%u fine_bindings=%u errors=%u\n",
         tag,counts.shadowCoarse,counts.shadowFine,counts.visible,counts.fine,counts.bad);
     summary<<"frame,"<<tag<<','<<counts.visible<<','<<counts.fine<<','<<counts.bad<<"\n";draws.flush();summary.flush();
@@ -531,13 +602,10 @@ HRESULT WINAPI UpProbe(IDirect3DDevice9* d,D3DPRIMITIVETYPE type,UINT count,cons
 void SharedChecks() {
     auto* renderer=host->Renderer();
     host->ShadowFilterEnhanced()=true;host->ShadowMode()=2;
-    sf::ReleaseRenderer(renderer);
+    CoarseFixture fixture(512);
     sf::Invalidate(host);
-    auto* fine=sf::Prepare(host,true);Check(fine!=nullptr,"prepare private fine input for shared pass");
-    ClearFine(fine);
-    Hr(ownedDevice->BeginScene(),"warm shared resources before timing");
-    sf::FinalizeDepth(host,true);
-    Hr(ownedDevice->EndScene(),"complete shared warmup");
+    Check(!sf::Prepare(host,true),"shared prefilter consumes current coverage directly");
+    FinalizeShared("warm shared resources before timing");
     DeviceSnapshot snapshot(ownedDevice);
     ComPtr<IDirect3DQuery9> start,end,frequency,disjoint;
     bool timing=SUCCEEDED(ownedDevice->CreateQuery(D3DQUERYTYPE_TIMESTAMP,&start))&&
@@ -549,9 +617,7 @@ void SharedChecks() {
     sf::FinalizeDepth(host,true);
     if(timing){end->Issue(D3DISSUE_END);disjoint->Issue(D3DISSUE_END);}
     Hr(ownedDevice->EndScene(),"end isolated shared depth preprocessing");
-    snapshot.Verify();
-    auto* visible=sf::VisibleTexture(host);Check(visible!=renderer->hdrTexture && visible!=fine->Texture(),"published separate filtered R32F, not raw coarse or fine");
-    Check(!EffectEnabled(),"native receiver kernel disabled only after shared output succeeds");
+    snapshot.Verify();CheckSharedSampling(512);
     if(timing) {
         UINT64 a=0,b=0,f=0;BOOL invalid=TRUE;const auto until=GetTickCount64()+10000;
         HRESULT ready=S_FALSE;
@@ -562,24 +628,49 @@ void SharedChecks() {
         else std::puts("SHARED_GPU timing unavailable");
     }
     sf::Invalidate(host);Check(sf::VisibleTexture(host)==renderer->hdrTexture,"frame invalidation cannot reuse prior prefiltered texture");
-    fine=sf::Prepare(host,true);Check(fine!=nullptr,"prepare next shared frame");ClearFine(fine);
+    sf::Prepare(host,true);
     auto** vt=*reinterpret_cast<void***>(ownedDevice);
     Check(MH_CreateHook(vt[83],&UpProbe,reinterpret_cast<void**>(&realUp))==MH_OK&&MH_EnableHook(vt[83])==MH_OK,"hook only owned DrawPrimitiveUP failure");
-    DeviceSnapshot failedSnapshot(ownedDevice);
-    failUp=true;Hr(ownedDevice->BeginScene(),"begin injected shared draw failure");sf::FinalizeDepth(host,true);Hr(ownedDevice->EndScene(),"end injected failure");
-    failedSnapshot.Verify();Check(!failUp,"injected draw failure consumed by shared pass");
-    Check(sf::VisibleTexture(host)==renderer->hdrTexture,"failed shared draw publishes coarse fallback, not old filtered frame");
-    Check(sf::Prepare(host,true)==nullptr,"shared failure cached for unchanged device and size");
+    {
+        DeviceSnapshot failedSnapshot(ownedDevice);
+        failUp=true;FinalizeShared("inject shared draw failure");
+        failedSnapshot.Verify();
+    }
+    Check(!failUp,"injected draw failure consumed by shared pass");
+    Check(sf::VisibleTexture(host)==renderer->hdrTexture,"failed shared draw publishes raw fallback, not old filtered frame");
+    const unsigned afterDrawFailure=allocationAttempts;
+    sf::Invalidate(host);sf::Prepare(host,true);FinalizeShared("verify draw failure cache");
+    Check(allocationAttempts==afterDrawFailure&&sf::VisibleTexture(host)==renderer->hdrTexture,
+          "shared draw failure stays cached for unchanged device and size");
     MH_DisableHook(vt[83]);MH_RemoveHook(vt[83]);
-    sf::ReleaseRenderer(renderer);fine=sf::Prepare(host,true);Check(fine!=nullptr,"reset clears shared failure cache");ClearFine(fine);
-    probeSize=fine->Size();probeAllocations=true;failOneAllocation=true;unsigned before=allocationAttempts;
-    Hr(ownedDevice->BeginScene(),"begin injected shared allocation failure");sf::FinalizeDepth(host,true);Hr(ownedDevice->EndScene(),"end allocation failure");
-    probeAllocations=false;
+    sf::ReleaseRenderer(renderer);sf::Prepare(host,true);
+    FinalizeShared("reset clears shared failure cache");CheckSharedSampling(512);
+    sf::ReleaseRenderer(renderer);sf::Prepare(host,true);
+    probeSize=512;probeAllocations=true;failOneAllocation=true;unsigned before=allocationAttempts;
+    FinalizeShared("inject shared allocation failure");
     Check(!failOneAllocation&&allocationAttempts==before+1,"first shared R32F allocation safely failed");
-    Check(sf::VisibleTexture(host)==renderer->hdrTexture,"allocation failure returns current coarse depth");
-    Check(sf::Prepare(host,true)==nullptr,"allocation failure cached without repeat allocation");
-    host->ShadowFilterEnhanced()=false;sf::Invalidate(host);Check(sf::VisibleTexture(host)==renderer->hdrTexture,"toggle off releases shared resources and returns native map");
-    sf::ReleaseRenderer(renderer);
+    Check(sf::VisibleTexture(host)==renderer->hdrTexture,"allocation failure returns current raw depth");
+    for(int i=0;i<3;++i) {
+        sf::Invalidate(host);sf::Prepare(host,true);FinalizeShared("verify allocation failure cache");
+    }
+    Check(allocationAttempts==before+1&&sf::VisibleTexture(host)==renderer->hdrTexture,
+          "allocation failure remains cached without repeat allocations");
+    // Changing actual coverage identity/dimensions permits recovery without a reset.
+    probeAllocations=false;
+    ComPtr<IDirect3DTexture9> replacement;
+    Hr(ownedDevice->CreateTexture(1024,1024,1,D3DUSAGE_RENDERTARGET,D3DFMT_R32F,D3DPOOL_DEFAULT,&replacement,nullptr),
+       "create replacement coverage identity");
+    renderer->hdrTexture=replacement.Get();renderer->renderTargetWidth=renderer->renderTargetHeight=1024;
+    probeSize=1024;probeAllocations=true;sf::Invalidate(host);sf::Prepare(host,true);
+    FinalizeShared("changed coverage key permits retry");
+    Check(allocationAttempts==before+3,"changed coverage key allocates fresh scratch and output");
+    CheckSharedSampling(1024);
+    auto died=Life(sf::VisibleTexture(host));
+    host->ShadowFilterEnhanced()=false;sf::Invalidate(host);
+    Check(died->load()&&sf::VisibleTexture(host)==renderer->hdrTexture,"toggle off releases shared resources and returns native map");
+    sf::ReleaseRenderer(renderer);renderer->hdrTexture=fixture.texture.Get();
+    renderer->renderTargetWidth=renderer->renderTargetHeight=512;
+    probeAllocations=false;failOneAllocation=false;
 }
 
 void SharedSizeChecks() {
@@ -591,8 +682,8 @@ void SharedSizeChecks() {
         const unsigned before=allocationAttempts;
         Hr(ownedDevice->BeginScene(),"begin shared size sample");sf::FinalizeDepth(host,true);Hr(ownedDevice->EndScene(),"end shared size sample");
         auto* visible=sf::VisibleTexture(host);D3DSURFACE_DESC desc{};
-        Check(visible!=host->Renderer()->hdrTexture&&SUCCEEDED(visible->GetLevelDesc(0,&desc))&&desc.Width==FineSize(coarse,deviceLimit),"shared filtered allocation uses current actual size, including capped coarse");
-        Check(!EffectEnabled(),"shared output disables receiver kernel at current size");
+        Check(visible!=host->Renderer()->hdrTexture&&SUCCEEDED(visible->GetLevelDesc(0,&desc))&&desc.Width==SharedSize(coarse,deviceLimit),"shared filtered allocation uses current actual size, including capped coarse");
+        CheckSharedSampling(coarse);
         Check(allocationAttempts==before+2,"shared size creates exactly scratch and final maps");
         sf::Invalidate(host);Check(sf::VisibleTexture(host)==host->Renderer()->hdrTexture,"resized shared frame starts invalid");
         fine=sf::Prepare(host,true);if(fine)ClearFine(fine);
@@ -606,7 +697,8 @@ void SharedSizeChecks() {
 int wmain(int argc,wchar_t** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
     SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX);
-    if(argc!=5||std::wcscmp(argv[3],L"--mme")!=0||
+    const bool fixedOnly=argc==6&&std::wcscmp(argv[5],L"--fixed-model-only")==0;
+    if((argc!=5&&!fixedOnly)||std::wcscmp(argv[3],L"--mme")!=0||
        (std::wcscmp(argv[4],L"0")!=0&&std::wcscmp(argv[4],L"1")!=0)) {
         std::fwprintf(stderr,L"Usage: MikuMikuDance.exe model-without-FX.pmx new-output-directory --mme 0|1\n");return 64;
     }
@@ -660,6 +752,12 @@ MeshMaterialList { 1;2;0,0;; Material {0.6;0.6;0.6;1.0;;5.0;0.0;0.0;0.0;;0.1;0.1
         Check(MH_CreateHook(createEntry,&CreateTextureProbe,reinterpret_cast<void**>(&realCreateTexture))==MH_OK&&
               MH_EnableHook(createEntry)==MH_OK, "observe and selectively fail only owned-device fine allocations");
 
+        if(fixedOnly) {
+            ConfigureFrame(false,2);FrameDriver(host);
+            Check(host->Renderer()->effect!=nullptr,"deferred host effect initialized");
+            Hr(FxSetInt(host->Renderer()->effect,"MdsDetailEnabled",0),"production effect supports fixed model sampling");
+            FixedModelTests();
+        } else {
         wchar_t system[MAX_PATH]{};GetSystemDirectoryW(system,MAX_PATH);
         systemD3d=LoadLibraryW((std::filesystem::path(system)/L"d3d9.dll").c_str());Check(systemD3d!=nullptr, "load actual system D3D9");
         auto create=reinterpret_cast<IDirect3D9*(WINAPI*)(UINT)>(GetProcAddress(systemD3d,"Direct3DCreate9"));Check(create!=nullptr, "resolve actual D3D9 factory");
@@ -682,6 +780,7 @@ MeshMaterialList { 1;2;0,0;; Material {0.6;0.6;0.6;1.0;;5.0;0.0;0.0;0.0;;0.1;0.1
         Check(sf::VisibleTexture(host)==host->Renderer()->hdrTexture, "reset invalidates prior fine image");
         Frame(true,2,"enhanced-after-reset");
         Frame(false,2,"disabled-after");
+        }
         summary<<"checks,"<<checks<<",passed\n";summary.flush();exitCode=0;
     } catch(const std::exception& error) {
         std::fprintf(stderr,"FAIL shadow filter acceptance: %s\n",error.what());

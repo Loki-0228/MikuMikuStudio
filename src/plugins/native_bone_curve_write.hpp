@@ -8,6 +8,7 @@ namespace mikumikustudio::plugins {
 struct NativeBoneCurveControls {
     int frame=0;
     std::array<bone_scale::Curve,5> controls{};
+    int targetFrame=-1; // -1 retains the frame in the source row.
 };
 struct BoneCurveEdit {
     unsigned bone=0;

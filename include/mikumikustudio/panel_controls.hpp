@@ -231,6 +231,7 @@ constexpr int kAviWaveCheckbox = 614;        // 0x266 WAVEも出力する
 constexpr int kAviCloseAfterExportCheckbox = 615;
 constexpr int kExportUnsavedWarning = 9160;
 constexpr int kExportSaveProjectButton = 9161;
+constexpr int kVideoChangeDestinationButton = 9168;
 constexpr int kAviCodecCombo = 628;          // 0x274 video compressor (list box in other dialogs)
 constexpr int kAviSettingsButton = 724;      // 0x2D4 詳細設定 / codec settings (physics dialog: copy body)
 constexpr int kAvi3dVisionCheckbox = 806;    // NVIDIA 3D Vision output

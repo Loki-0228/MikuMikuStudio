@@ -10,9 +10,11 @@ MmsEvaluationApiV1_3 api13{};
 MmsEvaluationApiV1_4 api14{};
 MmsEvaluationApiV1_5 api15{};
 MmsEvaluationApiV1_6 api16{};
+MmsEvaluationApiV1_7 api17{};
 mms::sdk::EvaluationServices sdkServices;
 mms::sdk::EvaluationMeshServices sdkMeshServices;
 mms::sdk::EvaluationMaterialServices sdkMaterialServices;
+mms::sdk::EvaluationReferenceServices sdkReferenceServices;
 MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1*, void** out) {
     if (!host || !out) return MMS_E_ARGUMENT;
     constexpr char service[] = "mms.scene.evaluate";
@@ -31,6 +33,7 @@ MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1*, void** 
     // Optional for the older host checks; the 1.6 host fixture requires it
     // explicitly in its manifest and verifies the returned table below.
     if (host->queryService(host->context, {service, sizeof(service)-1}, 1, 6, sizeof(api16), &api16) != MMS_OK) api16 = {};
+    if (host->queryService(host->context, {service, sizeof(service)-1}, 1, 7, sizeof(api17), &api17) != MMS_OK) api17 = {};
     const auto sdk = mms::sdk::EvaluationServices::Query(*host, sdkServices);
     if (sdk != MMS_OK) return sdk;
     const auto meshSdk = mms::sdk::EvaluationMeshServices::Query(*host, sdkMeshServices);
@@ -39,13 +42,17 @@ MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1*, void** 
         const auto materialSdk = mms::sdk::EvaluationMaterialServices::Query(*host, sdkMaterialServices);
         if (materialSdk != MMS_OK) return materialSdk;
     }
+    if (api17.context) {
+        const auto referenceSdk = mms::sdk::EvaluationReferenceServices::Query(*host, sdkReferenceServices);
+        if (referenceSdk != MMS_OK) return referenceSdk;
+    }
     if (sdk == MMS_OK) *out = &api;
     return sdk;
 }
 MmsResult MMS_CALL Start(void*) { return MMS_OK; }
 void MMS_CALL Event(void*, const MmsEventV1*) {}
 MmsResult MMS_CALL Stop(void*) { return MMS_OK; }
-void MMS_CALL Destroy(void*) { api = {}; api11 = {}; api12 = {}; api13 = {}; api14 = {}; api15 = {}; api16 = {}; sdkServices = {}; sdkMeshServices = {}; sdkMaterialServices = {}; }
+void MMS_CALL Destroy(void*) { api = {}; api11 = {}; api12 = {}; api13 = {}; api14 = {}; api15 = {}; api16 = {}; api17 = {}; sdkServices = {}; sdkMeshServices = {}; sdkMaterialServices = {}; sdkReferenceServices = {}; }
 }
 extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostGetApi(MmsEvaluationApiV1* out) {
     if (!out || !api.context) return MMS_E_NOT_READY;
@@ -74,6 +81,24 @@ extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostGetApi15(Mm
 extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostGetApi16(MmsEvaluationApiV1_6* out) {
     if (!out || !api16.context) return MMS_E_NOT_READY;
     *out = api16; return MMS_OK;
+}
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostGetApi17(MmsEvaluationApiV1_7* out) {
+    if (!out || !api17.context) return MMS_E_NOT_READY;
+    *out = api17; return MMS_OK;
+}
+// Values are copied before release; the test fixture may retain the output.
+extern "C" __declspec(dllexport) MmsResult MMS_CALL MmsEvaluationHostSdkReferences(
+    MmsEvaluationMaterialReferencesV1* refs, MmsEvaluationToonTableV1* toon) {
+    if (!refs || !toon) return MMS_E_ARGUMENT;
+    mms::sdk::EvaluationReferenceSource source;
+    MmsEvaluationMaterialReferencesV1 copied[2]{}; MmsEvaluationToonTableV1 table{};
+    auto result=sdkReferenceServices.Capture(source);
+    if(result==MMS_OK)result=source.ReadMaterialReferences(0,0,copied[0]);
+    if(result==MMS_OK)result=source.ReadMaterialReferences(0,1,copied[1]);
+    if(result==MMS_OK)result=source.ReadToonTable(0,table);
+    if(source) { const auto released=source.Release(); if(result==MMS_OK)result=released; }
+    if(result==MMS_OK){std::memcpy(refs,copied,sizeof(copied));*toon=table;}
+    return result;
 }
 // Called by the host fixture only. The plugin owns the wrappers and releases
 // the source before reading its frame, proving the SDK uses independent leases.

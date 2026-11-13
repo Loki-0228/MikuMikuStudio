@@ -49,7 +49,7 @@ void SourceGeometryMatches(MMDApp* app,const MmsEvaluationApiV1_5& api,MmsHandle
     }
 }
 PublicModels Identities(MMDApp* app,const MmsEvaluationApiV1_4& api,MmsHandle source) {
-    auto store=CreateSceneStore(app);SceneClient client;auto scene=store->Api(client);
+    auto store=CreateSceneStore(app);SceneClient client;auto scene=([&]{ MmsSceneApiV1 value{}; if (store->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     MmsSceneQueryV1 query{};query.h=Header<MmsSceneQueryV1>();query.stage=MMS_STAGE_BIND;query.flags=MMS_SCENE_CURRENT_TIME;query.channels=MMS_CHANNEL_BONES;
     MmsSnapshotV1 bind{};MmsSpan objects{};Check(scene.acquire(scene.context,&query,&bind)==MMS_OK&&scene.objects(scene.context,bind.handle,&objects)==MMS_OK&&objects.count==3,"BIND snapshot publishes three actual models");
     const auto* rows=static_cast<const MmsObjectV1*>(objects.data);PublicModels result;

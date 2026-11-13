@@ -1,4 +1,5 @@
 #include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include <algorithm>
 // ===========================================================================
 // VA 0x0044AEE0 - HandleHScroll  (original: sub_44AEE0)
@@ -350,11 +351,7 @@ void HandleHScroll(LPARAM lParam, WPARAM wParam) {
         if (app->state.waveEnabled != 0) {
             TimelineDrawTicks(app->state.timelineStartFrame,
                               app->SidebarWidth());
-            RECT rc;
-            rc.left = 6;
-            rc.top = 95;
-            rc.right = app->SidebarWidth() - 3;
-            rc.bottom = 146;
+            RECT rc = TimelineRulerDamage(app);
             InvalidateRect(hwnd, &rc, FALSE);
         }
     }

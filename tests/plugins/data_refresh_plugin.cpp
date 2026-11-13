@@ -5,6 +5,8 @@
 #include <mms/cpp/state_content.hpp>
 #include <mms/surface.h>
 #include <mms/edit.h>
+#include <mms/layout_session.h>
+#include <mms/cpp/layout_session.hpp>
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -24,6 +26,9 @@ struct Plugin {
     MmsHostV1 host{};MmsUiApiV1 ui{};MmsUiSurfaceApiV1 surface{};MmsEditApiV1 edit{};
     RefreshServices refresh;DataServices data;DataSource source;DataBinding binding;
     StateContentServices stateContent;
+    // Retain an SDK session if explicit failure cleanup cannot release it.
+    // Its destructor deliberately does not call the host.
+    LayoutSession sdkLayoutSession;
     RefreshTicket ticket;DataDisplay held;
     std::string id;MmsHandle command=0,menu=0,button=0,panel=0,factory=0;
     HINSTANCE module=nullptr;bool registeredClass=false;
@@ -242,6 +247,11 @@ MmsResult MMS_CALL Start(void* context){auto& p=*static_cast<Plugin*>(context);c
 void MMS_CALL Event(void*,const MmsEventV1*){}
 bool Retired(MmsResult result){return result==MMS_E_STALE||result==MMS_E_NOT_FOUND||result==MMS_E_NOT_READY;}
 MmsResult MMS_CALL Stop(void* context){auto& p=*static_cast<Plugin*>(context);++p.state.stopCount;
+    if(p.sdkLayoutSession){
+        MmsUiLayoutSessionInfoV1 info{};
+        if(const auto result=p.sdkLayoutSession.Query(info))return result;
+        if(const auto result=p.sdkLayoutSession.Close())return result;
+    }
     if(p.ticket||p.held){p.state.stopHeldTicket=bool(p.ticket);p.state.stopHeldDisplay=bool(p.held);
         Log(p,"DATA_PROBE_STOP_HELD");return MMS_OK;}
     if(auto result=p.binding.Release())if(!Retired(result))return result;
@@ -308,4 +318,235 @@ extern "C" MmsResult MMS_CALL ProbeEnqueueLayoutNormal(void){return mms::sdk::de
     return EnqueueLayout(*p,0,false,false,true);});}
 extern "C" MmsResult MMS_CALL ProbeLayoutSetVisible(uint32_t visible){
     if(!current)return MMS_E_NOT_READY;if(visible>1)return MMS_E_ARGUMENT;current->layoutVisible=visible;return MMS_OK;
+}
+// Trusted host tests only. This is not a plugin ABI service or SDK API.
+extern "C" void* MMS_CALL ProbeUiContext(){return current?current->ui.context:nullptr;}
+// Negotiate in the loaded DLL. The copied table keeps the actual plugin's
+// owner context, and every operation still enters the public host C ABI.
+extern "C" MmsResult MMS_CALL ProbeLayoutSessionApi(MmsUiLayoutSessionApiV1* out){
+    if(!out||out->h.size!=sizeof(*out)||out->h.major!=1||out->h.minor)return MMS_E_ARGUMENT;
+    if(!current)return MMS_E_NOT_READY;
+    MmsUiLayoutSessionApiV1 table{};
+    const auto result=current->host.queryService(current->host.context,S("mms.ui.layout.session"),1,0,sizeof(table),&table);
+    if(result)return result;*out=table;return MMS_OK;
+}
+extern "C" MmsResult MMS_CALL ProbeLayoutSessionRoundtrip(uint32_t* steps){
+    return mms::sdk::detail::Call([&]()->MmsResult{
+        if(!steps)return MMS_E_ARGUMENT;*steps=0;if(!current)return MMS_E_NOT_READY;
+        MmsUiLayoutSessionApiV1 api{};api.h=Header<MmsUiLayoutSessionApiV1>();
+        if(const auto result=ProbeLayoutSessionApi(&api))return result;
+        MmsUiLayoutSessionTargetV1 target{};target.h=Header<MmsUiLayoutSessionTargetV1>();
+        target.element=current->button;target.fields=MMS_LAYOUT_SESSION_VISIBLE;
+        MmsHandle handle=0;
+        if(const auto result=api.begin(api.context,{&target,1,sizeof(target),1},&handle))return result;
+        *steps|=1;
+        struct Cleanup{MmsUiLayoutSessionApiV1& api;MmsHandle& handle;~Cleanup(){if(!handle)return;
+            MmsUiLayoutSessionInfoV1 info{};info.h=Header<MmsUiLayoutSessionInfoV1>();
+            if(api.query(api.context,handle,&info)==MMS_OK&&info.state==MMS_LAYOUT_SESSION_ACTIVE)
+                api.rollback(api.context,handle,info.revision);
+            api.release(api.context,handle);}} cleanup{api,handle};
+        MmsUiLayoutSessionValueV1 value{};value.h=Header<MmsUiLayoutSessionValueV1>();
+        value.element=target.element;value.fields=target.fields; // Hidden; unused fields stay zero.
+        MmsUiLayoutSessionInfoV1 info{};info.h=Header<MmsUiLayoutSessionInfoV1>();
+        if(const auto result=api.query(api.context,handle,&info))return result;
+        if(info.state!=MMS_LAYOUT_SESSION_ACTIVE)return MMS_E_FAILED;
+        if(const auto result=api.apply(api.context,handle,info.revision,{&value,1,sizeof(value),1}))return result;
+        *steps|=2;
+        if(const auto result=api.query(api.context,handle,&info))return result;
+        if(info.state!=MMS_LAYOUT_SESSION_ACTIVE||info.activeTargetCount!=1||info.targetCount!=1||info.reasons)return MMS_E_FAILED;
+        *steps|=4;
+        MmsUiLayoutSessionTargetV1 claim{};claim.h=Header<MmsUiLayoutSessionTargetV1>();
+        if(const auto result=api.queryClaim(api.context,handle,info.revision,0,&claim))return result;
+        if(claim.element!=target.element||claim.fields!=target.fields||claim.reserved)return MMS_E_FAILED;
+        *steps|=8;
+        if(const auto result=api.rollback(api.context,handle,info.revision))return result;
+        *steps|=16;
+        if(const auto result=api.query(api.context,handle,&info))return result;
+        if(info.state!=MMS_LAYOUT_SESSION_ROLLED_BACK||info.activeTargetCount)return MMS_E_FAILED;
+        *steps|=32;
+        if(const auto result=api.queryClaim(api.context,handle,info.revision,0,&claim))return result;
+        if(claim.element!=target.element||claim.fields||claim.reserved)return MMS_E_FAILED;
+        *steps|=64;
+        if(const auto result=api.release(api.context,handle))return result;
+        handle=0;*steps|=128;Log(*current,"LAYOUT_SESSION_CABI_ROUNDTRIP_PASS steps=255");return MMS_OK;
+    });
+}
+extern "C" MmsResult MMS_CALL ProbeLayoutWorkspaceVersion(){
+    return mms::sdk::detail::Call([&]()->MmsResult{
+        if(!current)return MMS_E_NOT_READY;
+        mms::sdk::LayoutSessionServices services;
+        if(const auto result=mms::sdk::LayoutSessionServices::Query(current->host,services,1))return result;
+        MmsUiLayoutSessionCapsV1 caps{};
+        if(const auto result=services.Capabilities(caps))return result;
+        if(services.api().h.minor!=1 || caps.mounts!=31 || caps.h.minor)return MMS_E_FAILED;
+        MmsUiLayoutSessionApiV1 legacy{};
+        const auto result=current->host.queryService(current->host.context,S("mms.ui.layout.session"),1,0,sizeof(legacy),&legacy);
+        if(result)return result;
+        return legacy.context==services.api().context && legacy.h.minor==0 ? MMS_OK : MMS_E_FAILED;
+    });
+}
+extern "C" MmsResult MMS_CALL ProbeLayoutSessionSdkRoundtrip(uint32_t* steps){
+    return mms::sdk::detail::Call([&]()->MmsResult{
+        if(!steps)return MMS_E_ARGUMENT;*steps=0;if(!current)return MMS_E_NOT_READY;
+        auto& p=*current;auto& session=p.sdkLayoutSession;
+        if(session)return MMS_E_BUSY; // Never overwrite a retained owner.
+        LayoutSessionServices services;
+        if(const auto result=LayoutSessionServices::Query(p.host,services))return result;
+        *steps|=1;
+        if(const auto result=services.BeginVisibility(p.button,session))return result;
+        *steps|=2;
+        const auto original=session.get();
+        const auto fail=[&](MmsResult originalResult)->MmsResult{
+            // Explicitly query before Close. On either failure the same member
+            // keeps the original handle for a later UI-thread Stop attempt.
+            MmsUiLayoutSessionInfoV1 remaining{};
+            if(session.Query(remaining)!=MMS_OK || session.Close()!=MMS_OK)
+                Log(p,"LAYOUT_SESSION_SDK_CLEANUP_RETAINED");
+            return originalResult;
+        };
+        MmsUiLayoutSessionInfoV1 info{};
+        if(const auto result=session.Query(info))return fail(result);
+        if(!original||info.state!=MMS_LAYOUT_SESSION_ACTIVE||info.targetCount!=1||info.activeTargetCount!=1)
+            return fail(MMS_E_FAILED);
+        *steps|=4;
+        const auto hidden=LayoutSessionVisibility(p.button,false);
+        if(const auto result=session.Apply(&hidden,1))return fail(result);
+        if(session.get()!=original||session.revision())return fail(MMS_E_FAILED);
+        *steps|=8;
+        if(const auto result=session.Query(info))return fail(result);
+        if(info.state!=MMS_LAYOUT_SESSION_ACTIVE||session.get()!=original||!session.revision())return fail(MMS_E_FAILED);
+        *steps|=16;
+        if(const auto result=session.Close())return fail(result);
+        *steps|=32;
+        if(session||session.get()||session.revision())return MMS_E_FAILED;
+        *steps|=64;
+        // No native refresh occurs inside this roundtrip. Geometry is exercised
+        // separately by the actual-host public C ABI takeover checks.
+        Log(p,"LAYOUT_SESSION_SDK_ROUNDTRIP_PASS steps=127");return MMS_OK;
+    });
+}
+
+// Private test observer: called from this exported test driver, not from a
+// plugin callback. The host independently checks real HWNDs and geometry.
+using LayoutParentObserver=MmsResult(MMS_CALL*)(void*,uint32_t,MmsHandle,MmsHandle,MmsHandle);
+static LayoutParentObserver parentObserver=nullptr;
+static void* parentObserverContext=nullptr;
+extern "C" void MMS_CALL ProbeSetLayoutParentObserver(LayoutParentObserver observer,void* context){
+    parentObserver=observer;parentObserverContext=context;
+}
+extern "C" MmsResult MMS_CALL ProbeLayoutParentRoundtrip(uint32_t* steps){
+    return mms::sdk::detail::Call([&]()->MmsResult{
+        if(!steps)return MMS_E_ARGUMENT;*steps=0;
+        if(!current||!parentObserver)return MMS_E_NOT_READY;
+        auto& p=*current;if(p.sdkLayoutSession)return MMS_E_BUSY;
+        MmsUiLayoutSessionApiV1_2 api{};
+        if(const auto r=p.host.queryService(p.host.context,S("mms.ui.layout.session"),1,2,sizeof(api),&api))return r;
+        if(api.h.size!=sizeof(api)||api.h.major!=1||api.h.minor!=2||!api.queryCapabilitiesEx||
+            !api.queryTargetEx||!api.beginEx||!api.applyEx||!api.queryClaimEx)return MMS_E_FAILED;
+        MmsUiLayoutSessionApiV1 old[2]{};
+        for(unsigned minor=0;minor!=2;++minor){
+            struct Guarded{MmsUiLayoutSessionApiV1 table;unsigned char tail[40];} guarded{};
+            std::memset(guarded.tail,0x5a,sizeof(guarded.tail));
+            if(const auto r=p.host.queryService(p.host.context,S("mms.ui.layout.session"),1,minor,sizeof(guarded.table),&guarded.table))return r;
+            for(auto byte:guarded.tail)if(byte!=0x5a)return MMS_E_FAILED;
+            old[minor]=guarded.table;
+            MmsUiLayoutSessionCapsV1 caps{};caps.h=Header<MmsUiLayoutSessionCapsV1>();
+            if(old[minor].h.size!=88||old[minor].h.minor!=minor||old[minor].context!=api.context||
+                old[minor].queryCapabilities(old[minor].context,&caps)||caps.fields!=7||caps.mounts!=(minor?31u:15u))return MMS_E_FAILED;
+        }
+        MmsUiLayoutSessionApiV1_2 shortTable;std::memset(&shortTable,0x6b,sizeof(shortTable));
+        const auto sentinel=shortTable;
+        for(uint32_t bytes:{88u,127u})if(p.host.queryService(p.host.context,S("mms.ui.layout.session"),1,2,bytes,&shortTable)!=MMS_E_ARGUMENT||
+            std::memcmp(&shortTable,&sentinel,sizeof(shortTable)))return MMS_E_FAILED;
+        if(p.host.queryService(p.host.context,S("mms.ui.layout.session"),1,3,sizeof(shortTable),&shortTable)!=MMS_E_VERSION||
+            std::memcmp(&shortTable,&sentinel,sizeof(shortTable))||
+            p.host.queryService(p.host.context,S("mms.ui.layout.session"),2,2,sizeof(shortTable),&shortTable)!=MMS_E_VERSION||
+            std::memcmp(&shortTable,&sentinel,sizeof(shortTable)))return MMS_E_FAILED;
+        MmsUiLayoutSessionCapsV1 caps{};caps.h=Header<MmsUiLayoutSessionCapsV1>();
+        if(api.queryCapabilities(api.context,&caps)||caps.fields!=7||caps.mounts!=31||
+            api.queryCapabilitiesEx(api.context,&caps)||caps.fields!=15||caps.mounts!=31)return MMS_E_FAILED;
+        *steps|=1;
+        MmsUiLayoutApiV1_1 history{};
+        if(const auto r=p.host.queryService(p.host.context,S("mms.ui.layout"),1,1,sizeof(history),&history))return r;
+        MmsHandle groups[2]{},button=0,session=0;
+        struct Cleanup{Plugin& p;MmsUiLayoutSessionApiV1_2& api;MmsHandle* groups;MmsHandle& button;MmsHandle& session;
+            ~Cleanup(){if(p.sdkLayoutSession){MmsUiLayoutSessionInfoV1 info{};if(!p.sdkLayoutSession.Query(info))p.sdkLayoutSession.Close();}
+                if(session){MmsUiLayoutSessionInfoV1 info{};info.h=Header<MmsUiLayoutSessionInfoV1>();
+                    if(!api.query(api.context,session,&info)&&info.state==MMS_LAYOUT_SESSION_ACTIVE)api.rollback(api.context,session,info.revision);
+                    api.release(api.context,session);}
+                if(button)p.ui.unregisterItem(p.ui.context,button);
+                for(int i=1;i>=0;--i)if(groups[i])p.ui.unregisterItem(p.ui.context,groups[i]);}
+        } cleanup{p,api,groups,button,session};
+        const std::string ids[]{p.id+".parent.group.a",p.id+".parent.group.b",p.id+".parent.button"};
+        const auto command=p.id+".command";
+        for(unsigned i=0;i!=3;++i){
+            MmsUiElementV1 e{};e.h=Header<MmsUiElementV1>();e.id=S(ids[i]);e.ownerPlugin=S(p.id);
+            e.parentId=i==2?S(ids[0]):S("mms.toolbar.main.extensions");e.label=S("Parent roundtrip button");
+            e.kind=i==2?MMS_UI_BUTTON:MMS_UI_GROUP;
+            e.capabilities=MMS_UI_MOVE|MMS_UI_HIDE|MMS_UI_LAYOUT|MMS_UI_RESIZE|(i==2?0:MMS_UI_CONTAINER);
+            if(i==2)e.commandId=S(command);
+            if(const auto r=p.ui.registerElement(p.ui.context,&e,i==2?&button:&groups[i]))return r;
+            if(i<2){MmsUiLayoutHintsV1 hints{};hints.h=Header<MmsUiLayoutHintsV1>();
+                hints.flow=MMS_FLOW_ROW;hints.minimum[0]=160;hints.minimum[1]=38;
+                hints.padding[0]=i?47.0f:5.0f;hints.padding[1]=3;hints.padding[2]=5;hints.padding[3]=3;
+                if(const auto r=history.setDefaultHints(history.context,e.id,&hints))return r;}
+        }
+        const auto observe=[&](uint32_t phase){return parentObserver(parentObserverContext,phase,button,groups[0],groups[1]);};
+        if(const auto r=observe(0))return r;
+        MmsUiLayoutSessionTargetInfoV1 targetInfo{};targetInfo.h=Header<MmsUiLayoutSessionTargetInfoV1>();
+        if(api.queryTargetEx(api.context,button,&targetInfo)||!(targetInfo.fields&MMS_LAYOUT_SESSION_PARENT)||targetInfo.mount!=1)return MMS_E_FAILED;
+        MmsUiLayoutSessionTargetV1_2 target{};target.h={sizeof(target),1,2};target.element=button;
+        target.fields=MMS_LAYOUT_SESSION_PARENT;target.parent=groups[1];
+        MmsUiLayoutSessionValueV1_2 value{};value.h={sizeof(value),1,2};value.element=button;value.fields=target.fields;value.parent=target.parent;
+        MmsUiLayoutSessionInfoV1 info{};info.h=Header<MmsUiLayoutSessionInfoV1>();
+        const auto beginApply=[&]()->MmsResult{
+            if(const auto r=api.beginEx(api.context,{&target,1,sizeof(target),2},&session))return r;
+            if(const auto r=old[0].query(old[0].context,session,&info))return r;
+            return api.applyEx(api.context,session,info.revision,{&value,1,sizeof(value),2});};
+        if(const auto r=beginApply())return r;
+        if(const auto r=api.query(api.context,session,&info))return r;
+        MmsUiLayoutSessionTargetV1 claim{};claim.h=Header<MmsUiLayoutSessionTargetV1>();claim.element=991;
+        const auto originalClaim=claim;
+        if(old[1].queryClaim(old[1].context,session,info.revision,0,&claim)!=MMS_E_UNSUPPORTED||
+            std::memcmp(&claim,&originalClaim,sizeof(claim)))return MMS_E_FAILED;
+        MmsUiLayoutSessionValueV1 omitted{};omitted.h=Header<MmsUiLayoutSessionValueV1>();omitted.element=button;omitted.fields=MMS_LAYOUT_SESSION_VISIBLE;
+        if(old[0].apply(old[0].context,session,info.revision,{&omitted,1,sizeof(omitted),1})!=MMS_E_ARGUMENT)return MMS_E_FAILED;
+        if(const auto r=observe(1))return r;
+        if(const auto r=old[0].rollback(old[0].context,session,info.revision))return r;
+        if(const auto r=api.query(api.context,session,&info))return r;
+        MmsUiLayoutSessionTargetV1_2 exClaim{};exClaim.h={sizeof(exClaim),1,2};
+        if(api.queryClaimEx(api.context,session,info.revision,0,&exClaim)||exClaim.element!=button||exClaim.fields||exClaim.parent)return MMS_E_FAILED;
+        if(const auto r=old[1].release(old[1].context,session))return r;session=0;
+        if(const auto r=observe(2))return r;*steps|=2;
+        MmsUiLayoutHistoryInfoV1 before{},after{};before.h=after.h=Header<MmsUiLayoutHistoryInfoV1>();
+        if(const auto r=history.queryHistory(history.context,&before))return r;
+        if(const auto r=beginApply())return r;
+        if(const auto r=api.query(api.context,session,&info))return r;
+        if(const auto r=old[1].commit(old[1].context,session,info.revision))return r;
+        if(const auto r=old[0].release(old[0].context,session))return r;session=0;
+        if(history.queryHistory(history.context,&after)||after.undoDepth!=before.undoDepth+1)return MMS_E_FAILED;
+        if(const auto r=observe(3))return r;
+        if(const auto r=history.undo(history.context))return r;
+        if(const auto r=observe(4))return r;
+        if(const auto r=history.redo(history.context))return r;
+        if(const auto r=observe(5))return r;
+        if(const auto r=history.undo(history.context))return r;
+        if(const auto r=observe(6))return r;*steps|=4;
+        LayoutSessionServices sdk;
+        if(const auto r=LayoutSessionServices::Query(p.host,sdk,2))return r;
+        auto& owned=p.sdkLayoutSession;
+        if(const auto r=sdk.BeginParent(button,groups[1],owned))return r;
+        if(const auto r=owned.Query(info))return r;
+        const auto sdkValue=LayoutSessionParent(button,groups[1]);
+        if(const auto r=owned.Apply(&sdkValue,1))return r;
+        if(const auto r=owned.Query(info))return r;
+        if(const auto r=owned.QueryClaim(0,exClaim))return r;
+        if(exClaim.element!=button||exClaim.fields!=MMS_LAYOUT_SESSION_PARENT||exClaim.parent!=groups[1])return MMS_E_FAILED;
+        if(const auto r=observe(7))return r;
+        if(const auto r=owned.Close())return r;
+        if(const auto r=observe(8))return r;*steps|=8;
+        if(const auto r=p.ui.unregisterItem(p.ui.context,button))return r;button=0;
+        for(int i=1;i>=0;--i){if(const auto r=p.ui.unregisterItem(p.ui.context,groups[i]))return r;groups[i]=0;}
+        *steps|=16;return MMS_OK;
+    });
 }

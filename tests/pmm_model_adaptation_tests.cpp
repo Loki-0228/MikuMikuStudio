@@ -40,8 +40,17 @@
 #include "mikumikustudio/system_settings.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #if !MMD_ORIGINAL_PROFILE
+#include <commctrl.h>
+#include <MinHook.h>
+#include <cmath>
+#include <iomanip>
+#include "../src/window/curve_editor_axis.hpp"
 #include "../src/plugins/history_runtime.hpp"
 #include "../src/plugins/scene_store.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/background_save.hpp"
+#include "mikumikustudio/bottom_panel_resize.hpp"
+#include "mikumikustudio/morph_curve.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
 #endif
 
@@ -51,12 +60,15 @@ int wmain() {
     return 77;
 }
 #else
+#include "pmm_selection_restore_checks.inc"
 using namespace mikumikustudio;
 namespace fs = std::filesystem;
 namespace {
 unsigned checks = 0, adaptations = 0;
 MMDApp* activeApp = nullptr;
 bool acceptAdaptation = false;
+const wchar_t* expectedOpenError = nullptr;
+unsigned expectedOpenDialogs = 0;
 const char* activeCase = "initialization";
 
 void Check(bool ok, const char* message) {
@@ -92,6 +104,36 @@ LRESULT CALLBACK AfterDialogInit(int code, WPARAM wp, LPARAM lp) {
                 const auto owner = GetWindow(window, GW_OWNER);
                 if (!activeApp || owner != activeApp->MainWindow())
                     UnexpectedDialog(window, "the dialog is not owned by this hidden test host");
+                if (expectedOpenError) {
+                    wchar_t title[256]{}, buttonType[64]{};
+                    GetWindowTextW(window, title, 256);
+                    auto button = GetDlgItem(window, IDOK);
+                    // Some message-box builds expose the sole OK-labelled
+                    // button as IDCANCEL during WM_INITDIALOG completion.
+                    if (!button) {
+                        auto candidate = GetDlgItem(window, IDCANCEL); wchar_t caption[32]{};
+                        if (candidate) GetWindowTextW(candidate, caption, 32);
+                        if (!std::wcscmp(caption, L"OK")) button = candidate;
+                    }
+                    if (button) GetClassNameW(button, buttonType, 64);
+                    struct ExpectedText { const wchar_t* needle; bool found; } text{expectedOpenError, false};
+                    EnumChildWindows(window, [](HWND child, LPARAM data)->BOOL {
+                        auto& expected = *reinterpret_cast<ExpectedText*>(data);
+                        wchar_t value[2048]{}; GetWindowTextW(child, value, 2048);
+                        if (std::wcsstr(value, expected.needle)) expected.found = true;
+                        return TRUE;
+                    }, reinterpret_cast<LPARAM>(&text));
+                    if (std::wcscmp(title, L"Load project") || !button || !IsChild(window, button) ||
+                        std::wcscmp(buttonType, L"Button") || !text.found || expectedOpenDialogs)
+                        UnexpectedDialog(window, "expected exactly one owned project-open error with its real OK button");
+                    ++expectedOpenDialogs;
+                    // Simulate the already-pending Enter edge in the real modal
+                    // dialog; the actual button's normal command closes it.
+                    activeApp->state.enterKeyState = 1;
+                    if (!PostMessageW(window, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(button), BN_CLICKED), reinterpret_cast<LPARAM>(button)))
+                        UnexpectedDialog(window, "could not queue the actual error dialog OK command");
+                    return CallNextHookEx(nullptr, code, wp, lp);
+                }
                 const auto button = GetDlgItem(window, 687);
                 wchar_t buttonType[64]{}, caption[256]{}, body[1024]{};
                 if (button) { GetClassNameW(button, buttonType, 64); GetWindowTextW(button, caption, 256); }
@@ -258,7 +300,7 @@ void NoHistory(MMDApp& app) {
 
 struct Identity { MmsObjectRef object{}; std::vector<MmsId> bones, morphs; };
 Identity CaptureIdentity(MMDApp& app, unsigned slot) {
-    auto store = plugins::CreateSceneStore(&app); plugins::SceneClient client; const auto api = store->Api(client);
+    auto store = plugins::CreateSceneStore(&app); plugins::SceneClient client; const auto api = ([&]{ MmsSceneApiV1 value{}; if (store->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     const auto object = plugins::SceneObjectIdentity(app.ModelSlot(slot));
     MmsSceneQueryV1 query{}; query.h = plugins::Header<MmsSceneQueryV1>();
     query.stage = MMS_STAGE_BIND; query.flags = MMS_SCENE_CURRENT_TIME;
@@ -318,6 +360,68 @@ void WriteBytes(const fs::path& path, const std::vector<char>& bytes, std::size_
     std::ofstream file(path, std::ios::binary | std::ios::trunc); file.write(bytes.data(), static_cast<std::streamsize>(size));
     Check(bool(file), "write an isolated standard-prefix or rejected-marker fixture");
 }
+void EarlyOpenEnterChecks(MMDApp& app, const fs::path& directory, const std::array<Motion, 2>& motion) {
+    const auto missing = directory / L"missing-open.pmm";
+    const auto invalid = directory / L"invalid-header.pmm";
+    const auto unsupported = directory / L"unsupported-version.pmm";
+    Check(!fs::exists(missing), "missing project fixture does not exist");
+    std::vector<char> badHeader(30, '\0');
+    WriteBytes(invalid, badHeader, badHeader.size());
+    std::vector<char> badVersion(30, '\0');
+    std::memcpy(badVersion.data(), "Polygon Movie maker", 19);
+    std::memcpy(badVersion.data() + 20, "9999", 4);
+    WriteBytes(unsupported, badVersion, badVersion.size());
+
+    const std::wstring oldFile = app.EnvFileName(), oldDirectory = app.PathWorkspace().projectDirectory;
+    const unsigned char oldDirty = app.SceneModified(), oldLayout = app.WindowLayoutReady();
+    const int oldFrame = app.CurrentFrame(), oldEnter = app.state.enterKeyState;
+    const std::array<unsigned char*, 2> models{app.ModelSlot(0), app.ModelSlot(1)};
+    const std::array<MmsObjectRef, 2> identities{plugins::SceneObjectIdentity(models[0]), plugins::SceneObjectIdentity(models[1])};
+    auto* const history = plugins::NativeHistory(&app);
+    Check(history != nullptr, "open error fixture has the active shared history");
+    std::uint64_t revision = 0;
+    Check(history->Revision(revision) == MMS_OK, "capture shared history revision before open failures");
+    const auto undo = history->UndoCount(), redo = history->RedoCount();
+    const auto* const camera = app.CameraKeys();
+    const auto cameraCapacity = mdl::KeyPoolCapacity(camera);
+    Check(camera && cameraCapacity, "open error fixture has camera keyframes");
+    const std::vector<mdl::CameraKey> cameraBefore(camera, camera + cameraCapacity);
+    struct ErrorCase { const char* name; fs::path path; const wchar_t* text; };
+    const ErrorCase cases[]{
+        {"open-missing", missing, L"Cannot open the project file."},
+        {"open-invalid-header", invalid, L"This is not a valid PMM file."},
+        {"open-unsupported-version", unsupported, L"This PMM file version is not supported."}
+    };
+    for (const auto& item : cases) {
+        activeCase = item.name; expectedOpenError = item.text; expectedOpenDialogs = 0;
+        app.state.enterKeyState = 0;
+        Check(!LoadSceneFile(item.path.c_str()), "early project-open failure is rejected");
+        expectedOpenError = nullptr;
+        Check(expectedOpenDialogs == 1 && app.state.enterKeyState == 3,
+            "the modal error consumes the pending Enter edge before returning");
+        Check(std::wstring(app.EnvFileName()) == oldFile && std::wstring(app.PathWorkspace().projectDirectory) == oldDirectory &&
+            app.SceneModified() == oldDirty && app.WindowLayoutReady() == oldLayout && app.CurrentFrame() == oldFrame,
+            "early open failure preserves project identity, dirty state, layout and playhead");
+        std::uint64_t after = 0;
+        Check(history == plugins::NativeHistory(&app) && history->Revision(after) == MMS_OK && after == revision &&
+            history->UndoCount() == undo && history->RedoCount() == redo,
+            "early open failure preserves the shared history and revision");
+        Check(app.CameraKeys() == camera && mdl::KeyPoolCapacity(camera) == cameraCapacity &&
+            !std::memcmp(camera, cameraBefore.data(), cameraCapacity * sizeof(mdl::CameraKey)),
+            "early open failure preserves all camera keyframes");
+        for (unsigned slot = 0; slot < 2; ++slot) {
+            Check(app.ModelSlot(slot) == models[slot], "early open failure keeps the original model object");
+            const auto identity = plugins::SceneObjectIdentity(app.ModelSlot(slot));
+            Check(Same(identity.id, identities[slot].id) && identity.generation == identities[slot].generation,
+                "early open failure preserves model identity and generation");
+            VerifyMotion(*mdl::Mdl(app.ModelSlot(slot)), motion[slot]);
+        }
+    }
+    activeCase = "open-empty-path"; expectedOpenDialogs = 0; app.state.enterKeyState = 1;
+    Check(!LoadSceneFile(L"") && expectedOpenDialogs == 0 && app.state.enterKeyState == 1,
+        "an empty path returns before any modal dialog or Enter consumption");
+    app.state.enterKeyState = oldEnter;
+}
 bool Load(MMDApp& app, const fs::path& path, bool prompt) {
     adaptations = 0; acceptAdaptation = prompt;
     const bool loaded = LoadSceneFile(path.c_str()); acceptAdaptation = false;
@@ -336,7 +440,7 @@ void VerifyChangedGroups(const mdl::ModelRecord& model) {
 }
 } // namespace
 
-int wmain(int argc, wchar_t** argv) {
+__declspec(noinline) int RunExistingPmmCases(int argc, wchar_t** argv) {
     if (argc != 2) return 2;
     std::setvbuf(stdout, nullptr, _IONBF, 0); SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     const auto run = fs::absolute(argv[1]).lexically_normal();
@@ -405,6 +509,7 @@ int wmain(int argc, wchar_t** argv) {
     auto rejectedBytes = originalBytes;
     std::memcpy(rejectedBytes.data() + rejectedBytes.size() - pmm_extension::kTrailerSize, "MDSXPMM2", 8);
     WriteBytes(rejected, rejectedBytes, rejectedBytes.size());
+    EarlyOpenEnterChecks(*app, directory, motion);
     struct Case { const char* name; std::vector<std::wstring> bones, morphs; unsigned groups = 1; bool prompt = true, adapted = true; };
     const Case cases[]{
         {"unchanged", originalBones, originalMorphs, 1, false, false},
@@ -486,5 +591,12 @@ int wmain(int argc, wchar_t** argv) {
     activeCase = "shutdown"; NoHistory(*app); ShutdownCleanup(app.get()); activeApp = g_Block = nullptr; app.reset();
     std::printf("PASS real PMM model adaptation host: %u checks; 44 positive cases, one old-marker negative case\n", checks);
     return 0;
+}
+#include "pmm_expression_roundtrip_checks.inc"
+int wmain(int argc,wchar_t** argv) {
+    if(argc==3 && std::wstring(argv[1])==L"--selection")return pmm_selection_checks::Run(std::filesystem::absolute(argv[2]));
+    if (argc == 3 && std::wcscmp(argv[1], L"--expression-pmm") == 0)
+        return pmm_expression_checks::Run(argv[2]);
+    return RunExistingPmmCases(argc,argv);
 }
 #endif

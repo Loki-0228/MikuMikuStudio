@@ -1,4 +1,5 @@
 #include "mikumikustudio/background_save.hpp"
+#include "mikumikustudio/cache_manager.hpp"
 #include "pmm_save_versions.hpp"
 #include "mikumikustudio/recent_projects.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
@@ -14,6 +15,7 @@
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/plugin_storage.hpp"
 #include <atomic>
 #include <filesystem>
@@ -171,11 +173,15 @@ namespace {
 
 // Preserve the legacy byte sequence, but do not report a partial save as success.
 thread_local bool pmmWriteFailed = false;
-thread_local std::vector<unsigned char>* pmmSnapshotSink = nullptr;
+struct PmmSnapshotSink {
+    std::vector<unsigned char>& bytes;
+    bool& canCopyLegacy;
+};
+thread_local PmmSnapshotSink* pmmSnapshotSink = nullptr;
 inline void W(int fd, const void* buf, unsigned int count) {
     if (pmmSnapshotSink) {
         const auto* bytes = static_cast<const unsigned char*>(buf);
-        if (count) pmmSnapshotSink->insert(pmmSnapshotSink->end(), bytes, bytes + count);
+        if (count) pmmSnapshotSink->bytes.insert(pmmSnapshotSink->bytes.end(), bytes, bytes + count);
         return;
     }
     if (_write(fd, buf, count) != static_cast<int>(count)) pmmWriteFailed = true;
@@ -184,11 +190,16 @@ inline void W(int fd, const void* buf, unsigned int count) {
 bool EncodePmmPath(char* out, std::size_t capacity, const wchar_t* value) {
 #if MMD_ORIGINAL_PROFILE
     const bool encoded = original_file_encoding::Fixed(out, capacity, value);
+#else
+    const bool encoded = text_encoding::EncodeProjectPath(out, capacity, value);
+    // A competing path can appear after preflight. Judge a compatible copy
+    // from the actual frozen wire bytes, not just the earlier report.
+    if (encoded && pmmSnapshotSink && pmmSnapshotSink->canCopyLegacy &&
+        !text_encoding::IsLegacyPathEncoding(out, value))
+        pmmSnapshotSink->canCopyLegacy = false;
+#endif
     if (!encoded) pmmWriteFailed = true;
     return encoded;
-#else
-    return text_encoding::EncodePath(out, capacity, value);
-#endif
 }
 
 #if MMD_ORIGINAL_PROFILE
@@ -1116,7 +1127,51 @@ void WritePmmModelTail(int fd, unsigned char** const slots) {
 
 }  // namespace
 
-namespace { std::atomic<bool> saveInProgress{false}, saveBlocksEdits{false}; }
+namespace {
+std::atomic<bool> saveInProgress{false}, saveBlocksEdits{false};
+bool closePending = false;
+
+class SaveEditScope {
+public:
+    enum class End { KeepOpen, ReplayClose, WorkerQueued };
+
+    explicit SaveEditScope(MMDApp* app) : app_(app) {
+#if !MMD_ORIGINAL_PROFILE
+        hadSceneClose_ = app && (app->deferredSceneMainClose || app->sceneMainClosePosted);
+#endif
+        saveBlocksEdits.store(true);
+    }
+
+    ~SaveEditScope() {
+        bool requested = std::exchange(closePending, false);
+#if !MMD_ORIGINAL_PROFILE
+        // Main-window and plugin close guards may defer into the scene queue
+        // while the save owns this edit block. Leave earlier requests there.
+        if (!hadSceneClose_ && app_ && app_->deferredSceneMainClose &&
+            app_->deferredSceneMainClose == app_->MainWindow() && !app_->sceneMainClosePosted) {
+            app_->deferredSceneMainClose = nullptr;
+            requested = true;
+        }
+#endif
+        if (end == End::WorkerQueued) closePending = requested;
+        saveBlocksEdits.store(false);
+        if (end == End::WorkerQueued) return;
+        saveInProgress.store(false);
+        if (requested && end == End::ReplayClose && app_)
+            PostMessageW(app_->MainWindow(), WM_CLOSE, 0, 0);
+    }
+
+    SaveEditScope(const SaveEditScope&) = delete;
+    SaveEditScope& operator=(const SaveEditScope&) = delete;
+    End end = End::KeepOpen;
+
+private:
+    MMDApp* app_;
+#if !MMD_ORIGINAL_PROFILE
+    bool hadSceneClose_;
+#endif
+};
+}
 bool SceneSaveBlocksEdits() noexcept { return saveBlocksEdits.load(); }
 bool SceneSaveInProgress() noexcept { return saveInProgress.load(); }
 #if !MMD_ORIGINAL_PROFILE
@@ -1149,14 +1204,28 @@ struct SceneSnapshot {
     save_compatibility::Report compatibility;
     std::wstring compatibleCopy;
     std::uint64_t revision = 0, generation = 0;
+    cache_manager::SceneToken cacheScene;
 #if !MMD_ORIGINAL_PROFILE
     plugins::SharedHistory* history = nullptr;
     std::uint64_t historyBinding = 0, historyRevision = 0;
 #endif
 };
 static bool CaptureScene(MMDApp* app, const wchar_t* target, bool backup, SceneSnapshot& snapshot) {
+    if (!app) return false;
+    // A scene whose post-replacement reset was refused is still half loaded:
+    // it mixes the replaced project with the half-read one. No PMM snapshot
+    // may come from it. Refuse before the destination path, the plugin save
+    // transaction, the snapshot buffer, or any completion identity is touched.
+    if (app->sceneRecoveryPending) {
+        if (!backup)
+            runtime_log::Write("PMM save refused: scene recovery is pending after an earlier PMM load");
+        return false;
+    }
     if (!SceneBoundaryReady(app)) return false;
     auto* s = app;
+    const auto captureGeneration = s->SceneGeneration();
+    const auto cacheScene = !backup && s == g_Block
+        ? cache_manager::CaptureActiveScene() : cache_manager::SceneToken{};
 
     // The scratch CHAR buffer (stack "Text").  The original leaves this
     // uninitialized, so every 0x100 fixed-width path field it feeds carries
@@ -1329,9 +1398,11 @@ static bool CaptureScene(MMDApp* app, const wchar_t* target, bool backup, SceneS
     snapshot.keepPrevious = !backup && pmm_paths::IsProject(snapshot.target) && autosave::Current().keepPrevious;
     snapshot.compatibility = compatibility;
     struct Sink {
-        explicit Sink(std::vector<unsigned char>& bytes) { pmmSnapshotSink = &bytes; }
+        PmmSnapshotSink target;
+        explicit Sink(SceneSnapshot& snapshot)
+            : target{snapshot.bytes, snapshot.compatibility.canCopyLegacy} { pmmSnapshotSink = &target; }
         ~Sink() { pmmSnapshotSink = nullptr; }
-    } sink(snapshot.bytes);
+    } sink(snapshot);
     const int fd = -1;
     WritePmmFileHeader(fd, s, main, hdr, compatibility.needsNewPmm);
 
@@ -1354,6 +1425,7 @@ static bool CaptureScene(MMDApp* app, const wchar_t* target, bool backup, SceneS
 #endif
     snapshot.revision = s->SceneRevision();
     snapshot.generation = s->SceneGeneration();
+    if (captureGeneration == snapshot.generation) snapshot.cacheScene = cacheScene;
     return !pmmWriteFailed;
 }
 
@@ -1427,7 +1499,22 @@ static void SaveFailure(MMDApp* app) {
         L"PMM", MB_OK | MB_ICONERROR);
 }
 
-static void CompleteSave(MMDApp* s, SceneSnapshot& snapshot) {
+static bool NotifySavedEffects(MMDApp* app, const wchar_t* target, bool unchanged) {
+    if (unchanged || !LegacyMmeLoaded() || !LegacyMmeHackLoaded()) {
+        NotifyEffectFileSave(target);
+        return false;
+    }
+
+    // MME consumes this path later and reads its live objects. The PMM on disk
+    // already represents an older scene, so suppress the stale notification.
+    constexpr UINT mmeAutoSave = 40022;
+    const UINT setting = GetMenuState(GetMenu(app->MainWindow()), mmeAutoSave, MF_BYCOMMAND);
+    if (setting != UINT(-1) && !(setting & MF_CHECKED)) return false;
+    runtime_log::WritePath("PMM saved; live scene changed, EMM not updated", target);
+    return true;
+}
+
+static void CompleteSave(MMDApp* s, SceneSnapshot& snapshot, bool& effectSaveSkipped) {
     const wchar_t* target = snapshot.target.c_str();
     // A snapshot may outlive its scene. Never change the replacement scene's
     // filename, dirty flag, settings, or effect assignments on its completion.
@@ -1435,7 +1522,13 @@ static void CompleteSave(MMDApp* s, SceneSnapshot& snapshot) {
     if (snapshot.backup) { NotifyEffectFileSave(target); return; }
 #if !MMD_ORIGINAL_PROFILE
     const bool pluginCompletionAccepted = !snapshot.plugins || snapshot.plugins->Complete(target, false);
+    if (s->SceneGeneration() != snapshot.generation) return;
 #endif
+    wcscpy_s(s->EnvFileName(), kPathFieldCapacity, target);
+    // The file has been published and accepted. Edits during the write can
+    // keep it dirty, but its live cache now belongs to this saved path.
+    if (snapshot.cacheScene && s == g_Block)
+        cache_manager::BindSavedScene(snapshot.cacheScene, target);
     bool unchanged = s->SceneRevision() == snapshot.revision;
 #if !MMD_ORIGINAL_PROFILE
     auto* history = SaveHistory(s);
@@ -1444,7 +1537,6 @@ static void CompleteSave(MMDApp* s, SceneSnapshot& snapshot) {
         plugins::BoundNativePoseGeneration(s) == snapshot.historyBinding &&
         (!history || (history->Revision(historyRevision) == MMS_OK && historyRevision == snapshot.historyRevision));
 #endif
-    wcscpy_s(s->EnvFileName(), kPathFieldCapacity, target);
     if (unchanged) {
 #if MMD_ORIGINAL_PROFILE
         // The original profile deliberately ignores project extension records
@@ -1464,8 +1556,19 @@ static void CompleteSave(MMDApp* s, SceneSnapshot& snapshot) {
         s->PmmProjectSettings().sortingCrossObjectsEdited = false;
         s->PmmProjectSettings().antialiasEdited = false;
         s->SceneModified() = 0;
+    } else {
+        // The scene gained new edits while this save was in flight. Keep the
+        // active document intact (the new edits belong to it), but carry over
+        // the naming series of the file just written so the next incremental
+        // save continues that series instead of nesting another suffix.
+        for (const char* key : {save_naming::BaseKey, save_naming::FileKey}) {
+            if (const auto* record = pmm_extension::Find(snapshot.extensions, key))
+                pmm_extension::Set(s->PmmProjectSettings().document, key, record->value);
+            else
+                pmm_extension::Erase(s->PmmProjectSettings().document, key);
+        }
     }
-    NotifyEffectFileSave(target);
+    effectSaveSkipped = NotifySavedEffects(s, target, unchanged);
     mmv4mms::ProjectSaved(s, target);
     pmm_io::SetProjectWindowTitle(s->MainWindow(), target);
     try { recent_projects::Record(s, target); }
@@ -1482,15 +1585,20 @@ static void CompleteSave(MMDApp* s, SceneSnapshot& snapshot) {
 
 static bool SaveSynchronously(MMDApp* app, const wchar_t* target, bool backup) {
     if (saveInProgress.exchange(true)) return false;
-    saveBlocksEdits.store(true);
-    struct Release { ~Release() { saveBlocksEdits.store(false); saveInProgress.store(false); } } release;
+    SaveEditScope editScope(app);
+    if (backup) editScope.end = SaveEditScope::End::ReplayClose;
     try {
         SceneSnapshot snapshot;
         if (!CaptureScene(app, target, backup, snapshot)) return false;
         if (!WriteSnapshot(snapshot)) { if (!backup) SaveFailure(app); return false; }
         // Synchronous copies retain the historical contract: their caller owns
         // the effect notification and rotation, including emergency backups.
-        if (!backup) CompleteSave(app, snapshot);
+        bool effectSaveSkipped = false;
+        if (!backup) CompleteSave(app, snapshot, effectSaveSkipped);
+        if (effectSaveSkipped && app->SceneGeneration() == snapshot.generation)
+            background_save::SetStatus(app, background_save::Status::EffectSaveSkipped);
+        else
+            editScope.end = SaveEditScope::End::ReplayClose;
         return true;
     } catch (...) { if (!backup) SaveFailure(app); return false; }
 }
@@ -1510,7 +1618,7 @@ struct Job {
 std::unique_ptr<Job> job;
 Status currentStatus = Status::Saved;
 ULONGLONG statusUntil = 0;
-bool closePending = false;
+std::uint64_t statusGeneration = 0;
 std::atomic<bool> backupOverwriting{false};
 
 void Repaint(MMDApp* app) {
@@ -1523,41 +1631,39 @@ void Finish(MMDApp* app) {
     if (!job || !job->done.load() || !SceneBoundaryReady(app)) return;
     // Keep the gate held through all main-thread completion hooks and nested
     // modal messages. A callback must not start a second writer here.
-    saveBlocksEdits.store(true);
+    SaveEditScope editScope(app);
     auto finished = std::move(job);
     if (finished->worker.joinable()) finished->worker.join();
     const bool backup = finished->snapshot.backup;
     const bool success = finished->success;
-    const bool requestedClose = closePending;
-    closePending = false;
+    const auto outcome = success ? (backup ? Status::BackedUp : Status::Saved)
+                                 : (backup ? Status::BackupFailed : Status::Failed);
+    const auto currentScene = [&] { return app->SceneGeneration() == finished->snapshot.generation; };
+    // Only a successful manual save or a finished backup may resume closing.
+    if (success || backup) editScope.end = SaveEditScope::End::ReplayClose;
+    bool effectSaveSkipped = false;
     try {
-        if (success) CompleteSave(app, finished->snapshot);
-        SetStatus(app, success ? (backup ? Status::BackedUp : Status::Saved)
-                              : (backup ? Status::BackupFailed : Status::Failed));
+        if (success) CompleteSave(app, finished->snapshot, effectSaveSkipped);
+        if (currentScene()) SetStatus(app, effectSaveSkipped ? Status::EffectSaveSkipped : outcome);
         if (finished->options.completed) finished->options.completed(success);
-        if (!success && !backup) SaveFailure(app);
+        if (!success && !backup && currentScene()) SaveFailure(app);
     } catch (...) {
         runtime_log::Write("SAVE completion notification failed; disk result=%d", success);
-        SetStatus(app, success ? Status::Saved : Status::Failed);
+        if (currentScene()) SetStatus(app, effectSaveSkipped ? Status::EffectSaveSkipped : outcome);
     }
-    const bool shouldClose = requestedClose || closePending;
-    closePending = false;
-    saveBlocksEdits.store(false);
-    saveInProgress.store(false);
-    // A failed manual save must leave the application open, including a
-    // previously clean unnamed project. Never implicitly discard it on exit.
-    if (shouldClose && (success || backup)) PostMessageW(app->MainWindow(), WM_CLOSE, 0, 0);
+    if (effectSaveSkipped) editScope.end = SaveEditScope::End::KeepOpen;
 }
 }
 
 void SetStatus(MMDApp* app, Status value, bool persistent) {
     currentStatus = value;
+    statusGeneration = app ? app->SceneGeneration() : 0;
     statusUntil = persistent ? ~ULONGLONG(0) : GetTickCount64() + 7000;
     if (app && IsWindow(app->MainWindow())) SetTimer(app->MainWindow(), kStatusTimer, 200, nullptr);
     Repaint(app);
 }
 const wchar_t* StatusText(MMDApp* app) {
-    if (!statusUntil) return L"";
+    if (!app || !statusUntil || statusGeneration != app->SceneGeneration()) return L"";
     if (currentStatus == Status::BackingUp && backupOverwriting.load()) {
         return autosave::Text(app, L"正在备份，将覆盖旧备份…",
             L"Backing up; replacing oldest backup…",
@@ -1574,21 +1680,36 @@ const wchar_t* StatusText(MMDApp* app) {
         {L"保存できませんでした。保存先を確認してください。", L"Save failed. Check the destination.", L"保存失败，请检查保存位置。"},
         {L"バックアップできませんでした。保存先を確認してください。", L"Backup failed. Check the destination.", L"备份失败，请检查备份位置。"},
         {L"バックアップ先が上限に達しました。", L"Backup limit reached; no backup replaced", L"备份数量已满，未覆盖旧备份。"},
-        {L"保存完了後に終了します…", L"Saving; will close when done…", L"正在等待保存完成，随后关闭…"}
+        {L"保存完了後に終了します…", L"Saving; will close when done…", L"正在等待保存完成，随后关闭…"},
+        {L"バックアップは保存しましたが、一部の古いバックアップを削除できませんでした。",
+         L"Backup saved, but some old backups could not be removed.",
+         L"备份已保存，但未能清理全部旧备份。"},
+        {L"PMM は保存しました。保存中にシーンが変更されたため EMM は更新されていません。",
+         L"PMM saved. EMM not updated because the scene changed during save.",
+         L"PMM 已保存。保存期间工程有改动，EMM 未更新。"}
     };
     return text[static_cast<unsigned>(currentStatus)][app->EnglishUI() <= 2 ? app->EnglishUI() : 1];
 }
 void ReportBackupOverwrite() noexcept { backupOverwriting.store(true); }
 bool Request(MMDApp* app, const wchar_t* destination, Options options) {
-    if (!destination || !*destination || !SceneBoundaryReady(app)) return false;
+    if (!app || !destination || !*destination) return false;
+    // Same refusal as CaptureScene, but earlier: a quarantined scene must not
+    // take the save gate, change the status line, allocate a job, or start a
+    // writer thread. Existing jobs still finish through Finish and Wait.
+    if (app->sceneRecoveryPending) {
+        if (!options.backup)
+            runtime_log::Write("PMM save refused: scene recovery is pending after an earlier PMM load");
+        return false;
+    }
+    if (!SceneBoundaryReady(app)) return false;
     if (GetWindowThreadProcessId(app->MainWindow(), nullptr) != GetCurrentThreadId()) return false;
     if (saveInProgress.exchange(true)) {
         SetStatus(app, Status::Busy, true);
         return false;
     }
-    saveBlocksEdits.store(true);
-    struct CaptureGate { ~CaptureGate() { saveBlocksEdits.store(false); } } captureGate;
+    SaveEditScope editScope(app);
     const bool backup = options.backup;
+    if (backup) editScope.end = SaveEditScope::End::ReplayClose;
     try {
         backupOverwriting.store(false);
         const auto capturedAt = GetTickCount64();
@@ -1596,7 +1717,6 @@ bool Request(MMDApp* app, const wchar_t* destination, Options options) {
         pending->options = std::move(options);
         SetStatus(app, backup ? Status::BackingUp : Status::Saving, true);
         if (!CaptureScene(app, destination, backup, pending->snapshot)) {
-            saveInProgress.store(false);
             SetStatus(app, backup ? Status::BackupFailed : Status::Failed);
             return false;
         }
@@ -1619,10 +1739,10 @@ bool Request(MMDApp* app, const wchar_t* destination, Options options) {
             work->done.store(true);
             PostMessageW(owner, kComplete, 0, 0);
         });
+        editScope.end = SaveEditScope::End::WorkerQueued;
         return true;
     } catch (...) {
         job.reset();
-        saveInProgress.store(false);
         SetStatus(app, backup ? Status::BackupFailed : Status::Failed);
         if (!backup) SaveFailure(app);
         return false;
@@ -1632,7 +1752,9 @@ bool HandleMessage(MMDApp* app, UINT message, WPARAM wp) {
     if (message != kComplete && (message != WM_TIMER || wp != kStatusTimer)) return false;
     Finish(app); // Timer is also a fallback if the posted message queue was full.
     if (SceneSaveInProgress() && backupOverwriting.load()) Repaint(app);
-    if (statusUntil && GetTickCount64() >= statusUntil && !SceneSaveInProgress()) {
+    if (statusUntil && !SceneSaveInProgress() &&
+        (statusGeneration != app->SceneGeneration() || GetTickCount64() >= statusUntil ||
+         currentStatus == Status::Busy || currentStatus == Status::WaitingToClose)) {
         statusUntil = 0;
         KillTimer(app->MainWindow(), kStatusTimer);
         Repaint(app);
@@ -1658,7 +1780,7 @@ void Shutdown(MMDApp* app) {
 bool DeferClose(MMDApp* app) {
     if (!SceneSaveInProgress()) return false;
     closePending = true;
-    SetStatus(app, Status::WaitingToClose, true);
+    if (!SceneSaveBlocksEdits()) SetStatus(app, Status::WaitingToClose, true);
     return true;
 }
 } // namespace background_save

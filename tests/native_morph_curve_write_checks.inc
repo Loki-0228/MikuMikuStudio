@@ -1,4 +1,10 @@
 #include "../src/plugins/native_morph_curve_write.hpp"
+#include "../src/plugins/native_pose_scope.hpp"
+#include "mikumikustudio/animation_curve_host.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "mikumikustudio/panel_controls.hpp"
+#include <cmath>
+#include <cwchar>
 namespace {
 struct MorphCurveWriteFixture:MorphKeyFixture {
     std::array<std::uint32_t,3> firstCursors{{7,6,2}},secondCursors{{7,6,2}};
@@ -21,6 +27,131 @@ struct MorphCurveWriteFixture:MorphKeyFixture {
         Check(history.PrepareNative("morph curves",change,transaction,plugins::SharedHistory::NativeIntent::ExplicitCommit)==MMS_OK,"reserve morph authored replacement in shared history");
         Check(CommitRegistrationNoAllocation(history,std::move(transaction))==MMS_OK,"publish morph pool layers local pose and cursors without allocations");}
 };
+void MorphHostCheck(bool ok,const char* stage,const char* aspect){
+    if(ok)return;
+    const std::string message=std::string(stage)+": "+aspect;
+    Check(false,message.c_str());
+}
+bool MorphHostSameTrack(const animation_curve::Track& left,const animation_curve::Track& right){
+    if(left.discrete!=right.discrete||left.keys.size()!=right.keys.size())return false;
+    for(std::size_t index=0;index<left.keys.size();++index){
+        const auto& a=left.keys[index];const auto& b=right.keys[index];
+        if(a.frame!=b.frame||a.value!=b.value||a.inSlope!=b.inSlope||a.outSlope!=b.outSlope||
+            a.inWeight!=b.inWeight||a.outWeight!=b.outWeight||a.interpolation!=b.interpolation||a.tangent!=b.tangent)return false;
+    }
+    return true;
+}
+struct MorphHostEditorScan{HWND owner=nullptr;HWND window=nullptr;unsigned count=0;};
+BOOL CALLBACK MorphHostEditorScanProc(HWND window,LPARAM context){
+    auto& scan=*reinterpret_cast<MorphHostEditorScan*>(context);
+    wchar_t name[128]{};
+    if(!GetClassNameW(window,name,128)||std::wstring(name)!=L"MikuMikuStudioCurveEditorWindow")return TRUE;
+    if(GetWindow(window,GW_OWNER)!=scan.owner)return TRUE;
+    ++scan.count;if(!scan.window)scan.window=window;
+    return TRUE;
+}
+MorphHostEditorScan MorphHostEditorWindows(HWND owner){
+    MorphHostEditorScan scan;scan.owner=owner;
+    EnumThreadWindows(GetCurrentThreadId(),MorphHostEditorScanProc,reinterpret_cast<LPARAM>(&scan));
+    return scan;
+}
+struct MorphHostSnapshot{
+    std::vector<mdl::MorphKey> keys;
+    std::array<mdl::MorphRecord,3> morphs;
+    std::array<std::uint32_t,3> cursors;
+    std::array<unsigned char,3> active;
+    morph_curve::AuthoredLayers layers;
+    const mdl::MorphKey* pool=nullptr;
+    std::size_t capacity=0;
+    std::uint64_t identity=0;
+    std::uint32_t maxFrame=0,searchCursor=0,lastRegistered=0;
+    std::uint64_t revision=0;
+    std::size_t undo=0,redo=0;
+    explicit MorphHostSnapshot(MorphCurveWriteFixture& f):keys(MorphKeysCopy(f.first)),morphs(f.firstMorphs),cursors(f.firstCursors),active(f.firstActive),
+        pool(f.first.m->morphKeys),capacity(mdl::MorphKeyCapacity(f.first.m->morphKeys)),identity(mdl::MorphKeyPoolIdentity(f.first.m->morphKeys)),
+        maxFrame(f.first.m->maxFrame),searchCursor(f.first.m->searchCursor),lastRegistered(f.app->LastRegisteredFrame()){
+        std::string error;
+        Check(morph_curve::CaptureLayers(f.first.raw(),layers,error),"capture the authored expression layers before the host regression");
+        Check(f.history.Revision(revision)==MMS_OK,"read the shared expression history revision");
+        undo=f.history.UndoCount();redo=f.history.RedoCount();
+    }
+    bool Matches(MorphCurveWriteFixture& f)const{
+        return MorphKeysMatch(f.first,keys)&&f.first.m->morphKeys==pool&&mdl::MorphKeyCapacity(f.first.m->morphKeys)==capacity&&
+            mdl::MorphKeyPoolIdentity(f.first.m->morphKeys)==identity&&
+            !std::memcmp(f.firstMorphs.data(),morphs.data(),sizeof morphs)&&f.firstCursors==cursors&&f.firstActive==active&&
+            f.first.m->maxFrame==maxFrame&&f.first.m->searchCursor==searchCursor&&f.app->LastRegisteredFrame()==lastRegistered&&
+            morph_curve::LayersUnchanged(f.first.raw(),layers);
+    }
+};
+HWND MorphHostOpenExpression(MorphCurveWriteFixture& f,const char* stage){
+    const auto lane=curve_host::MorphLaneInitial(*f.app,0);
+    MorphHostCheck(!lane.empty()&&lane==morph_curve::StableId(0,f.firstMorphs[0].name),stage,"the panel eyebrow lane names its selected morph");
+    curve_host::OpenMorph(f.app.get(),0,false);
+    const auto scan=MorphHostEditorWindows(f.app->MainWindow());
+    MorphHostCheck(scan.count==1&&scan.window!=nullptr,stage,"exactly one real host expression curve window is created");
+    MorphHostCheck(scan.window!=nullptr&&curve_editor::OwnsWindow(f.app->MainWindow(),scan.window),stage,"the hidden expression curve window belongs to the fixture owner");
+    MorphHostCheck(scan.window!=nullptr&&!IsWindowVisible(scan.window),stage,"the expression curve window stays hidden");
+    return scan.window;
+}
+void MorphHostCloseExpression(MorphCurveWriteFixture& f,HWND editor,const char* stage){
+    MorphHostCheck(editor!=nullptr&&IsWindow(editor),stage,"the expression curve window is live before close");
+    if(editor&&IsWindow(editor))SendMessageW(editor,WM_CLOSE,0,0);
+    MorphHostCheck(editor==nullptr||!IsWindow(editor),stage,"WM_CLOSE destroys the hidden expression curve window");
+    const auto scan=MorphHostEditorWindows(f.app->MainWindow());
+    MorphHostCheck(scan.count==0,stage,"no expression curve window remains owned by the fixture");
+}
+void MorphHostViewExpression(HWND editor,const char* stage){
+    MorphHostCheck(editor!=nullptr&&IsWindow(editor),stage,"the expression curve window is live for read-only viewing");
+    if(editor==nullptr||!IsWindow(editor))return;
+    for(double frame:{1.0,5.0,9.0,13.0,17.0,21.0,25.0,28.0}){
+        std::array<double,3> values{{frame,0,0}};
+        MorphHostCheck(SendMessageW(editor,WM_APP+396,0,reinterpret_cast<LPARAM>(values.data()))!=0,stage,"read-only expression sampling answers");
+    }
+    int compare[12]{};std::uint64_t state[5]{};
+    MorphHostCheck(SendMessageW(editor,WM_APP+308,0,reinterpret_cast<LPARAM>(compare))!=0,stage,"read-only comparison state answers");
+    MorphHostCheck(SendMessageW(editor,WM_APP+397,0,reinterpret_cast<LPARAM>(state))!=0,stage,"read-only history state answers");
+}
+void MorphHostVerifyExpression(MorphCurveWriteFixture& f,const MorphHostSnapshot& snapshot,const animation_curve::NamedTrack& authored,HWND editor,const char* stage){
+    MorphHostCheck(snapshot.Matches(f),stage,"native morph key bytes, model weights and authored layers are unchanged");
+    std::uint64_t revision=0;
+    MorphHostCheck(f.history.Revision(revision)==MMS_OK&&revision==snapshot.revision&&f.history.UndoCount()==snapshot.undo&&f.history.RedoCount()==snapshot.redo,
+        stage,"shared history revision and undo/redo counts are unchanged");
+    std::vector<curve_editor::Channel> channels;std::wstring error;
+    const bool read=curve_host::ReadMorphChannels(*f.app,channels,error)&&channels.size()==3&&
+        channels[0].id==authored.id&&MorphHostSameTrack(channels[0].track,authored.track);
+    MorphHostCheck(read,stage,"the bound expression source returns the authored Bezier interpolation slopes weights and values");
+    animation_curve::Track native;std::string nativeError;
+    const bool nativeRead=morph_curve::ReadNative(f.first.raw(),0,native,nativeError)&&native.keys.size()==authored.track.keys.size();
+    MorphHostCheck(nativeRead,stage,"the native mirror still carries the authored key count");
+    if(nativeRead){
+        MorphHostCheck(native.keys.front().value==static_cast<double>(static_cast<float>(authored.track.keys.front().value))&&
+            native.keys.back().value==static_cast<double>(static_cast<float>(authored.track.keys.back().value)),stage,"the native mirror keeps the clean float-rounded authored endpoints");
+        MorphHostCheck(native.keys.front().interpolation==animation_curve::Interpolation::Linear,stage,"the native mirror stays the legacy linear float chain");
+    }
+    const double firstValue=authored.track.keys.front().value,lastValue=authored.track.keys.back().value;
+    const double span=double(authored.track.keys.back().frame-authored.track.keys.front().frame);
+    const double secant=(lastValue-firstValue)/span;
+    for(double frame:{3.0,7.0,14.0,22.0,28.0}){
+        const auto expected=animation_curve::Evaluate(authored.track,frame);
+        if(read){
+            const auto actual=animation_curve::Evaluate(channels[0].track,frame);
+            MorphHostCheck(actual.value==expected.value&&actual.derivative==expected.derivative,stage,"the bound source samples the authored value and derivative exactly");
+        }
+        const double linear=firstValue+secant*(frame-double(authored.track.keys.front().frame));
+        MorphHostCheck(std::fabs(expected.value-linear)>.05,stage,"the authored interior value differs from a linear interpolation");
+        MorphHostCheck(std::fabs(expected.derivative-secant)>.005,stage,"the authored interior derivative differs from the linear secant");
+        if(editor){
+            std::array<double,3> values{{frame,0,0}};
+            MorphHostCheck(SendMessageW(editor,WM_APP+396,0,reinterpret_cast<LPARAM>(values.data()))!=0,stage,"the expression editor answers its sampling message");
+            MorphHostCheck(values[1]==expected.value&&values[2]==expected.derivative,stage,"the expression editor samples the independently retained authored value and derivative");
+        }
+    }
+    if(editor){
+        int compare[12]{};std::uint64_t state[5]{};
+        MorphHostCheck(SendMessageW(editor,WM_APP+308,0,reinterpret_cast<LPARAM>(compare))!=0&&compare[1]==0,stage,"the expression editor starts on the lane eyebrow channel");
+        MorphHostCheck(SendMessageW(editor,WM_APP+397,0,reinterpret_cast<LPARAM>(state))!=0&&!state[0]&&!state[1]&&state[3]!=0,stage,"the expression editor uses the shared journal without a local undo stack");
+    }
+}
 void MorphCurveWriteParity(){
     for(bool multiple:{false,true})for(auto mode:{plugins::SharedHistory::RecordingMode::AllOperations,plugins::SharedHistory::RecordingMode::ExplicitOnly}){
         MorphCurveWriteFixture f;Check(f.history.SetMode(mode)==MMS_OK,"morph curve explicit commit works in each recording mode");
@@ -113,6 +244,59 @@ void MorphCurveWriteMixedHistory(){
         "undo merges only owned author maps and preserves a later unowned morph's authoring");
     Check(animation_curve::Evaluate(independent.Effective(1).track,13).value==animation_curve::Evaluate(other.track,13).value,"unowned morph's exact authored sampling survives another curve undo");
 }
+void MorphCurveWriteHostCloseReopen(){
+    MorphCurveWriteFixture f;
+    plugins::NativePoseTestBinding binding(*f.app,f.history);
+    Check(plugins::BoundNativePoseHistory(f.app.get())==&f.history,"the expression host regression binds the fixture's shared history");
+    Check(f.app->MainWindow()!=nullptr&&GetDlgItem(f.app->MainWindow(),panel::kPhysicsFrameCheckbox)!=nullptr&&
+        GetDlgItem(f.app->MainWindow(),panel::kUndoButton)!=nullptr&&GetDlgItem(f.app->MainWindow(),panel::kReadoutPosXEdit)!=nullptr,
+        "the hidden expression host owner has the common controls its publication touches");
+    f.app->SelectedModelSlot()=0;f.app->CameraMode()=0;
+    f.firstMorphs[0].panel=mdl::MorphPanel::eyebrow;
+    MorphHostCheck(f.app->SelectedModel()==f.first.raw(),"fixture setup","the first model is the selected model");
+    for(auto& index:f.first.m->selectedMorphs)index=-1;
+    f.first.m->selectedMorphs[0]=0;
+    MorphHostCheck(morph_curve::PanelGroup(static_cast<std::uint8_t>(f.firstMorphs[0].panel))==0,"fixture setup","the selected lane morph belongs to the panel eyebrow group");
+    MorphHostCheck(!curve_host::MorphLaneInitial(*f.app,0).empty(),"fixture setup","the panel eyebrow selector names a valid lane morph");
+    const auto modelIdentity=curve_host::MorphIdentityOf(*f.app,f.first.raw());
+    MorphHostCheck(curve_host::MorphIdentityCurrent(*f.app,modelIdentity),"fixture setup","the model identity and selected slot agree");
+    std::vector<curve_editor::Channel> baseline;std::wstring error;
+    Check(curve_host::ReadMorphChannels(*f.app,baseline,error)&&baseline.size()==3,"read the pristine expression channels before the host regression");
+    Check(baseline[0].id==morph_curve::StableId(0,f.firstMorphs[0].name),"the panel eyebrow channel is the selected morph");
+    animation_curve::NamedTrack authored;authored.id=baseline[0].id;
+    animation_curve::Key first,last;
+    first.frame=0;first.value=.1;first.inSlope=.02;first.outSlope=.12;first.inWeight=.4;first.outWeight=.2;
+    last.frame=30;last.value=.9;last.inSlope=-.04;last.outSlope=-.02;last.inWeight=.7;last.outWeight=.3;
+    first.interpolation=last.interpolation=animation_curve::Interpolation::Bezier;
+    first.tangent=last.tangent=animation_curve::Tangent::Free;
+    authored.track.keys={first,last};
+    auto next=baseline;next[0].track=authored.track;
+    Check(curve_host::WriteMorphChannels(*f.app,modelIdentity,next,baseline,error),"the bound production expression write installs the seeded Bezier curve");
+    Check(f.history.UndoCount()==1&&!f.history.RedoCount(),"the seeded expression write records exactly one shared history node");
+    Check(morph_curve::CurveCount(f.first.raw())==1&&morph_curve::HasCurve(f.first.raw(),0),"the bound write installs exactly one authored expression curve");
+    MorphHostSnapshot snapshot(f);
+    MorphHostCheck(snapshot.undo==1&&snapshot.redo==0,"fixture setup","the seeded expression write remains the only shared history node");
+    MorphHostVerifyExpression(f,snapshot,authored,nullptr,"before initial open");
+    MorphHostCheck(MorphHostEditorWindows(f.app->MainWindow()).count==0,"before initial open","no host expression curve window exists before the first OpenMorph");
+    HWND editor=MorphHostOpenExpression(f,"after initial open");
+    MorphHostVerifyExpression(f,snapshot,authored,editor,"after initial open");
+    MorphHostViewExpression(editor,"after only viewing");
+    MorphHostVerifyExpression(f,snapshot,authored,editor,"after only viewing");
+    MorphHostCloseExpression(f,editor,"after initial close");
+    MorphHostVerifyExpression(f,snapshot,authored,nullptr,"after initial close");
+    editor=MorphHostOpenExpression(f,"after reopen");
+    MorphHostVerifyExpression(f,snapshot,authored,editor,"after reopen");
+    MorphHostViewExpression(editor,"after repeat viewing");
+    MorphHostVerifyExpression(f,snapshot,authored,editor,"after repeat viewing");
+    MorphHostCloseExpression(f,editor,"after repeat close");
+    MorphHostVerifyExpression(f,snapshot,authored,nullptr,"after repeat close");
+    editor=MorphHostOpenExpression(f,"after repeated reopen");
+    MorphHostVerifyExpression(f,snapshot,authored,editor,"after repeated reopen");
+    MorphHostCloseExpression(f,editor,"after final close");
+    MorphHostVerifyExpression(f,snapshot,authored,nullptr,"after final close");
+    curve_editor::CloseOwned(f.app->MainWindow());
+    MorphHostCheck(MorphHostEditorWindows(f.app->MainWindow()).count==0,"fixture teardown","CloseOwned leaves no expression curve window before fixture destruction");
+}
 void MorphCurveWriteRefusals(){
     {
         MorphCurveWriteFixture f;const auto input=f.Input();const auto before=f.Digest();auto change=f.Plan({input});
@@ -184,12 +368,630 @@ void MorphCurveWriteFailures(){
         Check(result==MMS_E_MEMORY&&!transaction,"morph preparation reports allocation failure without a publication token");++failed;
     }Check(false,"morph curve failure sweep terminates");
 }
+// ---------------------------------------------------------------------------
+// Real OpenMorph expression window: MMD panel mouse drag persistence.
+//
+// The panel preview is editor-local: MmdMouseMove only rewrites the displayed
+// 0..127 handles, while the host source and the shared history stay untouched.
+// A release must publish exactly one native control edit for the interval that
+// was displayed. Two positive controls (an endpoint key selected on the real
+// canvas, one drag per handle) come first; the follow-playhead case without any
+// key selection follows them.
+// ---------------------------------------------------------------------------
+UINT MorphHostDpi(HWND window){
+    using GetDpiForWindowFn=UINT(WINAPI*)(HWND);
+    static GetDpiForWindowFn getter=reinterpret_cast<GetDpiForWindowFn>(
+        reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"user32.dll"),"GetDpiForWindow")));
+    if(getter&&window){const UINT dpi=getter(window);if(dpi>=48)return dpi;}
+    HDC screen=GetDC(nullptr);
+    const int dpi=screen?GetDeviceCaps(screen,LOGPIXELSX):96;
+    if(screen)ReleaseDC(nullptr,screen);
+    return dpi>=48?static_cast<UINT>(dpi):96;
+}
+struct MorphHostMmdGeometry {int margin=0;int side=0;};
+MorphHostMmdGeometry MorphHostMmdGeometryOf(HWND editor,HWND& panel,const char* stage){
+    MorphHostMmdGeometry geometry;
+    panel=GetDlgItem(editor,1031);
+    MorphHostCheck(panel!=nullptr&&IsWindow(panel),stage,"the real MMD panel exists inside the expression window");
+    if(panel==nullptr)return geometry;
+    RECT client={};
+    GetClientRect(panel,&client);
+    // Same square MmdSquare derives: a 6 logical pixel margin and the shorter
+    // client side, scaled with the editor's own resolved DPI.
+    const int dpi=static_cast<int>(MorphHostDpi(editor));
+    geometry.margin=MulDiv(6,dpi,96);
+    geometry.side=std::min(int(client.right),int(client.bottom))-2*geometry.margin;
+    MorphHostCheck(geometry.side>0,stage,"the MMD panel owns a drawable handle square");
+    return geometry;
+}
+POINT MorphHostMmdHandlePoint(const MorphHostMmdGeometry& geometry,double u,double v){
+    POINT point={};
+    point.x=geometry.margin+static_cast<LONG>(std::lround(u/127.0*double(geometry.side)));
+    point.y=geometry.margin+geometry.side-static_cast<LONG>(std::lround(v/127.0*double(geometry.side)));
+    return point;
+}
+std::array<double,4> MorphHostMmdDragControls(const MorphHostMmdGeometry& geometry,int handle,POINT point,
+    const std::array<double,4>& start){
+    std::array<double,4> controls=start;
+    const double side=double(std::max(1,geometry.side));
+    const double u=std::max(0.0,std::min(127.0,(point.x-geometry.margin)*127.0/side));
+    const double v=std::max(0.0,std::min(127.0,(geometry.margin+geometry.side-point.y)*127.0/side));
+    controls[std::size_t(handle)*2]=std::floor(u+0.5);
+    controls[std::size_t(handle)*2+1]=std::floor(v+0.5);
+    return controls;
+}
+// Read the coordinate fields SyncMmdCoordinateFields updates during the drag.
+// The WM_APP+302 hook must not be used here: ComputeMmdControls would recompute
+// the interval and overwrite the in-flight preview.
+std::array<double,4> MorphHostMmdFields(HWND editor,const char* stage){
+    std::array<double,4> controls{};
+    for(int index=0;index<4;++index){
+        const HWND field=GetDlgItem(editor,1096+index);
+        wchar_t text[64]{};
+        GetDlgItemTextW(editor,1096+index,text,64);
+        wchar_t* end=nullptr;
+        const double value=std::wcstod(text,&end);
+        MorphHostCheck(field!=nullptr&&end!=text&&end!=nullptr&&*end==L'\0'&&std::isfinite(value),stage,
+            "the MMD coordinate fields show a finite in-flight preview");
+        controls[std::size_t(index)]=value;
+    }
+    return controls;
+}
+unsigned MorphHostNativeSelectionCount(MorphCurveWriteFixture& f){
+    unsigned count=0;
+    const auto capacity=mdl::MorphKeyCapacity(f.first.m->morphKeys);
+    for(std::size_t index=0;index<capacity;++index)if(f.first.m->morphKeys[index].allocated)++count;
+    return count;
+}
+void MorphHostClearNativeSelection(MorphCurveWriteFixture& f){
+    const auto capacity=mdl::MorphKeyCapacity(f.first.m->morphKeys);
+    for(std::size_t index=0;index<capacity;++index)f.first.m->morphKeys[index].allocated=0;
+}
+// Seed the straight two-key source the panel represents as diagonal handles.
+// A prior overshoot seed could not enable the panel; this one must.
+animation_curve::Track MorphHostSeedMmdDragCurve(MorphCurveWriteFixture& f,const char* stage){
+    MorphHostCheck(plugins::BoundNativePoseHistory(f.app.get())==&f.history,stage,
+        "the expression host regression binds the fixture's shared history");
+    MorphHostCheck(f.app->MainWindow()!=nullptr&&GetDlgItem(f.app->MainWindow(),panel::kPhysicsFrameCheckbox)!=nullptr&&
+        GetDlgItem(f.app->MainWindow(),panel::kUndoButton)!=nullptr&&GetDlgItem(f.app->MainWindow(),panel::kReadoutPosXEdit)!=nullptr,
+        stage,"the hidden expression host owner has the common controls its publication touches");
+    f.app->SelectedModelSlot()=0;f.app->CameraMode()=0;
+    f.firstMorphs[0].panel=mdl::MorphPanel::eyebrow;
+    MorphHostCheck(f.app->SelectedModel()==f.first.raw(),stage,"the first model is the selected model");
+    for(auto& index:f.first.m->selectedMorphs)index=-1;
+    f.first.m->selectedMorphs[0]=0;
+    MorphHostCheck(morph_curve::PanelGroup(static_cast<std::uint8_t>(f.firstMorphs[0].panel))==0,stage,
+        "the selected lane morph belongs to the panel eyebrow group");
+    MorphHostCheck(!curve_host::MorphLaneInitial(*f.app,0).empty(),stage,
+        "the panel eyebrow selector names a valid lane morph");
+    const auto modelIdentity=curve_host::MorphIdentityOf(*f.app,f.first.raw());
+    MorphHostCheck(curve_host::MorphIdentityCurrent(*f.app,modelIdentity),stage,
+        "the model identity and selected slot agree");
+    std::vector<curve_editor::Channel> baseline;std::wstring error;
+    Check(curve_host::ReadMorphChannels(*f.app,baseline,error)&&baseline.size()==3,
+        "read the pristine expression channels before the panel drag regression");
+    Check(baseline[0].id==morph_curve::StableId(0,f.firstMorphs[0].name),
+        "the panel eyebrow channel is the selected morph");
+    animation_curve::Key first,last;
+    first.frame=0;first.value=.1;last.frame=30;last.value=.9;
+    first.interpolation=last.interpolation=animation_curve::Interpolation::Linear;
+    first.tangent=last.tangent=animation_curve::Tangent::Free;
+    animation_curve::Track seeded;
+    seeded.keys={first,last};
+    std::string controlsError;
+    Check(animation_curve::SetMmdControls(seeded,1,{20,20,107,107},controlsError),
+        "the detached seed expresses the diagonal 20 20 107 107 handles");
+    Check(seeded.keys.back().interpolation==animation_curve::Interpolation::Linear,
+        "diagonal MMD controls keep the seed a straight Linear interval");
+    auto next=baseline;next[0].track=seeded;
+    Check(curve_host::WriteMorphChannels(*f.app,modelIdentity,next,baseline,error),
+        "the bound production expression write installs the seeded linear curve");
+    Check(f.history.UndoCount()==1&&!f.history.RedoCount(),
+        "the seeded expression write records exactly one shared history node");
+    std::vector<curve_editor::Channel> installed;
+    Check(curve_host::ReadMorphChannels(*f.app,installed,error)&&installed.size()==3&&
+        MorphHostSameTrack(installed[0].track,seeded),
+        "the bound source reads the seeded linear curve back bit for bit");
+    Check(installed[0].track.keys.back().interpolation==animation_curve::Interpolation::Linear,
+        "the seeded interval stays Linear before the drag");
+    MorphHostClearNativeSelection(f);
+    MorphHostCheck(MorphHostNativeSelectionCount(f)==0,stage,
+        "native morph allocated selection marks are clear before the real OpenMorph");
+    return seeded;
+}
+animation_curve::Track MorphHostMmdExpectedTrack(const animation_curve::Track& source,
+    const std::array<double,4>& controls,const char* stage){
+    animation_curve::Track expected=source;
+    std::string error;
+    MorphHostCheck(animation_curve::SetMmdControls(expected,1,controls,error),stage,
+        "the retained source track expresses the dragged MMD controls");
+    MorphHostCheck(expected.keys.size()==2&&expected.keys.back().interpolation==animation_curve::Interpolation::Bezier,
+        stage,"off-diagonal MMD controls turn the interval into a real Bezier");
+    return expected;
+}
+void MorphHostVerifyMmdDragCommitted(MorphCurveWriteFixture& f,HWND editor,
+    const animation_curve::Track& expected,const char* stage){
+    std::vector<curve_editor::Channel> channels;std::wstring error;
+    const bool read=curve_host::ReadMorphChannels(*f.app,channels,error)&&channels.size()==3;
+    MorphHostCheck(read,stage,"the committed expression channels can be read back");
+    if(!read)return;
+    const auto& track=channels[0].track;
+    MorphHostCheck(MorphHostSameTrack(track,expected),stage,
+        "the committed authored track carries the intended Bezier slopes and handle weights");
+    MorphHostCheck(track.keys.size()==2&&track.keys.front().frame==0&&track.keys.back().frame==30,stage,
+        "the committed curve keeps the two seeded frame keys");
+    MorphHostCheck(track.keys.back().interpolation==animation_curve::Interpolation::Bezier,stage,
+        "the committed endpoint interval is Bezier");
+    MorphHostCheck(std::fabs(track.keys.front().value-.1)<1e-12&&std::fabs(track.keys.back().value-.9)<1e-12,stage,
+        "the committed curve preserves the authored endpoint values");
+    for(double frame:{5.0,10.0,15.0,20.0,25.0}){
+        const auto wanted=animation_curve::Evaluate(expected,frame);
+        const auto actual=animation_curve::Evaluate(track,frame);
+        MorphHostCheck(std::fabs(actual.value-wanted.value)<=1e-9&&std::fabs(actual.derivative-wanted.derivative)<=1e-9,stage,
+            "the committed interior samples match the retained source track");
+        if(editor!=nullptr){
+            std::array<double,3> values{{frame,0,0}};
+            MorphHostCheck(SendMessageW(editor,WM_APP+396,0,reinterpret_cast<LPARAM>(values.data()))!=0,stage,
+                "the expression editor answers its sampling message");
+            MorphHostCheck(std::fabs(values[1]-wanted.value)<=1e-9&&std::fabs(values[2]-wanted.derivative)<=1e-9,stage,
+                "the expression editor samples the committed value and derivative");
+        }
+    }
+    MorphHostCheck(std::fabs(animation_curve::Evaluate(track,15.0).value-.5)>0.05,stage,
+        "the committed interior departs from the straight seed segment");
+}
+void MorphCurveWriteHostMmdPanelDrag(bool selectEndKey){
+    const char* label=selectEndKey?"selected-endpoint":"no-selection-follow-playhead";
+    for(int handle=0;handle<2;++handle){
+        std::printf("  morph curve write: MMD panel %s drag handle %d\n",label,handle);
+        std::fflush(stdout);
+        MorphCurveWriteFixture f;
+        plugins::NativePoseTestBinding binding(*f.app,f.history);
+        const std::string stage=std::string("MMD panel ")+label+" handle "+std::to_string(handle);
+        const animation_curve::Track seeded=MorphHostSeedMmdDragCurve(f,stage.c_str());
+        HWND editor=MorphHostOpenExpression(f,stage.c_str());
+        MorphHostCheck(editor!=nullptr,stage.c_str(),"the real OpenMorph expression window is live");
+        HWND panel=nullptr;
+        const auto geometry=MorphHostMmdGeometryOf(editor,panel,stage.c_str());
+        if(editor==nullptr||geometry.side<=0){curve_editor::CloseOwned(f.app->MainWindow());continue;}
+        if(selectEndKey){
+            const auto packed=SendMessageW(editor,WM_APP+300,1,0);
+            POINT keyPoint={static_cast<LONG>(static_cast<short>(LOWORD(packed))),
+                static_cast<LONG>(static_cast<short>(HIWORD(packed)))};
+            MorphHostCheck(keyPoint.x>0&&keyPoint.y>0,stage.c_str(),
+                "the endpoint key lies inside the real canvas");
+            const HWND canvas=GetDlgItem(editor,1020);
+            MorphHostCheck(canvas!=nullptr,stage.c_str(),"the real expression canvas exists");
+            if(canvas!=nullptr){
+                SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(keyPoint.x,keyPoint.y));
+                SendMessageW(canvas,WM_LBUTTONUP,0,MAKELPARAM(keyPoint.x,keyPoint.y));
+            }
+            MorphHostCheck(f.app->CurrentFrame()==30,stage.c_str(),
+                "the real canvas click selects the endpoint and seeks to frame 30");
+            MorphHostCheck(MorphHostNativeSelectionCount(f)==1,stage.c_str(),
+                "the positive control leaves exactly the clicked endpoint selected");
+        }else{
+            const HWND timeline=GetDlgItem(editor,1024);const HWND seek=GetDlgItem(editor,1025);
+            MorphHostCheck(timeline!=nullptr&&seek!=nullptr,stage.c_str(),
+                "the real host timeline seek controls exist");
+            if(timeline!=nullptr&&seek!=nullptr){
+                SetWindowTextW(timeline,L"10");
+                SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1025,BN_CLICKED),reinterpret_cast<LPARAM>(seek));
+            }
+            MorphHostCheck(f.app->CurrentFrame()==10,stage.c_str(),
+                "the real host seek control moves the app frame to frame 10");
+            MorphHostCheck(MorphHostNativeSelectionCount(f)==0,stage.c_str(),
+                "no canvas click leaves every native morph selection mark empty");
+        }
+        std::array<double,4> before{};
+        const BOOL enabled=static_cast<BOOL>(SendMessageW(editor,WM_APP+302,0,reinterpret_cast<LPARAM>(before.data())));
+        MorphHostCheck(enabled!=FALSE,stage.c_str(),
+            "the follow-playhead MMD panel enables its handles for the active interval");
+        MorphHostCheck(before==std::array<double,4>{20,20,107,107},stage.c_str(),
+            "the straight seed displays the diagonal 20 20 107 107 handles");
+        const POINT pressed=MorphHostMmdHandlePoint(geometry,before[std::size_t(handle)*2],
+            before[std::size_t(handle)*2+1]);
+        const POINT targetPoint=handle==0?MorphHostMmdHandlePoint(geometry,35,95):MorphHostMmdHandlePoint(geometry,95,35);
+        const LPARAM target=MAKELPARAM(targetPoint.x,targetPoint.y);
+        const auto expectedControls=MorphHostMmdDragControls(geometry,handle,targetPoint,before);
+        MorphHostCheck(!(expectedControls[0]==expectedControls[1]&&expectedControls[2]==expectedControls[3]),stage.c_str(),
+            "the drag target is unambiguously off the diagonal");
+        MorphHostSnapshot snapshot(f);
+        MorphHostCheck(snapshot.undo==1&&snapshot.redo==0,stage.c_str(),
+            "the seeded expression write is the only shared history node before the drag");
+        SendMessageW(panel,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(pressed.x,pressed.y));
+        MorphHostCheck(GetCapture()==panel,stage.c_str(),
+            "the real panel press acquires the MMD capture");
+        SendMessageW(panel,WM_MOUSEMOVE,MK_LBUTTON,target);
+        MorphHostCheck(GetCapture()==panel,stage.c_str(),
+            "the in-flight MMD drag keeps the panel capture");
+        const auto preview=MorphHostMmdFields(editor,stage.c_str());
+        MorphHostCheck(preview==expectedControls,stage.c_str(),
+            "the in-flight coordinate fields show the quantized dragged handle");
+        MorphHostCheck(snapshot.Matches(f),stage.c_str(),
+            "native keys model weights and authored layers are untouched during the drag");
+        std::uint64_t revision=0;
+        MorphHostCheck(f.history.Revision(revision)==MMS_OK&&revision==snapshot.revision&&
+            f.history.UndoCount()==snapshot.undo&&f.history.RedoCount()==snapshot.redo,stage.c_str(),
+            "the shared history records nothing while the handle is in flight");
+        std::vector<curve_editor::Channel> during;std::wstring duringError;
+        MorphHostCheck(curve_host::ReadMorphChannels(*f.app,during,duringError)&&during.size()==3&&
+            MorphHostSameTrack(during[0].track,seeded)&&
+            during[0].track.keys.back().interpolation==animation_curve::Interpolation::Linear,stage.c_str(),
+            "the bound source still returns the unchanged Linear seed during the drag");
+        SendMessageW(panel,WM_LBUTTONUP,0,target);
+        MorphHostCheck(GetCapture()!=panel,stage.c_str(),
+            "the real panel release returns the MMD capture");
+        MorphHostCheck(f.history.Revision(revision)==MMS_OK&&revision==snapshot.revision+1&&
+            f.history.UndoCount()==snapshot.undo+1,stage.c_str(),
+            "the finished drag publishes exactly one shared history node");
+        const auto expected=MorphHostMmdExpectedTrack(seeded,preview,stage.c_str());
+        MorphHostVerifyMmdDragCommitted(f,editor,expected,stage.c_str());
+        MorphHostCloseExpression(f,editor,stage.c_str());
+        editor=MorphHostOpenExpression(f,stage.c_str());
+        MorphHostVerifyMmdDragCommitted(f,editor,expected,stage.c_str());
+        MorphHostCloseExpression(f,editor,stage.c_str());
+        curve_editor::CloseOwned(f.app->MainWindow());
+        MorphHostCheck(MorphHostEditorWindows(f.app->MainWindow()).count==0,stage.c_str(),
+            "CloseOwned leaves no expression curve window after the panel drag case");
+    }
+}
+// ---------------------------------------------------------------------------
+// Real OpenMorph numeric MMD coordinate Enter regression.
+//
+// The four coordinate fields edit the interval the panel displays. A is the
+// selected/displayed same-interval positive control: the clicked 0..30
+// endpoint owns the interval the panel shows. B has no selected key and
+// follows the playhead, so the displayed 0..30 interval is the only target.
+// C keeps the frame-10 key selected but moves the playhead to 20, so the
+// displayed 10..30 interval is the target and the untouched 0..10 interval
+// must survive. Adjacent-handle linking is switched off in all three so an
+// unrelated-interval assertion is meaningful.
+// ---------------------------------------------------------------------------
+struct MorphHostHistoryMarks {
+    std::uint64_t revision = 0;
+    std::size_t undo = 0;
+    std::size_t redo = 0;
+};
+MorphHostHistoryMarks MorphHostHistoryMarksOf(MorphCurveWriteFixture& f,const char* stage){
+    MorphHostHistoryMarks marks;
+    MorphHostCheck(f.history.Revision(marks.revision)==MMS_OK,stage,"read the shared expression history revision");
+    marks.undo=f.history.UndoCount();
+    marks.redo=f.history.RedoCount();
+    return marks;
+}
+void MorphHostRequireOneNewHistory(MorphCurveWriteFixture& f,const MorphHostHistoryMarks& before,const char* stage){
+    std::uint64_t revision=0;
+    MorphHostCheck(f.history.Revision(revision)==MMS_OK&&revision==before.revision+1&&
+        f.history.UndoCount()==before.undo+1&&f.history.RedoCount()==before.redo,stage,
+        "the MMD coordinate Enter publishes exactly one shared history node and leaves redo untouched");
+}
+void MorphHostRequireHistoryUnchanged(MorphCurveWriteFixture& f,const MorphHostHistoryMarks& marks,const char* stage){
+    std::uint64_t revision=0;
+    MorphHostCheck(f.history.Revision(revision)==MMS_OK&&revision==marks.revision&&
+        f.history.UndoCount()==marks.undo&&f.history.RedoCount()==marks.redo,stage,
+        "the shared expression history is unchanged after close and reopen");
+}
+void MorphHostRequireAdjacentLinkingOff(MorphCurveWriteFixture& f,const char* stage){
+    const HWND checkbox=GetDlgItem(f.app->MainWindow(),panel::kPhysicsFrameCheckbox);
+    MorphHostCheck(checkbox!=nullptr,stage,"the hidden host owner has the adjacent-handle linking checkbox");
+    if(checkbox!=nullptr)SendMessageW(checkbox,BM_SETCHECK,BST_UNCHECKED,0);
+    MorphHostCheck(IsDlgButtonChecked(f.app->MainWindow(),panel::kPhysicsFrameCheckbox)==BST_UNCHECKED,stage,
+        "adjacent-handle linking is unchecked so the displayed interval is the only edit");
+}
+// The coordinate fields are real WS_CHILD controls created directly on the
+// expression editor (MakeControl creates them with the built-in EDIT class).
+// The runtime class string of a built-in control is not an authored contract
+// and its capitalisation is not guaranteed, so it is logged for diagnosis and
+// never asserted. Identity is the exact control id, the direct editor parent,
+// IsChild and WS_CHILD; the class query only feeds the diagnostics.
+bool MorphHostMmdCoordinateField(HWND editor,int id,const char* stage,const char* role){
+    const HWND field=editor?GetDlgItem(editor,id):nullptr;
+    wchar_t className[64]{};
+    const int classLength=field?GetClassNameW(field,className,64):0;
+    const int actualId=field?GetDlgCtrlID(field):0;
+    const HWND actualParent=field?GetParent(field):nullptr;
+    const bool windowOk=field!=nullptr&&IsWindow(field)!=FALSE;
+    const bool idOk=windowOk&&actualId==id;
+    const bool parentOk=windowOk&&actualParent==editor;
+    const bool isChild=windowOk&&IsChild(editor,field)!=FALSE;
+    const bool styleChild=windowOk&&(GetWindowLongPtrW(field,GWL_STYLE)&WS_CHILD)!=0;
+    const bool identity=windowOk&&idOk&&parentOk&&isChild&&styleChild;
+    if(!identity){
+        std::printf("  MMD coordinate %s identity: stage=%s expectedId=%d actualId=%d hwnd=%p class=%ls parent=%p expectedParent=%p isChild=%d styleChild=%d\n",
+            role,stage,id,actualId,reinterpret_cast<void*>(field),
+            classLength>0?className:L"(none)",reinterpret_cast<void*>(actualParent),
+            reinterpret_cast<void*>(editor),isChild?1:0,styleChild?1:0);
+        std::fflush(stdout);
+    }
+    MorphHostCheck(identity,stage,"the MMD coordinate field is a real WS_CHILD control owned directly by the expression editor");
+    return identity;
+}
+void MorphHostTypeMmdCoordinates(HWND editor,const std::array<int,4>& values,const char* stage){
+    for(int index=0;index<4;++index){
+        const int id=1096+index;
+        if(!MorphHostMmdCoordinateField(editor,id,stage,"coordinate field"))return;
+        const HWND field=GetDlgItem(editor,id);
+        const auto text=std::to_wstring(values[std::size_t(index)]);
+        SetWindowTextW(field,text.c_str());
+        wchar_t shown[32]{};
+        GetDlgItemTextW(editor,id,shown,32);
+        if(std::wstring(shown)!=text){
+            std::printf("  MMD coordinate field text roundtrip: stage=%s id=%d hwnd=%p expected=%ls actual=%ls\n",
+                stage,id,reinterpret_cast<void*>(field),text.c_str(),shown);
+            std::fflush(stdout);
+        }
+        MorphHostCheck(std::wstring(shown)==text,stage,"the MMD coordinate field shows the typed integer");
+    }
+}
+void MorphHostPressMmdCoordinateEnter(HWND editor,const char* stage){
+    if(!MorphHostMmdCoordinateField(editor,1096,stage,"Enter target"))return;
+    const HWND field=GetDlgItem(editor,1096);
+    wchar_t className[64]{};
+    GetClassNameW(field,className,64);
+    std::printf("  MMD coordinate Enter child: stage=%s id=%d hwnd=%p class=%ls parent=%p editor=%p\n",
+        stage,GetDlgCtrlID(field),reinterpret_cast<void*>(field),
+        className[0]?className:L"(none)",reinterpret_cast<void*>(GetParent(field)),
+        reinterpret_cast<void*>(editor));
+    std::fflush(stdout);
+    SendMessageW(field,WM_KEYDOWN,VK_RETURN,0);
+}
+void MorphHostRequireMmdReadout(HWND editor,const std::wstring& expected,const char* stage){
+    wchar_t text[128]{};
+    GetDlgItemTextW(editor,1032,text,128);
+    MorphHostCheck(std::wstring(text)==expected,stage,"the MMD readout names the displayed interval");
+}
+std::vector<int> MorphHostMorphSelectionFrames(MorphCurveWriteFixture& f,unsigned morph=0){
+    std::vector<int> frames;
+    const auto capacity=mdl::MorphKeyCapacity(f.first.m->morphKeys);
+    if(morph>=capacity)return frames;
+    std::size_t slot=morph;
+    for(std::size_t visited=0;visited<capacity;++visited){
+        if(slot>=capacity)return {};
+        const auto& key=f.first.m->morphKeys[slot];
+        if(key.allocated)frames.push_back(static_cast<int>(key.frame));
+        if(!key.next)break;
+        slot=key.next;
+    }
+    return frames;
+}
+void MorphHostRequireOtherTracks(const std::vector<curve_editor::Channel>& before,
+    const std::vector<curve_editor::Channel>& after,const char* stage){
+    MorphHostCheck(before.size()==after.size()&&before.size()>=3,stage,"the expression channel list is stable");
+    for(std::size_t index=1;index<before.size()&&index<after.size();++index)
+        MorphHostCheck(before[index].id==after[index].id&&MorphHostSameTrack(before[index].track,after[index].track),stage,
+            "the other expression tracks keep their key frames values and handle geometry");
+}
+animation_curve::Track MorphHostMmdExpectedInterval(const animation_curve::Track& source,std::size_t endKey,
+    const std::array<double,4>& controls,const char* stage){
+    animation_curve::Track expected=source;
+    std::string error;
+    MorphHostCheck(animation_curve::SetMmdControls(expected,endKey,controls,error),stage,
+        "the retained source track expresses the typed MMD controls on the displayed interval");
+    MorphHostCheck(endKey>0&&endKey<expected.keys.size()&&
+        expected.keys[endKey].interpolation==animation_curve::Interpolation::Bezier,stage,
+        "the typed off-diagonal controls turn the displayed interval into a real Bezier");
+    return expected;
+}
+void MorphHostVerifyMmdCoordinateTrack(MorphCurveWriteFixture& f,const animation_curve::Track& source,
+    const animation_curve::Track& expected,HWND editor,const char* stage){
+    std::vector<curve_editor::Channel> channels;std::wstring error;
+    const bool read=curve_host::ReadMorphChannels(*f.app,channels,error)&&channels.size()==3;
+    MorphHostCheck(read,stage,"the committed expression channels can be read back");
+    if(!read)return;
+    const auto& track=channels[0].track;
+    MorphHostCheck(MorphHostSameTrack(track,expected),stage,
+        "the committed authored track equals the retained source and SetMmdControls oracle");
+    MorphHostCheck(track.keys.size()==source.keys.size(),stage,"the committed curve keeps the seeded key count");
+    if(track.keys.size()==source.keys.size()){
+        for(std::size_t index=0;index<track.keys.size();++index)
+            MorphHostCheck(track.keys[index].frame==source.keys[index].frame&&
+                track.keys[index].value==source.keys[index].value,stage,
+                "the committed curve keeps the seeded frame and value of every endpoint");
+        MorphHostCheck(track.keys[0].outWeight==source.keys[0].outWeight&&track.keys[0].outSlope==source.keys[0].outSlope&&
+            track.keys[1].inWeight==source.keys[1].inWeight&&track.keys[1].inSlope==source.keys[1].inSlope,stage,
+            "the first interval keeps its out and in handle geometry unchanged");
+        for(double frame:{2.0,5.0,8.0}){
+            const auto before=animation_curve::Evaluate(source,frame);
+            const auto after=animation_curve::Evaluate(track,frame);
+            MorphHostCheck(std::fabs(after.value-before.value)<=1e-12&&std::fabs(after.derivative-before.derivative)<=1e-12,stage,
+                "the untouched first interval samples exactly as before the second-interval edit");
+        }
+    }
+    for(double frame:{5.0,10.0,15.0,20.0,25.0,28.0}){
+        const auto wanted=animation_curve::Evaluate(expected,frame);
+        const auto actual=animation_curve::Evaluate(track,frame);
+        MorphHostCheck(std::fabs(actual.value-wanted.value)<=1e-9&&std::fabs(actual.derivative-wanted.derivative)<=1e-9,stage,
+            "the committed interior samples match the retained source track");
+        if(editor!=nullptr){
+            std::array<double,3> values{{frame,0,0}};
+            MorphHostCheck(SendMessageW(editor,WM_APP+396,0,reinterpret_cast<LPARAM>(values.data()))!=0,stage,
+                "the expression editor answers its sampling message");
+            MorphHostCheck(std::fabs(values[1]-wanted.value)<=1e-9&&std::fabs(values[2]-wanted.derivative)<=1e-9,stage,
+                "the expression editor samples the committed value and derivative");
+        }
+    }
+}
+void MorphCurveWriteHostMmdCoordinateEnter(bool selectEndKey){
+    const char* label=selectEndKey?"selected-endpoint":"no-selection-follow-playhead";
+    std::printf("  morph curve write: MMD coordinate Enter %s\n",label);std::fflush(stdout);
+    MorphCurveWriteFixture f;
+    plugins::NativePoseTestBinding binding(*f.app,f.history);
+    const std::string stage=std::string("MMD coordinate Enter ")+label;
+    f.app->EnglishUI()=1;
+    MorphHostRequireAdjacentLinkingOff(f,stage.c_str());
+    const animation_curve::Track seeded=MorphHostSeedMmdDragCurve(f,stage.c_str());
+    HWND editor=MorphHostOpenExpression(f,stage.c_str());
+    MorphHostCheck(editor!=nullptr,stage.c_str(),"the real OpenMorph expression window is live");
+    if(editor==nullptr){curve_editor::CloseOwned(f.app->MainWindow());return;}
+    if(selectEndKey){
+        const auto packed=SendMessageW(editor,WM_APP+300,1,0);
+        POINT keyPoint={static_cast<LONG>(static_cast<short>(LOWORD(packed))),
+            static_cast<LONG>(static_cast<short>(HIWORD(packed)))};
+        MorphHostCheck(keyPoint.x>0&&keyPoint.y>0,stage.c_str(),"the endpoint key lies inside the real canvas");
+        const HWND canvas=GetDlgItem(editor,1020);
+        MorphHostCheck(canvas!=nullptr,stage.c_str(),"the real expression canvas exists");
+        if(canvas!=nullptr){
+            SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(keyPoint.x,keyPoint.y));
+            SendMessageW(canvas,WM_LBUTTONUP,0,MAKELPARAM(keyPoint.x,keyPoint.y));
+        }
+        MorphHostCheck(f.app->CurrentFrame()==30,stage.c_str(),"the real canvas click selects the endpoint and seeks to frame 30");
+        MorphHostCheck(MorphHostMorphSelectionFrames(f)==std::vector<int>{30},stage.c_str(),
+            "the positive control leaves exactly the clicked endpoint selected");
+    }else{
+        const HWND timeline=GetDlgItem(editor,1024);
+        const HWND seek=GetDlgItem(editor,1025);
+        MorphHostCheck(timeline!=nullptr&&seek!=nullptr,stage.c_str(),"the real host timeline seek controls exist");
+        if(timeline!=nullptr&&seek!=nullptr){
+            SetWindowTextW(timeline,L"10");
+            SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1025,BN_CLICKED),reinterpret_cast<LPARAM>(seek));
+        }
+        MorphHostCheck(f.app->CurrentFrame()==10,stage.c_str(),"the real host seek control moves the app frame to frame 10");
+        MorphHostCheck(MorphHostNativeSelectionCount(f)==0&&MorphHostMorphSelectionFrames(f).empty(),stage.c_str(),
+            "no canvas click leaves every native morph selection mark empty");
+    }
+    MorphHostRequireMmdReadout(editor,std::wstring(L"Range 0")+L"\u2013"+L"30",stage.c_str());
+    std::array<double,4> displayed{};
+    const BOOL enabled=static_cast<BOOL>(SendMessageW(editor,WM_APP+302,0,reinterpret_cast<LPARAM>(displayed.data())));
+    MorphHostCheck(enabled!=FALSE,stage.c_str(),"the MMD panel enables the displayed 0..30 interval");
+    MorphHostCheck(displayed==std::array<double,4>{20,20,107,107},stage.c_str(),
+        "the displayed 0..30 interval keeps the seeded diagonal handles");
+    std::vector<curve_editor::Channel> tracks;std::wstring trackError;
+    Check(curve_host::ReadMorphChannels(*f.app,tracks,trackError)&&tracks.size()==3,
+        "read the expression tracks before the coordinate Enter");
+    const auto marks=MorphHostHistoryMarksOf(f,stage.c_str());
+    MorphHostTypeMmdCoordinates(editor,std::array<int,4>{35,95,107,107},stage.c_str());
+    MorphHostPressMmdCoordinateEnter(editor,stage.c_str());
+    const auto expected=MorphHostMmdExpectedTrack(seeded,std::array<double,4>{35,95,107,107},stage.c_str());
+    MorphHostRequireOneNewHistory(f,marks,stage.c_str());
+    MorphHostVerifyMmdDragCommitted(f,editor,expected,stage.c_str());
+    std::vector<curve_editor::Channel> after;std::wstring afterError;
+    Check(curve_host::ReadMorphChannels(*f.app,after,afterError)&&after.size()==3,
+        "read the expression tracks after the coordinate Enter");
+    MorphHostRequireOtherTracks(tracks,after,stage.c_str());
+    const auto committed=MorphHostHistoryMarksOf(f,stage.c_str());
+    MorphHostCloseExpression(f,editor,stage.c_str());
+    MorphHostRequireHistoryUnchanged(f,committed,stage.c_str());
+    editor=MorphHostOpenExpression(f,stage.c_str());
+    MorphHostVerifyMmdDragCommitted(f,editor,expected,stage.c_str());
+    MorphHostRequireHistoryUnchanged(f,committed,stage.c_str());
+    MorphHostCloseExpression(f,editor,stage.c_str());
+    curve_editor::CloseOwned(f.app->MainWindow());
+    MorphHostCheck(MorphHostEditorWindows(f.app->MainWindow()).count==0,stage.c_str(),
+        "CloseOwned leaves no expression curve window after the coordinate Enter case");
+}
+void MorphCurveWriteHostMmdCoordinateEnterDifferentInterval(){
+    std::printf("  morph curve write: MMD coordinate Enter selected-key different interval\n");std::fflush(stdout);
+    MorphCurveWriteFixture f;
+    plugins::NativePoseTestBinding binding(*f.app,f.history);
+    const char* stage="MMD coordinate Enter selected-key different interval";
+    f.app->EnglishUI()=1;
+    MorphHostRequireAdjacentLinkingOff(f,stage);
+    MorphHostSeedMmdDragCurve(f,stage);
+    std::vector<curve_editor::Channel> baseline;std::wstring error;
+    Check(curve_host::ReadMorphChannels(*f.app,baseline,error)&&baseline.size()==3,
+        "read the seeded expression channels before the three-key interval setup");
+    const auto identity=curve_host::MorphIdentityOf(*f.app,f.first.raw());
+    MorphHostCheck(curve_host::MorphIdentityCurrent(*f.app,identity),stage,
+        "the three-key seed still targets the selected model");
+    animation_curve::Key first,middle,last;
+    first.frame=0;first.value=.1;middle.frame=10;middle.value=.5;last.frame=30;last.value=.9;
+    first.interpolation=middle.interpolation=last.interpolation=animation_curve::Interpolation::Linear;
+    first.tangent=middle.tangent=last.tangent=animation_curve::Tangent::Free;
+    animation_curve::Track seeded;seeded.keys={first,middle,last};
+    std::string controlsError;
+    Check(animation_curve::SetMmdControls(seeded,1,{20,20,107,107},controlsError)&&
+        animation_curve::SetMmdControls(seeded,2,{30,30,100,100},controlsError),
+        "the detached three-key seed expresses both legal diagonal MMD intervals");
+    Check(seeded.keys[1].interpolation==animation_curve::Interpolation::Linear&&
+        seeded.keys[2].interpolation==animation_curve::Interpolation::Linear,
+        "both diagonal MMD intervals stay straight Linear seeds");
+    auto next=baseline;next[0].track=seeded;
+    Check(curve_host::WriteMorphChannels(*f.app,identity,next,baseline,error),
+        "the bound production expression write installs the three-key seed");
+    MorphHostClearNativeSelection(f);
+    MorphHostCheck(MorphHostNativeSelectionCount(f)==0,stage,
+        "native morph allocated selection marks are clear before the real OpenMorph");
+    std::vector<curve_editor::Channel> installed;
+    Check(curve_host::ReadMorphChannels(*f.app,installed,error)&&installed.size()==3&&
+        MorphHostSameTrack(installed[0].track,seeded),
+        "the bound source reads the three-key seed back bit for bit");
+    {
+        std::array<double,4> intervalOne{},intervalTwo{};
+        Check(animation_curve::GetMmdControls(installed[0].track,1,intervalOne)&&
+            intervalOne==std::array<double,4>{20,20,107,107}&&
+            animation_curve::GetMmdControls(installed[0].track,2,intervalTwo)&&
+            intervalTwo==std::array<double,4>{30,30,100,100},
+            "the two seeded intervals expose distinguishable diagonal MMD controls");
+    }
+    HWND editor=MorphHostOpenExpression(f,stage);
+    MorphHostCheck(editor!=nullptr,stage,"the real OpenMorph expression window is live");
+    if(editor==nullptr){curve_editor::CloseOwned(f.app->MainWindow());return;}
+    const auto packed=SendMessageW(editor,WM_APP+300,1,0);
+    POINT keyPoint={static_cast<LONG>(static_cast<short>(LOWORD(packed))),
+        static_cast<LONG>(static_cast<short>(HIWORD(packed)))};
+    MorphHostCheck(keyPoint.x>0&&keyPoint.y>0,stage,"the frame 10 key lies inside the real canvas");
+    const HWND canvas=GetDlgItem(editor,1020);
+    MorphHostCheck(canvas!=nullptr,stage,"the real expression canvas exists");
+    if(canvas!=nullptr){
+        SendMessageW(canvas,WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(keyPoint.x,keyPoint.y));
+        SendMessageW(canvas,WM_LBUTTONUP,0,MAKELPARAM(keyPoint.x,keyPoint.y));
+    }
+    MorphHostCheck(f.app->CurrentFrame()==10,stage,"the real canvas click selects frame 10 and seeks there");
+    MorphHostCheck(MorphHostMorphSelectionFrames(f)==std::vector<int>{10},stage,
+        "exactly the clicked frame 10 key is selected");
+    const HWND timeline=GetDlgItem(editor,1024);
+    const HWND seek=GetDlgItem(editor,1025);
+    MorphHostCheck(timeline!=nullptr&&seek!=nullptr,stage,"the real host timeline seek controls exist");
+    if(timeline!=nullptr&&seek!=nullptr){
+        SetWindowTextW(timeline,L"20");
+        SendMessageW(editor,WM_COMMAND,MAKEWPARAM(1025,BN_CLICKED),reinterpret_cast<LPARAM>(seek));
+    }
+    MorphHostCheck(f.app->CurrentFrame()==20,stage,"the real host seek moves the playhead to frame 20 without a canvas click");
+    MorphHostCheck(MorphHostMorphSelectionFrames(f)==std::vector<int>{10},stage,
+        "the playhead move leaves only the frame 10 key selected");
+    MorphHostRequireMmdReadout(editor,std::wstring(L"Range 10")+L"\u2013"+L"30",stage);
+    std::array<double,4> displayed{};
+    const BOOL enabled=static_cast<BOOL>(SendMessageW(editor,WM_APP+302,0,reinterpret_cast<LPARAM>(displayed.data())));
+    MorphHostCheck(enabled!=FALSE,stage,"the MMD panel enables the displayed 10..30 interval");
+    MorphHostCheck(displayed==std::array<double,4>{30,30,100,100},stage,
+        "the MMD panel displays the second interval's diagonal controls");
+    std::vector<curve_editor::Channel> tracks;std::wstring trackError;
+    Check(curve_host::ReadMorphChannels(*f.app,tracks,trackError)&&tracks.size()==3,
+        "read the expression tracks before the second-interval coordinate Enter");
+    const auto marks=MorphHostHistoryMarksOf(f,stage);
+    MorphHostTypeMmdCoordinates(editor,std::array<int,4>{35,95,107,107},stage);
+    MorphHostPressMmdCoordinateEnter(editor,stage);
+    const auto expected=MorphHostMmdExpectedInterval(seeded,2,std::array<double,4>{35,95,107,107},stage);
+    MorphHostRequireOneNewHistory(f,marks,stage);
+    MorphHostVerifyMmdCoordinateTrack(f,seeded,expected,editor,stage);
+    std::vector<curve_editor::Channel> after;std::wstring afterError;
+    Check(curve_host::ReadMorphChannels(*f.app,after,afterError)&&after.size()==3,
+        "read the expression tracks after the second-interval coordinate Enter");
+    MorphHostRequireOtherTracks(tracks,after,stage);
+    const auto committed=MorphHostHistoryMarksOf(f,stage);
+    MorphHostCloseExpression(f,editor,stage);
+    MorphHostRequireHistoryUnchanged(f,committed,stage);
+    editor=MorphHostOpenExpression(f,stage);
+    MorphHostVerifyMmdCoordinateTrack(f,seeded,expected,editor,stage);
+    MorphHostRequireHistoryUnchanged(f,committed,stage);
+    MorphHostCloseExpression(f,editor,stage);
+    curve_editor::CloseOwned(f.app->MainWindow());
+    MorphHostCheck(MorphHostEditorWindows(f.app->MainWindow()).count==0,stage,
+        "CloseOwned leaves no expression curve window after the second-interval coordinate case");
+}
 void NativeMorphCurveWriteChecks(){
     std::puts("  morph curve write: legacy mirror export and common history parity");MorphCurveWriteParity();
     std::puts("  morph curve write: raw layer restoration and private effective sampling");MorphCurveWriteRawLayers();
     std::puts("  morph curve write: pool growth root and multi-morph selection");MorphCurveWriteGrowthAndSelection();
     std::puts("  morph curve write: mixed native history and unowned author preservation");MorphCurveWriteMixedHistory();
+    std::puts("  morph curve write: real expression host close and reopen");MorphCurveWriteHostCloseReopen();
+    std::puts("  morph curve write: real OpenMorph MMD panel selected-endpoint drag");MorphCurveWriteHostMmdPanelDrag(true);
+    std::puts("  morph curve write: real OpenMorph MMD panel no-selection follow-playhead drag");MorphCurveWriteHostMmdPanelDrag(false);
     std::puts("  morph curve write: budgets aliasing finite evaluation and lifetime");MorphCurveWriteRefusals();MorphCurveWriteLifetimeAndStale();
     std::puts("  morph curve write: full private preparation allocation sweep");MorphCurveWriteFailures();
+    std::puts("  morph curve write: real OpenMorph MMD coordinate Enter selected-endpoint");MorphCurveWriteHostMmdCoordinateEnter(true);
+    std::puts("  morph curve write: real OpenMorph MMD coordinate Enter no-selection follow-playhead");MorphCurveWriteHostMmdCoordinateEnter(false);
+    std::puts("  morph curve write: real OpenMorph MMD coordinate Enter selected-key different interval");MorphCurveWriteHostMmdCoordinateEnterDifferentInterval();
 }
 }

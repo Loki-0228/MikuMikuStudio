@@ -18,7 +18,7 @@ void Run(MMDApp* app) {
     auto* raw = app->ModelSlot(0); Check(raw != nullptr, "load actual combined evaluation model");
     auto& model = *mdl::Mdl(raw);
     Check(model.boneCount && model.morphCount, "fixture has both channel kinds");
-    auto scene = CreateSceneStore(app); SceneClient client; auto bindApi = scene->Api(client);
+    auto scene = CreateSceneStore(app); SceneClient client; auto bindApi = ([&]{ MmsSceneApiV1 value{}; if (scene->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     MmsSceneQueryV1 request{}; request.h = Header<MmsSceneQueryV1>();
     request.flags = MMS_SCENE_CURRENT_TIME; request.channels = MMS_CHANNEL_BONES | MMS_CHANNEL_MORPHS;
     MmsSnapshotV1 bind{};

@@ -1,0 +1,2 @@
+EXPORTS
+    destroy3=KERNEL32.GetCurrentProcessId

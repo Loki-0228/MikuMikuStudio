@@ -1,9 +1,12 @@
 #include "storage_store.hpp"
+#include <limits>
 
 namespace mikumikustudio::plugins {
 namespace {
 // A bounded public transfer. The encoded sidecar imposes its own total limit.
 constexpr uint64_t kMaxBytes = 64ull * 1024 * 1024;
+constexpr uint64_t kMaxClientSavedLeaseBytes = 128ull * 1024 * 1024;
+constexpr uint64_t kMaxTotalSavedLeaseBytes = 256ull * 1024 * 1024;
 struct Busy { bool& flag; explicit Busy(bool& b) : flag(b) { flag = true; } ~Busy() { flag = false; } };
 StoredData Copy(MmsBytes bytes, uint32_t schema) {
     if (!schema || bytes.bytes > kMaxBytes || (bytes.bytes && !bytes.data)) throw std::invalid_argument("serializer bytes/schema");
@@ -34,15 +37,44 @@ MmsStorageApiV1 StorageStore::Api(StorageClient& client) {
             if (c.stopping) return MMS_E_NOT_READY;
             if (!bytes || !schema || !lease) return MMS_E_ARGUMENT;
             auto it = s.records_.find(c.id); if (it == s.records_.end()) return MMS_E_NOT_FOUND;
-            if (s.leases_.size() >= 4096) return MMS_E_BUSY;
-            auto h = s.next_++; auto& value = s.leases_.emplace(h, Lease{&c, it->second}).first->second.data;
-            *bytes = {value.bytes.data(), value.bytes.size()}; *schema = value.schema; *lease = h; return MMS_OK;
+            if (s.leases_.size() >= 4096 || s.next_ == (std::numeric_limits<MmsHandle>::max)()) return MMS_E_BUSY;
+            std::shared_ptr<const StoredData> value;
+            auto cached = s.savedSnapshots_.find(&c);
+            if (cached != s.savedSnapshots_.end()) value = cached->second.lock();
+            const bool newSnapshot = !value;
+            if (newSnapshot) {
+                const auto size = static_cast<uint64_t>(it->second.bytes.size());
+                if (size > kMaxBytes || size > kMaxClientSavedLeaseBytes ||
+                    c.savedLeaseBytes > kMaxClientSavedLeaseBytes - size ||
+                    size > kMaxTotalSavedLeaseBytes || s.savedLeaseBytes_ > kMaxTotalSavedLeaseBytes - size)
+                    return MMS_E_MEMORY;
+                value = std::make_shared<const StoredData>(it->second);
+                // Weak cache publication may allocate; do it before inserting a
+                // lease so a thrown allocation never leaves an invisible lease.
+                s.savedSnapshots_[&c] = value;
+            }
+            const auto h = s.next_;
+            const auto inserted = s.leases_.emplace(h, Lease{&c, value});
+            if (!inserted.second) return MMS_E_FAILED;
+            ++s.next_;
+            if (newSnapshot) {
+                const auto size = static_cast<uint64_t>(value->bytes.size());
+                c.savedLeaseBytes += size; s.savedLeaseBytes_ += size;
+            }
+            *bytes = {value->bytes.data(), value->bytes.size()}; *schema = value->schema; *lease = h; return MMS_OK;
         });
     };
     api.releaseSaved = [](void* context, MmsHandle lease) {
         auto& c = *static_cast<StorageClient*>(context); auto& s = *c.store;
         if (GetCurrentThreadId() != s.thread_) return;
-        auto it = s.leases_.find(lease); if (it != s.leases_.end() && it->second.owner == &c) s.leases_.erase(it);
+        auto it = s.leases_.find(lease);
+        if (it != s.leases_.end() && it->second.owner == &c) {
+            if (it->second.data.use_count() == 1) {
+                const auto size = static_cast<uint64_t>(it->second.data->bytes.size());
+                c.savedLeaseBytes -= size; s.savedLeaseBytes_ -= size;
+            }
+            s.leases_.erase(it);
+        }
     };
     return api;
 }
@@ -55,7 +87,10 @@ MmsResult StorageStore::Register(StorageClient& client, MmsString name, const vo
     for (auto& [h, p] : providers_) if (p.owner->id == client.id) return MMS_E_CONFLICT;
     // Restore retained state before accepting a late provider. Allocate its map
     // node before the irreversible commit; a failure leaves the data retained.
-    const auto h = next_++; auto inserted = providers_.emplace(h, Provider{&client, table});
+    if (next_ == (std::numeric_limits<MmsHandle>::max)()) return MMS_E_BUSY;
+    const auto h = next_; auto inserted = providers_.emplace(h, Provider{&client, table});
+    if (!inserted.second) return MMS_E_FAILED;
+    ++next_;
     Busy guard(busy_); const auto found = records_.find(client.id); MmsHandle candidate = 0;
     const StoredData empty{}; const auto& saved = found == records_.end() ? empty : found->second;
     auto r = Boundary([&] { return table.prepareLoad(table.context, {saved.bytes.data(),saved.bytes.size()}, saved.schema, &candidate); });
@@ -79,6 +114,7 @@ bool StorageStore::HasLeases(StorageClient& c) const {
 bool StorageStore::Retire(StorageClient& c) {
     if (Ready() != MMS_OK || HasLeases(c)) return false;
     for (auto it = providers_.begin(); it != providers_.end();) if (it->second.owner == &c) it = providers_.erase(it); else ++it;
+    savedSnapshots_.erase(&c);
     return true;
 }
 MmsResult StorageStore::Capture(StoredRecords& out) {
@@ -131,10 +167,14 @@ bool StorageStore::Commit() noexcept {
     if (GetCurrentThreadId() != thread_ || busy_ || !prepared_) return false;
     Busy guard(busy_); bool ok = true;
     for (auto& c : candidates_) if (Boundary([&] { c.table.commitLoad(c.table.context, c.value); return MMS_OK; })) { poisoned_ = true; ok = false; }
-    candidates_.clear(); if(!restoreOnly_)records_.swap(pending_); pending_.clear(); prepared_ = false; return ok;
+    candidates_.clear(); if(!restoreOnly_){records_.swap(pending_);savedSnapshots_.clear();} pending_.clear(); prepared_ = false; return ok;
 }
 void StorageStore::Cancel() noexcept {
     if (GetCurrentThreadId() != thread_ || busy_) return;
     Busy guard(busy_); CancelCandidates();
+}
+void StorageStore::Saved(StoredRecords& data) noexcept {
+    records_.swap(data);
+    savedSnapshots_.clear();
 }
 }

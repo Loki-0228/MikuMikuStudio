@@ -1,4 +1,5 @@
 #include "mikumikustudio/update_coordinator.hpp"
+#include "mikumikustudio/scene_ownership.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 // ===========================================================================
 // VA 0x00461E00 / 0x00461FA0 - separate ("Mic") window create / destroy pair
@@ -12,6 +13,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#include <shellapi.h>
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #if !MMD_ORIGINAL_PROFILE
@@ -82,13 +84,81 @@ int FilterSeparateWindowMouseMove(MMDApp* app, unsigned short x, unsigned short 
     return result;
 }
 
+namespace {
+
+// A PMM load that already replaced the native scene can fail its recovery
+// reset; the half-loaded scene then stays quarantined (see
+// MMDApp::sceneRecoveryPending) until a reset completes.  The detached panels
+// must take no edits meanwhile.  Drop the input that would edit them or start
+// a viewport gesture; this runs ahead of plugins::HandleBoundViewportMessage
+// and of the mouse-modifier stores below, so neither can latch gesture or
+// modifier state for the scene.  Close requests, the system menu
+// (Alt+Space/Alt+F4), Escape, capture loss and the window-lifetime, layout
+// and paint messages keep their normal path.
+//
+// The recovery reset drives its own child controls synchronously (BM_CLICK and
+// edit notifications), so those control commands keep the ordinary dispatch
+// while the reset's scene mutation is in progress, exactly like MainWndProc.
+bool SceneRecoveryBlocksMicInput(const MMDApp& app, UINT msg, WPARAM wParam,
+                                 LPARAM lParam) noexcept {
+    if (!app.sceneRecoveryPending) return false;
+    if (msg == WM_NOTIFY || msg == WM_HSCROLL || msg == WM_VSCROLL) return true;
+    if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) return true;
+    if (msg >= WM_KEYFIRST && msg <= WM_KEYLAST) {
+        // Alt+Space / Alt+F4 are system-window keys: DefWindowProc turns them
+        // into the system menu and SC_CLOSE.
+        if (msg >= WM_SYSKEYDOWN && msg <= WM_SYSDEADCHAR) return false;
+        // Escape only cancels an in-flight gesture or leaves fullscreen.
+        return !(msg == WM_KEYDOWN && wParam == VK_ESCAPE);
+    }
+    // Only a child control driven by the recovery reset's scene mutation may
+    // pass through WM_COMMAND; a menu/accelerator command (lParam 0) is
+    // dropped like every other edit input.
+    if (msg == WM_COMMAND) return !(app.SceneMutationInProgress() && lParam != 0);
+    return false;
+}
+
+}  // namespace
+
 // VA 0x00466A10 - separate ("Mic") window procedure.
 LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
                             LPARAM lParam) {
     updates::MessageScope dispatchScope;
     MMDApp* app = g_Block;
+    if (msg == WM_CREATE) DragAcceptFiles(hwnd, TRUE);
+    if (msg == WM_DROPFILES) {
+        // The main window owns drop handling, including the busy guards and HDROP cleanup.
+        const HWND main = app ? app->MainWindow() : nullptr;
+        if (main != hwnd && IsWindow(main)) return SendMessageW(main, msg, wParam, lParam);
+        DragFinish(reinterpret_cast<HDROP>(wParam));
+        return 0;
+    }
     updates::ObserveMessage(app, msg, wParam, lParam);
     auto& s = *app;
+#if !MMD_ORIGINAL_PROFILE
+    const bool replayClose = msg == kSceneCloseReplayMessage;
+    const bool closeRequest = replayClose || msg == WM_CLOSE || (msg == WM_SYSCOMMAND && (wParam & 0xfff0) == SC_CLOSE);
+    if (msg == WM_NCDESTROY) {
+        s.deferredSceneFloatingClose = nullptr;
+        s.sceneFloatingClosePosted = false;
+    }
+    if (replayClose) {
+        if (!s.sceneFloatingClosePosted || s.deferredSceneFloatingClose != hwnd) return 0;
+        s.sceneFloatingClosePosted = false;
+    }
+    if (closeRequest) {
+        if (s.sceneFloatingCloseProcessing) return 0;
+        if (SceneCloseBlocked(s)) { s.deferredSceneFloatingClose = hwnd; return 0; }
+        if (!replayClose && (s.sceneFloatingClosePosted || s.deferredSceneFloatingClose)) return 0;
+        s.deferredSceneFloatingClose = nullptr;
+        s.sceneFloatingCloseProcessing = true;
+        msg = WM_CLOSE; wParam = 0; lParam = 0;
+    }
+    struct CloseGuard {
+        MMDApp& app; bool active;
+        ~CloseGuard() { if (active) { app.sceneFloatingCloseProcessing = false; RetryDeferredSceneCloses(app); } }
+    } closeGuard{s, closeRequest};
+#endif
     // Startup can pump messages while a graph still owns borrowed resources.
     // Queued detached-panel commands must obey the same busy scope as main.
     if ((recording_state::Guard::Active(app, recording_state::Operation::Start) ||
@@ -100,6 +170,14 @@ LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
          (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
          (msg == WM_SYSCOMMAND && (wParam & 0xfff0) == SC_CLOSE)))
         return 0;
+    // A quarantined scene must not take an edit or start a gesture.  This runs
+    // before plugins::HandleBoundViewportMessage can latch a viewport/HUD
+    // gesture and write the mouse modifiers it carries, and before the
+    // mouse-modifier stores in the dispatch below.  WM_CLOSE/SC_CLOSE, the
+    // system menu, the remaining window-lifetime/layout/paint messages, the
+    // system keys, Escape and the recovery reset's own callbacks keep their
+    // normal path.
+    if (SceneRecoveryBlocksMicInput(s, msg, wParam, lParam)) return 0;
 #if !MMD_ORIGINAL_PROFILE
     // Disabling the detached window does not discard already queued messages.
     // A bake pumps those messages while it borrows private scene state; closing
@@ -127,12 +205,13 @@ LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
         }
         return DefWindowProcA(hwnd, msg, wParam, lParam);
     case WM_MOUSEMOVE:                                             // 0x466A36
-        s.MessageSeen() = 1;                                      // 0x466BDB
+        if (build_profile::original) s.MessageSeen() = 1;          // 0x466BDB
         FilterSeparateWindowMouseMove(app, LOWORD(lParam), HIWORD(lParam));  // 0x466BF6
         return 0;
-    case WM_CLOSE:                                                 // 0x466B8A
+    case WM_CLOSE: {                                               // 0x466B8A
         SaveFlagSubsystem(app);                                    // 0x466BBD
         return 0;
+    }
     case WM_COMMAND:                                               // 0x466B91
 #if !MMD_ORIGINAL_PROFILE
         if (LOWORD(wParam) == panel::kFollowCameraCheckbox &&
@@ -142,6 +221,12 @@ LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
         DispatchSeparateWindowCommand(app, LOWORD(wParam));  // 0x466B9E
         return 0;
     case WM_PAINT: {                                               // 0x466AB7
+        if (s.sceneRecoveryPending) {
+            PAINTSTRUCT ps{};
+            BeginPaint(hwnd, &ps);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
         RECT rc;
         GetClientRect(hwnd, &rc);
         PAINTSTRUCT ps;
@@ -174,6 +259,9 @@ LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
         LayoutViewportPanels(app);                                 // 0x466A77
         return 0;
     case WM_MOUSEACTIVATE:                                         // 0x466C6E
+        // The quarantined scene must not activate a hover/drag gesture; the
+        // click is eaten rather than forwarded to HandleMouseActivate.
+        if (s.sceneRecoveryPending) return MA_ACTIVATEANDEAT;
         if (LOWORD(lParam) != HTCLIENT)
             return DefWindowProcA(hwnd, msg, wParam, lParam);
         HandleMouseActivate(app);
@@ -215,6 +303,7 @@ LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
         PostViewRefresh(app);                                      // 0x466D00
         return 0;
     case 792 /* WM_PRINTCLIENT */:                                   // 0x466CBC: Defect B2-12.
+        if (s.sceneRecoveryPending) return 0;
         HandlePaletteChanged2(reinterpret_cast<HDC>(wParam));
         return 0;
     default:
@@ -292,7 +381,10 @@ void SaveFlagSubsystem(MMDApp* app) {
 
     CheckMenuItem(GetMenu(main), 0x118, 0 /*MF_UNCHECKED*/);       // 0x46205F
     s.SidebarWidth() = s.SeparateWindowSidebarWidth();
-    PanelPaint(app);                                               // 0x462073
+    // Closing the detached window must still restore its controls and HWND
+    // ownership when recovery failed. Its timeline paint reads model keys,
+    // though, so leave that refresh to the next successful scene reset.
+    if (!s.sceneRecoveryPending) PanelPaint(app);                  // 0x462073
     InvalidateRect(main, nullptr, FALSE);                          // 0x462083
     RelayoutSidebarControls(app);                                                // 0x462090
 }

@@ -6,6 +6,7 @@
 #include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/native_media.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/runtime_log.hpp"
@@ -181,7 +182,9 @@ bool RefreshBoundAudioUi(MMDApp& app)noexcept{
     auto* audio=app.Audio();if(!audio||!wave_audio::NeedsRefresh(audio))return true;
     if(g_Block!=&app||!audio->timelineDC||!app.MainWindow()||!IsWindow(app.MainWindow()))return false;
     return Boundary([&]()->MmsResult{TimelineDrawTicks(app.TimelineStartFrame(),app.SidebarWidth());
-        RECT area{6,0x5f,app.SidebarWidth()-3,0x97};if(!InvalidateRect(app.MainWindow(),&area,FALSE))return MMS_E_FAILED;
+        RECT area = TimelineRulerDamage(&app);
+        area.bottom += 5;
+        if(!InvalidateRect(app.MainWindow(),&area,FALSE))return MMS_E_FAILED;
         wave_audio::Refreshed(audio);return MMS_OK;})==MMS_OK;
 }
 void ClearLegacyAudio(MMDApp* app)noexcept{

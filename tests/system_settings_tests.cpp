@@ -30,8 +30,12 @@ void Put(const fs::path& path, const std::string& value) {
 }
 int Worker(const fs::path& path, const std::string& section) {
     settings::Store store(path);
-    for (unsigned i = 0; i < 24; ++i)
-        if (store.WriteSection(section, "{\"value\":" + std::to_string(i) + "}") != Result::Ok) return 2;
+    for (unsigned i = 0; i < 24; ++i) {
+        const auto object = "{\"value\":" + std::to_string(i) + "}";
+        const auto result = i % 2 ? store.WriteSections("{\"" + section + "\":" + object +
+            ",\"batchWorkers\":{\"" + section + "\":" + std::to_string(i) + "}}") : store.WriteSection(section, object);
+        if (result != Result::Ok) return 2;
+    }
     return 0;
 }
 void Processes(const fs::path& path) {
@@ -58,6 +62,9 @@ void Processes(const fs::path& path) {
         std::string value;
         Check(store.ReadSection("worker" + std::to_string(i), value) == Result::Ok &&
             Json::Parse(value).At("value").UInt() == 23, "cross-process sections preserved");
+        Check(store.ReadSection("batchWorkers", value) == Result::Ok &&
+            Json::Parse(value).At(("worker" + std::to_string(i)).c_str()).UInt() == 23,
+            "concurrent process batch writes preserve other writers");
     }
 }
 }
@@ -123,6 +130,29 @@ int wmain(int argc, wchar_t** argv) {
     auto rootValue = Json::Parse(Bytes(path));
     Check(rootValue.At("futureRoot").At("n").text == "1e2" && rootValue.At("sections").At("ui").At("future").array.size() == 3,
         "unknown root and section data survive save");
+    Check(store.WriteSections(R"({"history":{"future":{"keep":7},"steps":12},"resources":{"future":{"keep":9},"backgroundPictureSourcesMiB":128}})") == Result::Ok,
+        "create history and resources in one update");
+    Check(store.WriteSections(R"({"history":{"future":{"new":8},"steps":24},"resources":{"backgroundPictureSourcesMiB":64}})") == Result::Ok,
+        "merge two sections together");
+    rootValue = Json::Parse(Bytes(path));
+    Check(rootValue.At("sections").At("history").At("steps").UInt() == 24 &&
+        rootValue.At("sections").At("history").At("future").At("keep").UInt() == 7 &&
+        rootValue.At("sections").At("history").At("future").At("new").UInt() == 8 &&
+        rootValue.At("sections").At("resources").At("backgroundPictureSourcesMiB").UInt() == 64 &&
+        rootValue.At("sections").At("resources").At("future").At("keep").UInt() == 9 &&
+        rootValue.At("futureRoot").At("n").text == "1e2" && rootValue.At("sections").At("ui").At("current").UInt() == 3,
+        "batch preserves nested unknown members, other sections and root metadata");
+    const auto beforeBatch = Bytes(path);
+    const auto batchTime = fs::last_write_time(path);
+    Check(store.WriteSections(R"({"resources":{"backgroundPictureSourcesMiB":64},"history":{"steps":24}})") == Result::Ok &&
+        Bytes(path) == beforeBatch && fs::last_write_time(path) == batchTime, "batch no-op preserves file and timestamp");
+    for (const auto* invalid : {"{}", "[]", R"({"history":{"steps":1},"resources":[]})",
+        R"({"history":{"steps":1},"resources":null})", R"({"history":{"steps":1},"z/bad":{}})",
+        R"({"history":{"steps":1},"history":{}})"})
+        Check(store.WriteSections(invalid) == Result::Invalid && Bytes(path) == beforeBatch,
+            "invalid batch never commits its valid first section");
+    Check(settings::Store("relative.json").WriteSections(R"({"history":{}})") == Result::Invalid,
+        "batch rejects relative store path");
     for (const std::string& bad : std::vector<std::string>{
         "{", "{\"schemaVersion\":2,\"sections\":{}}", "{\"schemaVersion\":1.0,\"sections\":{}}",
         "{\"schemaVersion\":1,\"sections\":[]}", "{\"schemaVersion\":1,\"sections\":{\"ui\":[]}}",
@@ -131,15 +161,34 @@ int wmain(int argc, wchar_t** argv) {
         Check(store.ReadSection("ui", output) == Result::Invalid && output == "unchanged", "invalid read preserves output");
         Check(store.WriteSection("ui", "{}") == Result::Invalid && Bytes(path) == bad,
             "corrupt oversized or unsupported file is never overwritten");
+        Check(store.WriteSections(R"({"history":{"steps":1},"resources":{"backgroundPictureSourcesMiB":16}})") == Result::Invalid &&
+            Bytes(path) == bad, "batch never overwrites corrupt oversized or unsupported settings");
     }
     Put(path, "{\"schemaVersion\":1,\"sections\":{}}");
     const auto beforeLarge = Bytes(path);
     Check(store.WriteSection("ui", "{\"large\":\"" + std::string(1024 * 1024, 'x') + "\"}") == Result::Invalid &&
         Bytes(path) == beforeLarge, "oversized update leaves original unchanged");
+    Check(store.WriteSections("{\"history\":{\"steps\":1},\"resources\":{\"large\":\"" + std::string(1024 * 1024, 'x') + "\"}}") == Result::Invalid &&
+        Bytes(path) == beforeLarge, "oversized batch leaves every section unchanged");
+    std::string deep = "{}";
+    for (unsigned i = 0; i < 47; ++i) deep = "{\"n\":" + deep + "}";
+    const auto deepBatch = "{\"deep\":" + deep + "}";
+    Check(Json::Parse(deepBatch).kind == Json::Object && store.WriteSections(deepBatch) == Result::Invalid &&
+        Bytes(path) == beforeLarge, "batch validates combined document depth before publication");
+    std::string many = "{\"items\":[0";
+    for (unsigned i = 1; i < 17000; ++i) many += ",0";
+    many += "]}";
+    Check(store.WriteSection("nodes", many) == Result::Ok, "prepare individually valid node budget fixture");
+    const auto beforeNodes = Bytes(path);
+    Check(store.WriteSections("{\"history\":{\"steps\":1},\"newNodes\":" + many + "}") == Result::Invalid &&
+        Bytes(path) == beforeNodes, "batch rejects combined node budget without partial history update");
+    Put(path, "{\"schemaVersion\":1,\"sections\":{}}");
     Check(store.WriteSection("first", "{\"large\":\"" + std::string(600000, 'x') + "\"}") == Result::Ok, "large valid section");
     const auto beforeCombined = Bytes(path);
     Check(store.WriteSection("second", "{\"large\":\"" + std::string(600000, 'x') + "\"}") == Result::Invalid &&
         Bytes(path) == beforeCombined, "combined file size limit preserves original");
+    Check(store.WriteSections("{\"history\":{\"steps\":1},\"second\":{\"large\":\"" + std::string(600000, 'x') + "\"}}") == Result::Invalid &&
+        Bytes(path) == beforeCombined, "batch combined file size rejects all sections");
 
     // Holding a readable handle without delete-sharing permits Load but forces
     // the atomic replacement to fail, without modifying the old settings.
@@ -147,6 +196,8 @@ int wmain(int argc, wchar_t** argv) {
     Check(file != INVALID_HANDLE_VALUE, "open replacement fault fixture");
     Check(store.WriteSection("failed", "{\"value\":1}") == Result::Io && Bytes(path) == beforeCombined,
         "atomic replacement failure preserves old contents");
+    Check(store.WriteSections(R"({"history":{"steps":1},"resources":{"backgroundPictureSourcesMiB":16}})") == Result::Io &&
+        Bytes(path) == beforeCombined, "batch replacement failure preserves both sections");
     CloseHandle(file);
     unsigned temporaryCount = 0;
     for (const auto& entry : fs::directory_iterator(path.parent_path()))
@@ -166,12 +217,18 @@ int wmain(int argc, wchar_t** argv) {
     std::vector<std::thread> threads;
     std::atomic<unsigned> failures{0};
     for (unsigned worker = 0; worker < 4; ++worker) threads.emplace_back([&, worker] {
-        for (unsigned i = 0; i < 24; ++i)
-            if (store.WriteSection("shared", "{\"field" + std::to_string(worker * 24 + i) + "\":true}") != Result::Ok) ++failures;
+        for (unsigned i = 0; i < 24; ++i) {
+            const auto object = "{\"field" + std::to_string(worker * 24 + i) + "\":true}";
+            const auto result = worker % 2 ? store.WriteSections("{\"shared\":" + object + ",\"paired\":" + object + "}") :
+                store.WriteSection("shared", object);
+            if (result != Result::Ok) ++failures;
+        }
     });
     for (auto& thread : threads) thread.join();
     Check(failures == 0 && store.ReadSection("shared", output) == Result::Ok && Json::Parse(output).object.size() == 96,
         "threads preserve merged same-section fields");
+    Check(store.ReadSection("paired", output) == Result::Ok && Json::Parse(output).object.size() == 48,
+        "mixed single and batch writers preserve all paired fields");
     std::printf("PASS system settings checks=%u artifacts=%ls\n", checks, root.c_str());
     return 0;
 }

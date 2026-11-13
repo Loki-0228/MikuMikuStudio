@@ -27,7 +27,7 @@ struct Manager::Impl {
         MmsPluginApiV1 api{};
         void* instance = nullptr;
         LoadedPackage code;
-        bool started = false, stopFailed = false;
+        bool started = false, stopFailed = false, stopSucceeded = false;
         // Last device notification this plugin was given. RecordDevice* never
         // touches these; only FlushDeviceEvents advances a cursor, right before
         // the matching onEvent call, so an exception still counts as attempted.
@@ -50,7 +50,7 @@ struct Manager::Impl {
     bool uiRegistryChanged = false;
     bool layoutChanged = false;
     uint64_t layoutRevision = 0;
-    std::vector<std::pair<std::string, uint64_t>> pendingPropertyChanges;
+    PropertyNotificationQueue pendingPropertyChanges;
     UiRegistry registry;
     RenderService render;
     RenderImageStore images;
@@ -149,9 +149,9 @@ struct Manager::Impl {
         }, [this](UiClient& client, const PropertyInputSnapshot& snapshot, const MmsValue& value) {
             return InputEdit(client, snapshot, value);
         });
-        registry.SetPropertyChanged([this](const std::string& id, uint64_t revision) {
-            BroadcastPropertyChanged(id, revision);
-        });
+        // The manager's edit bridge reserves and publishes its own deferred
+        // property event. Do not also install the registry's optional direct
+        // observer, which would deliver the same successful edit twice.
     }
     ~Impl() { if (wake) DestroyWindow(wake); }
     bool EditOrigin(const Instance& i) const noexcept {
@@ -265,16 +265,19 @@ struct Manager::Impl {
         if (const auto result = current()) return result;
         if (const auto result = api.prepare(api.context, transaction)) return result;
         if (const auto result = current()) return result;
+        PropertyNotificationQueue::Reservation notification;
+        if (const auto result = pendingPropertyChanges.Prepare(snapshot.propertyId, notification)) return result;
         const auto result = api.commit(api.context, transaction);
         committed = result == MMS_OK;
         if (result == MMS_OK) {
             uint64_t revision = snapshot.sceneRevision;
             if (editHost) {
                 uint64_t current = 0;
-                if (editHost->Revision(current) == MMS_OK && current) revision = current;
+                if (Boundary([&] { return editHost->Revision(current); }) == MMS_OK && current) revision = current;
             }
             if (!revision) revision = registry.Revision();
-            QueuePropertyChanged(snapshot.propertyId, revision);
+            pendingPropertyChanges.Publish(notification, revision);
+            WakePropertyChanges();
         }
         return result;
     }
@@ -374,6 +377,17 @@ struct Manager::Impl {
         }
         if (id == "mms.ui") return Table(major, minor, bytes, out, registry.Api(i.ui));
         if (id == "mms.ui.surface") return Table(major, minor, bytes, out, registry.SurfaceApi(i.ui));
+        if (id == "mms.ui.layout.session") {
+            if (major != 1 || minor > 2) return MMS_E_VERSION;
+            if (minor == 2) {
+                if (!out || bytes < sizeof(MmsUiLayoutSessionApiV1_2)) return MMS_E_ARGUMENT;
+                const auto api = registry.LayoutSessionApi12(i.ui);
+                std::memcpy(out, &api, sizeof(api)); return MMS_OK;
+            }
+            if (!out || bytes < sizeof(MmsUiLayoutSessionApiV1)) return MMS_E_ARGUMENT;
+            const auto api = registry.LayoutSessionApi(i.ui, minor);
+            std::memcpy(out, &api, sizeof(api)); return MMS_OK;
+        }
         if (id == "mms.ui.layout") {
             if (minor == 1) {
                 if (major != 1) return MMS_E_VERSION;
@@ -441,6 +455,12 @@ struct Manager::Impl {
         }
         if (id == "mms.scene.evaluate" && evaluations) {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
+            if (minor == 7) {
+                if (major != 1) return MMS_E_VERSION;
+                if (!out || bytes < sizeof(MmsEvaluationApiV1_7)) return MMS_E_ARGUMENT;
+                const auto api = evaluations->Api17(i.evaluation);
+                std::memcpy(out, &api, sizeof(api)); return MMS_OK;
+            }
             if (minor == 6) {
                 if (major != 1) return MMS_E_VERSION;
                 if (!out || bytes < sizeof(MmsEvaluationApiV1_6)) return MMS_E_ARGUMENT;
@@ -479,7 +499,13 @@ struct Manager::Impl {
             }
             return Table(major, minor, bytes, out, evaluations->Api(i.evaluation));
         }
-        if (id == "mms.scene" && scene) return Table(major, minor, bytes, out, scene->Api(i.scene));
+        if (id == "mms.scene" && scene) {
+            if (!out || bytes < sizeof(MmsSceneApiV1)) return MMS_E_ARGUMENT;
+            if (major != 1 || minor > 0) return MMS_E_VERSION;
+            MmsSceneApiV1 api{};
+            if (const auto result = scene->Api(i.scene, api)) return result;
+            std::memcpy(out, &api, sizeof(api)); return MMS_OK;
+        }
         if (id == "mms.storage") return Table(major, minor, bytes, out, storage.Api(i.storage));
         if (id == "mms.edit" && edits) return Table(major, minor, bytes, out, EditApi(i));
         return MMS_E_NOT_FOUND;
@@ -546,7 +572,7 @@ struct Manager::Impl {
         bool failed = false;
         {
             std::lock_guard<std::mutex> lock(mutex);
-            if (tasks.empty()) KillTimer(wake, kTaskRetry);
+            if (tasks.empty() && pendingPropertyChanges.Empty()) KillTimer(wake, kTaskRetry);
             else failed = !SetTimer(wake, kTaskRetry, 16, nullptr);
         }
         if (failed) Write("UI task retry timer unavailable; pending tasks retained");
@@ -602,7 +628,7 @@ struct Manager::Impl {
         event.payload = payload; event.payloadVersion = version; event.object = object;
         for (const auto& i : instances) if (i->started && !i->stopping) {
             ++active; auto r = Boundary([&] { i->api.onEvent(i->instance, &event); return MMS_OK; }); --active;
-            if (r) Write(i->ui.id + ": event callback failed");
+            if (r) try { Write(i->ui.id + ": event callback failed"); } catch (...) {}
         }
     }
     void RecordDeviceLost(uint64_t generation) noexcept {
@@ -697,21 +723,26 @@ struct Manager::Impl {
     // A declarative property edit commits inside a plugin callback, where Event
     // dispatch is illegal. Keep the change until Drain can broadcast it outside
     // the callback.
-    void QueuePropertyChanged(const std::string& id, uint64_t revision) {
-        if (id.empty() || !revision) return;
-        if (pendingPropertyChanges.size() >= 64) pendingPropertyChanges.erase(pendingPropertyChanges.begin());
-        pendingPropertyChanges.emplace_back(id, revision);
-        PostMessageW(wake, kDrain, 0, 0);
+    void WakePropertyChanges() noexcept {
+        if (pendingPropertyChanges.Empty()) return;
+        if (!PostMessageW(wake, kDrain, 0, 0) && !SetTimer(wake, kTaskRetry, 16, nullptr))
+            try { Write("property notification wake unavailable; pending changes retained"); } catch (...) {}
     }
     void FlushPropertyChanges() {
-        if (pendingPropertyChanges.empty() || active || render.InCallback() || registry.InCallback() ||
+        if (pendingPropertyChanges.Empty() || GetCurrentThreadId() != thread || sending || active ||
+            render.InCallback() || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
             (edits && edits->InCallback())) return;
-        auto pending = std::move(pendingPropertyChanges);
-        pendingPropertyChanges.clear();
-        for (const auto& [id, revision] : pending) BroadcastPropertyChanged(id, revision);
+        while (!pendingPropertyChanges.Empty()) {
+            const auto& item = pendingPropertyChanges.Front();
+            if (Boundary([&] { BroadcastPropertyChanged(item.first, item.second); return MMS_OK; }) != MMS_OK) {
+                WakePropertyChanges(); return;
+            }
+            pendingPropertyChanges.Pop();
+        }
     }
     bool StopOne(Instance& i) {
         i.stopping = true; i.ui.stopping = true; i.scene.stopping = true; i.storage.stopping = true; i.edit.stopping = true; i.status.stage = "stopping";
+        registry.RevokeLayoutPreviews(i.ui);
         // Retire even clients with no callbacks in the dispatch list. Cached
         // service tables must not resurrect callbacks from stop/destroy.
         i.render.retired = true;
@@ -724,7 +755,10 @@ struct Manager::Impl {
         { std::lock_guard<std::mutex> lock(mutex); for (auto& [id, task] : tasks) if (task->owner == &i) task->cancel = true; }
         Drain();
         MmsResult r = MMS_OK;
-        if (i.instance) { ++active; r = Boundary([&] { return i.api.stop(i.instance); }); --active; }
+        if (i.instance && !i.stopSucceeded) {
+            ++active; r = Boundary([&] { return i.api.stop(i.instance); }); --active;
+            if (r == MMS_OK) i.stopSucceeded = true;
+        }
         if (r != MMS_OK) {
             if (r != MMS_E_BUSY) { i.stopFailed = true; i.status.error = "stop returned " + std::to_string(r); Write(i.ui.id + ": " + i.status.error); }
             return false;
@@ -746,10 +780,18 @@ struct Manager::Impl {
     bool Stop() {
         if (GetCurrentThreadId() != thread || active || render.InCallback() || registry.InCallback() || storage.InCallback() || storage.Prepared() ||
             (edits && edits->InCallback())) return false;
-        if (!closing) { Event(MMS_EVENT_UI_CLOSING); SavePreferences(); closing = true; }
+        if (!closing) {
+            // Deliver committed property edits to every live subscriber before
+            // UI_CLOSING and before any instance enters stopping. If dispatch
+            // cannot complete, retain the manager and retry at a safe point.
+            FlushPropertyChanges();
+            if (!pendingPropertyChanges.Empty()) { WakePropertyChanges(); return false; }
+            Event(MMS_EVENT_UI_CLOSING); SavePreferences(); closing = true;
+        }
         KillTimer(wake, kRefreshRetry);
         for (const auto& i : instances) {
             i->stopping = true; i->ui.stopping = true; i->scene.stopping = true;
+            registry.RevokeLayoutPreviews(i->ui);
             images.Retire(i->images);
             if (evaluations) evaluations->Retire(i->evaluation);
             registry.Refresh().Retire(i->refresh);
@@ -768,6 +810,7 @@ struct Manager::Impl {
         auto order = Resolve(discovered, [&](const std::string& d) { Write(d); }); std::set<std::string> started;
         for (size_t index : order) {
             const auto& m = discovered.packages[index];
+            if (m.kind == Manifest::Kind::LegacyMmdPlugin) continue;
             if (m.kind == Manifest::Kind::LegacyMme) {
                 const auto& legacy = LegacyMmeStatus();
                 const bool loaded = legacy.loaded && legacy.id == m.id;
@@ -874,6 +917,11 @@ void Manager::SetEditPublished(std::function<void()> callback) {
 }
 bool Manager::CanInvokeEdit() const noexcept { return impl_->CanInvokeEdit(); }
 void Manager::Drain() { impl_->Drain(); }
+bool Manager::FlushPropertyNotifications() noexcept {
+    if (GetCurrentThreadId() != impl_->thread) return false;
+    const auto result = Boundary([&] { impl_->FlushPropertyChanges(); return MMS_OK; });
+    return result == MMS_OK && impl_->pendingPropertyChanges.Empty();
+}
 bool Manager::Stop() { return Boundary([&] { return impl_->Stop() ? MMS_OK : MMS_E_BUSY; }) == MMS_OK; }
 void Manager::Event(uint32_t kind, MmsBytes payload, uint32_t version, MmsObjectRef object) {
     impl_->Event(kind,payload,version,object);

@@ -3,7 +3,11 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <commctrl.h>
+#include <MinHook.h>
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/system_settings.hpp"
 #include "mikumikustudio/ui_message.hpp"
+#include "mikumikustudio/ui_scale.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/undo_storage.hpp"
@@ -267,6 +271,7 @@ int response = IDCANCEL;
 int seen = 0;
 bool projectDialog = false;
 bool mismatchDialog = false;
+bool v1Dialog = false;
 const wchar_t* expectedButtons[4]{};
 std::string DiagnosticUtf8(const std::wstring& text) {
     if (text.empty()) return {};
@@ -305,6 +310,11 @@ LRESULT CALLBACK Inspect(int code, WPARAM wp, LPARAM lp) {
                           "project model action follows current UI language");
                 Check((GetDlgItem(dialog, 690) != nullptr) == mismatchDialog,
                       "missing and mismatched models use the correct resources");
+                if (v1Dialog) {
+                    const HWND skip = GetDlgItem(dialog, 688);
+                    Check(skip && !(GetWindowLongW(skip, GWL_STYLE) & WS_VISIBLE) && !IsWindowEnabled(skip),
+                          "the V1 dialog offers no skip action for a model required by the PMM stream");
+                }
                 RECT bodyRect{}, firstButton{};
                 GetWindowRect(GetDlgItem(dialog, 686), &bodyRect);
                 GetWindowRect(GetDlgItem(dialog, 687), &firstButton);
@@ -324,6 +334,241 @@ LRESULT CALLBACK Inspect(int code, WPARAM wp, LPARAM lp) {
     }
     return CallNextHookEx(nullptr, code, wp, lp);
 }
+
+struct RecoveryLayoutCase {
+    HWND owner;
+    RECT work;
+    RECT templateClient;
+    int templateFontHeight;
+    int expectedPercent;
+    int cancelButton;
+    bool effect;
+    bool closeByCaption;
+    bool seen = false;
+    bool matches = false;
+    const wchar_t* longName = nullptr;
+};
+
+RecoveryLayoutCase* recoveryCase = nullptr;
+decltype(&GetMonitorInfoW) realRecoveryMonitorInfo = nullptr;
+HMONITOR recoveryMonitor = nullptr;
+DWORD recoveryThread = 0;
+
+BOOL WINAPI RecoveryMonitorInfo(HMONITOR monitor, LPMONITORINFO info) {
+    const BOOL result = realRecoveryMonitorInfo(monitor, info);
+    if (result && monitor == recoveryMonitor && GetCurrentThreadId() == recoveryThread)
+        info->rcWork = recoveryCase->work;
+    return result;
+}
+
+bool Contains(const RECT& outer, const RECT& inner) {
+    return inner.left >= outer.left && inner.right <= outer.right &&
+           inner.top >= outer.top && inner.bottom <= outer.bottom && !IsRectEmpty(&inner);
+}
+
+int FontHeight(HWND control) {
+    LOGFONTW font{};
+    const auto assigned = reinterpret_cast<HFONT>(SendMessageW(control, WM_GETFONT, 0, 0));
+    Check(assigned && GetObjectW(assigned, sizeof font, &font) == sizeof font,
+          "read actual recovery control font");
+    return font.lfHeight;
+}
+
+bool RecoveryTextFits(HWND child, int width, int height, bool button) {
+    auto text = Text(child);
+    const HDC dc = GetDC(child);
+    Check(dc && !text.empty(), "measure nonempty localized recovery control");
+    const auto old = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(child, WM_GETFONT, 0, 0)));
+    RECT needed{0, 0, width, 0};
+    const UINT flags = DT_CALCRECT | DT_NOPREFIX | (button ? DT_SINGLELINE : DT_WORDBREAK);
+    const bool measured = DrawTextW(dc, text.data(), static_cast<int>(text.size()), &needed, flags) > 0;
+    SelectObject(dc, old);
+    ReleaseDC(child, dc);
+    const int margin = button ? 4 : 0;
+    return measured && needed.right + margin <= width && needed.bottom + margin <= height;
+}
+
+LRESULT CALLBACK InspectRecoveryLayout(int code, WPARAM wp, LPARAM lp) {
+    const HWND dialog = reinterpret_cast<HWND>(wp);
+    if (code != HCBT_ACTIVATE || !recoveryCase || GetWindow(dialog, GW_OWNER) != recoveryCase->owner)
+        return CallNextHookEx(nullptr, code, wp, lp);
+    auto& test = *recoveryCase;
+    const HWND caption = GetDlgItem(dialog, test.effect ? 1001 : 686);
+    const HWND cancel = GetDlgItem(dialog, test.cancelButton);
+    Check(caption && cancel && !test.seen, "observe the actual owned recovery dialog");
+    test.seen = true;
+    RECT outer{}, client{}, content{};
+    Check(GetWindowRect(dialog, &outer) && GetClientRect(dialog, &client) &&
+          GetWindowRect(caption, &content), "read actual recovery geometry");
+    RECT clientScreen = client;
+    MapWindowPoints(dialog, HWND_DESKTOP, reinterpret_cast<POINT*>(&clientScreen), 2);
+    bool textFits = false;
+    if (test.longName) {
+        wchar_t type[16]{};
+        GetClassNameW(caption, type, std::size(type));
+        const auto style = GetWindowLongW(caption, GWL_STYLE);
+        const auto body = Text(caption);
+        const std::wstring_view name(test.longName);
+        if (!lstrcmpiW(type, L"Edit") && (style & ES_READONLY) && (style & WS_VSCROLL) &&
+            (style & WS_TABSTOP) && body.size() >= name.size() &&
+            std::wstring_view(body).substr(body.size() - name.size()) == name) {
+            const auto start = SendMessageW(caption, EM_GETFIRSTVISIBLELINE, 0, 0);
+            const auto lines = SendMessageW(caption, EM_GETLINECOUNT, 0, 0);
+            SendMessageW(caption, WM_VSCROLL, SB_BOTTOM, 0);
+            const auto end = SendMessageW(caption, EM_GETFIRSTVISIBLELINE, 0, 0);
+            const auto position = SendMessageW(caption, EM_POSFROMCHAR, body.size() - 1, 0);
+            RECT format{};
+            SendMessageW(caption, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&format));
+            SendMessageW(caption, WM_VSCROLL, SB_TOP, 0);
+            textFits = start == 0 && end > start && end < lines && position != -1 &&
+                PtInRect(&format, POINT{short(LOWORD(position)), short(HIWORD(position))}) &&
+                SendMessageW(caption, EM_GETFIRSTVISIBLELINE, 0, 0) == start;
+            std::printf("RECOVERY_SCROLL start=%lld end=%lld lines=%lld last=(%d,%d) rect=(%ld,%ld,%ld,%ld)\n",
+                static_cast<long long>(start), static_cast<long long>(end), static_cast<long long>(lines),
+                short(LOWORD(position)), short(HIWORD(position)), format.left, format.top, format.right, format.bottom);
+        } else {
+            std::printf("RECOVERY_SCROLL unavailable style=%08lx body=%zu name=%zu\n",
+                static_cast<unsigned long>(style), body.size(), name.size());
+        }
+    } else {
+        textFits = RecoveryTextFits(caption, content.right - content.left, content.bottom - content.top, false);
+    }
+    bool childrenFit = true;
+    for (HWND child = GetWindow(dialog, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        if (!(GetWindowLongW(child, GWL_STYLE) & WS_VISIBLE)) continue;
+        RECT bounds{};
+        Check(GetWindowRect(child, &bounds), "read visible recovery control bounds");
+        childrenFit &= Contains(clientScreen, bounds);
+        wchar_t type[16]{};
+        GetClassNameW(child, type, 16);
+        if (!lstrcmpiW(type, L"Button"))
+            textFits &= RecoveryTextFits(child, bounds.right - bounds.left, bounds.bottom - bounds.top, true);
+    }
+    if (test.effect) {
+        const HWND list = GetDlgItem(dialog, 1002);
+        Check(list && SendMessageW(list, LB_GETCOUNT, 0, 0) == 2 &&
+              !IsWindowEnabled(GetDlgItem(dialog, IDOK)), "effect list needs a selection before replacement");
+        wchar_t path[512]{};
+        const auto length = SendMessageW(list, LB_GETTEXT, 0, reinterpret_cast<LPARAM>(path));
+        const HDC dc = GetDC(list);
+        const auto old = SelectObject(dc, reinterpret_cast<HFONT>(SendMessageW(list, WM_GETFONT, 0, 0)));
+        SIZE needed{};
+        const bool measured = length > 0 && GetTextExtentPoint32W(dc, path, static_cast<int>(length), &needed);
+        SelectObject(dc, old);
+        ReleaseDC(list, dc);
+        textFits &= measured && SendMessageW(list, LB_GETHORIZONTALEXTENT, 0, 0) >= needed.cx &&
+                    SendMessageW(list, LB_GETITEMHEIGHT, 0, 0) >= needed.cy;
+    }
+    const int font = FontHeight(caption);
+    test.matches = Contains(test.work, outer) && childrenFit && textFits &&
+        client.right == MulDiv(test.templateClient.right, test.expectedPercent, 100) &&
+        client.bottom == MulDiv(test.templateClient.bottom, test.expectedPercent, 100) &&
+        font == MulDiv(test.templateFontHeight, test.expectedPercent, 100);
+    std::printf("RECOVERY_LAYOUT effect=%d cancel=%d percent=%d client=%ldx%ld font=%d inWork=%d children=%d text=%d matches=%d\n",
+        test.effect, test.cancelButton, test.expectedPercent, client.right, client.bottom, font,
+        Contains(test.work, outer), childrenFit, textFits, test.matches);
+    Check(PostMessageW(test.closeByCaption ? dialog : cancel, test.closeByCaption ? WM_CLOSE : BM_CLICK, 0, 0),
+          "queue the real recovery cancellation");
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+
+void RecoveryLayoutRegression(MMDApp& app, HWND owner, bool longNames = false) {
+    constexpr int requested = 200;
+    const bool original = build_profile::original;
+    if (!original) {
+        Check(system_settings::WriteSection("uiScaling", "{\"percent\":200}") == system_settings::Result::Ok,
+              "save scale in the isolated test settings");
+        ui_scale::ApplyAtStartup();
+        Check(ui_scale::Percent() == requested, "read requested interface scale through the production settings");
+    }
+    recoveryMonitor = MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO physical{sizeof physical};
+    Check(GetMonitorInfoW(recoveryMonitor, &physical), "read real monitor work area");
+    const auto hook = SetWindowsHookExW(WH_CBT, InspectRecoveryLayout, nullptr, GetCurrentThreadId());
+    Check(hook != nullptr, "observe actual recovery modal initialization");
+    const auto target = reinterpret_cast<void*>(&GetMonitorInfoW);
+    if (!original) {
+        Check(MH_Initialize() == MH_OK &&
+              MH_CreateHook(target, reinterpret_cast<void*>(&RecoveryMonitorInfo),
+                            reinterpret_cast<void**>(&realRecoveryMonitorInfo)) == MH_OK,
+              "prepare test-thread work area override");
+    }
+    const std::vector<std::wstring> paths{
+        L"Old\\制作素材\\背景ステージ\\Effects\\materials\\"
+        L"Long reference name used to test the horizontal scroll extent in the list.fx", L"other.fx"};
+    std::wstring longName;
+    for (int part = 0; part < 18; ++part) longName += L"長い素材&模型・附件_";
+    longName += L"末尾確認🐈";
+    bool all = true;
+    for (unsigned char language : {0, 1, 2}) {
+        app.EnglishUI() = language;
+        for (int kind = 0; kind <= 4; ++kind) {
+            const bool effect = kind == 4;
+            if (longNames && effect) continue;
+            const auto issue = static_cast<ProjectModelIssue>(kind);
+            const bool mismatch = issue == ProjectModelIssue::StructureMismatch;
+            const int resource = effect ? 9171 : (mismatch ? 816 : 814) + (language != 0);
+            const HWND baseline = CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(resource), owner,
+                [](HWND, UINT, WPARAM, LPARAM) -> INT_PTR { return FALSE; }, 0);
+            RECT client{}, frame{};
+            Check(baseline && GetClientRect(baseline, &client) && GetWindowRect(baseline, &frame),
+                  "measure the unscaled recovery resource");
+            const int baseFont = FontHeight(baseline);
+            DestroyWindow(baseline);
+            for (int percent : {100, 135, requested}) {
+                if (original && percent != 100) continue;
+                const auto& actual = physical.rcWork;
+                RECT work = actual;
+                const bool constrained = !original && percent < requested;
+                if (constrained) {
+                    work.right -= 8;
+                    work.bottom -= 8;
+                    work.left = work.right - (frame.right - frame.left - client.right) -
+                        (client.right * percent + 99) / 100;
+                    work.top = work.bottom - (frame.bottom - frame.top - client.bottom) -
+                        (client.bottom * percent + 99) / 100;
+                    Check(Contains(actual, work), "constrained work area is inside the real monitor");
+                } else if (!original) {
+                    Check(actual.right - actual.left >= frame.right - frame.left + client.right &&
+                          actual.bottom - actual.top >= frame.bottom - frame.top + client.bottom,
+                          "private desktop can fit the requested 200 percent");
+                }
+                for (bool close : {false, true}) {
+                    RecoveryLayoutCase test{owner, work, client, baseFont, percent,
+                        effect ? IDCANCEL : mismatch ? 690 : 689, effect, close};
+                    const auto name = longNames ? longName + (issue == ProjectModelIssue::MissingAccessory ? L".x" : L".pmx") : L"背景モデル Stage_2026.pmx";
+                    if (longNames) test.longName = name.c_str();
+                    recoveryCase = &test;
+                    if (constrained) {
+                        recoveryThread = GetCurrentThreadId();
+                        Check(MH_EnableHook(target) == MH_OK, "install test-thread work area override");
+                    }
+                    if (effect) {
+                        std::wstring originalPath = L"original", replacement = L"replacement";
+                        Check(SelectProjectEffectReplacement(app, owner, paths, true, originalPath, replacement) ==
+                            ProjectEffectAction::Cancel && originalPath == L"original" && replacement == L"replacement",
+                            "cancel effect recovery without publishing a pair");
+                    } else {
+                        Check(ShowProjectModelDialog(&app, GetModuleHandleW(nullptr), owner, issue,
+                            name.c_str()) == (close ? 2 : mismatch ? 5 : 4),
+                            "preserve model and accessory recovery cancellation results");
+                    }
+                    if (constrained) {
+                        Check(MH_DisableHook(target) == MH_OK, "restore real monitor work area");
+                        recoveryThread = 0;
+                    }
+                    all &= test.seen && test.matches;
+                    recoveryCase = nullptr;
+                }
+            }
+        }
+    }
+    Check(UnhookWindowsHookEx(hook), "release recovery layout observer");
+    if (!original)
+        Check(MH_RemoveHook(target) == MH_OK && MH_Uninitialize() == MH_OK, "release monitor override");
+    Check(all, "recovery dialogs fit work area, font, and complete controls at their effective scales");
+    std::puts("PASS project recovery dialog scale, text, buttons, and cancellation");
+}
 }
 int main(int argc,char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -336,20 +581,50 @@ int main(int argc,char** argv) {
     if(argc>1&&std::strcmp(argv[1],"accessory-load")==0){const bool ok=AccessoryLoadMessageRegression(app.get(),owner);DestroyWindow(owner);return ok?0:1;}
     if(argc>1&&std::strcmp(argv[1],"auto-curve")==0){NativeCurveLinkRegression(app.get(),owner);DestroyWindow(owner);return 0;}
     if(argc>1&&std::strcmp(argv[1],"edge")==0){EdgeThicknessRegression(app.get(),owner);DestroyWindow(owner);return 0;}
-    auto combo = [&](int id) {
+    if (argc > 1 && (!std::strcmp(argv[1], "recovery-layout") || !std::strcmp(argv[1], "recovery-long-name"))) {
+        RecoveryLayoutRegression(*app, owner, !std::strcmp(argv[1], "recovery-long-name"));
+        DestroyWindow(owner);
+        return 0;
+    }
+    // Production model order reserves row 0 for the camera/non-model row with
+    // item data -1 and starts model slots at row 1. The accessory combo keeps
+    // its native row 0 / rank 0 mapping, so only the model combo adds that row.
+    auto combo = [&](int id, bool leadingCameraRow) {
         HWND window = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | CBS_DROPDOWNLIST,
             0, 0, 100, 100, owner, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), nullptr, nullptr);
-        SendMessageW(window, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"fixture"));
-        SendMessageW(window, CB_SETCURSEL, 0, 0);
+        if (leadingCameraRow) {
+            SendMessageW(window, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"camera/light/accessory"));
+            SendMessageW(window, CB_SETITEMDATA, 0, static_cast<LPARAM>(-1));
+            SendMessageW(window, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"fixture"));
+            SendMessageW(window, CB_SETITEMDATA, 1, static_cast<LPARAM>(0));
+            SendMessageW(window, CB_SETCURSEL, 1, 0);
+        } else {
+            SendMessageW(window, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"fixture"));
+            SendMessageW(window, CB_SETCURSEL, 0, 0);
+        }
         return window;
     };
-    Check(combo(436) && combo(471), "create selection fixtures");
+    const HWND modelCombo = combo(panel::kMainComboModel, true);
+    const HWND accessoryCombo = combo(panel::kAccessoryCombo, false);
+    Check(modelCombo && accessoryCombo, "create selection fixtures");
+    Check(SendMessageW(modelCombo, CB_GETCOUNT, 0, 0) == 2 &&
+          SendMessageW(modelCombo, CB_GETCURSEL, 0, 0) == 1 &&
+          SendMessageW(modelCombo, CB_GETITEMDATA, 0, 0) == static_cast<LPARAM>(-1) &&
+          SendMessageW(modelCombo, CB_GETITEMDATA, 1, 0) == 0,
+          "model combo fixture: camera row, model slot row and selected model row");
+    Check(SendMessageW(accessoryCombo, CB_GETCOUNT, 0, 0) == 1 &&
+          SendMessageW(accessoryCombo, CB_GETCURSEL, 0, 0) == 0 &&
+          SendMessageW(accessoryCombo, CB_GETITEMDATA, 0, 0) == 0,
+          "accessory combo fixture keeps its native row and rank");
     auto model = std::make_unique<mdl::ModelRecord>();
     wchar_t nativeName[] = L"中文モデル😀";
     wchar_t englishName[] = L"English model😀";
     model->pmxTextBuffers[0] = nativeName;
     model->pmxTextBuffers[1] = englishName;
-    model->comboSelIndex = 0;
+    model->comboSelIndex = 1;
+    Check(static_cast<int>(model->comboSelIndex) ==
+              static_cast<int>(SendMessageW(modelCombo, CB_GETCURSEL, 0, 0)),
+          "model fixture rank matches the selected combo row");
     app->ModelSlot(0) = reinterpret_cast<unsigned char*>(model.get());
     auto accessory = std::make_unique<mdl::AccessoryRecord>();
     Check(text_encoding::EncodeDisplay(accessory->name, sizeof(accessory->name), nativeName), "accessory Unicode fixture");
@@ -366,10 +641,18 @@ int main(int argc,char** argv) {
     const wchar_t* missingBodies[] = {L"モデルファイルを開けません", L"Cannot open the model file", L"找不到或无法打开模型文件"};
     const wchar_t* mismatchBodies[] = {L"モデルの構造が PMM と異なります", L"Model structure differs from the PMM", L"模型结构与 PMM 工程不一致"};
     const wchar_t* locate[] = {L"モデルファイルを指定して読み込む", L"Locate and load the model file", L"指定模型文件位置并加载"};
+    const wchar_t* locateOriginal[] = {L"元のモデルファイルを指定する", L"Locate the original model file", L"指定原模型文件"};
     const wchar_t* locateAnother[] = {L"別のモデルファイルを指定して読み込む", L"Locate another model file", L"指定其他模型文件"};
     const wchar_t* fit[] = {L"PMM のモデル情報を合わせて続行", L"Adapt PMM model data and continue", L"将 PMM 数据适配到此模型并继续"};
     const wchar_t* skip[] = {L"このモデルを飛ばして続行", L"Skip this model and continue", L"跳过此模型并继续加载"};
     const wchar_t* cancel[] = {L"プロジェクトの読み込みを中止", L"Cancel loading this project", L"取消加载整个项目"};
+    const wchar_t* missingAccessoryBodies[] = {
+        L"アクセサリファイルが見つからないか、開けません：",
+        L"Cannot find or open the accessory file:",
+        L"找不到或无法打开附件文件："};
+    const wchar_t* locateAccessory[] = {L"アクセサリファイルを選択して読み込む", L"Select and load the accessory file", L"选择附件文件并加载"};
+    const wchar_t* skipAccessory[] = {L"このアクセサリを飛ばして続行", L"Skip this accessory and continue", L"跳过此附件并继续加载"};
+    const wchar_t* missingAccessoryName = L"中文アクセサリ😀";
     // Reuse the same app and return to Japanese to catch cached language state.
     for (unsigned char selected : {0, 2, 1, 0}) {
         language = selected; app->EnglishUI() = selected;
@@ -395,25 +678,41 @@ int main(int argc,char** argv) {
         Check(seen == before + 1 && app->ModelSlot(0) == reinterpret_cast<unsigned char*>(model.get()),
               "new scene cancel preserves scene");
 
-        projectDialog = true; expectedTitle = projectTitles[selected]; expectedDetail = nativeName;
-        for (bool mismatch : {false, true}) {
+        projectDialog = true; expectedTitle = projectTitles[selected];
+        for (ProjectModelIssue issue : {ProjectModelIssue::MissingFile,
+                                        ProjectModelIssue::StructureMismatch,
+                                        ProjectModelIssue::MissingAccessory,
+                                        ProjectModelIssue::MissingV1Model}) {
+            const bool mismatch = issue == ProjectModelIssue::StructureMismatch;
+            const bool accessory = issue == ProjectModelIssue::MissingAccessory;
+            const wchar_t* name = accessory ? missingAccessoryName : nativeName;
             mismatchDialog = mismatch;
-            expectedBody = mismatch ? mismatchBodies[selected] : missingBodies[selected];
-            expectedButtons[0] = mismatch ? fit[selected] : locate[selected];
-            expectedButtons[1] = mismatch ? locateAnother[selected] : skip[selected];
+            v1Dialog = issue == ProjectModelIssue::MissingV1Model;
+            expectedDetail = name;
+            expectedBody = mismatch ? mismatchBodies[selected]
+                           : accessory ? missingAccessoryBodies[selected]
+                                       : missingBodies[selected];
+            expectedButtons[0] = v1Dialog ? locateOriginal[selected] : mismatch ? fit[selected]
+                               : accessory ? locateAccessory[selected] : locate[selected];
+            expectedButtons[1] = mismatch ? locateAnother[selected]
+                               : accessory ? skipAccessory[selected] : skip[selected];
             expectedButtons[2] = mismatch ? skip[selected] : cancel[selected];
             expectedButtons[3] = cancel[selected];
             for (int action = 0; action < (mismatch ? 4 : 3); ++action) {
+                if (v1Dialog && action == 1) continue;
                 response = 687 + action; before = seen;
-                const auto result = ShowProjectModelDialog(app.get(), GetModuleHandleW(nullptr), owner,
-                    mismatch ? ProjectModelIssue::StructureMismatch : ProjectModelIssue::MissingFile, nativeName);
+                const auto result = ShowProjectModelDialog(app.get(), GetModuleHandleW(nullptr), owner, issue, name);
                 Check(result == (action == 0 ? 1 : action + 2) && seen == before + 1,
                       "PMM model dialog preserves locate/fit, skip, and cancel results");
             }
             response = IDCANCEL; before = seen;
-            Check(ShowProjectModelDialog(app.get(), GetModuleHandleW(nullptr), owner,
-                mismatch ? ProjectModelIssue::StructureMismatch : ProjectModelIssue::MissingFile, nativeName) == 2
+            Check(ShowProjectModelDialog(app.get(), GetModuleHandleW(nullptr), owner, issue, name) == 2
                 && seen == before + 1, "PMM model dialog Escape cancels loading");
+            if (v1Dialog) {
+                response = IDOK; before = seen;
+                Check(ShowProjectModelDialog(app.get(), GetModuleHandleW(nullptr), owner, issue, name) == 2 &&
+                      seen == before + 1, "closing the V1 prompt cancels loading");
+            }
         }
     }
     // A missing project used to display Shift-JIS bytes through the system

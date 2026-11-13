@@ -115,7 +115,9 @@ void NegativeBoundCandidateStaleChecks();
 void NegativeBoundTimelineScopeChecks();
 void NegativeBoundFailureSweepChecks();
 void NegativeBoundCandidateScopeChecks();
+void NegativeDormantObjectHistoryChecks();
 void NegativeRegistrationHistoryChecks() {
+    NegativeDormantObjectHistoryChecks();
     for(auto mode:{plugins::SharedHistory::RecordingMode::AllOperations,plugins::SharedHistory::RecordingMode::ExplicitOnly}) {
         NegativeGlobalFixture f;plugins::NativePoseTestBinding binding(*f.app,f.history);
         f.app->CameraFov()=45;f.app->CurrentFrame()=-10;
@@ -625,15 +627,28 @@ void NegativeBoundCommandHistoryChecks() {
             before=NegativeTestRecord(*f.app,negative_frames::kPmmKey);
             selected=NegativeTestRecord(*f.app,negative_frames::kPmmSelectionKey);f.app->SceneModified()=0;
             CmdControl400(f.app.get(),f.app->MainWindow(),423,0);
-            Check(!f.history.UndoCount() && !f.app->SceneModified() && GlobalRegistrationSame(camera,mixedBefore) &&
-                NegativeTestRecord(*f.app,negative_frames::kPmmKey)==before && NegativeTestRecord(*f.app,negative_frames::kPmmSelectionKey)==selected,
-                "mixed positive and negative delete is currently rejected without partial writes or legacy history");
+            double surviving=0;
+            Check(f.history.UndoCount()==1 && f.app->SceneModified() && !f.app->CameraKeys()[0].next &&
+                !NegativeTestGlobal(*f.app,2,-10,surviving) && NegativeTestGlobal(*f.app,2,-20,surviving) && surviving==4,
+                "mixed positive and negative delete publishes both sides through one common history node");
+            CmdControl400(f.app.get(),f.app->MainWindow(),400,0);
+            Check(!f.history.UndoCount() && f.history.RedoCount()==1 && GlobalRegistrationSame(f.app->CameraKeys(),mixedBefore) &&
+                NegativeTestRecord(*f.app,negative_frames::kPmmKey)==before,
+                "one undo restores both mixed sources after real menu deletion");
+            Check(f.history.Reset()==MMS_OK,"release ordinary mixed deletion before maximum-frame fixture change");f.history.Collect();
+            camera=f.app->CameraKeys();
             camera[1].frame=frame_limits::maximum;
             const std::vector<mdl::CameraKey> maximumBefore(camera,camera+cameraCapacity);
+            Check(negative_frames::SelectCell(f.app.get(),-10,0,false),"select restored negative key beside maximum frame");
+            f.app->SceneModified()=0;
             CmdControl400(f.app.get(),f.app->MainWindow(),423,0);
-            Check(!f.history.UndoCount() && !f.app->SceneModified() && GlobalRegistrationSame(camera,maximumBefore) &&
-                NegativeTestRecord(*f.app,negative_frames::kPmmKey)==before && NegativeTestRecord(*f.app,negative_frames::kPmmSelectionKey)==selected,
-                "selected maximum-frame native key still rejects mixed deletion without partial writes");
+            Check(f.history.UndoCount()==1 && f.app->SceneModified() && !f.app->CameraKeys()[0].next &&
+                !NegativeTestGlobal(*f.app,2,-10,surviving),
+                "maximum-frame key participates in the same mixed deletion instead of looking like an empty selection");
+            CmdControl400(f.app.get(),f.app->MainWindow(),400,0);
+            Check(!f.history.UndoCount() && f.history.RedoCount()==1 && GlobalRegistrationSame(f.app->CameraKeys(),maximumBefore) &&
+                NegativeTestGlobal(*f.app,2,-10,surviving) && surviving==8,
+                "one undo restores maximum and negative frame together");
             Check(f.history.Reset()==MMS_OK,"release negative rejection history");f.history.Collect();negative_frames::Reset(f.app.get());g_Block=previous;
         }
         {
@@ -939,3 +954,5 @@ void NegativeBoundCandidateScopeChecks() {
     }
 }
 }
+
+#include "negative_dormant_object_checks.inc"

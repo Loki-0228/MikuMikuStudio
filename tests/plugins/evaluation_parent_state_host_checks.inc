@@ -6,7 +6,7 @@ namespace {
 using namespace mikumikustudio::plugins;
 struct Identities {MmsObjectRef source{},target{};MmsId globalTarget{},localTarget{};};
 Identities Publish(MMDApp* app) {
-    auto scene=CreateSceneStore(app);SceneClient client;auto api=scene->Api(client);
+    auto scene=CreateSceneStore(app);SceneClient client;auto api=([&]{ MmsSceneApiV1 value{}; if (scene->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     MmsSceneQueryV1 q{};q.h=Header<MmsSceneQueryV1>();q.stage=MMS_STAGE_BIND;q.flags=MMS_SCENE_CURRENT_TIME;q.channels=MMS_CHANNEL_BONES;
     MmsSnapshotV1 bind{};Check(api.acquire(api.context,&q,&bind)==MMS_OK,"publish real parent-state model identities");
     MmsSpan objects{},bones{};Check(api.objects(api.context,bind.handle,&objects)==MMS_OK&&objects.count==2,"source and target BIND objects exist");

@@ -246,8 +246,8 @@ struct EvaluationStore::Payload {
 };
 
 EvaluationStore::EvaluationStore(Capture capture) : capture_(std::move(capture)) {}
-EvaluationStore::EvaluationStore(CaptureChannels captureChannels, uint32_t supportedChannels, CaptureScene scene, CaptureScene meshScene, CaptureScene materialScene)
-    : captureChannels_(std::move(captureChannels)), captureScene_(std::move(scene)), captureMeshScene_(std::move(meshScene)), captureMaterialScene_(std::move(materialScene)), supportedChannels_(supportedChannels) {
+EvaluationStore::EvaluationStore(CaptureChannels captureChannels, uint32_t supportedChannels, CaptureScene scene, CaptureScene meshScene, CaptureScene materialScene, CaptureScene referenceScene)
+    : captureChannels_(std::move(captureChannels)), captureScene_(std::move(scene)), captureMeshScene_(std::move(meshScene)), captureMaterialScene_(std::move(materialScene)), captureReferenceScene_(std::move(referenceScene)), supportedChannels_(supportedChannels) {
     constexpr uint32_t known = MMS_EVALUATION_CAP_BONE_CHANNELS | MMS_EVALUATION_CAP_MORPH_WEIGHTS |
         MMS_EVALUATION_CAP_DISPLAY;
     if (!supportedChannels_ || (supportedChannels_ & ~known)) throw std::invalid_argument("invalid supported channels");
@@ -628,6 +628,17 @@ MmsEvaluationApiV1_6 EvaluationStore::Api16(Client& client) {
     api.readFrameMaterials=[](void* ctx,MmsHandle h,uint32_t model,uint32_t first,uint32_t count,MmsEvaluationMaterialV1* out) {
         return Gateway([&] {if(!ctx)return MMS_E_ARGUMENT;auto& c=*static_cast<Client*>(ctx);return c.owner?c.owner->ReadMesh(c,h,model,first,count,out,4):MMS_E_ARGUMENT;});
     };
+    return api;
+}
+
+MmsEvaluationApiV1_7 EvaluationStore::Api17(Client& client) {
+    const auto base=Api16(client); MmsEvaluationApiV1_7 api{};
+    static_assert(offsetof(MmsEvaluationApiV1_7,getReferenceCapabilities)==sizeof(base), "evaluation 1.6 prefix");
+    std::memcpy(&api,&base,sizeof(base)); api.h=MmsHeader{sizeof(api),1,7};
+    api.getReferenceCapabilities=[](void* ctx,MmsEvaluationReferenceCapsV1* out) { return Gateway([&]{if(!ctx)return MMS_E_ARGUMENT;auto& c=*static_cast<Client*>(ctx);return c.owner?c.owner->ReferenceCapabilities(c,out):MMS_E_ARGUMENT;}); };
+    api.createReferenceSceneSource=[](void* ctx,const MmsEvaluationSceneQueryV1* q,MmsHandle* out) { return Gateway([&]{if(!ctx)return MMS_E_ARGUMENT;auto& c=*static_cast<Client*>(ctx);return c.owner?c.owner->CreateScene(c,q,out,3):MMS_E_ARGUMENT;}); };
+    api.readMaterialReferences=[](void* ctx,MmsHandle h,uint32_t model,uint32_t index,MmsEvaluationMaterialReferencesV1* out) { return Gateway([&]{if(!ctx)return MMS_E_ARGUMENT;auto& c=*static_cast<Client*>(ctx);return c.owner?c.owner->ReadReference(c,h,model,index,out,false):MMS_E_ARGUMENT;}); };
+    api.readToonTable=[](void* ctx,MmsHandle h,uint32_t model,MmsEvaluationToonTableV1* out) { return Gateway([&]{if(!ctx)return MMS_E_ARGUMENT;auto& c=*static_cast<Client*>(ctx);return c.owner?c.owner->ReadReference(c,h,model,0,out,true):MMS_E_ARGUMENT;}); };
     return api;
 }
 
@@ -1219,6 +1230,44 @@ MmsResult EvaluationStore::MaterialCapabilities(Client& client, MmsEvaluationMat
     value.maxItemsPerRead=kMaxMeshBatch;*out=value;return MMS_OK;
 }
 
+MmsResult EvaluationStore::ReferenceCapabilities(Client& client, MmsEvaluationReferenceCapsV1* out) {
+    if(!out)return MMS_E_ARGUMENT; std::lock_guard<std::mutex> lock(mutex_);
+    if(client.retired)return MMS_E_NOT_READY;
+    MmsEvaluationReferenceCapsV1 value{}; value.h=Header<MmsEvaluationReferenceCapsV1>();
+    value.flags=captureReferenceScene_ ? MMS_EVALUATION_REFERENCE_CAP_RUNTIME_FIELDS : 0; *out=value; return MMS_OK;
+}
+
+MmsResult EvaluationStore::ReadReference(Client& client,MmsHandle handle,uint32_t model,uint32_t index,void* out,bool table) {
+    if(!out)return MMS_E_ARGUMENT;
+    std::shared_ptr<const Payload> payload;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(client.retired)return MMS_E_NOT_READY;
+        const auto found=sources_.find(handle);
+        if(found==sources_.end()||found->second.owner!=&client)return MMS_E_NOT_FOUND;
+        const auto& p=found->second.data;
+        if(p->kind!=Payload::Kind::SceneSource || !p->sceneSource->references || !p->sceneSource->toonTable || !p->sceneSource->materialIds)return MMS_E_UNSUPPORTED;
+        if(model>=p->sceneSource->models->size() || model>=p->sceneSource->materialIds->size())return MMS_E_NOT_FOUND;
+        if(!table && index>=(*p->sceneSource->materialIds)[model].size())return MMS_E_NOT_FOUND;
+        payload=p; ++client.active;
+    }
+    const auto result=Gateway([&]()->MmsResult {
+        const auto terminated=[](const auto& array){return std::find(std::begin(array),std::end(array),uint16_t(0))!=std::end(array);};
+        if(table) {
+            MmsEvaluationToonTableV1 value{};auto status=payload->sceneSource->toonTable(model,value);
+            if(status!=MMS_OK)return status; if(!terminated(value.modelDirectory))return MMS_E_FAILED;
+            value.h=Header<MmsEvaluationToonTableV1>(); *static_cast<MmsEvaluationToonTableV1*>(out)=value; return MMS_OK;
+        }
+        MmsEvaluationMaterialReferencesV1 value{};auto status=payload->sceneSource->references(model,index,value);
+        if(status!=MMS_OK)return status;
+        if(value.reserved || !terminated(value.texturePath)||!terminated(value.spherePath)||!terminated(value.toonPath) ||
+            (value.flags!=MMS_EVALUATION_MATERIAL_FORMAT_PMD && value.flags!=MMS_EVALUATION_MATERIAL_FORMAT_PMX))return MMS_E_FAILED;
+        value.h=Header<MmsEvaluationMaterialReferencesV1>();value.index=index;value.material=(*payload->sceneSource->materialIds)[model][index];
+        *static_cast<MmsEvaluationMaterialReferencesV1*>(out)=value;return MMS_OK;
+    });
+    FinishMeshRead(payload,client,0);return result;
+}
+
 MmsResult EvaluationStore::MaterialAt(Client& client,MmsHandle source,uint32_t model,uint32_t index,MmsEvaluationMaterialIdV1* out) {
     if(!out)return MMS_E_ARGUMENT;
     std::lock_guard<std::mutex> lock(mutex_);if(client.retired)return MMS_E_NOT_READY;
@@ -1390,14 +1439,14 @@ void EvaluationStore::FinishMeshRead(std::shared_ptr<const Payload>& payload,
 
 MmsResult EvaluationStore::CreateScene(Client& client, const MmsEvaluationSceneQueryV1* query, MmsHandle* out, uint32_t kind) {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
-    if (!out || !Valid(query) || kind>2) return MMS_E_ARGUMENT;
+    if (!out || !Valid(query) || kind>3) return MMS_E_ARGUMENT;
     const auto request = *query;
     if (request.flags || request.reserved || request.maxRetainedBytes > kMaxSourceBytes) return MMS_E_ARGUMENT;
     const uint64_t bound = request.maxRetainedBytes ? request.maxRetainedBytes : kMaxSourceBytes;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (client.retired) return MMS_E_NOT_READY;
-        if (!(kind==2 ? captureMaterialScene_ : kind==1 ? captureMeshScene_ : captureScene_)) return MMS_E_UNSUPPORTED;
+        if (!(kind==3 ? captureReferenceScene_ : kind==2 ? captureMaterialScene_ : kind==1 ? captureMeshScene_ : captureScene_)) return MMS_E_UNSUPPORTED;
         if (acquiring_) return MMS_E_BUSY;
         if (client.handles >= kMaxHandlesPerClient || sources_.size() >= kMaxTotalHandles ||
             next_ >= kHandleLimit || !captureId_) return MMS_E_BUSY;
@@ -1408,11 +1457,12 @@ MmsResult EvaluationStore::CreateScene(Client& client, const MmsEvaluationSceneQ
     std::shared_ptr<const EvaluationSceneSourceData> data;
     std::shared_ptr<Payload> payload;
     const auto result = Gateway([&]() -> MmsResult {
-        const auto captured = (kind==2 ? captureMaterialScene_ : kind==1 ? captureMeshScene_ : captureScene_)(request, bound, data);
+        const auto captured = (kind==3 ? captureReferenceScene_ : kind==2 ? captureMaterialScene_ : kind==1 ? captureMeshScene_ : captureScene_)(request, bound, data);
         if (captured != MMS_OK) return captured;
         if (!data || !data.use_count() || !data->models || !data->models.use_count() || !data->evaluate) return MMS_E_FAILED;
         if (kind && (!data->meshInfo || !data->meshIndex || !data->meshMaterial || !data->meshBindVertex)) return MMS_E_FAILED;
-        if ((kind==2) != bool(data->materialIds)) return MMS_E_FAILED;
+        if ((kind>=2) != bool(data->materialIds)) return MMS_E_FAILED;
+        if ((kind==3) != bool(data->references) || (kind==3) != bool(data->toonTable)) return MMS_E_FAILED;
         uint64_t verified = sizeof(EvaluationSceneSourceData);
         const auto measured = SceneModelBytes(*data->models, verified);
         if (measured != MMS_OK) return measured;

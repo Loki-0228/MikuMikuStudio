@@ -82,4 +82,89 @@ void PollLetterHotkeys(MMDApp* app) {
             app->state.messageSeen = 1;
     }
 }
+
+// Polled keyboard eligibility.  The latch lives in the app (PolledKeys()) so
+// each window owns exactly one history and a destroyed window leaves nothing
+// behind: the next Advance for a different owner pair starts from ineligible.
+// An override, when enabled for tests, stands in for GetForegroundWindow() so
+// the rules can be exercised without owning the foreground.
+bool PollKeyInputEligibleWithForeground(const MMDApp* app, void* foreground) noexcept {
+    if (!app || !foreground) return false;
+    const void* main = app->state.hwnd;
+    const void* floating = app->state.floatingWindow;
+    return foreground == main || (floating != nullptr && foreground == floating);
+}
+
+bool PollKeyInputEligible(const MMDApp* app) noexcept {
+    if (!app) return false;
+    const PolledKeyState& polled = app->PolledKeys();
+    void* foreground = polled.HasForegroundOverride()
+        ? polled.ForegroundOverride()
+        : static_cast<void*>(GetForegroundWindow());
+    return PollKeyInputEligibleWithForeground(app, foreground);
+}
+
+void AdvancePollKeyEligibility(MMDApp* app, bool eligible) noexcept {
+    if (!app) return;
+    app->PolledKeys().Advance(static_cast<void*>(app->state.hwnd),
+                              static_cast<void*>(app->state.floatingWindow),
+                              eligible);
+}
+
+bool PollKeyEligible(const MMDApp* app) noexcept {
+    return app && app->PolledKeys().Eligible();
+}
+
+bool PollKeyRegained(const MMDApp* app) noexcept {
+    return app && app->PolledKeys().Regained();
+}
+
+void SetPollKeyForegroundForTests(MMDApp* app, void* foreground) noexcept {
+    if (app) app->PolledKeys().SetForegroundOverride(foreground);
+}
+
+void ClearPollKeyForegroundForTests(MMDApp* app) noexcept {
+    if (app) app->PolledKeys().ClearForegroundOverride();
+}
+
+namespace {
+// Test-only raw key source, one copy per thread.  These bytes are what the read
+// helpers report while enabled; the setter copies the caller's array, so
+// nothing here points into a test's storage.
+thread_local bool enabled = false;
+thread_local unsigned char keys[256]{};
+
+// One polled key byte as the Win32 SHORT: bit 0x80 becomes 0x8000, bit 0x01 is
+// copied as the toggle bit, and the remaining bits are zero.  An index outside
+// 0..255 reports 0.
+std::int16_t PolledKeyShort(int virtualKey) noexcept {
+    if (virtualKey < 0 || virtualKey > 255) return 0;
+    const std::uint16_t bits = static_cast<std::uint16_t>(
+        ((keys[virtualKey] & 0x80) != 0 ? 0x8000u : 0x0000u) |
+        static_cast<unsigned>(keys[virtualKey] & 0x01));
+    return static_cast<std::int16_t>(bits);
+}
+}  // namespace
+
+std::int16_t ReadPolledKeyState(int virtualKey) noexcept {
+    if (!enabled) return GetKeyState(virtualKey);
+    return PolledKeyShort(virtualKey);
+}
+
+std::int16_t ReadPolledAsyncKeyState(int virtualKey) noexcept {
+    if (!enabled) return GetAsyncKeyState(virtualKey);
+    return PolledKeyShort(virtualKey);
+}
+
+void SetPolledKeyStateForTests(const unsigned char (&source)[256]) noexcept {
+    for (int i = 0; i < 256; ++i) keys[i] = source[i];
+    enabled = true;
+}
+
+void ClearPolledKeyStateForTests() noexcept {
+    enabled = false;
+    for (int i = 0; i < 256; ++i) keys[i] = 0;
+}
+
+bool HasPolledKeyStateForTests() noexcept { return enabled; }
 }

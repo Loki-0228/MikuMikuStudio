@@ -2,6 +2,8 @@
 #include "mikumikustudio/pmm_paths.hpp"
 #include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/legacy_mme_bootstrap.hpp"
+#include "mikumikustudio/legacy_mmd_plugin.hpp"
+#include "mikumikustudio/legacy_playback_map.hpp"
 #include "mikumikustudio/mmv4mms.hpp"
 #include "mikumikustudio/plugin_menu.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
@@ -512,6 +514,8 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
         HWND item = GetDlgItem(static_cast<HWND>(s.Hwnd()), panel::kPhysicsFrameCheckbox);
         SendMessageA(item, BM_SETCHECK, 1, 0);
     }
+    legacy_playback_map::Attach(app);
+    legacy_mmd_plugin::Start(app);
     InvalidateRect(static_cast<HWND>(s.Hwnd()), nullptr, FALSE);
     return true;
 }

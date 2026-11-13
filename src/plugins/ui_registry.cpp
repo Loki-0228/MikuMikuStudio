@@ -411,23 +411,13 @@ MmsResult UiRegistry::UndoLayout() {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     if (callbackDepth_) return MMS_E_BUSY;
     if (layoutUndo_.empty()) return MMS_E_NOT_READY;
-    const std::string current = preferences_->json;
-    if (const auto result = ImportPreferences(layoutUndo_.back())) return result;
-    layoutUndo_.pop_back();
-    layoutRedo_.push_back(current);
-    while (layoutRedo_.size() > 32) layoutRedo_.pop_front();
-    return MMS_OK;
+    return ImportPreferencesImpl(layoutUndo_.back(), LayoutHistoryTransfer::Undo);
 }
 MmsResult UiRegistry::RedoLayout() {
     if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
     if (callbackDepth_) return MMS_E_BUSY;
     if (layoutRedo_.empty()) return MMS_E_NOT_READY;
-    const std::string current = preferences_->json;
-    if (const auto result = ImportPreferences(layoutRedo_.back())) return result;
-    layoutRedo_.pop_back();
-    layoutUndo_.push_back(current);
-    while (layoutUndo_.size() > 32) layoutUndo_.pop_front();
-    return MMS_OK;
+    return ImportPreferencesImpl(layoutRedo_.back(), LayoutHistoryTransfer::Redo);
 }
 std::string UiRegistry::ExportPreferences() const {
     if (GetCurrentThreadId() != thread_) throw std::invalid_argument("layout preferences thread");
@@ -563,6 +553,9 @@ std::unique_ptr<UiRegistry::Preferences> UiRegistry::CapturePreferences(
     result->json = PreferencesJson(result->entries); return result;
 }
 MmsResult UiRegistry::ImportPreferences(std::string_view source) {
+    return ImportPreferencesImpl(source, LayoutHistoryTransfer::None);
+}
+MmsResult UiRegistry::ImportPreferencesImpl(std::string_view source, LayoutHistoryTransfer transfer) {
     return Boundary([&]() -> MmsResult {
         if (GetCurrentThreadId() != thread_) return MMS_E_THREAD;
         if (callbackDepth_) return MMS_E_BUSY;
@@ -599,6 +592,18 @@ MmsResult UiRegistry::ImportPreferences(std::string_view source) {
         auto tree = elements; auto next = next_; const auto result = MergePreferences(tree, candidate->entries, next, true); if (result) return result;
         candidate->json = PreferencesJson(candidate->entries);
         const bool changed = candidate->json != preferences_->json;
+        // Reserve the inverse before publishing. No callbacks or potentially
+        // throwing work may separate this transfer from the preference swap.
+        // Changed observers then see matching preferences and history, and may
+        // reenter without invalidating an outer operation's pending stack edit.
+        if (transfer != LayoutHistoryTransfer::None) {
+            auto& from = transfer == LayoutHistoryTransfer::Undo ? layoutUndo_ : layoutRedo_;
+            auto& to = transfer == LayoutHistoryTransfer::Undo ? layoutRedo_ : layoutUndo_;
+            to.push_back(preferences_->json);
+            while (to.size() > 32) to.pop_front();
+            from.pop_back();
+        }
+        RevokeAllLayoutPreviews();
         for (auto& [id, e] : tree) if (!e.nativeObserved) e.desc.generation = generation_++;
         elements.swap(tree); preferences_.swap(candidate); next_ = next;
         if (changed) ++preferencesRevision_;
@@ -682,7 +687,8 @@ MmsResult UiRegistry::Element(UiClient& c, const MmsUiElementV1* input, MmsHandl
     if (!MenuOverflowAllowed(tree.at(id), tree)) return MMS_E_UNSUPPORTED;
     auto merged = MergePreferences(tree, preferences_->entries, next, false); if (merged) return merged;
     for (auto& [key, element] : tree) if (!element.nativeObserved) element.desc.generation = generation_++;
-    if (replace) { ForgetStateContent(replace); refresh_.InvalidateTarget(replace); DestroyView(id); }
+    if (replace) { RevokeLayoutPreviewFields(replace, 15, MMS_LAYOUT_SESSION_TARGET_CHANGED); ForgetStateContent(replace); refresh_.InvalidateTarget(replace); DestroyView(id); }
+    ReconcileLayoutPreviews(tree);
     elements.swap(tree); next_ = next; *out = elements[id].handle; Changed(); return MMS_OK;
 }
 MmsResult UiRegistry::Property(UiClient& c, const MmsPropertyDescV1* input, MmsHandle* out, MmsHandle replace) {
@@ -712,6 +718,8 @@ MmsResult UiRegistry::Remove(UiClient& c, MmsHandle handle) {
         if (it->second.nativeObserved) return MMS_E_UNSUPPORTED;
         if (String(it->second.desc.ownerPlugin) != c.id) return MMS_E_ARGUMENT;
         for (const auto& [id, e] : elements) if (!e.nativeObserved && String(e.desc.parentId) == it->first) return MMS_E_BUSY;
+        RevokeLayoutPreviewFields(handle, 15, MMS_LAYOUT_SESSION_TARGET_CHANGED);
+        ReconcileParentPreviews(elements);
         ForgetStateContent(handle); refresh_.InvalidateTarget(handle);
         DestroyView(it->first);
         elements.erase(it); Changed(); return MMS_OK;
@@ -867,15 +875,12 @@ MmsResult UiRegistry::CommitPropertyInput(const PropertyInputSnapshot& snapshot,
         if (!intended() || !IsPropertyInputCurrent(snapshot)) return MMS_E_STALE;
         if (!snapshot.editable || !snapshot.sceneRevision || !propertyInputEdit_ || !propertyInputRevision_)
             return MMS_E_NOT_READY;
-        const auto element = elements.find(snapshot.elementId);
-        // Hiding a field or any containing group cancels its pending edit.
-        auto current = element;
-        for (size_t depth = 0; depth <= elements.size(); ++depth) {
-            if (current == elements.end() || !current->second.visible) return MMS_E_NOT_READY;
-            if (NativeControlAnchor(current->first)) break;
-            current = elements.find(String(current->second.desc.parentId));
-            if (depth == elements.size()) return MMS_E_STALE;
-        }
+        const auto visible = [&]() noexcept {
+            const auto element = elements.find(snapshot.elementId);
+            return element != elements.end() && ControlVisibility(element->second) == ControlLayoutVisibility::Visible;
+        };
+        // Apply publishes effective visibility before native controls refresh.
+        if (!visible()) return MMS_E_NOT_READY;
         const auto& info = snapshot.property->desc.info;
         changedProperty = String(info.id);
         changedRevision = snapshot.sceneRevision;
@@ -892,6 +897,7 @@ MmsResult UiRegistry::CommitPropertyInput(const PropertyInputSnapshot& snapshot,
         if (!fresh.editable) return MMS_E_NOT_READY;
         if (!IsPropertyInputCurrent(snapshot) || fresh.sceneRevision != snapshot.sceneRevision || !fresh.value.Equals(snapshot.value))
             return MMS_E_STALE;
+        if (!visible()) return MMS_E_NOT_READY;
         if (owned.Equals(fresh.value)) return MMS_OK;
         auto* owner = snapshot.property->owner;
         changedOwner = owner;
@@ -902,11 +908,11 @@ MmsResult UiRegistry::CommitPropertyInput(const PropertyInputSnapshot& snapshot,
         // cancels only the transaction it creates; commandFinished_ is not run.
         return propertyInputEdit_(*owner, snapshot, staged);
     });
-    if (result == MMS_OK && !changedProperty.empty() && propertyChanged_) {
+    if (result == MMS_OK && changedOwner && !changedProperty.empty() && propertyChanged_) {
         uint64_t revision = changedRevision;
         if (changedOwner && propertyInputRevision_) {
             MmsResult queried = MMS_E_FAILED;
-            queried = propertyInputRevision_(*changedOwner, revision);
+            queried = Boundary([&] { return propertyInputRevision_(*changedOwner, revision); });
             if (queried != MMS_OK) revision = changedRevision;
         }
         try {
@@ -1166,11 +1172,27 @@ MmsResult UiRegistry::Read(UiClient& c, MmsString id, MmsObjectRef target, MmsVa
     auto found = properties.find(String(id)); if (found == properties.end()) return MMS_E_NOT_FOUND; auto record = found->second;
     if (record->owner->stopping) return MMS_E_NOT_READY;
     Callback guard(callbackDepth_); MmsValue value{}; MmsHandle providerLease = 0;
-    struct ReleaseProvider { MmsPropertyDescV1& d; MmsHandle& h; ~ReleaseProvider() { if (h) try { d.releaseValue(d.context, h); } catch (...) {} } } release{record->desc, providerLease};
-    auto result = record->desc.read(record->desc.context, target, &value, &providerLease);
+    std::unique_ptr<Lease> lease;
+    // Stage the copied value before releasing the provider's borrowed bytes.
+    // Boundary covers read, validation and allocation so every path reaches
+    // the single release attempt below, including a throwing provider read.
+    auto result = Boundary([&]() -> MmsResult {
+        const auto read = record->desc.read(record->desc.context, target, &value, &providerLease);
+        if (read) return read;
+        if (value.type != record->desc.info.valueType || value.components != record->desc.info.components) return MMS_E_FAILED;
+        lease = std::make_unique<Lease>(); lease->owner = c.id; lease->kind = 2; value = lease->arena.Copy(value);
+        return MMS_OK;
+    });
+    if (providerLease) {
+        const auto released = Boundary([&] { record->desc.releaseValue(record->desc.context, providerLease); return MMS_OK; });
+        if (released != MMS_OK) {
+            // A throwing provider cannot prove that its borrowed resources or
+            // callbacks are gone. Keep its context and DLL resident.
+            record->owner->unsafeToUnload = true;
+            return MMS_E_FAILED;
+        }
+    }
     if (result) return result;
-    if (value.type != record->desc.info.valueType || value.components != record->desc.info.components) return MMS_E_FAILED;
-    auto lease = std::make_unique<Lease>(); lease->owner = c.id; lease->kind = 2; value = lease->arena.Copy(value);
     auto h = next_++; leases_.emplace(h, std::move(lease)); *out = value; *handle = h; return MMS_OK;
 }
 MmsResult UiRegistry::Stage(UiClient& c, MmsHandle transaction, MmsString id, MmsObjectRef target, const MmsValue* value) {
@@ -1206,7 +1228,7 @@ MmsResult UiRegistry::Apply(UiClient& c, MmsHandle h, const MmsLayoutOpV1* op) {
     if (op->operation == MMS_LAYOUT_CREATE_GROUP) copy.value.groupLabel = t.arena.Copy(copy.value.groupLabel);
     t.operations.push_back(copy); return MMS_OK;
 }
-MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
+MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h, MmsHandle preview) {
     auto check = Check(c, true); if (check) return check; auto found = layouts_.find(h);
     if (found == layouts_.end() || found->second->owner != c.id) return MMS_E_NOT_FOUND;
     auto transaction = std::move(found->second); layouts_.erase(found); if (transaction->revision != revision_) return MMS_E_STALE;
@@ -1260,14 +1282,19 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
         case MMS_LAYOUT_MOVE: {
             if (!(e.desc.capabilities & MMS_UI_MOVE)) return MMS_E_UNSUPPORTED;
             // New strings belong to a fresh arena; the original snapshots retain theirs.
-            auto arena = std::make_shared<Arena>(); arena->strings = e.arena->strings;
+            auto arena = std::make_shared<Arena>();
             e.desc.parentId = arena->Copy(op.parentId);
             // Keep the original arena alive through the transaction lease until
             // commit; copy the remaining strings into the new owner as well.
             e.desc.id = arena->Copy(e.desc.id); e.desc.ownerPlugin = arena->Copy(e.desc.ownerPlugin); e.desc.label = arena->Copy(e.desc.label);
             e.desc.commandId = arena->Copy(e.desc.commandId); e.desc.propertyId = arena->Copy(e.desc.propertyId); e.desc.surfaceId = arena->Copy(e.desc.surfaceId); e.arena = arena;
-            if (!Allowed(e.desc, tree)) return MMS_E_ARGUMENT;
+            // Internal preview batches validate their final graph below. A
+            // legal two-group exchange can have a cyclic intermediate order.
+            if (!preview && !Allowed(e.desc, tree)) return MMS_E_ARGUMENT;
             if (auto prior = retained.find(id); prior != retained.end()) prior->second.object.erase("parent");
+            // A Parent-only preview preserves independent ordering. Explicit
+            // Order previews stage hints below; public MOVE still inserts.
+            if (preview) break;
             auto result = insertBefore(id, op.beforeId); if (result) return result; break;
         }
         case MMS_LAYOUT_REMOVE_GROUP:
@@ -1309,19 +1336,58 @@ MmsResult UiRegistry::Commit(UiClient& c, MmsHandle h) {
             (e.width < e.effectiveHints.minimum[0] || e.height < e.effectiveHints.minimum[1])) return MMS_E_ARGUMENT;
         if (e.key && !shortcuts.emplace(e.key, e.modifiers, e.scope).second) return MMS_E_CONFLICT;
     }
+    // Collect explicit intent before the nonthrowing publication phase. A
+    // same-value persistent write must still supersede its temporary field.
+    struct PreviewConflict { MmsHandle target; uint32_t fields, reason; };
+    std::vector<PreviewConflict> previewConflicts;
+    bool resetPreviews = false;
+    for (const auto& op : transaction->operations) {
+        if (op.operation == MMS_LAYOUT_RESTORE && !op.elementId.bytes) { resetPreviews = true; continue; }
+        const auto target = elements.find(String(op.elementId));
+        if (target == elements.end()) continue;
+        const unsigned fields = op.operation == MMS_LAYOUT_VISIBLE ? PreviewVisible :
+            op.operation == MMS_LAYOUT_SIZE ? PreviewSize :
+            op.operation == MMS_LAYOUT_MOVE ? uint32_t(preview ? PreviewParent : PreviewOrder | PreviewParent) :
+            op.operation == MMS_LAYOUT_RESTORE || op.operation == MMS_LAYOUT_REMOVE_GROUP ? 15u : 0u;
+        if (fields) previewConflicts.push_back({target->second.handle, fields,
+            op.operation == MMS_LAYOUT_REMOVE_GROUP ? MMS_LAYOUT_SESSION_TARGET_CHANGED : MMS_LAYOUT_SESSION_PERSISTENT_EDIT});
+    }
+    for (const auto& hint : transaction->hints) {
+        const auto target = elements.find(hint.id);
+        // An internal Order preview stages a full hints record only to reuse
+        // validation/history. It does not claim an independent Size preview.
+        if (target != elements.end()) previewConflicts.push_back({target->second.handle,
+            uint32_t(preview ? PreviewOrder : PreviewSize | PreviewOrder), MMS_LAYOUT_SESSION_PERSISTENT_EDIT});
+    }
     auto preferences = CapturePreferences(tree, retained);
     if (const auto result = PreferenceGraph(preferences->entries)) return result;
     const bool preferenceChange = preferences->json != preferences_->json;
-    const std::string previousPreferences = preferenceChange ? preferences_->json : std::string();
+    // History allocation must succeed before any visible state is published.
+    // The following generation updates and swaps cannot allocate or call out.
+    if (preferenceChange) RecordLayoutHistory(preferences_->json);
+    // Publish preview termination and persistent state together, before any
+    // observer can reenter. An unsuccessful preparation never revokes fields.
+    if (preview) {
+        const auto session = layoutPreviews_.find(preview);
+        if (session != layoutPreviews_.end()) {
+            session->second.info.state = LayoutPreviewState::Committed;
+            ++session->second.info.revision;
+        }
+    }
+    if (resetPreviews) RevokeAllLayoutPreviews();
+    for (const auto& conflict : previewConflicts) RevokeLayoutPreviewFields(conflict.target, conflict.fields, conflict.reason);
+    ReconcileLayoutPreviews(tree, preview);
     for (auto& [id, e] : tree) if (!e.nativeObserved) e.desc.generation = generation_++;
     elements.swap(tree); preferences_.swap(preferences); if (preferenceChange) ++preferencesRevision_;
-    if (preferenceChange) RecordLayoutHistory(previousPreferences);
     Changed();
     if (layoutChanged_) try { layoutChanged_(revision_); } catch (...) {}
     return MMS_OK;
 }
 bool UiRegistry::HasLeases(const UiClient& c) const { if (c.unsafeToUnload || catalog_->HasLeases(c)) return true; for (const auto& [h, lease] : leases_) if (lease->owner == c.id) return true; return false; }
 void UiRegistry::Retire(UiClient& c) {
+    RevokeLayoutPreviews(c);
+    for (auto it = layoutPreviews_.begin(); it != layoutPreviews_.end();)
+        if (it->second.owner == &c) it = layoutPreviews_.erase(it); else ++it;
     refresh_.PropertyRefresh().Retire(c);
     for (auto it = layouts_.begin(); it != layouts_.end();) if (it->second->owner == c.id) it = layouts_.erase(it); else ++it;
     for (auto it = elements.begin(); it != elements.end();) if (String(it->second.desc.ownerPlugin) == c.id && !it->second.layoutGroup) { ForgetStateContent(it->second.handle); refresh_.InvalidateTarget(it->second.handle); DestroyView(it->first); it = elements.erase(it); } else ++it;
@@ -1386,6 +1452,8 @@ MmsResult UiRegistry::DefaultHints(UiClient& c, MmsString id, const MmsUiLayoutH
     element.defaultHints = *hints; element.defaultHints.h = Header<MmsUiLayoutHintsV1>();
     auto next = next_; check = MergePreferences(tree, preferences_->entries, next, false); if (check) return check;
     for (auto& [key, e] : tree) if (!e.nativeObserved) e.desc.generation = generation_++;
+    RevokeLayoutPreviewFields(it->second.handle, PreviewSize | PreviewOrder);
+    ReconcileLayoutPreviews(tree);
     elements.swap(tree); next_ = next; Changed(); return MMS_OK;
 }
 MmsResult UiRegistry::StageHints(UiClient& c, MmsHandle h, MmsString id, uint64_t generation, const MmsUiLayoutHintsV1* hints) {
@@ -1404,7 +1472,7 @@ bool UiRegistry::PublishGeometry(const std::map<std::string, Geometry>& input, u
         for (float v : {g.x, g.y, g.width, g.height}) if (!std::isfinite(v)) return false;
         if (g.width < 0 || g.height < 0) return false;
         MmsUiLayoutItemV1 item{}; item.h = Header<MmsUiLayoutItemV1>(); item.elementId = e.desc.id; item.generation = e.desc.generation;
-        item.defaults = e.defaultHints; item.effective = e.effectiveHints;
+        item.defaults = e.defaultHints; item.effective = EffectiveLayout(e).hints;
         item.rect[0] = g.x; item.rect[1] = g.y; item.rect[2] = g.width; item.rect[3] = g.height; item.visible = g.visible; item.overflowed = g.overflowed;
         candidate.emplace(id, item);
     }
@@ -1582,6 +1650,22 @@ MmsResult UiRegistry::ShowSurface(const std::string& id, HWND parent, const MmsU
         };
         Callback guard(callbackDepth_);
         if (!current()) return fail(MMS_E_STALE);
+        const auto applyVisibility = [&]() -> MmsResult {
+            if (expected->visible != visible || bool(GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE) != visible) {
+                const auto result = Boundary([&] { return refresh_.WithLayoutProvider(*retained->owner, [&] {
+                    retained->desc.showView(expected->context, visible ? 1 : 0); return MMS_OK;
+                }); });
+                if (result) return fail(result);
+                if (!current()) return fail(MMS_E_STALE);
+                if (bool(GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE) != visible) return fail(MMS_E_FAILED);
+                expected->visible = visible;
+            }
+            return MMS_OK;
+        };
+        // Hiding an existing page cannot depend on a resize callback succeeding.
+        // Preserve the established hidden-page size/DPI notifications, but hide
+        // first so their failure cannot leave the previous page visible.
+        if (!visible) if (const auto result = applyVisibility()) return result;
         // A callback may have moved/hidden its HWND before throwing. Cached
         // metadata alone cannot decide whether a later layout must repair it.
         if (std::memcmp(&expected->bounds, &bounds, sizeof(bounds)) || expected->dpi != dpi || !actualBoundsMatch()) {
@@ -1591,18 +1675,13 @@ MmsResult UiRegistry::ShowSurface(const std::string& id, HWND parent, const MmsU
             if (result) return fail(result);
             if (!current()) return fail(MMS_E_STALE);
             if (!actualBoundsMatch()) return fail(MMS_E_FAILED);
+            // A misbehaving resize must not undo the completed hide. Report
+            // failure instead of hiding it again and advertising success.
+            if (!visible && (GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE)) return fail(MMS_E_FAILED);
             expected->bounds = bounds; expected->dpi = dpi;
         }
-        if (expected->visible != visible || bool(GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE) != visible) {
-            const auto result = Boundary([&] { return refresh_.WithLayoutProvider(*retained->owner, [&] {
-                retained->desc.showView(expected->context, visible ? 1 : 0); return MMS_OK;
-            }); });
-            if (result) return fail(result);
-            if (!current()) return fail(MMS_E_STALE);
-            if (bool(GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE) != visible) return fail(MMS_E_FAILED);
-            expected->visible = visible;
-        }
-        return MMS_OK;
+        if (!visible) return MMS_OK;
+        return applyVisibility();
     });
     if (result && !deferFailureSuspension) { SuspendGeometry(); refresh_.SuspendTargets(); }
     return result;

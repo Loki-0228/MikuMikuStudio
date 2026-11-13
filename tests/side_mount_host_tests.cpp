@@ -55,6 +55,7 @@ void Install(void* target,void* detour,void** original=nullptr) {
 // Reuse the existing actual-scene/key-pool/history invariant and native client
 // sizing helper. Its other checks are not executed by this dedicated host.
 #include "plugins/small_viewport_host_checks.inc"
+#include "ui_scale_popup_fixture.hpp"
 #include "plugins/side_mount_host_checks.inc"
 
 int wmain(int argc,wchar_t** argv) {

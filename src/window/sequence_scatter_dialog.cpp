@@ -15,9 +15,9 @@ namespace {
 struct Text { const wchar_t* jp; const wchar_t* en; const wchar_t* zh; };
 const wchar_t* Tr(unsigned language, Text t) { return language == 0 ? t.jp : language == 2 ? t.zh : t.en; }
 constexpr Text title{L"選択フレーム列を散布", L"Scatter selected frame sequence", L"选中帧序列散布"};
-constexpr Text selection{L"モデルを選び、異なるフレームの表情キーを2個以上選択してください。再生中は使用できません。",
-    L"Select a model and expression keys on at least two different frames. Stop playback before using this tool.",
-    L"请选中模型，并在时间轴上选择至少两个不同帧的表情关键帧。使用前请停止播放。"};
+constexpr Text selection{L"モデルを選び、異なるフレームのボーン・表情キーを2個以上選択してください。再生中は使用できません。",
+    L"Select a model and bone or expression keys on at least two different frames. Stop playback before using this tool.",
+    L"请选中模型，并在时间轴上选择至少两个不同帧的骨骼或表情关键帧。使用前请停止播放。"};
 struct Dialog {
     MMDApp* app; Source source; Plan plan; Settings settings;
     bool ready = false, prepared = false;
@@ -82,10 +82,10 @@ INT_PTR CALLBACK Proc(HWND window, UINT message, WPARAM w, LPARAM l) {
         const unsigned language = d->app->EnglishUI();
         SetWindowTextW(window, Tr(language, title));
         wchar_t source[256]{};
-        swprintf_s(source, Tr(language, {L"選択した表情キー：%d～%dフレーム\n%zu個の表情 ／ %zuキー",
-            L"Selected expression sequence: frames %d–%d\n%zu expressions / %zu keys",
-            L"选中的表情片段：第 %d–%d 帧\n%zu 个表情，共 %zu 个关键帧"}),
-            d->source.first, d->source.last, d->source.channels.size(), d->source.keyCount);
+        swprintf_s(source, Tr(language, {L"選択したキー：%d～%dフレーム\n%zuボーン・%zu表情 ／ %zuキー",
+            L"Selected sequence: frames %d–%d\n%zu bones / %zu expressions / %zu keys",
+            L"选中的片段：第 %d–%d 帧\n%zu 个骨骼、%zu 个表情，共 %zu 个关键帧"}),
+            d->source.first, d->source.last, d->source.bones.size(), d->source.channels.size(), d->source.keyCount);
         Label(window, source, 5001, 10, 8, 280, 24);
         Label(window, Tr(language, {L"散布範囲", L"Destination range", L"目标帧范围"}), 5002, 10, 39, 124, 16);
         Label(window, L"", 5101, 138, 36, 66, 16, L"EDIT", WS_TABSTOP | ES_AUTOHSCROLL);

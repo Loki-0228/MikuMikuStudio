@@ -85,7 +85,25 @@ void BoneCurveWriteNativeAndGuards(){
     Check(key.interpolation[0]==11&&key.interpolation[4]==35&&key.interpolation[8]==93&&key.interpolation[12]==116&&
         bone_scale::KeyCurve(f.first.raw(),2)==edit.nativeControls[1].controls[4],"native position rotation and scale handles are written with the original byte layout");
     const auto before=RegistrationKeys(f.first);auto invalid=edit;invalid.nativeControls[1].frame=11;std::shared_ptr<plugins::HistoryChange> change;
-    Check(plugins::PlanBoneCurveWrite(*f.app,0,{invalid},nullptr,change)==MMS_E_ARGUMENT&&!change&&SameRegistrationKeys(f.first,before),"native curve mode rejects retiming without partial publication");
+    Check(plugins::PlanBoneCurveWrite(*f.app,0,{invalid},nullptr,change)==MMS_E_ARGUMENT&&!change&&SameRegistrationKeys(f.first,before),"native curve rejects a stale source frame without partial publication");
+    {
+        BoneCurveWriteFixture timing;
+        auto move=NativeBoneCurve(timing.first);
+        auto* keys=timing.first.m->boneKeys;
+        const auto original=keys[2];
+        const auto scale=bone_scale::Key(timing.first.raw(),2);
+        move.nativeControls[1].targetFrame=30;
+        std::shared_ptr<plugins::HistoryChange> rejected;
+        Check(plugins::PlanBoneCurveWrite(*timing.app,0,{move},nullptr,rejected)==MMS_E_ARGUMENT&&
+            !rejected&&keys[2].frame==10,"native curve retiming refuses an occupied frame");
+        move.nativeControls[1].targetFrame=17;
+        timing.Commit(timing.Plan({move}));
+        auto expected=original;expected.frame=17;
+        Check(!std::memcmp(&keys[2],&expected,sizeof(expected))&&
+            bone_scale::Key(timing.first.raw(),2)==scale,"shared history retimes the original key slot and preserves native payload");
+        Check(timing.history.History(false)==MMS_OK&&keys[2].frame==10&&
+            timing.history.History(true)==MMS_OK&&keys[2].frame==17,"shared undo and redo replay the native frame move");
+    }
     auto next=FreeBoneCurve();change=f.Plan({next});std::unique_ptr<plugins::PreparedHistoryChange> token;
     Check(change->Prepare(true,token)==MMS_OK&&token->IsCurrent(),"prepare short bone curve publication token");
     f.first.m->boneKeys[1].allocated^=1;Check(!token->IsCurrent(),"short bone curve token freezes peer selection bytes too");token.reset();f.first.m->boneKeys[1].allocated^=1;

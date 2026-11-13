@@ -172,12 +172,11 @@ void InitializePmxEdgeVertices(const mdl::PmxVertex* source,
     }
 }
 
-// VA 0x00407910 - wide -> Shift-JIS.  The original falls back through
-// four locale objects kept in the render sub-object; the port uses the
-// plain CRT fallback (docs/ARCHITECTURE.md §8 - only reached when CP932
-// conversion fails).
+// VA 0x00407910 - fixed PMX binding identity. Keep CP932 bytes when
+// available; otherwise use exact ACP/UTF-8 instead of the old CRT's empty
+// fallback. Complete Unicode captions remain in the model text metadata.
 void WideToSjis(char* dst, const wchar_t* src, rsize_t size) {
-    text_encoding::EncodePmxMirror(dst, size, src);
+    text_encoding::EncodePmxName(dst, size, src);
 }
 
 // ---- length-prefixed UTF16 text validation --------------------------------
@@ -496,9 +495,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     reader.Read(&model.vertexCount, sizeof(model.vertexCount));
     const std::int32_t vertCount = static_cast<std::int32_t>(model.vertexCount);
     const auto vertexStart = reader.Tell();
-    auto geometryCache = model_geometry_cache::Session::Begin(fh,
+    auto geometryCache = model_geometry_cache::Session::BeginPmx(fh,
         {model_geometry_cache::Format::pmx, model.vertexCount, model.pmxAdditionalUvCount,
-         model.pmxBoneIndexSize, model.pmxVertexIndexSize}, vertexStart,
+         model.pmxBoneIndexSize, model.pmxVertexIndexSize}, reader,
         nullptr, MMD_ORIGINAL_PROFILE != 0);
     model_geometry_cache::HitCopy<mdl::PmxVertex> cachedGeometry(geometryCache, model.vertexCount);
     bool geometryHit = cachedGeometry.Ready();

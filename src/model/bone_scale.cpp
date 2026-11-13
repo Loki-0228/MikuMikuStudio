@@ -760,6 +760,88 @@ struct AuthoringRestore::Impl {
             found->second.current.curves == beforeCurves;
     }
 };
+std::uint64_t DeletionPreparationBytes(const unsigned char* model,const AuthoringState* target,
+    bool restore,bool lease,bool evaluate) noexcept {
+    if(!model)return UINT64_MAX;
+    const auto found=states.find(model);
+    const auto* live=found==states.end()?nullptr:&found->second;
+    std::uint64_t bytes=0;
+    const auto add=[&](std::uint64_t count,std::uint64_t stride) {
+        if(stride&&count>(UINT64_MAX-bytes)/stride)bytes=UINT64_MAX;
+        else bytes+=count*stride;
+    };
+    constexpr auto matrixNode=sizeof(Values::value_type)+4*sizeof(void*);
+    constexpr auto curveNode=sizeof(Curves::value_type)+4*sizeof(void*);
+    const auto map=[&](std::uint64_t count,std::uint64_t node) {
+        add(1,node); // MSVC allocates the sentinel even for an empty map.
+        add(count,node);
+    };
+    std::uint64_t targetKeys=0,targetCurves=0;
+    if(restore) {
+        const auto sourceKeys=live?live->current.keys.size():0;
+        const auto sourceCurves=live?live->current.curves.size():0;
+        targetKeys=target?(target->impl_?target->impl_->keys.size():0):sourceKeys;
+        targetCurves=target?(target->impl_?target->impl_->curves.size():0):sourceCurves;
+        // Capture's wrapper exists even when absence needs no allocated Impl.
+        // Keep the validation capture's charge conservatively through restore.
+        add(1,sizeof(AuthoringState));
+        if(sourceKeys||sourceCurves) {
+            add(1,sizeof(AuthoringState::Impl));map(sourceKeys,matrixNode);map(sourceCurves,curveNode);
+        }
+        add(1,sizeof(AuthoringRestore));add(1,sizeof(AuthoringRestore::Impl));
+        map(sourceKeys,matrixNode);map(targetKeys,matrixNode);
+        map(sourceCurves,curveNode);map(targetCurves,curveNode);
+    }
+    if(lease) {
+        add(1,sizeof(PoseStorageLease));add(1,sizeof(PoseStorageLease::Impl));
+    }
+    if(!live&&(lease||(restore&&(targetKeys||targetCurves)))) {
+        // Either lease path creates the same registry node. The State's map
+        // headers are embedded in the node; only their empty sentinels allocate.
+        add(1,sizeof(decltype(states)::value_type)+4*sizeof(void*));
+        constexpr auto snapshots=1+std::tuple_size<decltype(State::undo)>::value+
+            std::tuple_size<decltype(State::redo)>::value;
+        add(snapshots,matrixNode); // current/undo/redo pose sentinels.
+        add(snapshots,matrixNode); // current/undo/redo key sentinels.
+        add(snapshots,curveNode);
+        if(lease) {
+            // Match PoseStorageLease::RetainedBytes: a newly leased pose table
+            // reserves room for later signed publication of every bone scale.
+            add(mdl::Mdl(model)->boneCount,matrixNode);
+        }
+        // A single insertion may grow the shared registry's bucket vector.
+        // Charge only that new allocation, never other models' State contents.
+        // These are the supported MSVC xhash rules: load-factor trigger, 8x
+        // growth below 512 buckets, power-of-two rounding, two pointers/bucket.
+        if(states.size()==SIZE_MAX)return UINT64_MAX;
+        const auto nextSize=states.size()+1;
+        const auto buckets=states.bucket_count();const auto load=states.max_load_factor();
+        if(!buckets||!std::isfinite(load)||load<=0)return UINT64_MAX;
+        if(load<static_cast<float>(nextSize)/static_cast<float>(buckets)) {
+            const auto requiredFloat=std::ceil(static_cast<float>(nextSize)/load);
+            if(!std::isfinite(requiredFloat)||static_cast<double>(requiredFloat)>=static_cast<double>(UINT64_MAX))
+                return UINT64_MAX;
+            auto required=(std::max)(std::uint64_t(8),static_cast<std::uint64_t>(requiredFloat));
+            if(required>buckets) {
+                if(buckets<512&&std::uint64_t(buckets)*8>=required)required=std::uint64_t(buckets)*8;
+                std::uint64_t rounded=1;
+                while(rounded<required) {
+                    if(rounded>UINT64_MAX/2)return UINT64_MAX;
+                    rounded*=2;
+                }
+                add(rounded,2*sizeof(void*));
+            }
+        }
+    }
+    if(evaluate) {
+        const auto sourcePose=live?live->current.pose.size():0;
+        // Evaluation's object already owns the two map headers. Its before
+        // and after nodes are separate copies; only after may gain bone nodes.
+        map(sourcePose,matrixNode);map(sourcePose,matrixNode);
+        add(mdl::Mdl(model)->boneCount,matrixNode);
+    }
+    return bytes;
+}
 AuthoringRestore::AuthoringRestore() = default;
 AuthoringRestore::~AuthoringRestore() = default;
 AuthoringRestore::AuthoringRestore(AuthoringRestore&&) noexcept = default;

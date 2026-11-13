@@ -456,6 +456,12 @@ bool RegisterBoneKey(unsigned char* model, unsigned char* rec, int frameOffset,
 
 bool RegisterBoneKeyAtIndex(unsigned char* model, unsigned char* rec,
                             int frameOffset, int boneIdx) {
+    int cursor = boneIdx;
+    return kfa::RegisterBoneKeyAtCursor(model, rec, frameOffset, boneIdx, cursor);
+}
+
+bool kfa::RegisterBoneKeyAtCursor(unsigned char* model, unsigned char* rec,
+                                  int frameOffset, int boneIdx, int& cursor) {
     if (!model || !rec || boneIdx < 0 ||
         static_cast<std::uint32_t>(boneIdx) >= mdl::Mdl(model)->boneCount ||
         !mdl::Bones(model) || !mdl::BoneKeys(model)) return false;
@@ -525,8 +531,9 @@ bool RegisterBoneKeyAtIndex(unsigned char* model, unsigned char* rec,
         if (d3->quatNormalize != nullptr) d3->quatNormalize(q, q);
     }
 
-    // walk the per-bone chain from the bone index itself
-    int cur = boneIdx;
+    int cur = cursor;
+    while (cur != boneIdx && keys[cur].frame > frame)
+        cur = static_cast<int>(keys[cur].previous);
     if (keys[cur].frame < frame) {
         for (;;) {
             const int next = static_cast<int>(keys[cur].next);
@@ -554,6 +561,7 @@ bool RegisterBoneKeyAtIndex(unsigned char* model, unsigned char* rec,
             keys[free_].frame = frame;
             bone_scale::ApplyRegistration(model, free_, true);
             FillBoneRecord(keys[free_], rec, writePos);
+            cursor = free_;
             bone_curve::ReconcileRegisteredFrame(model,boneIdx,int(frame));
             if (frame > mdl::Mdl(m)->maxFrame)
                 mdl::Mdl(m)->maxFrame = frame;
@@ -567,6 +575,7 @@ bool RegisterBoneKeyAtIndex(unsigned char* model, unsigned char* rec,
         AppendBoneKeyToUndo(m, cur);
         bone_scale::ApplyRegistration(model, cur, false);
         FillBoneRecord(keys[cur], rec, writePos);
+        cursor = cur;
     } else {
         // insert before cur
         // Deliberate hardening: the original reads keys[cursor].frame
@@ -591,6 +600,7 @@ bool RegisterBoneKeyAtIndex(unsigned char* model, unsigned char* rec,
         keys[free_].frame = frame;
         bone_scale::ApplyRegistration(model, free_, true);
         FillBoneRecord(keys[free_], rec, writePos);
+        cursor = free_;
     }
     // max-frame bump uses the RAW frameOffset here (original quirk)
     bone_curve::ReconcileRegisteredFrame(model,boneIdx,int(frame));
@@ -756,6 +766,12 @@ bool RegisterMorphKeyFromRecord(unsigned char* model, const unsigned char* rec,
 // when two expressions have the same display or encoded name.
 bool RegisterMorphKeyAtIndex(unsigned char* model, int morphIdx,
                              std::uint32_t frame, float value) {
+    int cursor = morphIdx;
+    return kfa::RegisterMorphKeyAtCursor(model, morphIdx, frame, value, cursor);
+}
+
+bool kfa::RegisterMorphKeyAtCursor(unsigned char* model, int morphIdx,
+                                   std::uint32_t frame, float value, int& cursor) {
     unsigned char* const m = model;
     if(frame>std::uint32_t(frame_limits::maximum))return false;
     if (!m || morphIdx < 0 || static_cast<unsigned>(morphIdx) >= mdl::Mdl(m)->morphCount)
@@ -764,7 +780,9 @@ bool RegisterMorphKeyAtIndex(unsigned char* model, int morphIdx,
     std::size_t capacity = mdl::MorphKeyCapacity(keys);
     if (keys == nullptr) return false;
 
-    int cur = morphIdx;
+    int cur = cursor;
+    while (cur != morphIdx && keys[cur].frame > frame)
+        cur = static_cast<int>(keys[cur].previous);
     if (keys[cur].frame < frame) {
         for (;;) {
             const int next = static_cast<int>(keys[cur].next);
@@ -784,6 +802,7 @@ bool RegisterMorphKeyAtIndex(unsigned char* model, int morphIdx,
             keys[free_].frame = frame;
             keys[free_].value = value;
             keys[free_].allocated = 1;
+            cursor = free_;
             if (frame > mdl::Mdl(m)->maxFrame)
                 mdl::Mdl(m)->maxFrame = frame;
             return true;
@@ -793,6 +812,7 @@ bool RegisterMorphKeyAtIndex(unsigned char* model, int morphIdx,
     if (frame == keys[cur].frame) {
         keys[cur].value = value;
         keys[cur].allocated = 1;
+        cursor = cur;
         return true;
     }
     // insert before cur
@@ -809,6 +829,7 @@ bool RegisterMorphKeyAtIndex(unsigned char* model, int morphIdx,
     keys[free_].frame = frame;
     keys[free_].value = value;
     keys[free_].allocated = 1;
+    cursor = free_;
     if (frame > mdl::Mdl(m)->maxFrame)
         mdl::Mdl(m)->maxFrame = frame;
     return true;

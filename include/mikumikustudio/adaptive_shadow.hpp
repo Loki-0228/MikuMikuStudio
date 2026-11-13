@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include "mikumikustudio/native_shadow_projection.hpp"
 
 namespace mikumikustudio {
@@ -18,6 +19,14 @@ inline unsigned ShadowQualityMapSize(float range, unsigned maximum) {
     const float quality=(std::clamp)(std::isfinite(range)?range/.1f:0.f,0.f,1.f);
     const unsigned tier=quality>.75f?0u:quality>.5f?1u:quality>.25f?2u:3u;
     return (std::max)(512u,maximum>>tier);
+}
+// Density, not texture dimensions, is the invariant when the box expands.
+inline unsigned ShadowSizeForDensity(float width,float density,unsigned minimum,unsigned maximum) {
+    unsigned size=(std::min)(minimum,maximum);
+    const double required=double(width)*density;
+    if(!std::isfinite(required))return maximum;
+    while(size<maximum && double(size)+1e-4<required)size=(std::min)(maximum,size*2);
+    return size;
 }
 inline float ShadowSamplingFactor(float range) {
     // The fine half of the shared range control retains the former finest
@@ -50,6 +59,86 @@ inline float DynamicShadowMapDemand(float projectedPixels, float coverageWidth,
     if (orthographic) return 1.25f * projectedPixels * coverageWidth * .5f;
     if (!std::isfinite(focusDepth) || focusDepth <= 0) return 0.f;
     return 1.25f * projectedPixels * coverageWidth / (2.f * focusDepth);
+}
+// Compress the slider's world-density range into a screen-pixel budget when
+// zooming in. Using the linear ratio would allow nearly nine times larger
+// screen texels at 8875 than at 0, even after dynamic precision took over.
+// The fourth root retains slider ordering without waiting for an extreme zoom.
+inline float ShadowScreenQuality(float referenceDensity,float finestReferenceDensity) {
+    if(!std::isfinite(referenceDensity) || referenceDensity<=0 ||
+       !std::isfinite(finestReferenceDensity) || finestReferenceDensity<=0)return 0.f;
+    return float(std::sqrt(std::sqrt((std::min)(1.0,double(referenceDensity)/finestReferenceDensity))));
+}
+// Only maps confined to the close regions may exceed fixed precision. Distant
+// maps follow a smooth minimum of the fixed baseline and screen demand. This
+// makes finer presets shed more excess sampling at distance without reversing
+// their absolute quality order. Every object shares these camera-depth regions.
+// Distant silhouettes use a wider screen footprint; comparison filtering
+// reconstructs their coverage. The 25% demand margin remains in effect.
+inline constexpr float kShadowFarPixelBudget=3.f;
+inline constexpr float kShadowCloseBoost=0.8f;
+inline float ShadowLayerDensity(float referenceDensity,float finestReferenceDensity,
+    float projectedPixels,float depth,bool orthographic,bool dynamic,bool closeLayer,
+    float maximumDensity=(std::numeric_limits<float>::infinity)()) {
+    if(!dynamic)return referenceDensity;
+    const float screen=DynamicShadowMapDemand(projectedPixels,1.f,depth,orthographic);
+    if(!std::isfinite(screen) || screen<=0 || !std::isfinite(finestReferenceDensity) || finestReferenceDensity<=0)
+        return referenceDensity;
+    const double base=referenceDensity;
+    const double footprint=double(screen)*ShadowScreenQuality(referenceDensity,finestReferenceDensity)/
+        (closeLayer?1.0:double(kShadowFarPixelBudget));
+    const double high=(std::max)(base,footprint),low=(std::min)(base,footprint);
+    if(!(high>0))return referenceDensity;
+    const double ratio2=(low/high)*(low/high);
+    const double norm=std::sqrt(std::sqrt(1.0+ratio2*ratio2));
+    // Both branches are smooth at equal demand. The far branch can never
+    // exceed either budget, including where a coarse preset meets the screen.
+    if(!closeLayer)return float(low/norm);
+    // Reduce the additional sampling, not the fixed slider baseline. Apply the
+    // device/box capacity first so a capped close map also receives the change.
+    const double capacity=maximumDensity>0?double(maximumDensity):high*norm;
+    const double fixed=(std::min)(base,capacity);
+    const double boosted=(std::min)(high*norm,capacity);
+    return float(fixed+double(kShadowCloseBoost)*(boosted-fixed));
+}
+
+// Keep the finer map fully weighted while the neighbouring coarse map still
+// magnifies its texels on screen. Use the density after fitting to the actual
+// allocation, not its requested size. Keep a 1.5x logarithmic fade, or the
+// original interval if that was narrower, even when hardware limits precision.
+inline float ShadowScreenBlendStartForDemand(float nearDepth,float farDepth,float fixedStart,
+    float coarseDensity,float screen,bool orthographic) {
+    if(!std::isfinite(coarseDensity) || coarseDensity<=0 || farDepth<=nearDepth)return fixedStart;
+    if(!std::isfinite(screen) || screen<=0)return fixedStart;
+    const float latest=(std::max)(fixedStart,farDepth/1.5f);
+    const float t=(std::clamp)((screen/coarseDensity-1.f)*4.f,0.f,1.f);
+    const float requested=orthographic?fixedStart+(latest-fixedStart)*t*t*(3.f-2.f*t):screen/coarseDensity;
+    return (std::clamp)(requested,fixedStart,latest);
+}
+inline float ShadowScreenBlendStart(float nearDepth,float farDepth,float fixedStart,
+    float coarseDensity,float referenceDensity,float finestReferenceDensity,
+    float projectedPixels,bool orthographic) {
+    const float screen=DynamicShadowMapDemand(projectedPixels,1.f,1.f,orthographic)*
+        ShadowScreenQuality(referenceDensity,finestReferenceDensity);
+    return ShadowScreenBlendStartForDemand(nearDepth,farDepth,fixedStart,coarseDensity,screen,orthographic);
+}
+
+inline unsigned ShadowTextureSizeForDensity(float width,float density,unsigned maximum) {
+    // Two spare texels let the final world grid snap without clipping the
+    // requested box or subtly lowering an otherwise attainable reference.
+    return ShadowSizeForDensity(width+2.f/density,density,512u,maximum);
+}
+// Fade over the interval between adjacent camera-depth regions, instead of
+// holding a level until the last 35% of its box. Allocation demand is separate.
+inline float ShadowTransitionFraction(float nearDepth,float startDepth,float farDepth) {
+    if(!std::isfinite(nearDepth) || !std::isfinite(startDepth) || !std::isfinite(farDepth) || farDepth<=nearDepth)
+        return .35f;
+    return (std::clamp)((farDepth-startDepth)/(farDepth-nearDepth),.001f,1.f);
+}
+inline float ShadowTransitionLogRatio(float startDepth,float farDepth) {
+    if(!std::isfinite(startDepth) || !std::isfinite(farDepth) || startDepth<=0 || farDepth<=startDepth)
+        return 0.f;
+    return (std::clamp)(1.f-startDepth/farDepth,0.f,.9999f);
 }
 // Coverage size that belongs to a quality tier: the coverage pass runs at half
 // the detail tier, with the existing 512 minimum.

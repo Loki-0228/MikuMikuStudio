@@ -217,9 +217,12 @@ void CheckOriginalShadow(MMDApp* app) {
 }
 }
 
-int main() {
+#include "original_version_crash_checks.inc"
+
+int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    if (argc > 1) return original_version_crash::Dispatch(argc, argv);
     SetProcessDPIAware();
     Require(!GetModuleHandleW(L"MMEffect.dll") && !GetModuleHandleW(L"MMHack.dll"), "test runtime contains no native MME proxy");
     Require(MH_Initialize() == MH_OK, "initialize hidden-window guards");

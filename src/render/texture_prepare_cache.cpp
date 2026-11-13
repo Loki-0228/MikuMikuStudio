@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -21,6 +22,8 @@
 #include <vector>
 #include <condition_variable>
 #include <thread>
+#include <io.h>
+#include <share.h>
 
 namespace mikumikustudio::texture_prepare_cache {
 namespace {
@@ -111,6 +114,7 @@ struct Source {
 struct Prepared {
     Source source;
     Bytes encoded, dds, diskPayload;
+    cache_manager::TextureUseReceipt diskUse;
     Info info{};
     Digest key{};
     bool ready = false, queued = false;
@@ -254,31 +258,36 @@ bool BuildKey(IDirect3DDevice9* device, const Source& source, const Digest& deco
     return hash.Finish(key);
 }
 
-bool Read(const fs::path& path, const Digest& key, Bytes& payload,
+bool Read(const fs::path& path, const Digest& key, Bytes& payload, cache_manager::TextureUseReceipt& use,
           std::uint64_t limit = sizeof(Metadata)+kMaxPixels) {
     if (path.empty()) return false;
-    std::error_code error;
-    const auto size = fs::file_size(path, error);
-    if(error)return false;
     struct Validation {
         const fs::path& path;
-        bool valid=false;
+        bool valid=true;
         ~Validation(){if(!valid)cache_manager::Invalidate(path);}
     } validation{path};
+    // Keep the validated bytes and the first use tied to the same open file.
+    std::unique_ptr<FILE, decltype(&std::fclose)> stream(_wfsopen(path.c_str(), L"rb", _SH_DENYWR), &std::fclose);
+    if (!stream) return false;
+    const int descriptor = _fileno(stream.get());
+    const auto length = _filelengthi64(descriptor);
+    if (length < 0) return false;
+    const auto size = static_cast<std::uint64_t>(length);
+    validation.valid=false;
     if (size < sizeof(Header) + sizeof(Metadata) ||
         size > sizeof(Header) + sizeof(Metadata) + kMaxPixels) return false;
     if(size-sizeof(Header)>limit){validation.valid=true;return false;}
-    std::ifstream stream(path, std::ios::binary);
     Header header{};
-    if (!stream.read(reinterpret_cast<char*>(&header), sizeof header) || header.magic != kMagic ||
+    if (std::fread(&header, 1, sizeof header, stream.get()) != sizeof header || header.magic != kMagic ||
         header.version != kVersion || header.key != key || header.bytes != size - sizeof header) return false;
     payload.resize(header.bytes);
-    if (!stream.read(reinterpret_cast<char*>(payload.data()), payload.size()) || stream.peek() != EOF) return false;
+    if (std::fread(payload.data(), 1, payload.size(), stream.get()) != payload.size() ||
+        std::fgetc(stream.get()) != EOF || std::ferror(stream.get())) return false;
     Hash hash; hash.Add(payload.data(), payload.size());
     Digest actual{};
     const bool valid=hash.Finish(actual) && actual == header.payload;
     validation.valid=valid;
-    if(valid)cache_manager::Touch(path);
+    if (valid) use = cache_manager::TouchTextureRead(path, _get_osfhandle(descriptor));
     return valid;
 }
 bool Budget(const fs::path& root, const fs::path& target, std::uint64_t incoming) {
@@ -303,6 +312,65 @@ bool Budget(const fs::path& root, const fs::path& target, std::uint64_t incoming
     }
     return !error && bytes <= kMaxDisk && count <= kMaxEntries;
 }
+// Own only the CREATE_NEW file. A failed rename must never delete a replacement
+// that another writer installed at the temporary name after our handle closed.
+class CacheTemporaryFile {
+public:
+    CacheTemporaryFile(HANDLE file, const wchar_t* path) noexcept
+        : file_(file), path_(path) {
+        identified_ = GetFileInformationByHandle(file_, &identity_) != FALSE &&
+            identity_.nNumberOfLinks == 1 &&
+            !(identity_.dwFileAttributes &
+              (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+    }
+    CacheTemporaryFile(const CacheTemporaryFile&) = delete;
+    CacheTemporaryFile& operator=(const CacheTemporaryFile&) = delete;
+    ~CacheTemporaryFile() {
+        if (published_) return;
+        if (file_ != INVALID_HANDLE_VALUE) {
+            Discard(file_);
+            CloseHandle(file_);
+            return;
+        }
+        if (!identified_) return;
+        const HANDLE reopened = CreateFileW(path_, DELETE | FILE_READ_ATTRIBUTES,
+            0, nullptr, OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (reopened == INVALID_HANDLE_VALUE) return;
+        BY_HANDLE_FILE_INFORMATION current{};
+        if (GetFileInformationByHandle(reopened, &current) &&
+            current.nNumberOfLinks == 1 &&
+            !(current.dwFileAttributes &
+              (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+            current.dwVolumeSerialNumber == identity_.dwVolumeSerialNumber &&
+            current.nFileIndexHigh == identity_.nFileIndexHigh &&
+            current.nFileIndexLow == identity_.nFileIndexLow &&
+            current.ftCreationTime.dwHighDateTime == identity_.ftCreationTime.dwHighDateTime &&
+            current.ftCreationTime.dwLowDateTime == identity_.ftCreationTime.dwLowDateTime)
+            Discard(reopened);
+        CloseHandle(reopened);
+    }
+    bool Identified() const noexcept { return identified_; }
+    bool CloseForPublish() noexcept {
+        if (!identified_ || !CloseHandle(file_)) return false;
+        file_ = INVALID_HANDLE_VALUE;
+        return true;
+    }
+    void Published() noexcept { published_ = true; }
+private:
+    static void Discard(HANDLE file) noexcept {
+        FILE_DISPOSITION_INFO disposition{TRUE};
+        // If deletion fails, retain the residue; never guess ownership by name.
+        SetFileInformationByHandle(file, FileDispositionInfo,
+                                   &disposition, sizeof disposition);
+    }
+    HANDLE file_ = INVALID_HANDLE_VALUE;
+    const wchar_t* path_ = nullptr;
+    BY_HANDLE_FILE_INFORMATION identity_{};
+    bool identified_ = false;
+    bool published_ = false;
+};
+
 bool Write(const fs::path& root, const fs::path& path, const Digest& key, const Bytes& payload) {
     if (path.empty()) return false;
     std::error_code error;
@@ -314,17 +382,25 @@ bool Write(const fs::path& root, const fs::path& path, const Digest& key, const 
     if (!hash.Finish(header.payload)) return false;
     const fs::path temp = path.wstring() + L".tmp-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
         std::to_wstring(serial.fetch_add(1));
-    const HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const HANDLE file = CreateFileW(temp.c_str(), GENERIC_WRITE | DELETE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return false;
+    CacheTemporaryFile cleanup(file, temp.c_str());
+    if (!cleanup.Identified() || !reservation.TrackTemporary(temp)) return false;
     DWORD written = 0;
     bool good = WriteFile(file, &header, sizeof header, &written, nullptr) && written == sizeof header &&
         WriteFile(file, payload.data(), static_cast<DWORD>(payload.size()), &written, nullptr) && written == payload.size() &&
         FlushFileBuffers(file);
-    CloseHandle(file);
+    if (good) good = cleanup.CloseForPublish();
     good = good && MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-    if (!good) DeleteFileW(temp.c_str());
-    if(good)reservation.Commit();
-    return good;
+    if (!good) return false;
+    cleanup.Published();
+    // A published file is not yet a successful persistent registration. Do
+    // not increment stores on failure; the already-created texture is kept.
+    if (!reservation.Commit()) {
+        runtime_log::Write("TEXTURE_PREPARE published reason=registration-pending");
+        return false;
+    }
+    return true;
 }
 
 bool Capture(IDirect3DTexture9* texture, const Info& source, HRESULT result, DWORD usage, Bytes& output) {
@@ -406,15 +482,16 @@ HRESULT Native(d3dx::FnCreateTexFromFileExW original, IDirect3DDevice9* device,
             !BuildKey(device, source, decoder, usage, key)) return fallback();
         const auto root = Root(), entry = Entry(root, source, key);
         Bytes payload;
+        cache_manager::TextureUseReceipt use;
         Info restored{};
         HRESULT result = E_FAIL;
         const Bytes* readyPayload=prepared && prepared->key==key && !prepared->diskPayload.empty()
             ? &prepared->diskPayload : nullptr;
         if (diskAllowed && ((readyPayload && Restore(device,*readyPayload,usage,restored,output,result)) ||
-            (!readyPayload && Read(entry,key,payload) && Restore(device,payload,usage,restored,output,result)))) {
+            (!readyPayload && Read(entry,key,payload,use) && Restore(device,payload,usage,restored,output,result)))) {
             if (info) std::memcpy(info, &restored, sizeof restored);
             ++hits; runtime_log::WritePath("TEXTURE_PREPARE hit", file);
-            cache_manager::Touch(entry);
+            cache_manager::FinishTextureUse(entry, readyPayload ? std::move(prepared->diskUse) : std::move(use));
             SetLastError(incoming); return result;
         }
         // Always return the original object's HRESULT/ownership on a miss.
@@ -553,7 +630,7 @@ Batch::Batch(d3dx::FnCreateTexFromFileExW outer, IDirect3DDevice9* device,
             // Warm persistent entries already contain exact resized pixels;
             // queueing a fresh decoder here would repeat work needlessly.
             if (diskAllowed && Read(Entry(Root(),item->source,item->key),item->key,item->diskPayload,
-                                    available-item->encoded.size())) {
+                                    item->diskUse,available-item->encoded.size())) {
                 state->reservedBytes+=item->diskPayload.size();
                 Bytes{}.swap(item->encoded); item->ready=true; ++diskReady;
             } else {

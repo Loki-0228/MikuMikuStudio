@@ -84,15 +84,36 @@ inline HWND AppHwnd(MMDApp* app) {
 // VA 0x0040E3D0 - single-key edge detector, inlined into PollKeyboardStates below
 // (its only caller).  State cells hold 0=up, 1=just pressed, 3=held,
 // 2=just released; any 0->1 / active->2 transition latches app+658796=1.
+// Keyboard cells are sampled only while input eligibility is latched: an
+// ineligible poll clears the cell, and a key still down when eligibility
+// returns reports held (3), never a new press (1).  The three mouse-button
+// cells are not keyboard cells - they keep the original (state != 0) ? 3 : 1
+// press rule and the release rule below, and ignore eligibility.
 inline void KeyEdgeScan(MMDApp* app, int vk, std::uint32_t* cell) {
-    if ((GetKeyState(vk) & 0x8000) != 0) {
-        if (*cell != 0u) {
+    const bool keyboardCell = vk != VK_LBUTTON && vk != VK_RBUTTON &&
+                              vk != VK_MBUTTON;
+    if (keyboardCell && !PollKeyEligible(app)) {
+        // Losing eligibility discards keyboard edges: a key held across the
+        // loss is cleared here and comes back through the held branch (3).
+        *cell = 0;
+        return;
+    }
+    const std::uint32_t oldCell = *cell;
+    if ((ReadPolledKeyState(vk) & 0x8000) != 0) {
+        if (keyboardCell) {
+            if (PollKeyRegained(app) || oldCell == 1u || oldCell == 3u) {
+                *cell = 3;                           // held repeat / regained
+            } else {
+                *cell = 1;                           // 0x40E3ED press edge (from 2 too)
+                app->state.messageSeen = 1;
+            }
+        } else if (oldCell != 0u) {
             *cell = 3;                               // 0x40E401 held repeat
         } else {
             *cell = 1;                               // 0x40E3ED press edge
             app->state.messageSeen = 1;  // 0x40E3F3
         }
-    } else if (*cell == 1u || *cell == 3u) {
+    } else if (oldCell == 1u || oldCell == 3u) {
         *cell = 2;                                   // 0x40E425 release edge
         app->state.messageSeen = 1;      // 0x40E42B
     } else {
@@ -160,9 +181,14 @@ int ReadFixedString(int fh, char* out, int len) {
 // tables below cover every original 0x42D3AA..0x42D6B6 pairing, regrouped
 // into named cells / letter twins / numpad twins - observationally
 // identical because each scan writes only its own cell plus the
-// idempotent messageSeen latch.  Called once per frame from 0x46FF02.
+// idempotent messageSeen latch.  Keyboard cells are gated by the polled
+// eligibility latch advanced below; the mouse-button cells are not.  Called
+// once per frame from 0x46FF02.
 // =========================================================================//
 void PollKeyboardStates(MMDApp* app) {  // was Sub42D3A0
+    // Latch this poll's keyboard eligibility once, before any key is sampled.
+    // The edge detector reads it for keyboard cells; mouse cells ignore it.
+    AdvancePollKeyEligibility(app, PollKeyInputEligible(app));
     struct KeyCell { int vk; std::int32_t MMDAppState::* cell; };
     static constexpr KeyCell kNamedCells[] = {
         // 0x42D3AA..0x42D428 and the 0x42D5D6..0x42D6B6 non-numpad entries

@@ -181,6 +181,13 @@ void References() {
         auto accessory = std::make_unique<mdl::AccessoryRecord>();
         Check(!LoadAccessoryObject(app.get(), accessory.get(), L"C:\\\U0001f31f.x"),
             "accessory import rejects unsupported path before using renderer");
+        CopyPathW(app->AviBackgroundPath(), L"C:\\existing.avi");
+        app->AviBackgroundEnabled() = 1;
+        SetLastError(0);
+        Check(!TryReplaceBackgroundVideo(app.get(), L"C:\\\U0001f31f.avi") &&
+            GetLastError() == ERROR_NO_UNICODE_TRANSLATION && app->AviBackgroundEnabled() &&
+            std::wcscmp(app->AviBackgroundPath(), L"C:\\existing.avi") == 0,
+            "manual AVI rejection retains the existing reference and display state");
         wcscpy_s(app->AviBackgroundPath(), 256, L"C:\\\U0001f31f.avi");
         app->AviBackgroundEnabled() = 1;
         SetLastError(0); LoadAviFile(app.get());
@@ -248,7 +255,12 @@ void OriginalProviderInterfaces() {
 #endif
 }
 }
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 2 && std::strcmp(argv[1], "--reference-only") == 0) {
+        References();
+        std::printf("PASS original import reference checks (%d)\n", checks);
+        return 0;
+    }
     Files files;
     Load(files, Pmx(L"初音ミク", L"センター"), true);
     Load(files, Pmx(L"model", L"abcdefghijklmno"), true);

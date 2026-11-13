@@ -68,11 +68,14 @@ struct MeshSceneSource::Impl {
         std::unique_ptr<MorphDefinitionSnapshot> morph;
         std::unique_ptr<morph_curve::SamplingState> weights;
         std::vector<MeshSceneMaterial> materials;
+        std::vector<MeshSceneMaterialReferences> references;
+        std::unique_ptr<MeshSceneToonTableReferences> toonTable;
     };
     std::unique_ptr<BoneSceneSource> bones;
     std::vector<Entry> models;
     std::uint64_t bytes = 0;
     bool materialsEnabled = false;
+    bool referencesEnabled = false;
 };
 struct MeshSceneFrame::Impl {
     std::unique_ptr<BoneSceneFrame> bones;
@@ -89,14 +92,18 @@ MeshSceneFrame::~MeshSceneFrame() = default;
 
 std::unique_ptr<MeshSceneSource> MeshSceneSource::Capture(
     const BoneSceneModelInput* models, std::uint32_t count, std::uint64_t limit) {
-    return CaptureImpl(models,count,limit,false);
+    return CaptureImpl(models,count,limit,false,false);
 }
 std::unique_ptr<MeshSceneSource> MeshSceneSource::CaptureWithMaterials(
     const BoneSceneModelInput* models, std::uint32_t count, std::uint64_t limit) {
-    return CaptureImpl(models,count,limit,true);
+    return CaptureImpl(models,count,limit,true,false);
+}
+std::unique_ptr<MeshSceneSource> MeshSceneSource::CaptureWithMaterialReferences(
+    const BoneSceneModelInput* models, std::uint32_t count, std::uint64_t limit) {
+    return CaptureImpl(models,count,limit,true,true);
 }
 std::unique_ptr<MeshSceneSource> MeshSceneSource::CaptureImpl(
-    const BoneSceneModelInput* models, std::uint32_t count, std::uint64_t limit, bool materialsEnabled) {
+    const BoneSceneModelInput* models, std::uint32_t count, std::uint64_t limit, bool materialsEnabled, bool referencesEnabled) {
     std::uint64_t bytes = 0;
     Charge(bytes, 1, sizeof(MeshSceneSource) + sizeof(Impl), limit);
     Charge(bytes, count, sizeof(Impl::Entry), limit);
@@ -104,6 +111,7 @@ std::unique_ptr<MeshSceneSource> MeshSceneSource::CaptureImpl(
     result->impl_ = std::make_unique<Impl>();
     auto& value = *result->impl_;
     value.materialsEnabled = materialsEnabled;
+    value.referencesEnabled = referencesEnabled;
     value.bones = BoneSceneSource::Capture(models, count, limit - bytes);
     Charge(bytes, 1, value.bones->RetainedBytes(), limit);
     value.models.resize(count);
@@ -126,6 +134,17 @@ std::unique_ptr<MeshSceneSource> MeshSceneSource::CaptureImpl(
             Charge(bytes, entry.materials.capacity() - model.materialCount, sizeof(MeshSceneMaterial), limit);
             for (std::uint32_t j=0;j<model.materialCount;++j)
                 entry.materials[j]=CaptureMaterial(native[j],model.physicsMode);
+            if (referencesEnabled) {
+                Charge(bytes,1,sizeof(MeshSceneToonTableReferences),limit);
+                entry.toonTable=std::make_unique<MeshSceneToonTableReferences>();
+                CaptureMeshSceneToonTableReferences(model,*entry.toonTable);
+                Charge(bytes,model.materialCount,sizeof(MeshSceneMaterialReferences),limit);
+                entry.references.resize(model.materialCount);
+                Charge(bytes,entry.references.capacity()-model.materialCount,sizeof(MeshSceneMaterialReferences),limit);
+                for (std::uint32_t j=0;j<model.materialCount;++j) {
+                    CaptureMeshSceneMaterialReferences(native[j],model.physicsMode,entry.references[j]);
+                }
+            }
             if (entry.mesh->MaterialCount() != entry.materials.size())
                 throw std::invalid_argument("mesh scene material count");
         }
@@ -143,6 +162,16 @@ std::uint32_t MeshSceneSource::ModelCount() const noexcept {
 }
 std::uint64_t MeshSceneSource::RetainedBytes() const noexcept { return impl_->bytes; }
 bool MeshSceneSource::HasMaterials() const noexcept { return impl_->materialsEnabled; }
+bool MeshSceneSource::HasMaterialReferences() const noexcept { return impl_->referencesEnabled; }
+bool MeshSceneSource::MaterialReferencesAt(std::uint32_t model,std::uint32_t material,
+    MeshSceneMaterialReferences& out) const noexcept {
+    if (!impl_->referencesEnabled || model>=impl_->models.size() || material>=impl_->models[model].references.size()) return false;
+    out=impl_->models[model].references[material];return true;
+}
+bool MeshSceneSource::ToonTableReferencesAt(std::uint32_t model,MeshSceneToonTableReferences& out) const noexcept {
+    if (!impl_->referencesEnabled || model>=impl_->models.size() || !impl_->models[model].toonTable) return false;
+    out=*impl_->models[model].toonTable;return true;
+}
 const MeshDefinitionSnapshot* MeshSceneSource::MeshAt(std::uint32_t index) const noexcept {
     return index < impl_->models.size() ? impl_->models[index].mesh.get() : nullptr;
 }

@@ -21,6 +21,9 @@
 // original entry point. A child with a separate cwd checks D3DX32/43 include
 // lookup, nested includes and content changes with preserved timestamps.
 // It writes only below the supplied output directory and keeps diagnostics.
+#include "mikumikustudio/cache_manager.hpp"
+#include <MinHook.h>
+#include <cwchar>
 #include "effect_compile_cache.hpp"
 
 #include <Windows.h>
@@ -51,6 +54,92 @@ void Check(bool condition, const std::string& description) {
         ++g_failures;
         std::fprintf(stderr, "FAIL: %s\n", description.c_str());
     }
+}
+
+// These hooks surround only synchronous calls of the real cache producer.
+namespace producer_fault {
+namespace fs = std::filesystem;
+enum class Mode { None, Commit, Track, Replacement };
+thread_local Mode mode = Mode::None;
+thread_local unsigned payloadRenames = 0, failures = 0;
+std::wstring indexPath, publishedPath, replacedPath, retainedPath;
+std::vector<unsigned char> blockedIndexBytes;
+using MoveFn = BOOL(WINAPI*)(LPCWSTR,LPCWSTR,DWORD);
+using CreateFn = HANDLE(WINAPI*)(LPCWSTR,DWORD,DWORD,LPSECURITY_ATTRIBUTES,DWORD,DWORD,HANDLE);
+MoveFn moveOriginal = nullptr;
+CreateFn createOriginal = nullptr;
+bool PayloadTemporary(LPCWSTR name) {
+    return name && (std::wcsstr(name,L".fxb.tmp-") || std::wcsstr(name,L".mtc.tmp-"));
+}
+BOOL WINAPI Move(LPCWSTR from,LPCWSTR to,DWORD flags) {
+    if (mode == Mode::Commit && payloadRenames && to && indexPath == to) {
+        if(!failures){
+            std::ifstream index(indexPath,std::ios::binary);
+            blockedIndexBytes.assign(std::istreambuf_iterator<char>(index),{});
+        }
+        ++failures; SetLastError(ERROR_ACCESS_DENIED); return FALSE;
+    }
+    if (mode != Mode::None && PayloadTemporary(from)) {
+        if (mode == Mode::Replacement) {
+            // Preserve our own candidate at another fixture name, then install
+            // a different file at its old name before the producer sees failure.
+            replacedPath = from; retainedPath = replacedPath + L".retained";
+            if (!moveOriginal(from,retainedPath.c_str(),MOVEFILE_WRITE_THROUGH)) return FALSE;
+            HANDLE replacement=createOriginal(from,GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+            Check(replacement!=INVALID_HANDLE_VALUE,"create independent replacement at temporary name");
+            const unsigned char marker=0x6d; DWORD written=0;
+            Check(WriteFile(replacement,&marker,1,&written,nullptr)&&written==1,"write replacement ownership marker");
+            CloseHandle(replacement); ++failures;
+            SetLastError(ERROR_ACCESS_DENIED); return FALSE;
+        }
+        const auto result=moveOriginal(from,to,flags);
+        if(result){++payloadRenames;publishedPath=to;}
+        return result;
+    }
+    return moveOriginal(from,to,flags);
+}
+HANDLE WINAPI Create(LPCWSTR name,DWORD access,DWORD share,LPSECURITY_ATTRIBUTES security,
+                     DWORD creation,DWORD attributes,HANDLE templateFile) {
+    if(mode==Mode::Track && access==FILE_READ_ATTRIBUTES && PayloadTemporary(name)){
+        ++failures;SetLastError(ERROR_ACCESS_DENIED);return INVALID_HANDLE_VALUE;
+    }
+    return createOriginal(name,access,share,security,creation,attributes,templateFile);
+}
+struct Hooks {
+    Hooks(){
+        Check(MH_Initialize()==MH_OK,"initialize producer fault hooks");
+        Check(MH_CreateHook(reinterpret_cast<void*>(&MoveFileExW),reinterpret_cast<void*>(&Move),
+            reinterpret_cast<void**>(&moveOriginal))==MH_OK,"hook exact producer publication boundary");
+        Check(MH_CreateHook(reinterpret_cast<void*>(&CreateFileW),reinterpret_cast<void*>(&Create),
+            reinterpret_cast<void**>(&createOriginal))==MH_OK,"hook temporary metadata observation");
+        Check(MH_EnableHook(reinterpret_cast<void*>(&MoveFileExW))==MH_OK &&
+              MH_EnableHook(reinterpret_cast<void*>(&CreateFileW))==MH_OK,"enable producer fault hooks");
+    }
+    ~Hooks(){
+        mode=Mode::None;
+        MH_DisableHook(reinterpret_cast<void*>(&MoveFileExW));
+        MH_DisableHook(reinterpret_cast<void*>(&CreateFileW));
+        MH_RemoveHook(reinterpret_cast<void*>(&MoveFileExW));
+        MH_RemoveHook(reinterpret_cast<void*>(&CreateFileW));
+        MH_Uninitialize();
+    }
+};
+void Start(Mode next){payloadRenames=failures=0;publishedPath.clear();replacedPath.clear();retainedPath.clear();blockedIndexBytes.clear();mode=next;}
+void Configure(const fs::path& root){
+    Check(SetEnvironmentVariableW(L"MMS_CACHE_MANAGER_DIR",root.c_str())!=FALSE,"isolate managed producer root");
+    Check(SetEnvironmentVariableW(L"MMS_CACHE_MANAGER_SETTINGS",(root.parent_path()/L"settings.json").c_str())!=FALSE,"isolate producer settings");
+    mikumikustudio::cache_manager::Settings settings;
+    settings.limitBytes=64ull*1024*1024;settings.automaticCleanup=false;
+    std::wstring error;
+    Check(mikumikustudio::cache_manager::Configure(settings,error),"configure managed producer budget");
+    indexPath=(root/L"Management"/L"index.bin").wstring();
+}
+void Finish(){
+    mode=Mode::None;
+    (void)mikumikustudio::cache_manager::Inspect(); // Settle the intentional registration failure.
+    SetEnvironmentVariableW(L"MMS_CACHE_MANAGER_DIR",nullptr);
+    SetEnvironmentVariableW(L"MMS_CACHE_MANAGER_SETTINGS",nullptr);
+}
 }
 
 void RunTest(const char* name, void (*test)()) {
@@ -267,6 +356,7 @@ struct FakeState {
     std::vector<unsigned char> lastEffectBinary;
     std::vector<FakeEffect*> effects;
     bool createEffectFail = false;
+    std::vector<unsigned char> rejectedBinary;
 };
 
 FakeState* g_fake = nullptr;
@@ -471,7 +561,7 @@ HRESULT WINAPI FakeCreateEffect(IDirect3DDevice9* device, LPCVOID data,
                                       length);
     if (effect) *effect = nullptr;
     if (errors) *errors = nullptr;
-    if (state.createEffectFail) return E_FAIL;
+    if (state.createEffectFail || state.lastEffectBinary == state.rejectedBinary) return E_FAIL;
     ++g_fakeEffectsCreated;
     auto* object = new FakeEffect();
     object->vtable = EffectVtable();
@@ -761,6 +851,127 @@ void TestNonAsciiSourcePath() {
 // ---------------------------------------------------------------------------
 // Damaged disk entries
 // ---------------------------------------------------------------------------
+void TestManagedProducer() {
+    TempDir directory("managed-producer");
+    producer_fault::Hooks faults;
+    const auto managed=directory.path/L"Cache";
+    producer_fault::Configure(managed);
+    PrepareCache(managed/L"MME");
+    FakeState state;
+    const D3DX hooks=MakeHooks(state);
+    const auto source=directory.path/L"managed.fx";
+    WriteText(source,"float4 Tint = float4(0.25, 0.5, 0.75, 1.0);\n");
+    state.sourcePath=source;
+    auto load=[&](DWORD flags){
+        return CreateWith(hooks,TestDevice(),source.c_str(),nullptr,nullptr,flags,nullptr);
+    };
+    auto cold=load(0);
+    Check(cold.handled && cold.effect && SUCCEEDED(cold.result) && state.compileCalls==1,
+          "managed cold producer preserves successful compiler object");
+    auto files=CacheFiles(managed);
+    Check(files.size()==1 && mikumikustudio::cache_manager::Managed(files.front()),
+          "real effect producer published in managed root");
+    ClearMemoryCache();
+    auto warm=load(0);
+    Check(warm.handled && warm.effect && state.compileCalls==1,
+          "managed disk hit skips compilation with fresh effect object");
+    producer_fault::Start(producer_fault::Mode::Commit);
+    auto pending=load(0x10);
+    producer_fault::mode=producer_fault::Mode::None;
+    Check(pending.handled && pending.effect && SUCCEEDED(pending.result) &&
+          producer_fault::payloadRenames==1 && producer_fault::failures>0,
+          "real payload publishes before failed Commit and successful effect survives");
+    Check(!producer_fault::blockedIndexBytes.empty() &&
+          ReadWholeFile(producer_fault::indexPath)==producer_fault::blockedIndexBytes &&
+          std::filesystem::exists(producer_fault::publishedPath),
+          "failed effect registration does not pretend persistent index success or delete published data");
+    (void)mikumikustudio::cache_manager::Inspect();
+    ClearMemoryCache(); const auto compiled=state.compileCalls;
+    auto recovered=load(0x10);
+    Check(recovered.handled && recovered.effect && state.compileCalls==compiled,
+          "published effect remains a valid disk hit after registration recovery");
+    const auto count=CacheFiles(managed).size();
+    producer_fault::Start(producer_fault::Mode::Track);
+    auto untracked=load(0x20);
+    producer_fault::mode=producer_fault::Mode::None;
+    Check(untracked.handled && untracked.effect && SUCCEEDED(untracked.result) &&
+          producer_fault::failures>0 && producer_fault::payloadRenames==0 &&
+          CacheFiles(managed).size()==count,
+          "failed temporary tracking preserves compiled object without publishing payload");
+    producer_fault::Start(producer_fault::Mode::Replacement);
+    auto replaced=load(0x40);
+    producer_fault::mode=producer_fault::Mode::None;
+    Check(replaced.handled && replaced.effect && producer_fault::failures==1 &&
+          ReadWholeFile(producer_fault::replacedPath)==std::vector<unsigned char>{0x6d} &&
+          std::filesystem::exists(producer_fault::retainedPath),
+          "rename failure cleanup does not delete another file at the old temporary name");
+    ReleaseFakeEffects(state);
+    producer_fault::Finish();
+    ResetCacheEnvironment();
+}
+
+void TestRejectedCachedBinary() {
+    for (bool disk : {false, true}) {
+        TempDir directory(disk ? "rejected-disk" : "rejected-memory");
+        const auto managed = directory.path / L"Cache";
+        producer_fault::Configure(managed);
+        PrepareCache(managed / L"MME");
+        FakeState state;
+        const D3DX hooks = MakeHooks(state);
+        const auto source = directory.path / L"main.fx";
+        WriteText(source, "float4 Tint = float4(0.25, 0.5, 0.75, 1.0);\n");
+        const auto load = [&] {
+            return CreateWith(hooks, TestDevice(), source.c_str(), nullptr, nullptr, 0, nullptr);
+        };
+        Check(load().handled && state.compileCalls == 1, "seed a valid cache entry");
+        const auto files = CacheFiles(managed);
+        Check(files.size() == 1, "one managed effect entry was registered");
+        if (files.size() != 1) { ReleaseFakeEffects(state); producer_fault::Finish(); continue; }
+        const auto old = ReadWholeFile(files.front());
+        namespace cache = mikumikustudio::cache_manager;
+        cache::ResetScene();
+        if (disk) cache::Touch(files.front());
+        state.rejectedBinary = DefaultBinary();
+        state.binary = {'M', 'M', 'S', 'F', 'X', 0, 0, 2};
+        if (disk) ClearMemoryCache();
+        Check(load().handled && state.compileCalls == 2 && state.lastEffectBinary == state.binary,
+            "runtime rejection recompiles the unchanged source and uses the new effect");
+        if (disk) {
+            Check(ReadWholeFile(files.front()) == old, "an active scene lease protects the disk entry");
+        } else {
+            Check(ReadWholeFile(files.front()) != old, "the fresh binary replaces the unleased disk entry");
+        }
+        Check(load().handled && state.compileCalls == 2 && state.lastEffectBinary == state.binary,
+            "the repaired memory entry serves the next load");
+        cache::ResetScene();
+        ClearMemoryCache();
+        if (disk) {
+            state.compileFail = true;
+            Check(!load().handled && state.compileCalls == 3 && ReadWholeFile(files.front()) == old,
+                "failed recompilation falls back and preserves the last complete file");
+            state.compileFail = false;
+            Check(load().handled && state.compileCalls == 4 && ReadWholeFile(files.front()) != old,
+                "a new load repairs the disk entry after releasing the scene lease");
+        }
+        ClearMemoryCache();
+        const int compiled = state.compileCalls;
+        Check(load().handled && state.compileCalls == compiled && state.lastEffectBinary == state.binary,
+            "the repaired disk entry serves the next cold-process-style lookup");
+        cache::ResetScene();
+        const auto cleaned = cache::Clean(cache::Cleanup::All);
+        Check(cleaned.error.empty() && cleaned.files == 1 && !std::filesystem::exists(files.front()),
+            "normal cache cleanup can remove the repaired entry after releasing its lease");
+        ClearMemoryCache();
+        Check(load().handled && state.compileCalls == compiled + 1 &&
+            std::filesystem::exists(files.front()) && state.lastEffectBinary == state.binary,
+            "loading again after cleanup rebuilds the cache from the source");
+        ReleaseFakeEffects(state);
+        cache::ResetScene();
+        producer_fault::Finish();
+        ResetCacheEnvironment();
+    }
+}
+
 void TestCorruptEntries() {
     TempDir directory("corrupt");
     PrepareCache(directory.path);
@@ -2312,6 +2523,12 @@ int RunSmallStackCache() {
 }
 int main(int argc, char** argv) {
     if(argc==2 && std::strcmp(argv[1],"--small-stack")==0)return RunSmallStackCache();
+    if (argc == 2 && std::strcmp(argv[1], "--rejected-binary") == 0) {
+        RunTest("rejected cached effect binary", &TestRejectedCachedBinary);
+        if (g_failures) return 1;
+        std::puts("PASS rejected effect cache recovery");
+        return 0;
+    }
     if (argc >= 3 && std::strcmp(argv[1], "--include-probe") == 0) {
         std::wstring root;
         if (!WidenArgument(argv[2], root)) {
@@ -2342,10 +2559,12 @@ int main(int argc, char** argv) {
     RunTest("key-invalidation", &TestKeyInvalidation);
     RunTest("non-ascii-source-path", &TestNonAsciiSourcePath);
     RunTest("corrupt-entries", &TestCorruptEntries);
+    RunTest("rejected-binary", &TestRejectedCachedBinary);
     RunTest("fallback-and-diagnostics", &TestFallbackAndDiagnostics);
     RunTest("limits-and-unwritable-cache", &TestLimitsAndUnwritableCache);
     RunTest("disk-budget", &TestDiskBudget);
     RunTest("exception-safety", &TestExceptionSafety);
+    RunTest("managed-producer", &TestManagedProducer);
     SetDiskLimitsForTesting(0, 0);
     ResetCacheEnvironment();
     Check(g_fakeBuffersCreated == g_fakeBuffersReleased,

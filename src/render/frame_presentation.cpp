@@ -8,14 +8,17 @@
 
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/frame_rate.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/viewport_render_scale.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/window_dpi_scope.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/viewport_bounds.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
+#include "mikumikustudio/ui_scale.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -67,16 +70,21 @@ void BakePreview::RenderNative(){
     nativeBakePreview=true;RenderFrameScene(app_);Present();
 }
 
-static bool ReadFrameGeometry(MMDApp* app,FrameViewportGeometry& geometry) {
+static bool ReadFrameGeometry(MMDApp* app, FrameViewportGeometry& geometry,
+                              ViewportToolbarRows* toolbarRows = nullptr) {
     const bool fullscreen=app->FullscreenMode()!=0;
     const HWND window=fullscreen||!app->FloatingWindow()?app->MainWindow():app->FloatingWindow();
     const WindowDpiScope dpi(window);
     RECT client{};
     if(!window||IsIconic(window)||!GetClientRect(window,&client)){geometry={};return false;}
+    const auto nativePanels = MainPanelLayout(app, client.bottom);
+    const auto rows = FitViewportToolbarRows(app->FloatingWindow() ? client.bottom : nativePanels.bottomTop,
+                                             ui_scale::Percent());
+    if (toolbarRows) *toolbarRows = rows;
     return CalculateFrameViewport(client,app->SidebarWidth(),plugins::ToolbarHeight(app),
         fullscreen?FrameViewportMode::Fullscreen:app->FloatingWindow()?FrameViewportMode::Floating:FrameViewportMode::Docked,
         app->RenderWidth(),app->RenderHeight(),geometry,plugins::PropertyAreaHeight(app),
-        plugins::LeftAreaWidth(app),plugins::RightAreaWidth(app));
+        plugins::LeftAreaWidth(app),plugins::RightAreaWidth(app),nativePanels.bottomExtra,rows);
 }
 
 static RECT BasePresentationRect(MMDApp* app) {
@@ -112,10 +120,11 @@ static RECT BasePresentationRect(MMDApp* app) {
 ViewportPanelLayout FramePanelLayout(MMDApp* app) {
     if(!build_profile::original&&!app->RecordingWindow()){
         FrameViewportGeometry geometry;
-        if(!ReadFrameGeometry(app,geometry)||!FrameRectWithin(app->ViewportRect(),geometry.available))return {};
+        ViewportToolbarRows rows;
+        if(!ReadFrameGeometry(app,geometry,&rows)||!FrameRectWithin(app->ViewportRect(),geometry.available))return {};
         const bool adaptive=app->FullscreenMode()==0;
         auto panels=MakeViewportPanelLayout(geometry.available,app->ViewportRect(),adaptive,app->state.optflag[0]==0,
-            adaptive&&app->state.optflag[0]==0?ViewportScaleCaptionWidth(app):36);
+            adaptive&&app->state.optflag[0]==0?ViewportScaleCaptionWidth(app):36,adaptive?rows:ViewportToolbarRows{});
         if(!FrameRectWithin(panels.overlay,geometry.presentationBounds))return {};
         return panels;
     }
@@ -130,15 +139,19 @@ RECT FramePresentationRect(MMDApp* app) {
     return build_profile::original ? BasePresentationRect(app) : FramePanelLayout(app).overlay;
 }
 
-bool FrameViewportRenderable(MMDApp* app) {
+bool FrameViewportRenderable(MMDApp* app, RECT* presentation) {
     if(!app)return false;
-    if(build_profile::original||app->RecordingWindow())return true;
+    if(build_profile::original||app->RecordingWindow()){
+        if(presentation)*presentation=FramePresentationRect(app);
+        return true;
+    }
     for(auto* output=sceneOutput;output;output=output->previous_)
         if(output->app_==app&&output->borrowedViewport_)return false;
     const auto rect=FramePresentationRect(app);
     const auto* renderer=app->Renderer();
     if(!renderer||!renderer->device)return false;
     if(IsRectEmpty(&rect))return false;
+    if(presentation)*presentation=rect;
     IDirect3DSurface9* back=nullptr;D3DSURFACE_DESC desc{};
     HRESULT result=renderer->device->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back);
     if(SUCCEEDED(result))result=back?back->GetDesc(&desc):E_FAIL;
@@ -154,6 +167,26 @@ bool FrameViewportRenderable(MMDApp* app) {
     if(!desc.Width||!desc.Height||desc.Width>LONG_MAX||desc.Height>LONG_MAX)return false;
     const RECT buffer{0,0,LONG(desc.Width),LONG(desc.Height)};
     return FrameRectWithin(rect,buffer)&&FrameRectWithin(app->ViewportRect(),buffer);
+}
+
+bool PresentViewportPreview(MMDApp* app) {
+    if (!app || app->SceneMutationInProgress() || app->sceneRecoveryPending || !FrameViewportRenderable(app)) return false;
+    auto* renderer = app->Renderer();
+    if (!renderer || !renderer->device || FAILED(renderer->device->TestCooperativeLevel())) return false;
+    const auto previous = app->MessageSeen();
+    const float delta = app->DeltaTime();
+    app->MessageSeen() = 1;
+    app->DeltaTime() = 0;
+    frame_rate::Tick(app);
+    PrepareFrameTextOverlay(app);
+    RenderFrameScene(app);
+    app->MessageSeen() = previous;
+    app->DeltaTime() = delta;
+    const RECT rect = FramePresentationRect(app);
+    const bool presented = SUCCEEDED(renderer->device->Present(&rect, &rect,
+        app->FloatingWindow() ? app->FloatingWindow() : app->MainWindow(), nullptr));
+    frame_rate::Presented(app, presented);
+    return presented;
 }
 
 FrameSceneOutputScope::FrameSceneOutputScope(MMDApp* app):app_(app) {
@@ -250,10 +283,10 @@ float FrameOverlayScale(MMDApp* app) {
     const RECT frame = FrameOverlayRect(app);
     if (build_profile::original) return scale;
     const float frameWidth = float(frame.right - frame.left), frameHeight = float(frame.bottom - frame.top);
-    // One HUD unit is one window pixel. Keep that size until the FPS and
-    // operation block cannot sit side by side, or the block is too tall.
+    const float requested = app->RecordingWindow() ? 1.0f : ui_scale::Percent() / 100.0f;
+    // Keep the FPS and operation block inside the available presentation area.
     return frameWidth > 0 && frameHeight > 0
-        ? std::min({1.0f, frameWidth / 360.0f, frameHeight / 177.0f}) : 1.0f;
+        ? std::min({requested, frameWidth / 360.0f, frameHeight / 177.0f}) : 1.0f;
 }
 
 void FillFramePresentationMargins(MMDApp* app, IDirect3DDevice9* device) {

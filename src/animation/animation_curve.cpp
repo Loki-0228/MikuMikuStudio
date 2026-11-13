@@ -5,8 +5,8 @@
 //
 // Curve model
 // -----------
-// * Keys are stored in increasing frame order; every key's frame is a whole,
-//   non-negative frame number.
+// * Keys are stored in increasing frame order. Validate admits non-negative
+//   frames; ValidateSigned explicitly admits the signed authoring range.
 // * Key::interpolation describes the interval that ENDS at the key, so the
 //   first key's interpolation value is unused.  The pair (key i, key i+1) is
 //   therefore interpolated with keys[i + 1].interpolation.
@@ -25,6 +25,7 @@
 // * Time is recovered by inverting the cubic; it is never assumed linear.
 
 #include "mikumikustudio/animation_curve.hpp"
+#include "mikumikustudio/frame_limits.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -73,6 +74,7 @@ bool IsValidTangent(Tangent value) {
 std::string KeyLabel(std::size_t index) { return "key " + std::to_string(index) + ": "; }
 
 double FrameSpan(const Key &start, const Key &end) {
+    // Convert before subtraction: the signed authoring span can be 4294967292.
     return static_cast<double>(end.frame) - static_cast<double>(start.frame);
 }
 
@@ -301,9 +303,9 @@ void WriteF64(std::vector<std::uint8_t> &out, double value) {
     }
 }
 
-}  // namespace
+enum class FrameDomain { NonNegative, Signed };
 
-bool Validate(const Track &track, std::string &error) {
+bool ValidateTrack(const Track &track, std::string &error, FrameDomain domain) {
     error.clear();
     const std::vector<Key> &keys = track.keys;
     if (keys.size() > kMaximumKeys) {
@@ -313,8 +315,15 @@ bool Validate(const Track &track, std::string &error) {
     }
     for (std::size_t index = 0; index < keys.size(); ++index) {
         const Key &key = keys[index];
-        if (key.frame < 0) {
+        if (domain == FrameDomain::NonNegative && key.frame < 0) {
             error = KeyLabel(index) + "frame " + std::to_string(key.frame) + " is negative";
+            return false;
+        }
+        if (domain == FrameDomain::Signed &&
+            (key.frame < frame_limits::minimum || key.frame > frame_limits::maximum)) {
+            error = KeyLabel(index) + "frame " + std::to_string(key.frame) + " is outside [" +
+                    std::to_string(frame_limits::minimum) + ", " +
+                    std::to_string(frame_limits::maximum) + "]";
             return false;
         }
         if (!std::isfinite(key.value)) {
@@ -369,6 +378,16 @@ bool Validate(const Track &track, std::string &error) {
         }
     }
     return true;
+}
+
+}  // namespace
+
+bool Validate(const Track &track, std::string &error) {
+    return ValidateTrack(track, error, FrameDomain::NonNegative);
+}
+
+bool ValidateSigned(const Track &track, std::string &error) {
+    return ValidateTrack(track, error, FrameDomain::Signed);
 }
 
 Sample Evaluate(const Track &track, double frame) {

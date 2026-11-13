@@ -1,5 +1,7 @@
 #pragma once
+#include "mikumikustudio/build_profile.hpp"
 #include "scene_store.hpp"
+#include <cstdint>
 #include <set>
 
 namespace mikumikustudio::plugins {
@@ -25,6 +27,12 @@ public:
         bool Publish() noexcept;
     };
     const Entry& Get(const void* token);
+#if !MMD_ORIGINAL_PROFILE
+    // Allocation-free bound for Get's private registration storage. Existing
+    // present entries need no storage. Reject invalid/absent entries, exhausted
+    // generations/capacities and unaudited STL layouts without changing bytes.
+    MmsResult MeasureGetPreparation(const void* token,std::uint64_t& bytes) const noexcept;
+#endif
     // A new import is registered absent; it is never visible before commit.
     const Entry& CreateAbsent(const void* token);
     // Retained identity for an undoable absent object. Get/Element refuse it;

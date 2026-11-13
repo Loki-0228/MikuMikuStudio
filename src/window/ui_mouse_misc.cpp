@@ -1,4 +1,5 @@
 #include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 // ===========================================================================
 // VA 0x0044AAA0 - HandleLButtonDblClk  (original: sub_44AAA0)
 // ===========================================================================
@@ -93,15 +94,17 @@ void HandleLButtonDblClk(MMDApp* app) {
     const HWND hwnd = static_cast<HWND>(app->state.hwnd);  // 657080
     app->CameraAttachmentTransformSuppressed() = 0;
     RECT rect;
-    GetClientRect(hwnd, &rect);                                 // output never read in the original
+    GetClientRect(hwnd, &rect);
+    const auto layout = MainPanelLayout(app, rect.bottom);
+    const int x = layout.DesignX(app->MouseX());
+    const int y = layout.DesignY(app->MouseY());
 
     // compact-panel geometry gate (asm order: width < sidebar-18, height
     // < 160, height > 144, width > 100, then byte 0x330 clear)
-    if (app->MouseY() > 144 &&
-        app->MouseY() < 160 &&
-        app->MouseX() <
-            app->SidebarWidth() - 18 &&
-        app->MouseX() > 100 &&
+    if (y >= kTimelineGridTop && y < kTimelineGridTop + 15 &&
+        app->MouseX() < app->SidebarWidth() - layout.Pixels(18) &&
+        x > 100 && (x - 100) / 13 < layout.FrameColumns(app->SidebarWidth()) &&
+        app->MouseY() < layout.timelineBottom &&
         app->PlaybackActive() == 0) {
 
         // ---- 1. model IK sweep: snapshot + clear any set IK flags ---------
@@ -131,7 +134,7 @@ void HandleLButtonDblClk(MMDApp* app) {
 
         // ---- 2. frame number -> edit box (control 0x1A1 = 417) ------------
         // this+0x980 = this+0x97C + (this+4 - 100) / 13
-        const auto nextFrame = std::int64_t(app->state.timelineStartFrame) + (std::int64_t(app->MouseX()) - 100) / 13;
+        const auto nextFrame = std::int64_t(app->state.timelineStartFrame) + (x - 100) / 13;
         if (nextFrame < frame_limits::minimum || nextFrame > frame_limits::maximum) { MessageBeep(MB_ICONWARNING); return; }
         app->state.currentFrame = static_cast<int>(nextFrame);
         const LRESULT textLen = GetWindowTextLengthA(GetDlgItem(hwnd, panel::kCurrentFrameEdit));
@@ -216,11 +219,7 @@ void HandleLButtonDblClk(MMDApp* app) {
         if (app->state.waveEnabled != 0) {   // 657100 (0xA06CC)
             TimelineDrawTicks(app->state.timelineStartFrame,
                               app->SidebarWidth());
-            RECT rc;
-            rc.left = 6;
-            rc.top = 95;
-            rc.right = app->SidebarWidth() - 3;
-            rc.bottom = 146;
+            RECT rc = TimelineRulerDamage(app);
             InvalidateRect(hwnd, &rc, 0);
             if (app->state.wavPlaysOnFrameMove != 0) {  // 655766 (0xA0196)
                 // gate flag read BEFORE the 0xA02B6 store (asm zf capture)
@@ -299,18 +298,19 @@ void HandleMouseActivate(MMDApp* app) {
     if (app->PlaybackActive() != 0)
         return;
 
+    const int divider = MainPanelLayout(app, rect.bottom).bottomTop + 2;
     const HWND fg = GetForegroundWindow();
     const HWND cached = app->FloatingWindow();  // 658744 (0xA0D38)
 
     if (app->state.optflag[0] != 0) {    // 760 (0x2F8)
         // mode row: keep the combo selection in sync with the panel state
-        if (fg == cached || app->MouseY() <= rect.bottom - 158) {
+        if (fg == cached || app->MouseY() <= divider) {
             SendMessageA(GetDlgItem(hwnd, panel::kMainComboModel), CB_SETCURSEL,
                          ResolveModelComboSelection(app), 0);
             ApplyModelComboSelection(app);                                       // 0x44D940 (ui_model_reload.cpp)
             return;
         }
-    } else if (app->MouseY() > rect.bottom - 158 &&
+    } else if (app->MouseY() > divider &&
                fg != cached) {
         SendMessageA(GetDlgItem(hwnd, panel::kMainComboModel), CB_SETCURSEL, 0, 0);
         ApplyModelComboSelection(app);                                           // 0x44D940 (ui_model_reload.cpp)

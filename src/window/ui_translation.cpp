@@ -4,8 +4,10 @@
 #include "mikumikustudio/ui_language.hpp"
 #include <cstring>
 #include <cwchar>
+#include <limits>
 #include <string>
 #include "mikumikustudio/text_encoding.hpp"
+#include "mikumikustudio/status_title_checked_gdi.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -378,6 +380,58 @@ int DrawUiGlyph(MMDApp* app, const char* text, HDC hdc, int size, int x, int y,
                                captionFace);
     }
     return DrawGlyph(app, text, hdc, size, x, y, r, g, b, bold);
+}
+
+bool DrawStatusWideGlyphChecked(StatusTitleGdiSession& session,
+    const wchar_t* text, int size, int x, int y, unsigned char r, unsigned char g,
+    unsigned char b, int bold, int& advance, const wchar_t* face) noexcept {
+    if (!text || size == (std::numeric_limits<int>::min)()) return false;
+    const auto length = std::wcslen(text);
+    const wchar_t* selectedFace = face ? face : L"Microsoft YaHei UI";
+    if (length > static_cast<std::size_t>((std::numeric_limits<int>::max)()) ||
+        std::wcslen(selectedFace) >= LF_FACESIZE) return false;
+    LOGFONTW font{};
+    font.lfHeight = -size; font.lfWeight = bold ? FW_BOLD : FW_NORMAL;
+    font.lfCharSet = DEFAULT_CHARSET; wcscpy_s(font.lfFaceName, selectedFace);
+    const auto create = [](void* context) noexcept -> std::uintptr_t {
+        return reinterpret_cast<std::uintptr_t>(CreateFontIndirectW(static_cast<LOGFONTW*>(context)));
+    };
+    if (session.CreateAndSelect(create, &font) != OffscreenFontSelection::Selected) return false;
+    OffscreenSurfaceView view{};
+    bool ok = session.Read(view) && view.ready && view.dc;
+    SIZE extent{};
+    if (ok) {
+        HDC dc = reinterpret_cast<HDC>(view.dc);
+        ok = SetBkMode(dc, TRANSPARENT) != 0 && SetTextColor(dc, RGB(r,g,b)) != CLR_INVALID &&
+             TextOutW(dc, x, y, text, static_cast<int>(length)) != 0 &&
+             GetTextExtentPoint32W(dc, text, static_cast<int>(length), &extent) != 0 && GdiFlush() != 0;
+    }
+    const bool restored = session.RestoreFont();
+    if (!ok || !restored) { session.Fail(); return false; }
+    advance = extent.cx;
+    return true;
+}
+
+bool DrawStatusUiGlyphChecked(StatusTitleGdiSession& session,
+    MMDApp* app, const char* text, int size, int x, int y, unsigned char r,
+    unsigned char g, unsigned char b, int bold, int& advance, UiGlyphFace face) noexcept {
+    if (!app || !text) return false;
+    const bool caption = face == UiGlyphFace::Caption;
+    const wchar_t* captionFace = caption ? UiCaptionFaceName(app->EnglishUI()) : L"Microsoft YaHei UI";
+    if (app->EnglishUI() == kUiChinese) {
+        if (const auto* zh = ChineseUiText(text)) {
+            const int lift = std::strcmp(text, "fps") == 0 ? 5 : 3;
+            if (y < (std::numeric_limits<int>::min)() + lift) return false;
+            return DrawStatusWideGlyphChecked(session, zh, size, x, y-lift, r,g,b,bold,advance,captionFace);
+        }
+    }
+    if (caption) {
+        wchar_t wide[64]{}; int length = 0;
+        for (; length < 63 && text[length] != '\0'; ++length)
+            wide[length] = static_cast<wchar_t>(static_cast<unsigned char>(text[length]));
+        return DrawStatusWideGlyphChecked(session, wide, size,x,y,r,g,b,bold,advance,captionFace);
+    }
+    return DrawStatusGlyphChecked(session, app, text, size,x,y,r,g,b,bold,advance);
 }
 
 void SetUiControlText(MMDApp* app, HWND control, const char* english) {

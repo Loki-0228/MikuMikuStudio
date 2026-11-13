@@ -31,13 +31,8 @@
 //     stereo enable (0x407470 -> nvapi 0x4CC0F0; -3 no-op without
 //     nvapi)                                                       0x46EA49
 //     3D Vision side-by-side branch (A0D61 && A0D64 == 2):
-//       wide = CreateRenderTarget(2*screenW, screenH, ...);
-//       StretchRect(bb, {0,0,screenW,screenH}, wide,
-//                          {0,0,2*screenW,screenH}, LINEAR|NONE);
-//       StretchRect(wide, {0,0,capW,capH},       [9EB88],
-//                          {0,0,capW,capH},           LINEAR|NONE);
-//       StretchRect(wide, {screenW,0,screenW+capW,capH}, [9EB88],
-//                          {capW,0,2*capW,capH},        LINEAR|NONE)
+//       Stage the stereo backbuffer at twice its width. Copy one outputW
+//       crop from each half into the two halves of the capW-wide target.
 //                                                                   0x46EA93
 //     StretchRect(bb, {0,0,capW,capH}, [9EB88], same, LINEAR, then
 //     NONE on failure); still FAILED -> epilogue + return          0x46ED5D
@@ -111,6 +106,41 @@ void TraceRec(const char* fmt, ...) {
 #else
 inline void TraceRec(const char*, ...) {}
 #endif
+
+HRESULT PackStereoFrame(IDirect3DDevice9* device, IDirect3DSurface9* backbuffer,
+                        IDirect3DSurface9* capture, LONG eyeWidth, LONG eyeHeight,
+                        D3DFORMAT format) {
+    if (!backbuffer) return E_FAIL;
+    D3DSURFACE_DESC desc{};
+    HRESULT result = backbuffer->GetDesc(&desc);
+    if (FAILED(result)) return result;
+    if (eyeWidth <= 0 || eyeHeight <= 0 ||
+        static_cast<UINT>(eyeWidth) > desc.Width || static_cast<UINT>(eyeHeight) > desc.Height)
+        return E_INVALIDARG;
+
+    Microsoft::WRL::ComPtr<IDirect3DSurface9> staged;
+    result = device->CreateRenderTarget(2 * desc.Width, desc.Height, format,
+        D3DMULTISAMPLE_NONE, 0, FALSE, &staged, nullptr);
+    if (FAILED(result)) return result;
+    const auto copy = [&](IDirect3DSurface9* src, const RECT* srcRect,
+                          IDirect3DSurface9* dst, const RECT* dstRect) {
+        const HRESULT filtered = device->StretchRect(src, srcRect, dst, dstRect, D3DTEXF_LINEAR);
+        return SUCCEEDED(filtered) ? filtered : device->StretchRect(src, srcRect, dst, dstRect, D3DTEXF_NONE);
+    };
+    const RECT backbufferRect{0, 0, static_cast<LONG>(desc.Width), static_cast<LONG>(desc.Height)};
+    const RECT stagedRect{0, 0, 2 * backbufferRect.right, backbufferRect.bottom};
+    result = copy(backbuffer, &backbufferRect, staged.Get(), &stagedRect);
+    if (FAILED(result)) return result;
+
+    const RECT left{0, 0, eyeWidth, eyeHeight};
+    result = copy(staged.Get(), &left, capture, &left);
+    if (FAILED(result)) return result;
+
+    const LONG rightOrigin = backbufferRect.right;
+    const RECT rightSource{rightOrigin, 0, rightOrigin + eyeWidth, eyeHeight};
+    const RECT rightTarget{eyeWidth, 0, 2 * eyeWidth, eyeHeight};
+    return copy(staged.Get(), &rightSource, capture, &rightTarget);
+}
 
 }  // namespace
 
@@ -247,38 +277,7 @@ bool RecordingReadbackPass(MMDApp* app) {
         RECT rect{0, 0, capW, capH};
         stretch = source ? device->StretchRect(source, &rect, *rtSlot, &rect, D3DTEXF_NONE) : E_FAIL;
     } else if (stereo3d && s.AviStereoWidthMultiplier() == 2) {
-        // 3D Vision side-by-side packing (0x46EA93..0x46ED5C): stretch
-        // the back buffer into a double-width staging target, then copy
-        // the two eye regions down into the capture target.
-        const std::int32_t screenW = GetSystemMetrics(SM_CXSCREEN);
-        const std::int32_t screenH = GetSystemMetrics(SM_CYSCREEN);
-        IDirect3DSurface9* wide = nullptr;
-        device->CreateRenderTarget(screenW * 2, screenH, fmt,
-                                   D3DMULTISAMPLE_NONE, 0, FALSE, &wide,
-                                   nullptr);
-        if (wide != nullptr) {
-            RECT srcR{0, 0, screenW, screenH};
-            RECT dstR{0, 0, screenW * 2, screenH};
-            stretch = device->StretchRect(*backBuffer, &srcR, wide, &dstR,
-                                          D3DTEXF_LINEAR);
-            if (stretch != 0)
-                stretch = device->StretchRect(*backBuffer, &srcR, wide,
-                                              &dstR, D3DTEXF_NONE);
-            RECT eyeL{0, 0, capW, capH};
-            HRESULT eye = device->StretchRect(wide, &eyeL, *rtSlot, &eyeL,
-                                              D3DTEXF_LINEAR);
-            if (eye != 0)
-                device->StretchRect(wide, &eyeL, *rtSlot, &eyeL,
-                                    D3DTEXF_NONE);
-            RECT eyeRsrc{screenW, 0, screenW + capW, capH};
-            RECT eyeRdst{capW, 0, capW * 2, capH};
-            eye = device->StretchRect(wide, &eyeRsrc, *rtSlot, &eyeRdst,
-                                      D3DTEXF_LINEAR);
-            if (eye != 0)
-                device->StretchRect(wide, &eyeRsrc, *rtSlot, &eyeRdst,
-                                    D3DTEXF_NONE);
-            wide->Release();
-        }
+        stretch = PackStereoFrame(device, *backBuffer, *rtSlot, outputW, outputH, fmt);
     } else {
         RECT rect{0, 0, capW, capH};
         stretch = device->StretchRect(*backBuffer, &rect, *rtSlot, &rect,

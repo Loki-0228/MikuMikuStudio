@@ -1,4 +1,5 @@
 #include "mikumikustudio/plugin_storage.hpp"
+#include "mikumikustudio/bone_edit_axes.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/mmv4mms.hpp"
 #include "mikumikustudio/native_media.hpp"
@@ -17,6 +18,9 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#if !MMD_ORIGINAL_PROFILE
+#include "../plugins/background_identity.hpp"
+#endif
 #include <commctrl.h>   // TBM_SETPOS
 #include <d3d9.h>
 #include <vfw.h>
@@ -29,8 +33,10 @@
 #include <cstring>
 
 #include "mikumikustudio/mmd_app.hpp"
+#include "../io/project_relocation_context.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/scene_ownership.hpp"
+#include "mikumikustudio/texture_lookup.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ui_language.hpp"
 #include "mikumikustudio/ui_translation.hpp"
@@ -93,8 +99,16 @@ static void ReplaceEditText(HWND parent, int id, const char* text) {
                  reinterpret_cast<LPARAM>(text));                // 0xC2
 }
 
-void ResetAppState(MMDApp* app) {
-    if (!plugins::ResetPluginProject(app)) return;
+bool ResetAppState(MMDApp* app) {
+    if (!plugins::ResetPluginProject(app)) return false;
+    auto cacheReset = project_relocation::LoadScope::ResetAccepted(*app);
+    ResetBoneHudPreview(app);
+#if !MMD_ORIGINAL_PROFILE
+    // The original reset keeps the picture texture/path for later redisplay.
+    // Keep its immutable source asset too, but retire every old gesture ticket.
+    plugins::background_identity::Mutation mediaMutation(app, true, true, false, false,
+        plugins::background_identity::PictureRetention::RetainForSceneReset);
+#endif
     app->AdvanceSceneGeneration();
     app->PlaybackStartSeconds() = app->PlaybackCursorSeconds() = app->PlaybackEndSeconds() = 0;
     app->SyncPlaybackTimeCompatibility();
@@ -103,6 +117,15 @@ void ResetAppState(MMDApp* app) {
     mmv4mms::ClearScene();
     native_mesh::ClearScene();
     ScopedSceneMutation mutation(*app);
+    // The mutation scope may synchronously redraw on exit. Quarantine before
+    // it unwinds so paint and input cannot see a partly dismantled scene.
+    struct QuarantineIncompleteReset {
+        MMDApp& app;
+        bool complete = false;
+        ~QuarantineIncompleteReset() {
+            if (!complete) app.sceneRecoveryPending = true;
+        }
+    } recovery{*app};
     PrepareEffectProjectPaths(nullptr);
     HWND hwnd = app->MainWindow();
     app->SceneModified() = 0;
@@ -238,6 +261,7 @@ void ResetAppState(MMDApp* app) {
     ReleaseSceneModels(*app);                                    // 0x44E95A
     ReleaseGlobalTimelineTracks(*app);                            // 0x44E99C
     ReleaseAccessoriesAndTracks(*app);                            // 0x44EA10
+    if (auto* renderer = app->Renderer()) ReleaseTexturePool(*renderer);
 
     // ---- combo refills ------------------------------------------------------
     // Application-owned vocabulary (not model names): the English string is the
@@ -565,6 +589,11 @@ void ResetAppState(MMDApp* app) {
     PostModelReload2(app);                                       // 0x40D940
     PostViewRefresh(app);                                        // 0x40D130
     InvalidateRect(hwnd, nullptr, FALSE);
+    // The reset completed in full; refusals and exceptions above keep it set.
+    app->sceneRecoveryPending = false;
+    cacheReset.Complete(cache_manager::SceneOutcome::ResetComplete);
+    recovery.complete = true;
+    return true;
 }
 
 }  // namespace mikumikustudio

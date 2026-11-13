@@ -8,11 +8,12 @@ namespace mikumikustudio::plugins {
 struct StoredData { uint32_t schema = 0; std::vector<unsigned char> bytes; };
 using StoredRecords = std::map<std::string, StoredData>;
 class StorageStore;
-struct StorageClient { StorageStore* store = nullptr; std::string id; std::atomic<bool> stopping{false}; };
+struct StorageClient { StorageStore* store = nullptr; std::string id; std::atomic<bool> stopping{false}; uint64_t savedLeaseBytes = 0; };
 // All operations and callbacks are serialized on the creating UI thread.
 class StorageStore {
+    friend struct StorageStoreTestAccess;
     struct Provider { StorageClient* owner; MmsSerializerV1 table; };
-    struct Lease { StorageClient* owner; StoredData data; };
+    struct Lease { StorageClient* owner; std::shared_ptr<const StoredData> data; };
     struct Candidate { MmsSerializerV1 table; MmsHandle value; };
     DWORD thread_ = GetCurrentThreadId();
     MmsHandle next_ = 1;
@@ -20,6 +21,10 @@ class StorageStore {
     StoredRecords records_, pending_;
     std::map<MmsHandle, Provider> providers_;
     std::map<MmsHandle, Lease> leases_;
+    // Weak entries identify the current record version for each client; only
+    // outstanding leases keep a snapshot and its byte charge alive.
+    std::map<StorageClient*, std::weak_ptr<const StoredData>> savedSnapshots_;
+    uint64_t savedLeaseBytes_ = 0;
     std::vector<Candidate> candidates_;
     MmsResult Ready() const;
     void CancelCandidates() noexcept;
@@ -32,7 +37,7 @@ public:
     bool Retire(StorageClient&);
     bool InCallback() const { return busy_; }
     bool Poisoned() const noexcept { return poisoned_; }
-    bool Prepared() const { return prepared_; }
+    bool Prepared() const noexcept { return prepared_; }
     bool CanRestore(const std::string&) const;
     MmsHandle RestoreToken(const std::string&) const;
     const StoredRecords& Records() const { return records_; }
@@ -44,6 +49,6 @@ public:
     bool Commit() noexcept;
     void Cancel() noexcept;
     // The caller has already durably published the file pair. No allocation.
-    void Saved(StoredRecords& data) noexcept { records_.swap(data); }
+    void Saved(StoredRecords& data) noexcept;
 };
 }

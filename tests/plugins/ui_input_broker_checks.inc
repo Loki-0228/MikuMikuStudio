@@ -1,5 +1,11 @@
 #include <thread>
 
+// The test executable installs this size-selective operator new later through
+// overflow_menu_checks.inc; this declaration does not alter production code.
+namespace overflow_allocation_fault {
+extern thread_local std::size_t bytes;
+extern thread_local unsigned hits;
+}
 namespace ui_input_broker_checks {
 MmsValue Integer(int64_t value) { MmsValue v{}; v.type = MMS_VALUE_INT; v.value.signedValue = value; return v; }
 MmsUiElementV1 Input(const std::string& id, const std::string& owner, const std::string& property) {
@@ -127,6 +133,36 @@ void RevokedIntent() {
     f.duringRead = {}; snapshot.intent = std::make_shared<std::atomic<bool>>(true);
     CHECK(f.registry.CommitPropertyInput(snapshot, Integer(7)) == MMS_OK && f.edits == 1);
 }
+void RevisionFailureAfterCommit() {
+    // The edit bridge has already published when its final revision lookup
+    // fails. The caller must still observe success and exactly one notification
+    // carrying the pre-edit revision, even if the query wrote before failing.
+    for (bool throws : {false, true}) {
+        Fixture f; bool committed = false; unsigned notifications = 0;
+        std::string notifiedId; uint64_t notifiedRevision = 0;
+        f.registry.SetPropertyInputBridges([&](UiClient& owner, uint64_t& out) -> MmsResult {
+            CHECK(&owner == &f.owner);
+            if (committed) {
+                out = 999;
+                if (throws) throw std::runtime_error("revision lookup after commit");
+                return MMS_E_FAILED;
+            }
+            out = f.revision; return MMS_OK;
+        }, [&](UiClient& owner, const PropertyInputSnapshot& snapshot, const MmsValue& value) -> MmsResult {
+            CHECK(&owner == &f.owner && f.registry.InCallback() && snapshot.sceneRevision == f.revision);
+            ++f.edits; f.value = value; committed = true; return MMS_OK;
+        });
+        f.registry.SetPropertyChanged([&](const std::string& id, uint64_t revision) {
+            CHECK(!f.registry.InCallback()); ++notifications; notifiedId = id; notifiedRevision = revision;
+        });
+        PropertyInputSnapshot snapshot;
+        CHECK(f.registry.CapturePropertyInput(f.elementId, snapshot) == MMS_OK && snapshot.editable);
+        CHECK(f.registry.CommitPropertyInput(snapshot, Integer(7)) == MMS_OK);
+        CHECK(committed && f.edits == 1 && f.value.value.signedValue == 7);
+        CHECK(notifications == 1 && notifiedId == f.propertyId && notifiedRevision == snapshot.sceneRevision);
+        CHECK(f.reads == f.releases && !f.registry.HasLeases(f.owner) && !f.registry.InCallback());
+    }
+}
 struct IntentStageGuard final : EditStageGuard {
     std::shared_ptr<const std::atomic<bool>> intent;
     explicit IntentStageGuard(std::shared_ptr<const std::atomic<bool>> value): intent(std::move(value)) {}
@@ -189,6 +225,76 @@ MmsHandle RegisterInput(ManagerEditCase& f, const std::string& id) {
 }
 void ManagerChecks(const fs::path& root, const fs::path& dll) {
     const std::string id = "org.example.input-broker";
+    for (bool stopWithPending : {false, true}) {
+        ManagerEditCase f(root / (stopWithPending ? "input-event-stop" : "input-event-frame"));
+        ManagerEditProbe probe(f.Package(dll,id));f.Load();RegisterInput(f,id);
+        using Counter=uint64_t(*)();
+        auto events=reinterpret_cast<Counter>(GetProcAddress(probe.module,"GetPropertyEventCount"));
+        auto closing=reinterpret_cast<Counter>(GetProcAddress(probe.module,"GetClosingEventCount"));
+        auto ready=reinterpret_cast<Counter>(GetProcAddress(probe.module,"GetPropertyEventServiceReady"));
+        CHECK(events && closing && ready);
+        if (events && closing && ready) {
+            PropertyInputSnapshot snapshot;CHECK(f.manager->Ui().CapturePropertyInput(id+".input",snapshot)==MMS_OK);
+            CHECK(f.manager->Ui().CommitPropertyInput(snapshot,Integer(0))==MMS_OK && events()==0);
+            CHECK(f.manager->Ui().CommitPropertyInput(snapshot,Integer(9))==MMS_OK && events()==0);
+            if (stopWithPending) {
+                CHECK(f.manager->Stop() && events()==1 && closing()==1 && ready()==1);
+            } else {
+                CHECK(f.manager->FlushPropertyNotifications() && events()==1 && ready()==1);
+                CHECK(f.manager->FlushPropertyNotifications() && events()==1);
+            }
+        }
+        f.Close();
+    }
+    {
+        // Do not pump the dispatcher while producing these edits: exercise
+        // the real bounded manager queue, not a substitute container.
+        ManagerEditCase f(root/"input-event-capacity");
+        ManagerEditProbe probe(f.Package(dll,id));f.Load();RegisterInput(f,id);
+        using Counter=uint64_t(*)();
+        auto events=reinterpret_cast<Counter>(GetProcAddress(probe.module,"GetPropertyEventCount"));
+        auto ready=reinterpret_cast<Counter>(GetProcAddress(probe.module,"GetPropertyEventServiceReady"));
+        CHECK(events && ready);
+        if (events && ready) {
+            for (int value=1;value<=64;++value) {
+                PropertyInputSnapshot snapshot;
+                CHECK(f.manager->Ui().CapturePropertyInput(id+".input",snapshot)==MMS_OK);
+                CHECK(f.manager->Ui().CommitPropertyInput(snapshot,Integer(value))==MMS_OK);
+            }
+            CHECK(events()==0 && probe.Value()==64);
+            const auto before=f.Revision();
+            PropertyInputSnapshot snapshot;CHECK(f.manager->Ui().CapturePropertyInput(id+".input",snapshot)==MMS_OK);
+            CHECK(f.manager->Ui().CommitPropertyInput(snapshot,Integer(65))==MMS_E_BUSY);
+            CHECK(probe.Value()==64 && f.Revision()==before && !f.host->attached->HasPending());
+            CHECK(f.manager->FlushPropertyNotifications() && events()==64 && ready()==64);
+            CHECK(f.manager->Ui().CapturePropertyInput(id+".input",snapshot)==MMS_OK);
+            CHECK(f.manager->Ui().CommitPropertyInput(snapshot,Integer(65))==MMS_OK && probe.Value()==65);
+            CHECK(f.manager->FlushPropertyNotifications() && events()==65 && ready()==65);
+        }
+        f.Close();
+    }
+    {
+        // Arm a real allocation failure after the host prepared history.
+        // The size matches the x64 MSVC list node used by the notification
+        // queue; earlier allocations of the same size can also consume it.
+        ManagerEditCase f(root/"input-event-allocator");
+        ManagerEditProbe probe(f.Package(dll,id));f.Load();RegisterInput(f,id);
+        using Counter=uint64_t(*)();
+        auto events=reinterpret_cast<Counter>(GetProcAddress(probe.module,"GetPropertyEventCount"));
+        CHECK(events!=nullptr);
+        if (events) {
+            PropertyInputSnapshot snapshot;CHECK(f.manager->Ui().CapturePropertyInput(id+".input",snapshot)==MMS_OK);
+            const auto revision=f.Revision();const auto hits=overflow_allocation_fault::hits;
+            bool armed=false;
+            f.host->onReserve=[&] {armed=true;overflow_allocation_fault::bytes=sizeof(PropertyNotificationQueue::Item)+2*sizeof(void*);};
+            const auto result=f.manager->Ui().CommitPropertyInput(snapshot,Integer(9));
+            overflow_allocation_fault::bytes=0;f.host->onReserve={};
+            CHECK(armed && overflow_allocation_fault::hits==hits+1 && result==MMS_E_MEMORY);
+            CHECK(probe.Value()==0 && f.Revision()==revision && !f.host->attached->HasPending() && events()==0);
+            CHECK(f.manager->FlushPropertyNotifications() && events()==0);
+        }
+        f.Close();
+    }
     {
         ManagerEditCase f(root / "input-nohost", false); ManagerEditProbe probe(f.Package(dll, id)); f.Load(); RegisterInput(f, id);
         PropertyInputSnapshot snapshot; CHECK(f.manager->Ui().CapturePropertyInput(id + ".input", snapshot) == MMS_OK);
@@ -261,6 +367,7 @@ static void UiInputBrokerChecks(const fs::path& root, const fs::path& dll) {
     ui_input_broker_checks::RegistrationAndReadOnly();
     ui_input_broker_checks::CanonicalAndIdentity();
     ui_input_broker_checks::RevokedIntent();
+    ui_input_broker_checks::RevisionFailureAfterCommit();
     ui_input_broker_checks::StoreIntentPhases();
     ui_input_broker_checks::ManagerChecks(root, dll);
 }

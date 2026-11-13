@@ -15,9 +15,11 @@
 #include <Windows.h>
 
 #include <cstring>
+#include <limits>
 
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/status_title_checked_gdi.hpp"
 
 namespace mikumikustudio {
 
@@ -50,6 +52,38 @@ int DrawGlyph(MMDApp* app, const char* text, HDC hdc, int size, int x, int y,
     GlobalUnlock(mem);
     GlobalFree(mem);
     return extent.cx;
+}
+
+bool DrawStatusGlyphChecked(StatusTitleGdiSession& session,
+    MMDApp* app, const char* text, int size, int x, int y,
+    unsigned char r, unsigned char g, unsigned char b, int bold, int& advance) noexcept {
+    if (!app || !text || size == (std::numeric_limits<int>::min)()) return false;
+    const auto length = std::strlen(text);
+    if (length > static_cast<std::size_t>((std::numeric_limits<int>::max)())) return false;
+    // The old path allocates an incompletely initialized LOGFONT. The checked
+    // path initializes it deterministically; visual equivalence needs GDI QA.
+    LOGFONTA font{};
+    strcpy_s(font.lfFaceName, app->EnglishUI() ? "Arial" : "MS PGothic");
+    font.lfCharSet = SHIFTJIS_CHARSET;
+    font.lfWeight = bold == 1 ? 700 : 400;
+    font.lfHeight = -size;
+    const auto create = [](void* context) noexcept -> std::uintptr_t {
+        return reinterpret_cast<std::uintptr_t>(CreateFontIndirectA(static_cast<LOGFONTA*>(context)));
+    };
+    if (session.CreateAndSelect(create, &font) != OffscreenFontSelection::Selected) return false;
+    OffscreenSurfaceView view{};
+    bool ok = session.Read(view) && view.ready && view.dc;
+    SIZE extent{};
+    if (ok) {
+        HDC dc = reinterpret_cast<HDC>(view.dc);
+        ok = SetBkMode(dc, TRANSPARENT) != 0 && SetTextColor(dc, RGB(r,g,b)) != CLR_INVALID &&
+             TextOutA(dc, x, y, text, static_cast<int>(length)) != 0 &&
+             GetTextExtentPoint32A(dc, text, static_cast<int>(length), &extent) != 0 && GdiFlush() != 0;
+    }
+    const bool restored = session.RestoreFont();
+    if (!ok || !restored) { session.Fail(); return false; }
+    advance = extent.cx;
+    return true;
 }
 
 }  // namespace mikumikustudio

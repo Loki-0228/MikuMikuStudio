@@ -4,6 +4,7 @@
 #include <bcrypt.h>
 #include "model_geometry_cache.hpp"
 #include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/sequential_file_reader.hpp"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -72,13 +73,15 @@ struct Hash {
         return BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0 &&
             BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) >= 0;
     }
-    bool Add(unsigned char* bytes, ULONG count) noexcept { return BCryptHashData(hash, bytes, count, 0) >= 0; }
+    bool Add(const unsigned char* bytes, ULONG count) noexcept {
+        return BCryptHashData(hash, const_cast<unsigned char*>(bytes), count, 0) >= 0;
+    }
     bool Finish(Digest& result) noexcept { return BCryptFinishHash(hash, result.data(), ULONG(result.size()), 0) >= 0; }
 };
 // Read through the independent guard handle, never the parser's descriptor or
-// buffered cursor. On a miss the full-file sample also supplies the geometry
-// digest from those same bytes. Existing mappings can bypass sharing locks:
-// these samples detect observed changes, not malicious concurrent/ABA writes.
+// buffered cursor. The descriptor-only path also samples the complete source
+// on misses. Existing writable mappings can bypass sharing locks, so compare
+// content when validating a hit or publishing a new entry.
 bool Fingerprint(HANDLE handle, std::uint64_t first, std::uint64_t last, Digest& result,
                  std::uint64_t sliceFirst = 0, std::uint64_t sliceLast = 0, Digest* slice = nullptr) noexcept {
     if (first > last || last > std::uint64_t((std::numeric_limits<std::int64_t>::max)()) ||
@@ -190,6 +193,8 @@ struct Session::State {
     std::int64_t vertexStart = 0;
     std::uint64_t epoch = 0;
     Digest before{};
+    Hash consumedPmx;
+    fileio::SequentialFileReader* pmxReader = nullptr;
     Handle guard;
     std::shared_ptr<const Entry> hit;
     std::shared_ptr<Entry> pending;
@@ -205,6 +210,10 @@ struct Session::State {
     void CancelPending() noexcept { pending.reset(); ReleaseReservation(); }
     void FinishGeometry() noexcept {
         finished = true;
+        if (pmxReader) {
+            pmxReader->CancelReadObservation();
+            pmxReader = nullptr;
+        }
         guard.Reset();
         try { std::lock_guard<std::mutex> lock(cache->mutex); hit.reset(); cache->SweepRetired(); }
         catch (...) { hit.reset(); }
@@ -238,7 +247,20 @@ struct Session::State {
         if (entry->payloadBytes) entry->payload.reset(new unsigned char[entry->payloadBytes]);
         return entry;
     }
+    bool ObservePmx(fileio::SequentialFileReader& reader) noexcept {
+        if (!consumedPmx.Open() || !reader.BeginReadObservation(
+            [](void* context, const unsigned char* bytes, unsigned count) noexcept {
+                return static_cast<Hash*>(context)->Add(bytes, count);
+            }, &consumedPmx)) return false;
+        pmxReader = &reader;
+        return true;
+    }
     bool CaptureCurrent(Entry& entry) {
+        if (auto* reader = std::exchange(pmxReader, nullptr)) {
+            const bool observed = reader->FinishReadObservation();
+            return observed && reader->Tell() == entry.indexEnd &&
+                Current(guard.value, identity) && consumedPmx.Finish(entry.geometry);
+        }
         if (!Current(guard.value, identity)) return false;
         Digest after;
         return Fingerprint(guard.value, 0, identity.size, after, std::uint64_t(vertexStart),
@@ -276,6 +298,15 @@ Statistics GetProcessStatistics() noexcept {
     try { return ProcessCache().GetStatistics(); } catch (...) { return {}; }
 }
 Session Session::Begin(int descriptor, Layout layout, std::int64_t vertexStart, Cache* cache, bool disabled) noexcept {
+    return BeginImpl(descriptor, layout, vertexStart, cache, disabled, nullptr);
+}
+Session Session::BeginPmx(int descriptor, Layout layout, fileio::SequentialFileReader& reader,
+                          Cache* cache, bool disabled) noexcept {
+    if (layout.format != Format::pmx) return {};
+    return BeginImpl(descriptor, layout, reader.Tell(), cache, disabled, &reader);
+}
+Session Session::BeginImpl(int descriptor, Layout layout, std::int64_t vertexStart, Cache* cache,
+                           bool disabled, fileio::SequentialFileReader* pmxReader) noexcept {
     Session result;
     try {
         if (!cache) { if (build_profile::original) return result; cache = &ProcessCache(); }
@@ -316,8 +347,12 @@ Session Session::Begin(int descriptor, Layout layout, std::int64_t vertexStart, 
             state->hit->retired = true; ++state->cache->statistics.invalidations;
             state->hit.reset(); state->cache->SweepRetired();
         }
-        if (!state->hit && (!Fingerprint(state->guard.value, 0, state->identity.size, state->before) ||
-            !Current(state->guard.value, state->identity))) return result;
+        if (!state->hit) {
+            if (pmxReader) {
+                if (!state->ObservePmx(*pmxReader)) return result;
+            } else if (!Fingerprint(state->guard.value, 0, state->identity.size, state->before) ||
+                       !Current(state->guard.value, state->identity)) return result;
+        }
         {
             std::lock_guard<std::mutex> lock(state->cache->mutex);
             auto& store = *state->cache;

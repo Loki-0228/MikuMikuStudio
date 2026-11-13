@@ -50,7 +50,7 @@ void Run(MMDApp* app, bool requireIk = false) {
         m.maxFrame = (std::max)(m.maxFrame, 8u);
     };
     prepare(model);
-    auto scene = CreateSceneStore(app); SceneClient client; auto bindApi = scene->Api(client);
+    auto scene = CreateSceneStore(app); SceneClient client; auto bindApi = ([&]{ MmsSceneApiV1 value{}; if (scene->Api(client, value) != MMS_OK) throw std::runtime_error("scene API binding failed"); return value; }());
     const auto acquire = [&] {
         MmsSceneQueryV1 q{}; q.h = Header<MmsSceneQueryV1>(); q.stage = MMS_STAGE_BIND; q.flags = MMS_SCENE_CURRENT_TIME; q.channels = MMS_CHANNEL_BONES;
         MmsSnapshotV1 bind{}; Check(bindApi.acquire(bindApi.context, &q, &bind) == MMS_OK, "publish both stable model identities"); return bind;

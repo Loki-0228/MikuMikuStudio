@@ -167,7 +167,7 @@ struct BoneCurveChange final:HistoryChange,std::enable_shared_from_this<BoneCurv
     mdl::BoneRecord* bones;unsigned count;std::uint64_t identity,generation=1,initialObjectGeneration;
     int initialFrame,searchBefore,searchAfter;std::uint32_t maxBefore,maxAfter,lastBefore,lastAfter;
     bool published=false,preserveSelection=false,metadata=false,displayChanged=false,visibleOwned=false;
-    std::vector<unsigned> affected,mirrored,patches;std::vector<Key> before,after;
+    std::vector<unsigned> affected,mirrored,retimed,patches;std::vector<Key> before,after;
     std::vector<FrameMark> beforeMarks,afterMarks;
     bone_scale::AuthoringState scaleBefore,scaleAfter;
     std::unique_ptr<bone_curve::AuthoringState> curveBefore,curveAfter;
@@ -233,6 +233,7 @@ struct BoneCurveChange final:HistoryChange,std::enable_shared_from_this<BoneCurv
                 if(source->maxBefore!=source->maxAfter)m.maxFrame=forward?source->maxAfter:source->maxBefore;
                 if(source->lastBefore!=source->lastAfter)source->app.LastRegisteredFrame()=forward?source->lastAfter:source->lastBefore;}
             for(auto bone:source->mirrored){if(source->cursors)source->cursors[bone]=targetCursors[bone];if(source->active)source->active[bone]=targetActive[bone];}
+            if(source->cursors)for(auto bone:source->retimed)source->cursors[bone]=targetCursors[bone];
             if(source->displayChanged){const auto& targetDisplay=forward?source->displayAfter:source->displayBefore;
                 for(const auto& value:targetDisplay){auto& key=m.displayKeys[value.slot];key.visible=value.key.visible;
                     if(source->ikCount)std::memcpy(key.ikStates,value.ik.data(),source->ikCount);}
@@ -281,6 +282,14 @@ struct BoneCurveChange final:HistoryChange,std::enable_shared_from_this<BoneCurv
                 else if(!forward&&cursors)cursor=cursorBefore[bone];
                 if(cursors)candidate->targetCursors[bone]=cursor;
                 if(active)candidate->targetActive[bone]=forward?1:activeBefore[bone];}
+            if(cursors)for(auto bone:retimed){
+                unsigned cursor=bone;
+                for(auto index:Chain(candidate->target,bone,count)){
+                    cursor=index;
+                    if(candidate->target[index].frame>=unsigned(candidate->frame))break;
+                }
+                candidate->targetCursors[bone]=cursor;
+            }
             if(displayChanged){const auto& expected=forward?displayBefore:displayAfter;
                 const auto& targetDisplay=forward?displayAfter:displayBefore;candidate->display=m.displayKeys;
                 candidate->displayCapacity=mdl::KeyPoolCapacity(m.displayKeys);candidate->displayHeaders.resize(candidate->displayCapacity);
@@ -299,7 +308,7 @@ struct BoneCurveChange final:HistoryChange,std::enable_shared_from_this<BoneCurv
     }
     std::uint64_t RetainedBytes()const noexcept override{
         std::uint64_t bytes=sizeof(*this)+4*sizeof(void*);Charge(bytes,before.capacity(),sizeof(Key));Charge(bytes,after.capacity(),sizeof(Key));
-        for(const auto* values:{&affected,&mirrored,&patches})Charge(bytes,values->capacity(),sizeof(unsigned));
+        for(const auto* values:{&affected,&mirrored,&retimed,&patches})Charge(bytes,values->capacity(),sizeof(unsigned));
         Charge(bytes,beforeMarks.capacity()+afterMarks.capacity(),sizeof(FrameMark));Charge(bytes,cursorBefore.capacity(),sizeof(std::uint32_t));
         Charge(bytes,activeBefore.capacity()+ikOwned.capacity());Charge(bytes,scaleBefore.RetainedBytes());Charge(bytes,scaleAfter.RetainedBytes());
         Charge(bytes,curveBefore->RetainedBytes());Charge(bytes,curveAfter->RetainedBytes());
@@ -353,14 +362,28 @@ MmsResult PlanBoneCurveWrite(MMDApp& app,unsigned slot,const std::vector<BoneCur
                 MirrorFree(*change,edit);change->affected.push_back(edit.bone);
             }else{
                 if(authored)return MMS_E_ARGUMENT;const auto chain=Chain(change->after,edit.bone,change->count);
-                if(edit.nativeControls.size()!=chain.size())return MMS_E_ARGUMENT;bool changed=false;
+                if(edit.nativeControls.size()!=chain.size())return MMS_E_ARGUMENT;
+                bool changed=false,retimed=false;
                 for(std::size_t row=0;row<chain.size();++row){const auto& input=edit.nativeControls[row];auto& key=change->after[chain[row]];
                     if(input.frame!=int(key.frame))return MMS_E_ARGUMENT;
                     for(const auto& controls:input.controls)for(auto value:controls)if(value>127)return MMS_E_ARGUMENT;
+                    const int target=input.targetFrame==-1?input.frame:input.targetFrame;
+                    if((!row&&target!=0)||(row&&(target<=0||target>frame_limits::maximum||
+                        unsigned(target)<=change->after[chain[row-1]].frame)))return MMS_E_ARGUMENT;
                     if(!row)continue;
+                    if(key.frame!=unsigned(target)){
+                        key.frame=unsigned(target);
+                        changed=retimed=true;
+                    }
                     for(unsigned lane=0;lane<4;++lane)for(unsigned c=0;c<4;++c)if(key.interpolation[lane+c*4]!=input.controls[lane][c]){
                         key.interpolation[lane+c*4]=input.controls[lane][c];changed=true;}
                     if(change->scaleAfter.KeyCurve(int(chain[row]))!=input.controls[4]){if(!change->scaleAfter.SetKeyCurve(int(chain[row]),input.controls[4]))return MMS_E_ARGUMENT;changed=true;}
+                }
+                if(retimed){
+                    change->retimed.push_back(edit.bone);
+                    change->metadata=true;
+                    change->maxAfter=std::max(change->maxAfter,change->after[chain.back()].frame);
+                    change->lastAfter=std::max(change->lastAfter,change->maxAfter);
                 }
                 if(changed)change->affected.push_back(edit.bone);
             }

@@ -82,6 +82,7 @@
 #include <cwchar>
 
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/ui_message.hpp"
 #include "mikumikustudio/wave_audio_context.hpp"
@@ -658,7 +659,7 @@ void LoadWaveFile(MMDApp* app) {
         LineTo(hdc, 0xEF, 0x19);
         SelectObject(hdc, oldPen2);
         DeleteObject(black);
-        RECT rect{6, 0x64, 0xF7, 0x97};                             // 0x41866A..
+        RECT rect = TimelineRulerDamage(app);
         InvalidateRect(hwnd, &rect, FALSE);
         return;
     }
@@ -666,9 +667,7 @@ void LoadWaveFile(MMDApp* app) {
     wcscpy_s(s.WavePath(), 0x100, media::AudioSource(audio));
     s.WaveEnabled() = 1;                                            // 0x4186DD
     TimelineDrawTicks(s.TimelineStartFrame(), s.SidebarWidth());
-    RECT rect{6, 0x5F,
-              s.SidebarWidth() - 3,
-              0x92};                                                // 0x4186F5..
+    RECT rect = TimelineRulerDamage(app);
     InvalidateRect(hwnd, &rect, FALSE);
     PanelPaint(app);                                                // 0x414610
     SetFrameNormalized(s.FrameNormalization());                     // 0x4C2B80

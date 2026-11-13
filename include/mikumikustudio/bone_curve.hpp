@@ -75,6 +75,18 @@ class AuthoringRestore;
 // Canonical read for a shared-history host. Reconciliation is performed on a
 // detached author snapshot, never on live authoring or legacy undo rings.
 bool ReadDetached(const unsigned char* model, int bone, Tracks& out);
+struct CopyAuthoring { int bone; Tracks tracks; };
+// Capture only owned authors for the requested bones, in first-occurrence
+// order. All nine lanes retain their complete absolute-frame keys and handles;
+// missing/stale authors are omitted, never replaced by native/default curves.
+// Deferred edits and invalid indices, selected chains or tracks are refused.
+// Native reconciliation uses private storage; live authoring, stale registry
+// entries, undo rings, native keys, flags, pose and scale are never changed.
+// False clears out and sets error. Allocation failures also leave out empty
+// and propagate to the caller's preparation boundary. Success clears error.
+// The caller retains the model and serializes capture with source edits.
+bool CaptureCopyAuthoring(const unsigned char* model,const std::vector<int>& selectedBones,
+    std::vector<CopyAuthoring>& out,std::string& error);
 struct VmdTrackImport { int bone = -1; Tracks tracks; };
 bool ValidateFreeTracks(const Tracks&,std::string& error);
 // Decode and resolve one complete MMSBCRV1 block without importing native keys
@@ -93,6 +105,13 @@ struct NativeKeyView {
     const mdl::BoneKey* (*key)(const void*, std::uint32_t) noexcept = nullptr;
     bool (*scale)(const void*, std::uint32_t, bone_scale::Matrix&, bone_scale::Curve&) noexcept = nullptr;
 };
+class AuthoringState;
+// Allocation-free upper bound for signed deletion's validation capture and
+// source/target authoring restore, including staged empty registry storage.
+// Null target uses live authoring. Existing rings/caches are not charged.
+// The caller serializes source access; overflow returns UINT64_MAX.
+std::uint64_t DeletionPreparationBytes(const unsigned char* model,
+    const AuthoringState* target) noexcept;
 // Owned free-curve authoring only: tracks, stored native hashes and identity.
 // Capture does not call Read/Has, prune stale curves, or copy the 30-slot rings.
 // Empty curves and missing storage are equivalent; restoring empty curves
@@ -103,6 +122,7 @@ class AuthoringState {
     std::unique_ptr<Impl> impl_;
     AuthoringState();
     friend class AuthoringRestore;
+    friend std::uint64_t DeletionPreparationBytes(const unsigned char*, const AuthoringState*) noexcept;
 public:
     ~AuthoringState();
     AuthoringState(AuthoringState&&) noexcept;
@@ -189,6 +209,7 @@ class AuthoringRestore {
     struct Impl;
     std::unique_ptr<Impl> impl_;
     AuthoringRestore();
+    friend std::uint64_t DeletionPreparationBytes(const unsigned char*, const AuthoringState*) noexcept;
 public:
     ~AuthoringRestore();
     AuthoringRestore(AuthoringRestore&&) noexcept;
