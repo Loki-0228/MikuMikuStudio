@@ -9,6 +9,7 @@ void CheckBonePlaybackInterpolation() {
             if (attached && physicsMode != 2) continue;
             for (int outputFps : {60, 120, 240, 480}) {
                 if (moving && outputFps <= 240) continue;
+                const bool realtime = transition || outputFps > 240;
                 btDefaultCollisionConfiguration config;
                 btCollisionDispatcher dispatcher(&config);
                 btDbvtBroadphase broadphase;
@@ -73,11 +74,11 @@ void CheckBonePlaybackInterpolation() {
                     key.position[0] = float(i);
                     key.rotation[2] = attached ? 0 : std::sin(float(i) * .1f);
                     key.rotation[3] = attached ? 1 : std::cos(float(i) * .1f);
-                    key.physicsDisabled = transition && i > 0;
+                    key.physicsDisabled = transition && i > 1;
                     for (int c = 0; c < 4; ++c) {
                         key.interpolation[c] = key.interpolation[c + 4] = 20;
                         key.interpolation[c + 8] = key.interpolation[c + 12] = 107;
-                        if (eased && i == 1) {
+                        if (eased && i == 2) {
                             key.interpolation[c] = key.interpolation[c + 4] = 0;
                             key.interpolation[c + 8] = 127;
                             key.interpolation[c + 12] = 0;
@@ -90,7 +91,7 @@ void CheckBonePlaybackInterpolation() {
                 app->PlaybackPhysicsMode() = physicsMode;
                 app->PlaybackTiming().interpolate = true;
                 app->PlaybackActive() = 1;
-                app->FrameStepPlayback() = outputFps <= 240;
+                app->FrameStepPlayback() = !realtime;
                 app->AviRecordFps() = float(outputFps);
                 app->AviRecordEndFrame() = 300;
                 app->PlaybackEndSeconds() = 10;
@@ -106,21 +107,24 @@ void CheckBonePlaybackInterpolation() {
                     body.setLinearVelocity(btVector3(3, 0, 0));
                 }
                 if (transition) {
+                    // Inject a known simulated pose after reset; the first
+                    // nonzero fixed sample must capture it before bridging.
+                    const btTransform simulated(startRotation, btVector3(5, 0, 0));
+                    body.setWorldTransform(simulated);
+                    body.setInterpolationWorldTransform(simulated);
+                    motion.setWorldTransform(simulated);
                     PlaybackPoseAdvance(app.get(), 0);
                     PhysicsFrame(app.get(), 0);
-                    Check(std::abs(bone.matInit[12] - 5) < 1e-5 &&
-                          std::abs(bone.matInit[0] - std::cos(.6)) < 1e-5,
-                          "the transition start keeps the simulated position and rotation");
                 }
                 double maxPositionError = 0, maxRotationError = 0;
                 const int samples = outputFps / 5;
                 for (int sample = 1; sample <= samples; ++sample) {
                     app->DeltaTime() = 1.f / outputFps;
                     app->TimeNowLow() = unsigned(std::lround(sample * 1000.0 / outputFps));
-                    double frame = outputFps <= 240 ? sample * 30.0 / outputFps
+                    double frame = !realtime ? sample * 30.0 / outputFps
                         : app->TimeNowLow() * .03;
                     const auto stepsBefore = app->PlaybackPhysicsClock().step;
-                    const bool physicsDue = physicsMode && (outputFps <= 240
+                    const bool physicsDue = physicsMode && (!realtime
                         ? app->PlaybackPhysicsClock().Due(frame / 30, 60)
                         : app->PlaybackPhysicsClock().Completed(60) + 1e-12 < frame / 30);
                     const int collisionFlags = body.getCollisionFlags();
@@ -138,13 +142,21 @@ void CheckBonePlaybackInterpolation() {
                               bodyPose == body.getWorldTransform() && velocity == body.getLinearVelocity(),
                               "fractional display samples do not step or change the rigid-body transition");
                     }
-                    double blend = (std::min)(frame, 1.0);
-                    if (eased && frame < 1) {
+                    // The injected body reaches the bone snapshot on the first
+                    // fixed tick. The On-to-Off interval begins at frame 1.
+                    if (transition && frame < .5) continue;
+#if !MMD_ORIGINAL_PROFILE
+                    if (transition && frame >= 1 && frame < 2)
+                        Check(app->PlaybackPhysicsClock().VisualBridgeSamples(60, false).Contains(1),
+                              "the transition uses a capture from the current physics run");
+#endif
+                    double blend = std::clamp(frame - (transition ? 1.0 : 0.0), 0.0, 1.0);
+                    if (eased && frame > 1 && frame < 2) {
                         // Independent inverse of x(u)=3u^2-2u^3, y(u)=u^3.
                         double left = 0, right = 1;
                         for (int iteration = 0; iteration < 64; ++iteration) {
                             const double u = (left + right) * .5;
-                            if (3 * u * u - 2 * u * u * u < frame) left = u;
+                            if (3 * u * u - 2 * u * u * u < frame - 1) left = u;
                             else right = u;
                         }
                         const double u = (left + right) * .5;
@@ -152,7 +164,7 @@ void CheckBonePlaybackInterpolation() {
                     }
                     maxPositionError = (std::max)(maxPositionError,
                         std::abs(double(bone.matInit[12]) - (moving ? frame * .1 :
-                            transition && frame < 1 ? 5 - 4 * blend : frame)));
+                            transition && frame < 2 ? 5 - 3 * blend : frame)));
                     maxRotationError = (std::max)(maxRotationError,
                         std::abs(double(bone.matInit[0]) -
                             std::cos(moving ? 0 : transition ? .6 * (1 - blend) : frame * .2)));
