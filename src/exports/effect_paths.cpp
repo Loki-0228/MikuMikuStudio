@@ -368,16 +368,69 @@ bool NormalizeAgainstCwd(const std::wstring& decoded, std::wstring& normalized) 
     return true;
 }
 
-// Accept a spelling only when the exact bytes decode strictly and normalize to
-// an existing regular file.
-bool ExistingRegularPath(const char* bytes, UINT codePage, std::wstring& path) {
-    std::wstring decoded;
-    if (!text_encoding::Decode(bytes, codePage, decoded)) return false;
-    std::wstring normalized;
-    if (!NormalizeAgainstCwd(decoded, normalized) ||
-        !RegularFile(fs::path(normalized))) return false;
-    path = std::move(normalized);
+bool MissingPath(DWORD error) {
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ||
+           error == ERROR_INVALID_NAME || error == ERROR_NO_UNICODE_TRANSLATION;
+}
+
+bool HasNonAscii(const char* bytes) {
+    for (const auto* p = reinterpret_cast<const unsigned char*>(bytes); *p; ++p)
+        if (*p >= 0x80) return true;
+    return false;
+}
+
+// A foreign spelling needs a real file and must not compete with a different
+// real file. The callers check for an existing native target first.
+bool ExistingForeignPath(const char* bytes, bool requireSeparator,
+                         std::wstring& path, UINT* codePage = nullptr) {
+    if (!HasNonAscii(bytes)) return false;
+    const auto order = text_encoding::PathDecodingOrder();
+    std::wstring match;
+    UINT matchedCodePage = 0;
+    for (const UINT candidate : order) {
+        if (candidate == order.front()) continue;
+        std::wstring decoded, normalized;
+        if (!text_encoding::Decode(bytes, candidate, decoded)) continue;
+        // A DBCS trail byte 0x5c is not a directory separator.
+        if (requireSeparator && decoded.find_first_of(L"\\/") == std::wstring::npos) continue;
+        if (!NormalizeAgainstCwd(decoded, normalized) || !RegularFile(fs::path(normalized))) continue;
+        if (!match.empty()) {
+            if (_wcsicmp(match.c_str(), normalized.c_str()) != 0) return false;
+            continue;
+        }
+        match.swap(normalized);
+        matchedCodePage = candidate;
+    }
+    if (match.empty()) return false;
+    path.swap(match);
+    if (codePage) *codePage = matchedCodePage;
     return true;
+}
+
+enum class AssignmentMatch { None, Native, Mapped };
+AssignmentMatch ResolveAssignmentBytes(const char* bytes, bool normalizeAgainstCwd,
+                                      std::wstring& result, UINT* codePage = nullptr) {
+    const auto order = text_encoding::PathDecodingOrder();
+    const UINT native = order.front();
+    const auto mapped = [&](UINT candidate) {
+        std::wstring decoded, normalized;
+        if (!text_encoding::Decode(bytes, candidate, decoded)) return false;
+        if (normalizeAgainstCwd && !NormalizeAgainstCwd(decoded, normalized)) return false;
+        if (!RelativePath((normalizeAgainstCwd ? normalized : decoded).c_str(), result))
+            return false;
+        if (codePage) *codePage = candidate;
+        return true;
+    };
+    // A native EMM assignment intentionally resolves relative to the project,
+    // even if an EXE-relative namesake exists. An alternate encoding cannot
+    // claim an already usable native path (including directories), however.
+    if (mapped(native)) return AssignmentMatch::Mapped;
+    if (!HasNonAscii(bytes)) return AssignmentMatch::None;
+    if (::GetFileAttributesA(bytes) != INVALID_FILE_ATTRIBUTES || !MissingPath(GetLastError()))
+        return AssignmentMatch::Native;
+    for (const UINT candidate : order)
+        if (candidate != native && mapped(candidate)) return AssignmentMatch::Mapped;
+    return AssignmentMatch::None;
 }
 
 bool RelocatedEffectBytes(const char* bytes, std::wstring& result, UINT* codePage = nullptr) {
@@ -415,8 +468,8 @@ bool RelocatedEffectBytes(const char* bytes, std::wstring& result, UINT* codePag
 // A source the active code page cannot represent is persisted as UTF-8, and a
 // restarted process without that assignment accepts the saved real UTF-8 file.
 // Only an exact assignment mapping whose local file is a regular file, or an
-// existing regular file named by a strict UTF-8 decode, may change the result.
-// Unmapped names, absolute non-aliases, missing or directory targets, invalid
+// unambiguous existing regular file named by a strict foreign decode, may
+// change the result. Unknown names, missing or directory targets, invalid
 // parameters and allocation failures keep the native behavior, including
 // buffer sizing, lpFilePart, output and LastError.
 DWORD WINAPI EffectFullPathNameA(LPCSTR filename, DWORD length, LPSTR buffer,
@@ -426,36 +479,16 @@ DWORD WINAPI EffectFullPathNameA(LPCSTR filename, DWORD length, LPSTR buffer,
         // Interpret the input only for a valid size query or a usable buffer.
         if (filename && *filename && (buffer || length == 0)) {
             std::wstring source;
-            bool mapped = false;
-            // Decode the original bytes before normalizing: GetFullPathNameA
-            // first would already have replaced bytes the active code page
-            // cannot represent.
-            for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
-                std::wstring decoded;
-                if (!text_encoding::Decode(filename, cp, decoded)) continue;
-                std::wstring normalized;
-                if (!NormalizeAgainstCwd(decoded, normalized)) continue;
-                if (RelativePath(normalized.c_str(), source)) {
-                    mapped = true;
-                    break;
-                }
+            const auto assignment = ResolveAssignmentBytes(filename, true, source);
+            bool mapped = assignment == AssignmentMatch::Mapped;
+            if (assignment == AssignmentMatch::None) {
+                // Use the original bytes, before the ANSI API can change
+                // them. This also covers absolute EMM paths from another
+                // locale and UTF-8 paths persisted by a previous session.
+                mapped = RelocatedEffectBytes(filename, source) ||
+                    ExistingForeignPath(filename, false, source);
             }
-            if (!mapped) mapped = RelocatedEffectBytes(filename, source);
-            bool utf8Source = false;
-            if (!mapped) {
-                // A restarted process has no assignment for a source that was
-                // persisted as UTF-8. The native ACP meaning wins when those
-                // same bytes already name an existing file, so ambiguous
-                // input is never claimed.
-                std::wstring acpPath;
-                std::wstring utf8Path;
-                if (!ExistingRegularPath(filename, GetACP(), acpPath) &&
-                    ExistingRegularPath(filename, CP_UTF8, utf8Path)) {
-                    source.swap(utf8Path);
-                    utf8Source = true;
-                }
-            }
-            if (mapped || utf8Source) {
+            if (mapped) {
                 // A mapped local path was only lexically normalized. Apply the
                 // same trailing dot/space and separator rules the native call
                 // would, and keep the native path when that check fails.
@@ -522,37 +555,14 @@ HANDLE TrackAssignmentRead(HANDLE file, bool readOnly, DWORD attributes) noexcep
 // Japanese Windows can therefore point at an existing, different Unicode
 // spelling on Chinese Windows. Prefer the current ACP and only fall back to
 // another encoding when that exact decoded file really exists.
-bool ExistingPath(const char* bytes, std::wstring& path, UINT& codePage,
-                  bool allowProjectAliases = true) {
+bool ExistingPath(const char* bytes, std::wstring& path, UINT& codePage) {
     if (!bytes || !*bytes) return false;
-    if (allowProjectAliases && ProjectAliasBytes(bytes, path, &codePage) == AliasResult::Mapped) return true;
-    if (allowProjectAliases) for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
-        std::wstring decoded;
-        if (text_encoding::Decode(bytes, cp, decoded) && RelativePath(decoded.c_str(), path)) {
-            codePage = cp;
-            return true;
-        }
-    }
-    if (allowProjectAliases && RelocatedEffectBytes(bytes, path, &codePage)) return true;
-    bool nonAscii = false;
-    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(bytes); *p; ++p)
-        nonAscii |= *p >= 0x80;
-    if (!nonAscii || (!std::strchr(bytes, '\\') && !std::strchr(bytes, '/')))
-        return false;
-    for (UINT cp : {GetACP(), 932u, 936u, 950u, 949u, 65001u}) {
-        if (!text_encoding::Decode(bytes, cp, path)) continue;
-        const DWORD attributes = GetFileAttributesW(path.c_str());
-        if (attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            codePage = cp;
-            return true;
-        }
-    }
-    return false;
-}
-
-bool MissingPath(DWORD error) {
-    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ||
-           error == ERROR_INVALID_NAME || error == ERROR_NO_UNICODE_TRANSLATION;
+    if (ProjectAliasBytes(bytes, path, &codePage) == AliasResult::Mapped) return true;
+    const auto match = ResolveAssignmentBytes(bytes, false, path, &codePage);
+    if (match == AssignmentMatch::Mapped) return true;
+    if (match == AssignmentMatch::Native) return false;
+    if (RelocatedEffectBytes(bytes, path, &codePage)) return true;
+    return ExistingForeignPath(bytes, true, path, &codePage);
 }
 
 bool SettingsTarget(LPCWSTR filename, std::wstring& target) {
@@ -714,10 +724,12 @@ HANDLE WINAPI OpenEffectFile(LPCSTR filename, DWORD access, DWORD share,
 int WINAPI DecodeEffectPath(UINT codePage, DWORD flags, LPCCH bytes, int byteCount,
                            LPWSTR output, int capacity) {
     const DWORD incomingError = GetLastError();
+    // Explicit code pages and the thread ANSI code page can be intentional
+    // text conversions; do not override them with a process-wide path guess.
+    if (codePage != CP_ACP || !bytes || (byteCount != -1 && byteCount <= 0) ||
+        (flags != 0 && flags != MB_ERR_INVALID_CHARS))
+        return ::MultiByteToWideChar(codePage, flags, bytes, byteCount, output, capacity);
     try {
-    if ((codePage == CP_ACP || codePage == CP_THREAD_ACP || codePage == GetACP()) &&
-        bytes && (byteCount == -1 || byteCount > 0) &&
-        (flags == 0 || flags == MB_ERR_INVALID_CHARS)) {
         std::string bounded = byteCount == -1 ? std::string(bytes)
                                               : std::string(bytes, byteCount);
         if (!bounded.empty() && bounded.back() == '\0') bounded.pop_back();
@@ -730,12 +742,11 @@ int WINAPI DecodeEffectPath(UINT codePage, DWORD flags, LPCCH bytes, int byteCou
             // EXE-relative file does not exist. Convert the original bytes,
             // never the alias: subsequent W writes/deletes keep their target.
             SetLastError(incomingError);
-            return MultiByteToWideChar(resolvedCodePage, flags, bytes, byteCount, output, capacity);
+            return ::MultiByteToWideChar(resolvedCodePage, flags, bytes, byteCount, output, capacity);
         }
-    }
     } catch (...) { /* Preserve native conversion on compatibility failure. */ }
     SetLastError(incomingError);
-    return MultiByteToWideChar(codePage, flags, bytes, byteCount, output, capacity);
+    return ::MultiByteToWideChar(codePage, flags, bytes, byteCount, output, capacity);
 }
 
 // MMEffect derives its writable files, including MMEffect.ini, from the

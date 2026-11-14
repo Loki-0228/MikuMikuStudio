@@ -4,6 +4,12 @@
 #include <string>
 namespace mikumikustudio {
 class MMDApp;
+namespace effect_save {
+class CapturedEffects;
+class CompletionTracker;
+struct LiveIdentity;
+struct PublishedPair;
+}
 namespace plugins {
 class ProjectSave {
     struct Impl;
@@ -16,6 +22,13 @@ public:
     // One disk publication per snapshot. May run on a worker; the caller keeps
     // this object alive and joins that worker before Complete or destruction.
     bool PublishDisk(const wchar_t* staged, const wchar_t* destination, bool copy, bool keepPrevious = false, bool numberedManualVersions = false) noexcept;
+    // Native SAVE-02 entry, not part of the plugin SDK. Only an adapter with
+    // a verified frozen capture may opt in; a void MME notification cannot.
+    // A published frozen snapshot cannot use the ordinary Complete entry.
+    bool PublishFrozenDisk(const wchar_t* staged, const wchar_t* destination, bool copy,
+        bool keepPrevious, const effect_save::CapturedEffects&, effect_save::PublishedPair&) noexcept;
+    bool CompleteFrozenDisk(const wchar_t* destination,
+        const effect_save::CompletionTracker&, const effect_save::LiveIdentity&) noexcept;
     // UI thread only, using the same destination/copy arguments as PublishDisk.
     // False means the runtime changed or completion is not ready; an already
     // published pair remains valid. The caller separately checks its scene

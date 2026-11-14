@@ -1,3 +1,4 @@
+#include "baking_menu_commands.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/animation_curve_host.hpp"
 #include "mikumikustudio/frame_rate_correction.hpp"
@@ -55,7 +56,7 @@ bool Commit(MMDApp&, const PlanPtr&, std::wstring&, const std::function<bool(std
 namespace mikumikustudio::bake {
 void RefreshMenu(MMDApp*) {}
 bool HandleCommand(MMDApp*, unsigned id) {
-    return id == kBakeMenuCommand || id == kExportMenuCommand || id == kClearMeshBakeMenuCommand || id == kBakeMeshMenuCommand;
+    return id == kBakeMenuCommand || id == kBakePhysicsMenuCommand || id == kExportMenuCommand || id == kClearMeshBakeMenuCommand || id == kBakeMeshMenuCommand;
 }
 void ShowDialog(MMDApp*) {}
 bool CanBake(MMDApp*) { return false; }

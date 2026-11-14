@@ -1145,6 +1145,93 @@ void FullPathNameAcpSourcePriority(const fs::path& root) {
         "the compatibility open also keeps the native ACP file instead of the namesake");
     PrepareEffectProjectPaths(nullptr);
 }
+
+void JapaneseAssignmentPaths(const fs::path& root) {
+    if (GetACP() != 932) {
+        std::printf("NOTE Japanese assignment collision needs ACP=932 (current ACP=%u).\n", GetACP());
+        return;
+    }
+    const auto prefix = L"native-cp932-" + std::to_wstring(GetCurrentProcessId());
+    const auto relative = fs::path(prefix) / L"\u52B9\u679C" / L"\u8868" / L"assigned.fx";
+    const auto project = root / prefix / L"project" / L"scene.pmm";
+    const auto emm = pmm_paths::Effect(project);
+    const auto native = root / relative;
+    const auto projectNative = project.parent_path() / relative;
+    const auto source = NativeBytes(relative);
+    Check(source.find("\x95\x5c") != std::string::npos,
+        "Japanese folder contains a DBCS trail byte identical to a Windows separator");
+    std::wstring foreignRelative;
+    Check(text_encoding::Decode(source.c_str(), 936, foreignRelative) &&
+        fs::path(foreignRelative) == fs::path(prefix) / L"\u5CA0\u58E5" / L"\u661E" / L"assigned.fx",
+        "the same bytes name a different nested path in CP936");
+    const auto projectForeign = project.parent_path() / fs::path(foreignRelative);
+    const auto input = NativeBytes(native);
+    Write(emm, "[Effect]\r\nPmd1 = " + source + "\r\n");
+    Write(native, "native-japanese");
+    Write(projectForeign, "foreign-project");
+    PrepareEffectProjectPaths(project.c_str());
+
+    const auto compareNativeConversion = [&](UINT codePage) {
+        std::array<wchar_t, 32768> expected{}, actual{};
+        SetLastError(6149);
+        const int expectedSize = ::MultiByteToWideChar(codePage, 0, input.c_str(), -1,
+            expected.data(), static_cast<int>(expected.size()));
+        const DWORD expectedError = GetLastError();
+        SetLastError(6149);
+        const int actualSize = DecodeEffectPath(codePage, 0, input.c_str(), -1,
+            actual.data(), static_cast<int>(actual.size()));
+        Check(expectedSize > 0 && expectedSize == actualSize && GetLastError() == expectedError &&
+            actual == expected, "valid native or explicitly encoded Japanese bytes are not reinterpreted");
+    };
+    compareNativeConversion(CP_ACP);
+    Check(Read(input.c_str()) == "native-japanese",
+        "native Japanese effect wins over an unrelated alternate-encoding EMM mapping");
+    CheckFullPathContract("native Japanese assignment collision", input.c_str(), input.c_str());
+
+    Write(projectNative, "native-project");
+    Check(Read(input.c_str()) == "native-project",
+        "same-encoding EMM keeps intentional project-relative precedence");
+    const auto mapped = FullPathText(&EffectFullPathNameA, input.c_str());
+    Check(SameFullPathText(mapped, projectNative),
+        "full path keeps the native Japanese project effect when the assignment resolves");
+    Check(fs::remove(projectNative) && fs::remove(native), "remove only owned Japanese fixture files");
+    fs::create_directory(native);
+    const DWORD attributes = EffectFileAttributes(input.c_str());
+    Check(attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY),
+        "an existing Japanese directory cannot become an alternate-encoding regular file");
+    CheckFullPathContract("native Japanese directory collision", input.c_str(), input.c_str());
+
+    Check(fs::remove(native), "remove the owned native Japanese directory competitor");
+    Check(Read(input.c_str()) == "foreign-project",
+        "the confirmed CP936 project assignment remains a fallback when the native path is missing");
+    std::array<wchar_t, 32768> converted{};
+    Check(DecodeEffectPath(CP_ACP, 0, input.c_str(), -1, converted.data(), static_cast<int>(converted.size())) > 0 &&
+        fs::path(converted.data()) == root / fs::path(foreignRelative),
+        "implicit ACP still repairs a verified foreign assignment without substituting its project path");
+    compareNativeConversion(932);
+    compareNativeConversion(CP_THREAD_ACP);
+    PrepareEffectProjectPaths(nullptr);
+
+    // An EMM written in China can name the exact same shared characters with
+    // different bytes. Japanese Windows may mis-segment those bytes too.
+    const auto chineseWriterTarget = root / prefix / L"\u65E5\u672C" / L"\u8868" / L"shared.fx";
+    const auto japaneseBytes = NativeBytes(chineseWriterTarget);
+    std::string chineseBytes;
+    Check(text_encoding::EncodeExact(chineseWriterTarget.c_str(), 936, chineseBytes) &&
+        chineseBytes != japaneseBytes, "CP936 and CP932 spell the same Unicode effect path differently");
+    Write(chineseWriterTarget, "same-unicode-chinese-writer");
+    Check(GetFileAttributesA(chineseBytes.c_str()) == INVALID_FILE_ATTRIBUTES,
+        "the CP936 bytes do not already name a native Japanese file");
+    Check(Read(japaneseBytes.c_str()) == "same-unicode-chinese-writer" &&
+          Read(chineseBytes.c_str()) == "same-unicode-chinese-writer",
+        "both file spellings open the same nested Japanese effect");
+    Check(SameFullPathText(FullPathText(&EffectFullPathNameA, chineseBytes.c_str()), chineseWriterTarget),
+        "full path resolves original CP936 bytes before a lossy ANSI expansion");
+    Check(DecodeEffectPath(CP_ACP, 0, chineseBytes.c_str(), -1, converted.data(),
+        static_cast<int>(converted.size())) > 0 && fs::path(converted.data()) == chineseWriterTarget,
+        "implicit conversion recovers the absolute CP936 filename on Japanese Windows");
+}
+
 void ImportScope() {
     auto* image = static_cast<unsigned char*>(VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
     Check(image != nullptr, "allocate original PE import fixture");
@@ -1259,15 +1346,22 @@ static void ProjectRelocationPaths(const fs::path& root) {
     PrepareEffectProjectPaths(nullptr);
 }
 
-int main() {
+int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     const auto root = ExecutableDirectory(); const auto cwd = fs::current_path();
     Check(!GetModuleHandleW(L"MMEffect.dll") && !GetModuleHandleW(L"MMHack.dll"), "no third-party MME module loaded");
+    if (argc == 2 && std::strcmp(argv[1], "--japanese-path-encoding") == 0) {
+        std::printf("Effect path regression: ACP=%u\n", GetACP());
+        Check(GetACP() == 932, "locale runner selected actual process ACP 932");
+        JapaneseAssignmentPaths(root);
+        std::printf("PASS Japanese effect path compatibility: %u checks\n", checks);
+        return 0;
+    }
     ProjectSuffixPaths(root); ProjectNotificationAliases(root);
     AssignmentPaths(root); CompilerDiagnostics(root);
     FullPathNameCompatibility(root); FullPathNameLosslessEncoding(root);
     FullPathNameUtf8SourceAndRecovery(root); FullPathNameDirectUtf8(root);
-    FullPathNameAcpSourcePriority(root);
+    FullPathNameAcpSourcePriority(root); JapaneseAssignmentPaths(root);
     ProjectRelocationPaths(root);
     ImportScope(); ModuleFileNameForwarding();
     fs::current_path(cwd);

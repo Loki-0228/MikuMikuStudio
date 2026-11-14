@@ -24,6 +24,8 @@ std::wstring Text(HWND dialog, int id) {
 void CaptureDialog(HWND dialog, int language, const char* state) {
     RECT client{}; GetClientRect(dialog,&client);
     RECT window{}; GetWindowRect(dialog,&window);
+    RECT checkboxPadding{0,0,14,0};
+    MapDialogRect(dialog,&checkboxPadding);
     const int width=window.right-window.left,height=window.bottom-window.top;
     HDC screen=GetDC(dialog), dc=CreateCompatibleDC(screen);
     HBITMAP bitmap=CreateCompatibleBitmap(screen,width,height);
@@ -36,9 +38,11 @@ void CaptureDialog(HWND dialog, int language, const char* state) {
         if (id==scale::Warning || id==scale::Dimensions || id==scale::Automatic) {
             const auto text=Text(dialog,id);
             HGDIOBJ font=SelectObject(dc,reinterpret_cast<HFONT>(SendMessageW(child,WM_GETFONT,0,0)));
-            RECT measure{0,0,box.right-box.left-(id==scale::Automatic?22:0),0};
-            DrawTextW(dc,text.c_str(),int(text.size()),&measure,DT_CALCRECT|DT_WORDBREAK|DT_NOPREFIX);
-            Check(measure.bottom<=box.bottom-box.top,"localized text fits without clipping");
+            RECT measure{};
+            if (!text.empty())
+                DrawTextW(dc,text.c_str(),int(text.size()),&measure,DT_CALCRECT|DT_SINGLELINE|DT_NOPREFIX);
+            Check(measure.right<=box.right-box.left-(id==scale::Automatic?checkboxPadding.right:0) &&
+                measure.bottom<=box.bottom-box.top,"localized text fits on a single line");
             if(font)SelectObject(dc,font);
         }
     }
@@ -79,6 +83,7 @@ void UiTests(MMDApp* app) {
     Check(scale::ShadowSize(app,4096)==4096,"recording ignores preview shadow budget");
     app->RecordingWindow()=nullptr;app->viewportRender={};
     for (int lang = 0; lang != 3; ++lang) {
+        const std::wstring unit = lang == 2 ? L" 像素" : L" px";
         app->EnglishUI() = static_cast<unsigned char>(lang);
         scale::RefreshMenu(app); scale::RefreshMenu(app);
         HMENU bar = GetMenu(app->MainWindow());
@@ -99,6 +104,15 @@ void UiTests(MMDApp* app) {
         Check(dialog != nullptr && !IsWindowVisible(dialog), "shipped dialog created hidden");
         Check(IsDlgButtonChecked(dialog, scale::Automatic) == BST_CHECKED &&
             !IsWindowEnabled(GetDlgItem(dialog, scale::Slider)) && Text(dialog, scale::Percent) == L"100", "auto disables slider at startup");
+        Check(Text(dialog, scale::Dimensions) == L"1920 × 1080" + unit, "auto shows only dimensions and units");
+        RECT automatic{}, dimensions{}, compactClient{0,0,224,74}, client{};
+        GetWindowRect(GetDlgItem(dialog, scale::Automatic), &automatic);
+        GetWindowRect(GetDlgItem(dialog, scale::Dimensions), &dimensions);
+        Check(automatic.top == dimensions.top && automatic.bottom == dimensions.bottom &&
+            automatic.right < dimensions.left, "dimensions share the checkbox row without overlap");
+        MapDialogRect(dialog, &compactClient);
+        GetClientRect(dialog, &client);
+        Check(EqualRect(&client, &compactClient), "dialog omits the separate dimensions row");
         Check(!(GetWindowLongPtrW(GetDlgItem(dialog, scale::Warning), GWL_STYLE) & WS_VISIBLE), "4K warning hidden at default size");
         CaptureDialog(dialog,lang,"auto");
         Check(SendDlgItemMessageW(dialog, scale::Slider, TBM_GETRANGEMIN, 0, 0) == 25 &&
@@ -108,7 +122,8 @@ void UiTests(MMDApp* app) {
         Check(!app->viewportRender.automatic && IsWindowEnabled(GetDlgItem(dialog, scale::Slider)), "uncheck enables manual mode");
         SendDlgItemMessageW(dialog, scale::Slider, TBM_SETPOS, TRUE, 50);
         SendMessageW(dialog, WM_HSCROLL, TB_THUMBTRACK, reinterpret_cast<LPARAM>(GetDlgItem(dialog, scale::Slider)));
-        Check(app->viewportRender.percent == 100 && Text(dialog, scale::Percent) == L"50", "drag updates readout without committing");
+        Check(app->viewportRender.percent == 100 && Text(dialog, scale::Percent) == L"50" &&
+            Text(dialog, scale::Dimensions) == L"960 × 540" + unit, "drag updates readout without committing");
         SendMessageW(dialog, WM_HSCROLL, TB_THUMBPOSITION, reinterpret_cast<LPARAM>(GetDlgItem(dialog, scale::Slider)));
         SendMessageW(dialog, WM_HSCROLL, TB_ENDTRACK, reinterpret_cast<LPARAM>(GetDlgItem(dialog, scale::Slider)));
         Check(app->viewportRender.percent == 50, "release commits");
@@ -117,13 +132,17 @@ void UiTests(MMDApp* app) {
         Check(app->viewportRender.percent == 12.5, "manual value below slider minimum applied");
         SetDlgItemTextW(dialog, scale::Percent, L"200");
         Check(Text(dialog, scale::Warning).empty(), "exact 4K does not show warning");
+        SetDlgItemTextW(dialog, scale::Percent, L"1000");
+        Check(Text(dialog, scale::Dimensions) == L"19200 × 10800" + unit, "large readout keeps all digits and units");
+        CaptureDialog(dialog,lang,"large");
         SetDlgItemTextW(dialog, scale::Percent, L"250");
         Check(Text(dialog, scale::Warning).find(L"4K") != std::wstring::npos, "4K warning visible before apply");
         Check(GetWindowLongPtrW(GetDlgItem(dialog, scale::Warning), GWL_STYLE) & WS_VISIBLE, "above 4K reveals warning control");
         RECT warning{}, apply{};
         GetWindowRect(GetDlgItem(dialog, scale::Warning), &warning);
         GetWindowRect(GetDlgItem(dialog, scale::Apply), &apply);
-        Check(warning.top == apply.top && warning.right < apply.left, "4K warning shares button row without overlap");
+        Check(warning.top == apply.top && warning.right < apply.left && dimensions.bottom < apply.top,
+            "4K warning shares the next row with the buttons without overlap");
         HDC warningDc = GetDC(GetDlgItem(dialog, scale::Warning));
         SendMessageW(dialog, WM_CTLCOLORSTATIC, reinterpret_cast<WPARAM>(warningDc), reinterpret_cast<LPARAM>(GetDlgItem(dialog, scale::Warning)));
         Check(GetTextColor(warningDc) == RGB(192, 0, 0), "4K warning is red");
@@ -133,12 +152,16 @@ void UiTests(MMDApp* app) {
         CaptureDialog(dialog,lang,"warning");
         SetDlgItemTextW(dialog, scale::Percent, L"-7");
         SendMessageW(dialog, WM_COMMAND, scale::Apply, 0);
-        Check(app->viewportRender.percent == 250 && !Text(dialog, scale::Dimensions).empty(), "invalid input preserves applied setting and shows validation");
+        Check(app->viewportRender.percent == 250 && !Text(dialog, scale::Dimensions).empty() &&
+            Text(dialog, scale::Dimensions).find(L'×') == std::wstring::npos &&
+            Text(dialog, scale::Warning).empty(), "invalid input preserves applied setting and replaces stale readout and warning");
+        CaptureDialog(dialog,lang,"invalid");
         CheckDlgButton(dialog, scale::Automatic, BST_CHECKED);
         SendMessageW(dialog, WM_COMMAND, scale::Automatic, 0);
         Check(app->viewportRender.automatic && app->viewportRender.percent == 250 &&
             !IsWindowEnabled(GetDlgItem(dialog, scale::Slider)), "auto restores original path and retains manual value");
         Check(!(GetWindowLongPtrW(GetDlgItem(dialog, scale::Warning), GWL_STYLE) & WS_VISIBLE), "returning to normal size hides warning");
+        Check(Text(dialog, scale::Dimensions) == L"1920 × 1080" + unit, "returning to auto restores dimensions");
         Check(app->RenderWidth() == 1920 && app->RenderHeight() == 1080, "preview never changes export dimensions");
         DestroyWindow(dialog);
     }

@@ -3,9 +3,11 @@
 #include <Windows.h>
 #include <commctrl.h>
 #include <MinHook.h>
+#include "mikumikustudio/audio_menu.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/cache_manager.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/ui_scale.hpp"
 #include "../src/window/cache_manager_dialog.hpp"
 #include "../src/window/settings_json.hpp"
@@ -2694,19 +2696,99 @@ void ConfirmationInterruptionScenario(mikumikustudio::MMDApp* app,ConfirmationIn
     RequireStorage();
 }
 
+LRESULT CALLBACK FixtureOwnerProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) {
+    if(window==fixtureOwner&&mikumikustudio::g_Block&&message==WM_COMMAND&&!lParam&&!HIWORD(wParam)){
+        mikumikustudio::CommandDispatch(nullptr,wParam);
+        return 0;
+    }
+    return DefWindowProcW(window,message,wParam,lParam);
+}
+
+UINT CommandNamed(HMENU menu,const wchar_t* label) {
+    for(int i=0;i<GetMenuItemCount(menu);++i){
+        wchar_t text[128]{};
+        if(GetMenuStringW(menu,UINT(i),text,128,MF_BYPOSITION)>0&&!std::wcscmp(text,label))
+            return GetMenuItemID(menu,i);
+    }
+    return UINT(-1);
+}
+
+constexpr wchar_t kMenuRouteWave[]=L"fixture-cache-menu-route.wav";
+bool MenuRouteAudioIntact(mikumikustudio::MMDApp& app) {
+    return app.WaveEnabled()&&!std::wcscmp(app.WavePath(),kMenuRouteWave)&&!app.SceneModified();
+}
+
+void CALLBACK PollMenuRoute(HWND,UINT,UINT_PTR,DWORD) {
+    try {
+        Need(GetTickCount64()<deadline,"cache Help command completes before its deadline");
+        RequireDesktop();RequireStorage();
+        EnumThreadWindows(GetCurrentThreadId(),Find,0);
+        if(!dialog||!IsWindowEnabled(GetDlgItem(dialog,ui::Apply)))return;
+        Check(MenuRouteAudioIntact(*mikumikustudio::g_Block),"open Cache management leaves audio and the clean scene intact");
+        Need(PostMessageW(dialog,WM_CLOSE,0,0)!=FALSE,"close the verified cache fixture dialog");
+    }catch(...){Need(false,"exception supervising the cache Help command");}
+}
+
+void CacheMenuRouteScenario(mikumikustudio::MMDApp& app,HMENU help,HMENU file) {
+    stage=24;
+    RequireDesktop();RequireStorage();
+    Need(fixtureVerified&&OwnedByTest(fixtureOwner)&&!mikumikustudio::g_Block,
+        "bind production dispatch only to the private fixture owner");
+    struct DispatchBinding {
+        explicit DispatchBinding(mikumikustudio::MMDApp& app) {mikumikustudio::g_Block=&app;}
+        ~DispatchBinding() {mikumikustudio::g_Block=nullptr;}
+    } binding(app);
+
+    Need(wcscpy_s(app.WavePath(),256,kMenuRouteWave)==0,"set synthetic WAV path without opening a file or device");
+    app.WaveEnabled()=1;
+    app.SceneModified()=0;
+    const auto revision=app.SceneRevision();
+    ui::RefreshMenu(&app);
+    mikumikustudio::audio_menu::EnsureItem(&app);
+    const auto cacheLabel=std::wstring(ExpectedTitle())+L"…";
+    const wchar_t* audioLabel=language==0?L"音声を削除":language==1?L"Remove audio":L"移除音频";
+    const UINT helpCommand=CommandNamed(help,cacheLabel.c_str()),fileCommand=CommandNamed(file,audioLabel);
+    Need(helpCommand!=UINT(-1)&&fileCommand!=UINT(-1),"find both actual localized menu items by label");
+    Check(helpCommand!=fileCommand,"Help Cache management and File Remove audio carry distinct IDs");
+    Check(!(GetMenuState(file,fileCommand,MF_BYCOMMAND)&MF_GRAYED),"synthetic audio enables File Remove audio");
+
+    const auto dispatch=[](UINT command){
+        dialog=nullptr;deadline=GetTickCount64()+15000;
+        Need(SetTimer(fixtureOwner,76,100,PollMenuRoute)!=0,"supervise the fixture menu command");
+        SendMessageW(fixtureOwner,WM_COMMAND,MAKEWPARAM(command,0),0);
+        KillTimer(fixtureOwner,76);
+    };
+    for(int attempt=0;attempt<2;++attempt){
+        dispatch(helpCommand);
+        Check(dialog&&!IsWindow(dialog)&&IsWindowEnabled(fixtureOwner),
+            "Help Cache management opens and closes its real dialog on both attempts");
+        Check(MenuRouteAudioIntact(app)&&app.SceneRevision()==revision,
+            "Help Cache management preserves audio path, enabled flag and scene dirty state");
+    }
+
+    dispatch(fileCommand);
+    Check(!dialog,"File Remove audio does not open the cache dialog");
+    Check(!app.WaveEnabled()&&!app.WavePath()[0]&&app.SceneModified()&&
+        (GetMenuState(file,fileCommand,MF_BYCOMMAND)&MF_GRAYED),
+        "File Remove audio still clears the WAV state and marks the scene dirty");
+    app.SceneModified()=0;
+}
+
 int wmain(int argc,wchar_t** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
     try {
     if(argc==6&&!std::wcscmp(argv[1],L"--scene-lease-child"))return RunLeaseChild(argv);
     Prepare(argc,argv);ConfigureDpi();
-    INITCOMMONCONTROLSEX common{sizeof(common),ICC_STANDARD_CLASSES|ICC_LISTVIEW_CLASSES};Need(InitCommonControlsEx(&common)!=FALSE,"initialize real common controls");
-    WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"MMS-cache-ui-owner";wc.lpfnWndProc=DefWindowProcW;
+    WNDCLASSW wc{};wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"MMS-cache-ui-owner";wc.lpfnWndProc=FixtureOwnerProc;
     Need(RegisterClassW(&wc)!=0,"register fixture owner");
     // Establish and verify the first isolated data set before any real UI window.
     Fixture();RequireDesktop();
     fixtureOwner=CreateWindowW(wc.lpszClassName,L"",WS_OVERLAPPEDWINDOW,0,0,1200,800,nullptr,nullptr,wc.hInstance,nullptr);
     Need(fixtureOwner!=nullptr,"create owner on held private desktop");
     if(interfacePercent>100){
+        // Only the direct template measurement bypasses production control registration.
+        INITCOMMONCONTROLSEX common{sizeof(common),ICC_LISTVIEW_CLASSES};
+        Need(InitCommonControlsEx(&common)!=FALSE,"register ListView for the raw DPI template measurement");
         const HWND baseline=CreateDialogParamW(wc.hInstance,MAKEINTRESOURCEW(ui::kDialog),fixtureOwner,
             [](HWND,UINT,WPARAM,LPARAM)->INT_PTR{return FALSE;},0);
         Need(baseline&&GetClientRect(baseline,&templateClient)&&GetWindowRect(baseline,&templateFrame),
@@ -2725,11 +2807,15 @@ int wmain(int argc,wchar_t** argv) {
     // Do not materialize the giant aggregate temporary in wmain's stack frame.
     {auto initialState=std::make_unique<mikumikustudio::MMDAppState>();app->state=*initialState;}
     app->Hwnd()=fixtureOwner;app->HInstance()=wc.hInstance;
-    HMENU bar=CreateMenu(),help=CreatePopupMenu();Need(bar&&help,"create fixture Help menu");
-    Need(AppendMenuW(help,MF_STRING,201,L"About")&&AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(help),L"Help")&&SetMenu(fixtureOwner,bar),"attach real command menu");
+    HMENU bar=CreateMenu(),file=CreatePopupMenu(),help=CreatePopupMenu();
+    Need(bar&&file&&help,"create fixture File and Help menus");
+    Need(AppendMenuW(file,MF_STRING,206,L"Open audio")&&AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(file),L"File")&&
+        AppendMenuW(help,MF_STRING,201,L"About")&&AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(help),L"Help")&&
+        SetMenu(fixtureOwner,bar),"attach real File and Help menus");
     for(language=0;language<3;++language) {
         if(language)Fixture();
         app->EnglishUI()=static_cast<unsigned char>(language);
+        CacheMenuRouteScenario(*app,help,file);
         if (!constrainedPercent) {
             ConfirmationInterruptionScenario(app.get(),ConfirmationInterruption::ReentrantCommands);
             ConfirmationInterruptionScenario(app.get(),ConfirmationInterruption::OwnerClose);

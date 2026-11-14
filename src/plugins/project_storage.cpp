@@ -1,6 +1,7 @@
 #include "project_storage.hpp"
 #include "json.hpp"
 #include "scene_digest.hpp"
+#include "../io/effect_pair_transaction.hpp"
 #include "../io/pmm_save_versions.hpp"
 #include <array>
 #include <cstddef>
@@ -349,11 +350,12 @@ std::string MemberHash(const fs::path& path) {
     return present ? FileHash(path) : std::string{};
 }
 
-void MoveRetainedMember(const fs::path& from, const fs::path& to, std::string_view expected) {
+void MoveRetainedMember(const fs::path& from, const fs::path& to, std::string_view expected,
+                        bool unaliased=false) {
     Handle file;
     BY_HANDLE_FILE_INFORMATION info{};
     if (!OpenTransactionMemberForDelete(file, from, info, 0, "open retained member for rename") ||
-        HashOpenFile(file.value) != expected)
+        (unaliased && info.nNumberOfLinks!=1) || HashOpenFile(file.value) != expected)
         throw std::runtime_error("retention source changed before rename");
 
     const auto name = fs::absolute(to).native();
@@ -535,12 +537,167 @@ std::string RecordBase(unsigned schema,const std::string& id,const std::string& 
     return "{\"schemaVersion\":"+std::to_string(schema)+",\"saveId\":\""+id+"\",\"newMain\":\""+nm+
         "\",\"newSide\":\""+ns+"\",\"oldMain\":\""+om+"\",\"oldSide\":\""+os+"\"";
 }
+
+namespace effects = effect_save::transaction;
+using FrozenNames = std::array<fs::path,effects::MemberCount>;
+
+bool SafeFrozenPath(const fs::path& path) {
+    if (!path.is_absolute() || path.native() != path.lexically_normal().native() ||
+        path.native().find(L'\0') != std::wstring::npos) return false;
+    // Do not interpret Win32 aliases, alternate streams, or device paths as
+    // transaction members. Stages are always siblings of the canonical PMM.
+    const auto root = path.root_name().native();
+    // Start with ordinary local DOS syntax. UNC/device paths need their own
+    // durability and rename acceptance before they can be admitted.
+    if (root.size()!=2 || root[1]!=L':' || path.filename().empty() ||
+        !((root[0]>=L'A' && root[0]<=L'Z') || (root[0]>=L'a' && root[0]<=L'z'))) return false;
+    for (const auto& component : path.relative_path()) {
+        const auto value = component.native();
+        if (value.empty() || value.back() == L'.' || value.back() == L' ' ||
+            value.find_first_of(L"<>:\"|?*") != std::wstring::npos) return false;
+        const auto stem=Lower(value.substr(0,value.find(L'.')));
+        if (stem==L"con" || stem==L"prn" || stem==L"aux" || stem==L"nul" ||
+            (stem.size()==4 && (stem.substr(0,3)==L"com" || stem.substr(0,3)==L"lpt") &&
+             ((stem[3]>=L'0' && stem[3]<=L'9') || stem[3]==L'\u00B9' ||
+                 stem[3]==L'\u00B2' || stem[3]==L'\u00B3')))
+            return false;
+    }
+    return true;
+}
+
+struct FrozenPaths {
+    Paths journal;
+    FrozenNames active, staged, displaced;
+    FrozenPaths(const fs::path& target,const std::string& id,bool withPlugin)
+        : journal(target,id,true,withPlugin),
+          active{target,pmm_paths::Effect(target),PluginSidecar(target)},
+          staged{journal.newMain,target.parent_path()/(L".mms-"+Wide(id)+L".new-emm"),journal.newSide},
+          displaced{journal.oldMain,journal.OldEffect(),journal.oldSide} {
+        if (!SafeFrozenPath(target) || !pmm_paths::IsProject(target) ||
+            !SafeFrozenPath(active[effects::Effect]) || SamePath(target,active[effects::Effect]))
+            throw std::invalid_argument("invalid frozen project target");
+    }
+};
+
+std::string FrozenMemberHash(const fs::path& path) {
+    Handle file;
+    // MMHack interprets exactly GENERIC_READ as an MME open notification.
+    // This inspection is not an effect load and may run on the save worker.
+    file.value=CreateFileW(path.c_str(),GENERIC_READ|FILE_READ_ATTRIBUTES,FILE_SHARE_READ,nullptr,OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_SEQUENTIAL_SCAN,nullptr);
+    if (file.value==INVALID_HANDLE_VALUE) {
+        const auto error=GetLastError();
+        if (error==ERROR_FILE_NOT_FOUND) return {};
+        throw FileFailure("inspect frozen project member",error);
+    }
+    BY_HANDLE_FILE_INFORMATION info{};
+    Check(GetFileInformationByHandle(file.value,&info)!=FALSE,"inspect frozen project member");
+    if (info.dwFileAttributes&(FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT) ||
+        info.nNumberOfLinks!=1)
+        throw std::runtime_error("frozen project member is not an unaliased regular file");
+    return HashOpenFile(file.value);
+}
+
+effects::Observation ObserveFrozen(const FrozenPaths& paths,const effects::Generation& generation) {
+    effects::Observation result;
+    for (std::size_t i=0;i<effects::MemberCount;++i) if (generation.Contains(i)) {
+        result.active[i]=FrozenMemberHash(paths.active[i]);
+        result.staged[i]=FrozenMemberHash(paths.staged[i]);
+        result.displaced[i]=FrozenMemberHash(paths.displaced[i]);
+    }
+    return result;
+}
+
+void RemoveFrozenMember(const fs::path& path,std::string_view expected) {
+    Handle file;
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!OpenTransactionMemberForDelete(file,path,info,FILE_WRITE_ATTRIBUTES) ||
+        info.nNumberOfLinks!=1 || HashOpenFile(file.value)!=expected)
+        throw std::runtime_error("frozen project member changed before removal");
+    DeleteOwnedStage(file.value,info);
+}
+
+void ApplyFrozen(const FrozenPaths& paths,const effects::Generation& generation,
+                 const effects::Plan& plan,const std::function<void(unsigned)>& check={}) {
+    unsigned point=3;
+    for (const auto& move : plan.moves) {
+        const auto i=move.member;
+        switch (move.action) {
+        case effects::Action::DisplacePrevious:
+            MoveRetainedMember(paths.active[i],paths.displaced[i],generation.previous[i],true);break;
+        case effects::Action::InstallFresh:
+            MoveRetainedMember(paths.staged[i],paths.active[i],generation.fresh[i],true);break;
+        case effects::Action::RemoveFresh:
+            RemoveFrozenMember(paths.active[i],generation.fresh[i]);break;
+        case effects::Action::RestorePrevious:
+            MoveRetainedMember(paths.displaced[i],paths.active[i],generation.previous[i],true);break;
+        }
+        if (check) check(point);
+        ++point;
+    }
+    const auto result=ObserveFrozen(paths,generation);
+    const auto verification=effects::Resolve(generation,result,plan.forward);
+    if (verification.forward!=plan.forward || !verification.moves.empty())
+        throw std::runtime_error("incomplete frozen project publication");
+}
+
+void CleanupFrozen(const FrozenPaths& paths,const effects::Generation& generation,const JournalRecord& journal) {
+    // Verify and pin surviving stages before deleting the first one. Keep the
+    // journal present across cleanup errors and interrupted cleanup.
+    std::array<Handle,2*effects::MemberCount> stages;
+    std::array<BY_HANDLE_FILE_INFORMATION,2*effects::MemberCount> identities{};
+    const auto verify=[&](std::size_t index,const fs::path& path,std::string_view hash) {
+        if (OpenTransactionMemberForDelete(stages[index],path,identities[index],FILE_WRITE_ATTRIBUTES) &&
+            (hash.empty() || identities[index].nNumberOfLinks!=1 || HashOpenFile(stages[index].value)!=hash))
+            throw std::runtime_error("frozen project stage changed before cleanup");
+    };
+    for (std::size_t i=0;i<effects::MemberCount;++i) if (generation.Contains(i)) {
+        verify(i,paths.staged[i],generation.fresh[i]);
+        verify(i+effects::MemberCount,paths.displaced[i],generation.previous[i]);
+    }
+    for (std::size_t i=0;i<stages.size();++i) if (stages[i].value!=INVALID_HANDLE_VALUE) {
+        DeleteOwnedStage(stages[i].value,identities[i]);
+        stages[i].Close();
+    }
+    RemoveJournal(paths.journal.journal,journal);
+}
+
+void RecoverFrozen(const fs::path& target,const ParsedJournal& parsed,JournalRecord& record) {
+    const auto& j=parsed.json;
+    if (j.object.size()!=6 || j.At("decision").String()!="rollback")
+        throw std::invalid_argument("invalid frozen recovery record shape");
+    const auto members=j.At("members").String();
+    const bool withPlugin=members=="pmm-emm-json";
+    if (!withPlugin && members!="pmm-emm") throw std::invalid_argument("frozen recovery members");
+    const FrozenPaths paths(target,j.At("saveId").String(),withPlugin);
+    effects::Generation generation{{},{},withPlugin};
+    const auto readHashes=[&](const char* key,effects::Hashes& output,bool allowEmpty) {
+        const auto& items=j.At(key).Items();
+        if (items.size()!=(withPlugin?3u:2u)) throw std::invalid_argument("frozen recovery member count");
+        for (std::size_t i=0;i<items.size();++i) {
+            output[i]=items[i].String();
+            if (!(allowEmpty && output[i].empty()) && !Hex(output[i],64))
+                throw std::invalid_argument("frozen recovery member hash");
+        }
+    };
+    readHashes("fresh",generation.fresh,false);
+    readHashes("previous",generation.previous,true);
+    if (generation.previous[effects::Main].empty() &&
+        (!generation.previous[effects::Effect].empty() || !generation.previous[effects::Plugin].empty()))
+        throw std::invalid_argument("orphan in previous frozen generation");
+    const auto plan=effects::Resolve(generation,ObserveFrozen(paths,generation),parsed.forward);
+    if (parsed.forward && !plan.forward) ChangeDecision(paths.journal,record,false);
+    ApplyFrozen(paths,generation,plan);
+    CleanupFrozen(paths,generation,record);
+}
+
 void Recover(const fs::path& target){
     const auto journal=fs::path(target.native()+L".mms-save.json");if(!fs::exists(journal))return;
     auto record=ReadJournal(journal);
     const auto parsed=ParseJournal(record.bytes);
     const auto& j=parsed.json;
     const unsigned schema=j.At("schemaVersion").UInt();
+    if (schema==4) { RecoverFrozen(target,parsed,record); return; }
     if(schema!=1&&schema!=2&&schema!=3)throw std::invalid_argument("recovery schema");
     const bool plugins=schema!=3;
     if(!plugins&&(j.At("members").String()!="pmm-emm"||j.object.count("newSide")||j.object.count("oldSide")))
@@ -595,6 +752,7 @@ void CheckArchiveOwner(const fs::path& target) {
         const auto parsed=ParseJournal(bytes);
         const auto& j=parsed.json;
         const auto schema=j.At("schemaVersion").UInt();
+        if(schema==4)continue; // Frozen transactions never move historical generations.
         if(schema!=1&&schema!=2&&schema!=3)throw std::invalid_argument("retention owner schema");
         if(schema>=2) {
             if(schema==3&&j.At("members").String()!="pmm-emm")throw std::invalid_argument("retention owner members");
@@ -702,6 +860,119 @@ PluginProject ReadPluginProject(const fs::path& target){
     if(!fs::exists(PluginSidecar(target))){PluginProject p;p.projectId=StorageId();return p;}
     auto p=DecodeProject(ReadFile(PluginSidecar(target),kMaxSidecar));if(FileHash(target)!=p.mainHash)throw std::runtime_error("PMM and plugin sidecar hashes differ; explicit association required");return p;
 }
+
+effect_save::EffectDigest FrozenEffectSha256(effect_save::EffectBytes bytes) {
+    if (!bytes.data || !bytes.size || bytes.size>effect_save::MaximumEffectBytes)
+        throw std::invalid_argument("invalid frozen EMM buffer");
+    Digest digest;
+    digest.Add(bytes.data,bytes.size);
+    return digest.Finish();
+}
+
+effect_save::PublishedPair PublishFrozenProjectPair(const fs::path& target,const fs::path& stagedMain,
+    const effect_save::CapturedEffects& frozen,PluginProject* data,bool createOnly,bool keepPrevious,
+    const std::function<void(unsigned)>& step) {
+    if (keepPrevious) throw std::invalid_argument("frozen project archive publication is unsupported");
+    const auto& request=frozen.GetRequest();
+    const auto expectedEffect=pmm_paths::Effect(target);
+    if (!SafeFrozenPath(target) || !SafeFrozenPath(stagedMain) ||
+        !SafeFrozenPath(request.pmmPath) || !SafeFrozenPath(request.emmPath) ||
+        !pmm_paths::IsProject(target) || !SamePath(target,request.pmmPath) ||
+        !SamePath(expectedEffect,request.emmPath) ||
+        !SamePath(target.parent_path(),stagedMain.parent_path()) ||
+        SamePath(target,stagedMain) || SamePath(expectedEffect,stagedMain) ||
+        SamePath(PluginSidecar(target),stagedMain) ||
+        (!createOnly && (request.kind==effect_save::SaveKind::Incremental ||
+                         request.kind==effect_save::SaveKind::Backup)))
+        throw std::invalid_argument("frozen EMM request does not name the final project generation");
+    const auto bytes=frozen.Bytes();
+    const auto effectHash=FrozenEffectSha256(bytes);
+    if (effectHash!=frozen.Digest()) throw std::runtime_error("frozen EMM SHA-256 changed");
+
+    Lock lock(target);
+    CheckArchiveOwner(target);
+    Recover(target); // Use the same lock for SAVE-01 and SAVE-02.
+    const auto id=StorageId();
+    const FrozenPaths paths(target,id,data!=nullptr);
+    effects::Generation generation{{},{},data!=nullptr};
+    generation.previous=ObserveFrozen(paths,generation).active;
+    const auto& previous=generation.previous;
+    if ((createOnly || previous[effects::Main].empty()) &&
+        (!previous[effects::Effect].empty() || !previous[effects::Plugin].empty()))
+        throw std::runtime_error("an existing companion reserves the frozen project name");
+    if (createOnly && !previous[effects::Main].empty()) throw std::runtime_error("project already exists");
+    if (!data && !FrozenMemberHash(paths.active[effects::Plugin]).empty())
+        throw std::runtime_error("cannot freeze a project with an unmanaged plugin sidecar");
+    if (data && !previous[effects::Plugin].empty() &&
+        DecodeProject(ReadFile(paths.active[effects::Plugin],kMaxSidecar)).mainHash!=previous[effects::Main])
+        throw std::runtime_error("existing plugin sidecar does not match PMM");
+
+    auto& fresh=generation.fresh;
+    fresh[effects::Main]=FrozenMemberHash(stagedMain);
+    if (fresh[effects::Main].empty()) throw std::invalid_argument("missing staged frozen PMM");
+    fresh[effects::Effect]=HexBytes(effectHash.data(),effectHash.size());
+    effect_save::PublishedPair proof{request,fresh[effects::Main],effectHash};
+    PluginProject publishedData;
+    if (data) {
+        publishedData=*data;
+        if (publishedData.projectId.empty()) publishedData.projectId=StorageId();
+        publishedData.saveId=id;
+        publishedData.mainHash=fresh[effects::Main];
+    }
+    std::array<StageIdentity,effects::MemberCount> identities;
+    JournalRecord record;
+    bool journalPublished=false;
+    const auto checkpoint=[&](unsigned n) { if (step) step(n); };
+    const auto requireUnchanged=[&] {
+        const auto observed=ObserveFrozen(paths,generation);
+        if (observed.active!=previous || observed.staged!=fresh || observed.displaced!=effects::Hashes{})
+            throw std::runtime_error("frozen project changed before publication");
+        // Original profile does not publish or discard a plugin sidecar.
+        if (!data && !FrozenMemberHash(paths.active[effects::Plugin]).empty())
+            throw std::runtime_error("plugin sidecar appeared before frozen project publication");
+        return effects::Resolve(generation,observed,true);
+    };
+    const auto fields=[&](const effects::Hashes& hashes) {
+        auto result="[\""+hashes[0]+"\",\""+hashes[1]+"\"";
+        if (data) result+=",\""+hashes[2]+"\"";
+        return result+"]";
+    };
+    try {
+        CopyDurable(stagedMain,paths.staged[effects::Main],identities[effects::Main]);
+        WriteDurable(paths.staged[effects::Effect],
+            {reinterpret_cast<const char*>(bytes.data),bytes.size},identities[effects::Effect]);
+        if (data) {
+            WriteDurable(paths.staged[effects::Plugin],EncodeProject(publishedData),identities[effects::Plugin]);
+            fresh[effects::Plugin]=FrozenMemberHash(paths.staged[effects::Plugin]);
+        }
+        checkpoint(0); // Stages exist, no public journal or change.
+        requireUnchanged();
+        record.bytes=std::string("{\"schemaVersion\":4,\"members\":\"")+
+            (data?"pmm-emm-json":"pmm-emm")+"\",\"saveId\":\""+id+
+            "\",\"fresh\":"+fields(fresh)+",\"previous\":"+fields(previous)+",\"decision\":\"rollback\"}";
+        WriteDurable(paths.journal.tempJournal,record.bytes,record.identity);
+        Move(paths.journal.tempJournal,paths.journal.journal,false);journalPublished=true;
+        checkpoint(1); // A recoverer still chooses the untouched old generation.
+        const auto plan=requireUnchanged();
+        ChangeDecision(paths.journal,record,true);
+        checkpoint(2); // Forward decision is durable before the first rename.
+        ApplyFrozen(paths,generation,plan,step);
+        checkpoint(9); // All members installed; evidence remains until cleanup.
+        CleanupFrozen(paths,generation,record);
+    } catch (...) {
+        if (!journalPublished) {
+            for (std::size_t i=0;i<effects::MemberCount;++i)
+                DiscardUnpublishedStage(paths.staged[i],identities[i]);
+            DiscardUnpublishedStage(paths.journal.tempJournal,record.identity);
+        }
+        // After journal publication an independent open owns recovery; a
+        // thrown or interrupted writer never emits a completion receipt.
+        throw;
+    }
+    if (data) *data=std::move(publishedData);
+    return proof;
+}
+
 void PublishProjectPair(const fs::path& target,const fs::path& stagedMain,PluginProject& data,bool createOnly,const std::function<void(unsigned)>& step,bool keepPrevious){
     Lock lock(target);CheckArchiveOwner(target);Recover(target);
     if(!SamePath(fs::absolute(target).parent_path(),fs::absolute(stagedMain).parent_path()))throw std::invalid_argument("staged PMM must share directory");

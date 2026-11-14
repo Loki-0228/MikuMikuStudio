@@ -14,6 +14,7 @@
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/physics_bake.hpp"
+#include "../src/window/baking_menu_commands.hpp"
 #include "mikumikustudio/pmm_extension.hpp"
 #include <atomic>
 #include <cmath>
@@ -1268,7 +1269,7 @@ void BoneScope() {
 }
 
 // ---- the Baking popup carries the mesh bake entry ---------------------------
-// Mesh baking follows key baking; its dialog also offers ABC export.  A hidden host window is enough: no
+// Mesh baking follows the separate Keyframes and Physics entries and includes ABC export. A hidden host window is enough: no
 // device and no dialog is opened here.
 void MeshMenuEntry() {
     auto scene = std::make_unique<Scene>();
@@ -1298,8 +1299,8 @@ void MeshMenuEntry() {
         return -1;
     };
     Check(commandAt(0) == bake::kBakeMenuCommand, "bake keyframes stays the first entry");
-    Check(positionOf(bake::kBakeMeshMenuCommand) == positionOf(bake::kBakeMenuCommand) + 1 && positionOf(bake::kExportMenuCommand) == -1,
-          "mesh baking follows key baking without the retired duplicate ABC command");
+    Check(commandAt(1)==bake::kBakePhysicsMenuCommand&&commandAt(2)==bake::kBakeMeshMenuCommand&&positionOf(bake::kExportMenuCommand)==-1,
+          "Physics sits between Keyframes and Mesh without a duplicate ABC entry");
     const auto caption = [&] {
         wchar_t text[128]{};
         GetMenuStringW(baking, bake::kBakeMeshMenuCommand, text, 128, MF_BYCOMMAND);
@@ -1317,9 +1318,10 @@ void MeshMenuEntry() {
                             : language == 1 ? std::wstring(L"Bake mesh…")
                                             : std::wstring(L"メッシュ焼き込み…")),
               "the mesh bake caption follows the UI language");
-        Check(positionOf(bake::kBakeMeshMenuCommand) == positionOf(bake::kBakeMenuCommand) + 1 && positionOf(bake::kExportMenuCommand) == -1 &&
-                  commandAt(0) == bake::kBakeMenuCommand,
-              "the language change keeps the entry order");
+        Check(GetMenuItemCount(baking)==4&&commandAt(0)==bake::kBakeMenuCommand&&
+                  commandAt(1)==bake::kBakePhysicsMenuCommand&&commandAt(2)==bake::kBakeMeshMenuCommand&&
+                  positionOf(bake::kExportMenuCommand)==-1,
+              "repeated localization keeps the same four entries and their order");
     }
     scene->app->EnglishUI() = 2;
     scene->app->PlaybackActive() = 1;
@@ -1348,7 +1350,7 @@ void MeshMenuEntry() {
 // the MMV mesh and physics to the mesh entry instead of promising bones.
 HHOOK g_closeHook = nullptr;
 bool g_sceneNote = false;
-bool g_sceneKeyControls=false,g_sceneKeyToggle=false,g_sceneRange=false,g_sceneSettings=false;
+bool g_sceneKeyControls=false,g_sceneRange=false,g_sceneSettings=false;
 LRESULT CALLBACK CloseDialogHook(int code, WPARAM wp, LPARAM lp) {
     if (code >= 0) {
         const auto& message = *reinterpret_cast<CWPRETSTRUCT*>(lp);
@@ -1364,25 +1366,16 @@ LRESULT CALLBACK CloseDialogHook(int code, WPARAM wp, LPARAM lp) {
                 if (GetDlgItem(message.hwnd, 133)) {
                     wchar_t note[512]{};
                     GetDlgItemTextW(message.hwnd, 133, note, 512);
-                    g_sceneNote =
-                        !wcscmp(note,
-                                L"相机、灯光、附件页烧录场景轨道：相机、灯光、自阴影、重力，以及每个 .x 附件及其子参数。网格烘焙和 ABC 导出请用「烘焙 → 烘焙网格…」。");
-                    g_sceneKeyControls=IsWindowEnabled(GetDlgItem(message.hwnd,104))&&
-                        IsWindowEnabled(GetDlgItem(message.hwnd,108))&&
-                        !IsWindowEnabled(GetDlgItem(message.hwnd,103));
+                    g_sceneNote=!wcscmp(note,L"场景：相机、灯光、自阴影、重力和附件。");
+                    g_sceneKeyControls=IsWindowEnabled(GetDlgItem(message.hwnd,141))&&
+                        !GetDlgItem(message.hwnd,103)&&!GetDlgItem(message.hwnd,104)&&!GetDlgItem(message.hwnd,108)&&
+                        !GetDlgItem(message.hwnd,106)&&!GetDlgItem(message.hwnd,145);
                     g_sceneRange=GetDlgItemInt(message.hwnd,101,nullptr,FALSE)==4052;
                     SetDlgItemTextW(message.hwnd,101,L"0");
                     SendMessageW(message.hwnd,WM_COMMAND,102,0);
                     g_sceneRange=g_sceneRange&&GetDlgItemInt(message.hwnd,101,nullptr,FALSE)==4052;
-                    SendDlgItemMessageW(message.hwnd,104,BM_CLICK,0,0);
-                    const bool off=IsDlgButtonChecked(message.hwnd,104)==BST_UNCHECKED&&
-                        !IsWindowEnabled(GetDlgItem(message.hwnd,108));
-                    SendDlgItemMessageW(message.hwnd,104,BM_CLICK,0,0);
-                    g_sceneKeyToggle=off&&IsDlgButtonChecked(message.hwnd,104)==BST_CHECKED&&
-                        IsWindowEnabled(GetDlgItem(message.hwnd,108));
-                    if(IsWindowEnabled(GetDlgItem(message.hwnd,108)))
-                        SendMessageW(message.hwnd,WM_COMMAND,108,0);
-                    g_sceneKeyToggle=g_sceneKeyToggle&&IsDlgButtonChecked(message.hwnd,104)==BST_CHECKED;
+                    SendMessageW(message.hwnd,WM_COMMAND,141,0);
+
                 }
                 EndDialog(message.hwnd, IDCANCEL);
             }
@@ -1403,7 +1396,7 @@ void SceneDialogNote() {
     scene->app->EnglishUI() = 2;
     Check(bake::CanBake(scene->app.get()), "the scene page can open the dialog without a model");
     g_sceneNote = false;
-    g_sceneKeyControls=g_sceneKeyToggle=g_sceneRange=g_sceneSettings=false;
+    g_sceneKeyControls=g_sceneRange=g_sceneSettings=false;
     g_closeHook = SetWindowsHookExW(WH_CALLWNDPROCRET, CloseDialogHook, nullptr, GetCurrentThreadId());
     Check(g_closeHook != nullptr, "the dialog close hook installs");
     if (g_closeHook) {
@@ -1411,11 +1404,10 @@ void SceneDialogNote() {
         UnhookWindowsHookEx(g_closeHook);
         g_closeHook = nullptr;
     }
-    Check(g_sceneNote, "the scene page note names the scene tracks and the mesh entry");
-    Check(g_sceneKeyControls,"scene keyframe switch and settings are enabled while physics remains model-only");
-    Check(g_sceneKeyToggle,"scene keyframes can be unchecked and checked without losing the channel selection");
+    Check(g_sceneNote,"the keyframe window names the scene tracks");
+    Check(g_sceneKeyControls,"scene Keyframes offers its channel picker without model or physics controls");
     Check(g_sceneRange,"default end and Last include an unselected model beyond the camera timeline");
-    Check(g_sceneSettings,"scene keyframe settings open the scene channel picker");
+    Check(g_sceneSettings,"scene Keyframes opens the scene channel picker");
     scene->app->ModelSlot(3)=nullptr;
     scene->app->MainWindow() = nullptr;
     DestroyWindow(window);

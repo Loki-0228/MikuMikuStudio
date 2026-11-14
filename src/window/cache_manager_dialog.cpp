@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include "cache_manager_dialog.hpp"
 #include "native_dialog_backdrop.hpp"
+#include "mikumikustudio/audio_menu.hpp"
 #include "mikumikustudio/cache_manager.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/mmd_app.hpp"
@@ -16,6 +17,10 @@
 #include <string>
 
 namespace mikumikustudio::cache_manager_ui {
+#if !MMD_ORIGINAL_PROFILE
+static_assert(kCommand != audio_menu::kRemoveCommand,
+    "Cache management and Remove audio need distinct WM_COMMAND IDs");
+#endif
 namespace {
 namespace cache=cache_manager;
 constexpr double GiB=1024.0*1024*1024;
@@ -136,6 +141,9 @@ bool ReadSettings(HWND dialog,Context& c,cache::Settings& settings) {
     settings.limitBytes=std::uint64_t(std::llround(limit*1024))*1024*1024;settings.recentProjects=recent;return true;
 }
 void Show(MMDApp* app) {
+    // The resource needs ListView at creation; register tooltips here as well.
+    INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_LISTVIEW_CLASSES|ICC_BAR_CLASSES};
+    if(!InitCommonControlsEx(&controls))return;
     Context c;c.app=app;c.language=app->EnglishUI();
     UiDialogBoxParamW(static_cast<HINSTANCE>(app->HInstance()),MAKEINTRESOURCEW(kDialog),app->MainWindow(),DialogProc,reinterpret_cast<LPARAM>(&c));
 }

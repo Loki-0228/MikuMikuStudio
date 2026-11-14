@@ -6,20 +6,23 @@ ABI 分支通过原创 `MMSAdapter.dll` 转接旧宿主的 37 个 `Exp*` 导出�
 
 ## 安装
 
-MMSAdapter、随宿主构建的 MMHack 与主程序放在同一个目录。MMHack 仅在启用 legacy_mme 包时加载。发布包保留主程序、原创 MMSAdapter、许可文件和 `PLUGINS` 基本结构。
+MMSAdapter、随宿主构建的 MMHack 与主程序放在同一个目录。MMHack 仅在启用 legacy_mme 包时加载。专用 ABI [发布预备目录](development/win7-build.md)还放入 `PLUGINS/config.json`、许可文件，以及另一条兼容路径使用的 `legacy-mmdplugin/MMDPlugin.dll`（本项目构建的观察者宿主 DLL）。这不是用户的旧观察者插件，也不是 MMEffect 的替代品。
 
 以下是用户本地安装一个旧 MME 包的例子：
 
 ```text
 MMS.exe
 MMSAdapter.dll
+MMHack.dll           # 随宿主构建；未指定 hack 时使用
+legacy-mmdplugin/
+  MMDPlugin.dll       # 随宿主构建；供旧观察者插件使用
 PLUGINS/
   config.json
   effects/
     legacy-mme/
       plugin.json
-      MMHack.dll
-      MMEffect.dll
+      MMHack.dll      # 仅当清单显式指定 hack；由用户提供
+      MMEffect.dll    # 由用户提供
       MMEffect.ini       # 可选：首次使用时复制初始偏好
 data/
 ```

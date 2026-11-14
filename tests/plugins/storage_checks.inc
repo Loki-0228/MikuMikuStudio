@@ -116,6 +116,7 @@ static void VersionStorageChecks(const fs::path& root){
     CHECK(bytes(prior)==activeBytes && bytes(older)==priorBytes && FileHash(target)==FileHash(stage));
     CHECK(ReadPluginProject(prior).mainHash==FileHash(prior) && ReadPluginProject(older).mainHash==FileHash(older));
 }
+#include "frozen_storage_checks.inc"
 static void StorageChecks(const fs::path& root){
     StorageStore store;StorageClient a,b,other;a.id="example.a";b.id="example.b";other.id="example.other";
     auto api=store.Api(a),apiOther=store.Api(other);SerializerFixture first,second;first.store=&store;second.store=&store;
@@ -236,5 +237,6 @@ static void StorageChecks(const fs::path& root){
     const auto sideBefore=ReadFile(PluginSidecar(target),96*1024*1024);Write(target,"external replacement");
     CHECK(Throws([&]{ReadPluginProject(target);}));CHECK(Throws([&]{PublishProjectPair(target,stage,project,false);}));CHECK(ReadFile(PluginSidecar(target),96*1024*1024)==sideBefore);
     VersionStorageChecks(root);
+    frozen_storage_checks::Run(root);
     std::cout<<"storage and paired-save recovery PASS\n";
 }

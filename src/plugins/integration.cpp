@@ -746,7 +746,7 @@ bool CloseBlocked(MMDApp* app) noexcept {
 }
 
 struct ProjectSave::Impl {
-    enum class Stage { Captured, Publishing, Published, Failed, Completed };
+    enum class Stage { Captured, Publishing, Published, Failed, Completed, FrozenPublished };
     MMDApp* app = nullptr;
     MMDApp* runtimeOwner = nullptr;
     Manager* capturedManager = nullptr;
@@ -756,6 +756,9 @@ struct ProjectSave::Impl {
     StoredRecords storeRecords;
     std::wstring destination;
     bool copy = false;
+    std::uint64_t frozenRequestId = 0;
+    std::uint64_t sceneGeneration = 0, sceneRevision = 0, historyBinding = 0, historyRevision = 0;
+    bool frozenSceneAvailable = false;
     std::atomic<Stage> stage{Stage::Captured};
 };
 ProjectSave::ProjectSave(MMDApp* app) : impl_(std::make_unique<Impl>()) {
@@ -772,6 +775,26 @@ ProjectSave::ProjectSave(MMDApp* app) : impl_(std::make_unique<Impl>()) {
     // values which are still cancellable and must never reach a saved pair.
     if (journal && journal->CheckNativeNavigation() != MMS_OK)
         throw std::runtime_error("project save during a pending history transaction");
+    impl_->sceneGeneration=app->SceneGeneration();
+    impl_->sceneRevision=app->SceneRevision();
+    // A verified effect capture must also identify this particular plugin
+    // serializer snapshot. Failure to observe the frozen boundary does not
+    // change legacy SAVE-01 serializer behavior.
+    const auto observeHistory=[&](std::uint64_t& revision) noexcept {
+        try {
+#if !MMD_ORIGINAL_PROFILE
+            auto* bound=BoundNativePoseHistory(app);
+            return !bound || bound->Revision(revision)==MMS_OK;
+#else
+            (void)revision;
+            return true;
+#endif
+        } catch (...) { return false; }
+    };
+#if !MMD_ORIGINAL_PROFILE
+    impl_->historyBinding=BoundNativePoseGeneration(app);
+#endif
+    const bool observed=observeHistory(impl_->historyRevision);
     if(currentProject.projectId.empty())currentProject.projectId=StorageId();
     impl_->app = app; impl_->data = currentProject;
     impl_->runtimeOwner = owner; impl_->capturedManager = manager.get(); impl_->binding = runtimeBinding;
@@ -780,6 +803,14 @@ ProjectSave::ProjectSave(MMDApp* app) : impl_(std::make_unique<Impl>()) {
         if (r) throw std::runtime_error("plugin serializer save returned " + std::to_string(r));
         impl_->storeRecords=impl_->data.records;
     }
+    std::uint64_t historyRevision=0;
+    impl_->frozenSceneAvailable=observed && impl_->sceneGeneration &&
+        app->SceneGeneration()==impl_->sceneGeneration && app->SceneRevision()==impl_->sceneRevision &&
+        observeHistory(historyRevision) && historyRevision==impl_->historyRevision;
+#if !MMD_ORIGINAL_PROFILE
+    impl_->frozenSceneAvailable=impl_->frozenSceneAvailable &&
+        BoundNativePoseGeneration(app)==impl_->historyBinding;
+#endif
 }
 ProjectSave::~ProjectSave() = default;
 bool ProjectSave::PublishDisk(const wchar_t* staged, const wchar_t* destination, bool copy, bool keepPrevious, bool numberedManualVersions) noexcept {
@@ -803,6 +834,50 @@ bool ProjectSave::PublishDisk(const wchar_t* staged, const wchar_t* destination,
         runtime_log::Write("PLUGIN_ABI project save failed with an unknown exception");
     }
     impl_->stage.store(Impl::Stage::Failed, std::memory_order_release);
+    return false;
+}
+bool ProjectSave::PublishFrozenDisk(const wchar_t* staged,const wchar_t* destination,bool copy,
+    bool keepPrevious,const effect_save::CapturedEffects& captured,effect_save::PublishedPair& result) noexcept {
+    const auto& request=captured.GetRequest();
+    const auto kind=request.kind;
+    const auto& identity=request.identity;
+    if (!staged || !*staged || !destination || !*destination ||
+        copy!=(kind==effect_save::SaveKind::Backup) || !impl_->frozenSceneAvailable ||
+        identity.sceneGeneration!=impl_->sceneGeneration || identity.sceneRevision!=impl_->sceneRevision ||
+        identity.historyBinding!=impl_->historyBinding || identity.historyRevision!=impl_->historyRevision) return false;
+    auto expected=Impl::Stage::Captured;
+    if (!impl_->stage.compare_exchange_strong(expected,Impl::Stage::Publishing)) return false;
+    try {
+        impl_->destination=destination;
+        impl_->copy=copy;
+        const bool numbered=kind==effect_save::SaveKind::Incremental;
+        result=PublishFrozenProjectPair(fs::path(destination),fs::path(staged),captured,&impl_->data,
+            copy || numbered,keepPrevious && !numbered);
+        impl_->frozenRequestId=result.request.requestId;
+        impl_->stage.store(Impl::Stage::FrozenPublished,std::memory_order_release);
+        return true;
+    } catch (const std::exception& error) {
+        runtime_log::Write("SAVE-02 frozen project publication failed: %s",error.what());
+    } catch (...) {
+        runtime_log::Write("SAVE-02 frozen project publication failed with an unknown exception");
+    }
+    // Do not synthesize success even if an independent recovery later
+    // finishes a writer which stopped at a durable journal.
+    impl_->stage.store(Impl::Stage::Failed,std::memory_order_release);
+    return false;
+}
+bool ProjectSave::CompleteFrozenDisk(const wchar_t* destination,const effect_save::CompletionTracker& completion,
+    const effect_save::LiveIdentity& live) noexcept {
+    if (GetCurrentThreadId()!=impl_->thread || !destination ||
+        impl_->stage.load(std::memory_order_acquire)!=Impl::Stage::FrozenPublished ||
+        impl_->frozenRequestId!=completion.GetRequest().requestId ||
+        _wcsicmp(destination,impl_->destination.c_str()) ||
+        !completion.AllowsApplySceneCompletion(live.identity,live.providerAvailable)) return false;
+    // Only the acknowledged route can advance this state into the ordinary
+    // plugin baseline logic. A failed attempt cannot enable legacy completion.
+    impl_->stage.store(Impl::Stage::Published,std::memory_order_release);
+    if (Complete(destination,false)) return true;
+    impl_->stage.store(Impl::Stage::FrozenPublished,std::memory_order_release);
     return false;
 }
 bool ProjectSave::Complete(const wchar_t* destination, bool copy) noexcept {

@@ -48,15 +48,15 @@ void UpdateReadout(HWND dialog, MMDApp* app) {
     EnableWindow(GetDlgItem(dialog, Apply), !automatic);
     double percent = app->viewportRender.percent;
     if (!automatic && !ReadPercent(dialog, percent)) {
-        SetDlgItemTextW(dialog, Dimensions, Text(app, L"请输入大于 0 的有效百分比。",
-            L"Enter a percentage greater than 0.", L"0より大きい数値を入力してください。"));
+        SetDlgItemTextW(dialog, Dimensions, Text(app, L"百分比须大于 0",
+            L"Percent must be > 0", L"倍率は 0 より大きく"));
         Show4KWarning(dialog, app, false);
         return;
     }
     const Size size = PreviewSize(app, automatic, percent);
     wchar_t text[180]{};
-    swprintf_s(text, Text(app, L"渲染尺寸：%u × %u 像素", L"Render resolution: %u × %u px",
-        L"描画解像度：%u × %u px"), size.width, size.height);
+    swprintf_s(text, Text(app, L"%u × %u 像素", L"%u × %u px",
+        L"%u × %u px"), size.width, size.height);
     SetDlgItemTextW(dialog, Dimensions, text);
     Show4KWarning(dialog, app, Above4K(size));
 }
@@ -117,7 +117,7 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
             session->dialog = dialog;
         SetWindowTextW(dialog, Title(app));
         SetDlgItemTextW(dialog, Automatic, Text(app, L"自动：匹配当前窗口尺寸",
-            L"Automatic: match window size", L"自動：ウィンドウサイズに合わせる"));
+            L"Automatic: match window size", L"自動：ウィンドウに追従"));
         SetDlgItemTextW(dialog, Apply, Text(app, L"应用", L"Apply", L"適用"));
         // The slider and Apply button commit immediately; this button only closes.
         SetDlgItemTextW(dialog, IDCANCEL, Text(app, L"关闭", L"Close", L"閉じる"));

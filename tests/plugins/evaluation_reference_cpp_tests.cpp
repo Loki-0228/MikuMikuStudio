@@ -46,6 +46,101 @@ struct ReferenceFake : MaterialFake {
 static_assert(!std::is_copy_constructible_v<sdk::EvaluationReferenceSource>);
 static_assert(!std::is_move_assignable_v<sdk::EvaluationReferenceSource>);
 static_assert(std::is_nothrow_move_constructible_v<sdk::EvaluationReferenceSource>);
+
+template<class Api,class HostApi>
+void CheckApi(const Api& api,uint16_t minor,const HostApi& hostApi){
+    CHECK(api.h.size==sizeof(api));
+    CHECK(api.h.major==1&&api.h.minor==minor);
+    CHECK(api.context==hostApi.context&&api.retain==hostApi.retain&&api.release==hostApi.release);
+}
+
+template<class Material,class HostApi>
+void CheckMaterialViews(const Material& material,const HostApi& hostApi){
+    const auto& mesh=material.Mesh();
+    CheckApi(material.api(),6,hostApi);
+    CheckApi(mesh.api(),5,hostApi);
+    CHECK(material.get()&&mesh.get()==material.get());
+    CHECK(material.api().materialAt==hostApi.materialAt&&material.api().readFrameMaterials==hostApi.readFrameMaterials);
+    CHECK(mesh.api().readBonePose==hostApi.readBonePose&&mesh.api().readMeshVertices==hostApi.readMeshVertices);
+}
+
+void PrefixViews(){
+    stage="reference prefix views";ReferenceFake fake;
+    const auto referenceTable=fake.reference;
+    sdk::EvaluationReferenceServices referenceService;
+    CHECK(sdk::EvaluationReferenceServices::Query(fake.ReferenceHost(),referenceService)==MMS_OK);
+    sdk::EvaluationReferenceSource source,retained;
+    CHECK(referenceService.Capture(source)==MMS_OK);
+    CheckApi(source.api(),7,referenceTable);
+    CheckMaterialViews(source.Material(),referenceTable);
+    CHECK(source.get()==source.Material().get());
+    CHECK(source.Retain(retained)==MMS_OK&&retained.get()!=source.get());
+    sdk::EvaluationReferenceSource moved(std::move(retained));
+    CHECK(!retained&&!retained.get());
+    CheckApi(moved.api(),7,referenceTable);
+    CheckMaterialViews(moved.Material(),referenceTable);
+    CHECK(moved.get()==moved.Material().get());
+    sdk::EvaluationMaterialFrame frame,retainedFrame;
+    CHECK(moved.Material().Evaluate({1,2},frame)==MMS_OK);
+    CheckMaterialViews(frame,referenceTable);
+    CHECK(frame.Retain(retainedFrame)==MMS_OK&&retainedFrame.get()!=frame.get());
+    CheckMaterialViews(retainedFrame,referenceTable);
+    CHECK(source.Release()==MMS_OK&&moved.Release()==MMS_OK&&frame.Release()==MMS_OK);
+    std::vector<MmsEvaluationMaterialV1> materials;
+    std::vector<MmsEvaluationMeshVertexV1> vertices;
+    CHECK(retainedFrame.ReadMaterials(0,1,1,materials)==MMS_OK&&materials.size()==1&&materials[0].index==1);
+    CHECK(retainedFrame.Mesh().ReadVertices(0,1,1,vertices)==MMS_OK&&vertices.size()==1&&vertices[0].position[0]==11.f);
+    CHECK(retainedFrame.Release()==MMS_OK&&fake.Live()==0);
+    CheckApi(referenceService.api(),7,referenceTable);
+    CHECK(Same(referenceService.api().h,referenceTable.h)&&Same(fake.reference.h,referenceTable.h));
+
+    stage="material prefix views";
+    const auto materialTable=fake.material;
+    sdk::EvaluationMaterialServices materialService;sdk::EvaluationMaterialSource materialSource;
+    CHECK(sdk::EvaluationMaterialServices::Query(fake.MaterialHost(),materialService)==MMS_OK);
+    CHECK(materialService.Capture(materialSource)==MMS_OK);
+    CheckMaterialViews(materialSource,materialTable);
+    CHECK(materialSource.Evaluate({1,2},frame)==MMS_OK);
+    CheckMaterialViews(frame,materialTable);
+    const auto detachedApi=frame.Mesh().api();
+    const auto handle=frame.detach();
+    CHECK(handle&&!frame&&detachedApi.release(detachedApi.context,handle)==MMS_OK);
+    CHECK(materialSource.Release()==MMS_OK&&fake.Live()==0);
+    CheckApi(materialService.api(),6,materialTable);
+    CHECK(Same(materialService.api().h,materialTable.h)&&Same(fake.material.h,materialTable.h));
+}
+
+template<class Service,class Source,class Api>
+void CheckCompatibleQuery(const MmsHostV1& host,Api& hostApi,uint16_t minor){
+    // This fake writes only the supplied prefix but advertises a newer table.
+    // Keep compatible negotiation, without publishing bytes we never received.
+    const auto original=hostApi.h;
+    const MmsHeader advertised{static_cast<uint32_t>(sizeof(Api)+sizeof(void*)),1,static_cast<uint16_t>(minor+1)};
+    hostApi.h=advertised;
+    Service service;Source source;
+    CHECK(Service::Query(host,service)==MMS_OK&&service.ready());
+    CheckApi(service.api(),minor,hostApi);
+    CHECK(service.Capture(source)==MMS_OK);
+    CheckApi(source.api(),minor,hostApi);
+    CHECK(source.Release()==MMS_OK&&Same(hostApi.h,advertised));
+    hostApi.h=original;
+}
+
+void CompatibleQueries(){
+    stage="compatible queries";ReferenceFake fake;
+    CheckCompatibleQuery<sdk::EvaluationServices,sdk::EvaluationSceneSource>(fake.Host(),fake.table,4);
+    CheckCompatibleQuery<sdk::EvaluationMeshServices,sdk::EvaluationMeshSource>(fake.MeshHost(),fake.mesh,5);
+    CheckCompatibleQuery<sdk::EvaluationMaterialServices,sdk::EvaluationMaterialSource>(fake.MaterialHost(),fake.material,6);
+    CheckCompatibleQuery<sdk::EvaluationReferenceServices,sdk::EvaluationReferenceSource>(fake.ReferenceHost(),fake.reference,7);
+    CHECK(fake.Live()==0);
+}
+
+void InternalLeasePrefix(){
+    // Mesh wrappers store a separate 1.4 lease table without exposing it via api().
+    stage="internal lease prefix";MeshFake fake;
+    CheckApi(sdk::evaluation_detail::Prefix(fake.mesh),4,fake.mesh);
+}
+
 void References(){
     stage="reference sdk";ReferenceFake fake;sdk::EvaluationReferenceServices service;
     CHECK(sdk::EvaluationReferenceServices::Query(fake.ReferenceHost(),service)==MMS_OK&&service.ready());
@@ -72,5 +167,5 @@ void References(){
     Fake old;sdk::EvaluationReferenceServices absent;CHECK(sdk::EvaluationReferenceServices::Query(old.Host(),absent)==MMS_E_VERSION&&!absent.ready());
 }
 }
-int main(){try{References();}catch(...){std::fprintf(stderr,"exception in %s\n",stage);return 1;}
+int main(){try{References();PrefixViews();CompatibleQueries();InternalLeasePrefix();}catch(...){std::fprintf(stderr,"exception in %s\n",stage);return 1;}
     std::printf("evaluation_reference_cpp_tests: %u checks passed\n",checks);return 0;}

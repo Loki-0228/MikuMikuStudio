@@ -9,7 +9,8 @@
 namespace mikumikustudio {
 class MMDApp;
 namespace cache_manager_ui {
-inline constexpr unsigned kCommand=32815;
+// Help and File share one WM_COMMAND namespace. 32815 is Remove audio in ABI.
+inline constexpr unsigned kCommand=32818;
 inline constexpr int kDialog=9200;
 enum Control { Enabled=9201,Automatic,Limit,Recent,Summary,Kinds,Projects,Path,
     Pin,ClearProject,ClearReclaimable,ClearAll,Explanation,Status,Apply,LimitLabel,RecentLabel };

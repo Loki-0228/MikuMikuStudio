@@ -1,6 +1,7 @@
-"""Run hidden name regressions with real Windows 11 process code pages.
+"""Run regressions with real Windows 11 process code pages.
 
-Usage: python tests/windows_locale_runner.py <test.exe> <output-dir> [names|selectors|menu]
+Usage: python tests/windows_locale_runner.py <test.exe> <output-dir> [names|selectors|menu|mme-paths]
+For mme-paths, use effect_path_compat_tests.exe; only ACP 932 is run.
 Only copied test executables receive a manifest; system settings stay unchanged.
 """
 from pathlib import Path
@@ -21,6 +22,7 @@ def main():
         'names': (['--name-gaps'], 'Name gap'),
         'selectors': (['--model-selectors'], 'Model selector'),
         'menu': ([], 'Menu'),
+        'mme-paths': (['--japanese-path-encoding'], 'Effect path'),
     }
     arguments, marker = modes[mode]
     output.mkdir(parents=True, exist_ok=True)
@@ -29,7 +31,8 @@ def main():
     if not candidates:
         raise RuntimeError('Windows SDK manifest tool was not found')
     rows = []
-    for locale, code_page in [('ja-JP', 932), ('zh-CN', 936), ('en-US', 1252), ('UTF-8', 65001)]:
+    locales = [('ja-JP', 932), ('zh-CN', 936), ('en-US', 1252), ('UTF-8', 65001)]
+    for locale, code_page in locales[:1] if mode == 'mme-paths' else locales:
         target = output / f'{mode}-{locale}.exe'
         manifest = output / f'{locale}.manifest'
         shutil.copy2(executable, target)
