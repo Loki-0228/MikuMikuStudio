@@ -11,6 +11,8 @@ set_target_properties(mms_legacy_mmd_provider PROPERTIES OUTPUT_NAME MMDPlugin
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_link_options(mms_legacy_mmd_provider PRIVATE /SUBSYSTEM:WINDOWS,6.01)
 add_dependencies(MikuMikuStudio mms_legacy_mmd_provider)
+# Legacy observers resolve this app-owned provider relative to the host EXE.
+install(TARGETS mms_legacy_mmd_provider RUNTIME DESTINATION legacy-mmdplugin)
 add_executable(legacy_image_tests EXCLUDE_FROM_ALL
     tests/plugins/legacy_image_tests.cpp src/plugins/legacy_image.cpp)
 target_compile_features(legacy_image_tests PRIVATE cxx_std_17)
@@ -1002,6 +1004,19 @@ add_test(NAME legacy_observer_export_preflight COMMAND legacy_observer_export_te
     "$<TARGET_FILE:mms_legacy_observer_exports_missing>"
     "$<TARGET_FILE:mms_legacy_observer_exports_forwarded>")
 set_tests_properties(legacy_observer_export_preflight PROPERTIES TIMEOUT 30)
+add_executable(legacy_mmd_menu_tests EXCLUDE_FROM_ALL tests/legacy_mmd_menu_tests.cpp)
+target_include_directories(legacy_mmd_menu_tests PRIVATE include src)
+set_target_properties(legacy_mmd_menu_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(plugin_abi_tests legacy_mmd_menu_tests)
+add_test(NAME legacy_mmd_menu_commands COMMAND legacy_mmd_menu_tests)
+find_program(MMS_ABI_POWERSHELL NAMES pwsh)
+if(Python3_Interpreter_FOUND AND MMS_ABI_POWERSHELL)
+    add_test(NAME abi_release_package_layout
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_release_package_tests.py"
+                "${MMS_ABI_POWERSHELL}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/package_abi_release.ps1")
+    set_tests_properties(abi_release_package_layout PROPERTIES TIMEOUT 60)
+endif()
 add_test(NAME ui_input_state_runtime COMMAND plugin_abi_tests --input-state-only)
 set_tests_properties(ui_input_state_runtime PROPERTIES TIMEOUT 90)
 add_test(NAME ui_property_mount_runtime COMMAND plugin_abi_tests --property-mount-only)

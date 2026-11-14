@@ -325,6 +325,7 @@ void BonePosEdit(MMDApp* app, std::size_t axis) {
         mikumikustudio::mdl::Bones(m)[sel].trans[axis] = 0.0f;
         m = ActiveModel(app);
         mdl::Mdl(m)->bonePhysicsState[sel] = 1;
+        app->SceneModified() = 1;
     }
     PostViewRefresh(app);
 }
@@ -343,6 +344,10 @@ void BoneRotEdit(MMDApp* app, float* vec, int axis) {
     if (plugins::TryResetUnboundBoneRotationAxis(app, axis,
         plugins::NativePoseAxisSource::MainWindow)) return;
 #endif
+    // Let the refresh overwrite the old rotation draft before focus can
+    // move and the edit subclass can commit it.
+    const HWND owner = app->FloatingWindow() ? app->FloatingWindow() : app->MainWindow();
+    SendDlgItemMessageA(owner, panel::kReadoutRotXEdit + axis, EM_SETMODIFY, FALSE, 0);
     if (app->state.optflag[0] != 0) {
         vec[axis] = 0.0f;
         RefreshRequest(-1);
@@ -398,6 +403,7 @@ void BoneRotEdit(MMDApp* app, float* vec, int axis) {
     }
     unsigned char* model = ActiveModel(app);
     mdl::Mdl(model)->bonePhysicsState[sel] = 1;
+    app->SceneModified() = 1;
     PostViewRefresh(app);
 }
 

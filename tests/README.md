@@ -4,6 +4,8 @@
 
 `stage_inheritance_runner.py --self-test` 验证原版兼容导入信息提示的精确匹配及拒绝规则。实际运行要求显式指定现有测试 EXE、隔离工程目录、新输出目录及二者预期 SHA-256；仅处理自身私有桌面上的指定中文信息通知，不处理导入拒绝或未知警告。当前 LOVE 的现有 Stage 宿主在真实私有桌面启动时出现 `0xC0000142`，因此该驱动尚未完成真实 Stage 物理回归；不要把匹配自测当成集成通过。仅保留为诊断与测试侧脚本，待进程内宿主处理取代后再评估删除。
 
+`legacy_mmd_menu_commands` 验证旧版 MMDPlugin 菜单编号的分配上限、已有菜单项跳过、消息归属、退役编号不复用，以及清理时保留其他菜单项；同一 CPU 测试也由 Linux 的 `make -C linux check` 运行。它不加载 DLL、不运行 Win32 钩子。`abi_release_package_layout` 在有 Python 及 PowerShell 7 时注册，使用临时构建与发布目录验证兼容 DLL 的位置、哈希、无关文件隔离，以及缺失 DLL 时不会替换现有发布目录。它不代替 Windows x64 实际安装与观察者 DLL 验证。
+
 `transparent_policy_tests` 在 `MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS=ON` 时提供，显式构建该 `EXCLUDE_FROM_ALL` 目标后可运行 CTest `transparent_policy_regressions`。它是无窗口、无 GPU 的独立 CPU 专项，覆盖显式排序范围、桶、外侧面、来源字段和分配失败发布。旧 `transparent_geometry_tests` 继续保留原入口全集。两者不能替代真实渲染与工程保存验收；布局成本、四个反例和数值限制见[CPU 策略记录](../docs/records/abi-transparent-policy-2026-10-23.md)。
 
 `menu_initial_paint_tests` 和 `menu_initial_paint_integration_tests` 是 `EXCLUDE_FROM_ALL` 的 UI 专项目标，不注册到默认 CTest。显式构建后复制到独立安装目录，继承 Default 桌面串行运行，无参数。核心测试使用真实子类、菜单句柄、计时器及分配失败；接入测试调用实际主窗口 WM_CREATE 和效果编辑器安装函数，只替换重型 UI 初始化。弹出窗口元数据和绘制通过私有接口模拟，不代表真实菜单像素验收。范围、三个反例和平台限制见[菜单验收记录](../docs/records/abi-menu-initial-paint-2026-10-23.md)。
@@ -24,6 +26,8 @@
 
 ## 物理骨骼读数回归
 
+`original_profile_ui_tests --bone-axis-reset-only` 检查 `mmd932` 主窗口和分离窗口 537–542 的原版回退行为。启用 `MIKUMIKUSTUDIO_BUILD_UI_TESTS` 后显式构建 `original_profile_ui_tests`，在有 D3DX9 的隔离 Windows Default 桌面运行 `tests/original-ui/Release/original_profile_ui_tests.exe --bone-axis-reset-only`（路径相对于构建目录）。专项只使用自有隐藏窗口和实际 EDIT 焦点，验证场景修改标记、重置后失焦不回填旧值、重复重置的原版行为，以及未选骨骼和相机分支不标记场景。完整档共同历史另运行 `native_edit_history_tests --pose-axis-only`。
+
 `native_edit_history_tests --pose-command-only` 运行完整 `NativePoseCommandChecks`，包括绑定 495 整体重置、497／498 粘贴、镜像粘贴和失败回滚。该入口检查 Default 桌面，只操作自有隐藏控件。495 增加九框真实草稿、失焦、两历史模式、无变化保留 redo、上下文重入及独立禁用控件哨兵；普通启动未绑定入口不在其通过范围。旧目标和旧草稿反例见[整体重置记录](../docs/records/abi-pose-reset-2026-10-23.md)。
 
 `native_edit_history_tests --legacy-pose-reset-only` 单独验证增强版未绑定 495、原 30 槽撤销环、九框真实失焦及普通 `plugins::Initialize`。运行前须将测试程序复制到独立安装目录，放置 `legacy-pose-reset-test-installation.txt`，内容须精确为 `MMS legacy pose reset test installation v1` 加 LF 换行；该目录的 `PLUGINS` 必须不存在或为空。入口继承 Default 桌面，只操作自有隐藏窗口，运行数据写入该安装的 `data`。真实数值提交使用 CPU/GDI 面板夹具，保留完整刷新路径。首次缩放状态的分配失败扫描上限为 512，覆盖 MSVC 空 map 的哨兵分配。结果、失败原因及旧实现反例见[普通重置记录](../docs/records/abi-legacy-pose-reset-2026-10-23.md)，不以此代替完整应用或真机验收。
@@ -38,6 +42,8 @@
 
 ## 曲线、备份及崩溃日志回归
 
+`native_edit_history_tests --signed-paste-command-only` 运行完整档实际 420／421 命令专项。跨零用例在全局与模型模式、两种共同历史记录模式中验证：当同一批复制的目标同时落在负帧和 0 或 1 帧时，当前实现拒绝整批，保留零帧、姿态、选区、剪贴板、播放头及已有重做。另用 `--signed-paste-frame-only` 检查共享偏移与曲线坐标，不执行窗口命令。跨零用例是现有限制的安全回归，不代表支持跨零粘贴。验证及实现边界见 [HIS-01 跨零粘贴记录](../docs/records/abi-signed-paste-cross-zero-2026-11-13.md)。
+
 `--subdivision-geometry-safe` 与 `--subdivision-writer-copy-safe` 分别验证同会话尺寸变化和晚期写入复制。两项均使用自身窗口，先验证正常写入，再验证失败保留 redo，并检查正文开始后的尺寸变化不会重复写入；也已纳入默认全集。两配置各通过 36,281 项全集，范围和失败记录见[插帧几何记录](../docs/records/abi-curve-insertion-geometry-2026-10-22.md)。
 
 `animation_curve_editor_tests` 全量测试包含插值和切线按钮立即生效、多选一次撤销、重复操作保留重做、手柄模式和一次性预设。可用 `--curve-modes` 单独运行按钮回归，用 `--curve-ui-compat` 运行手柄、布局、提示及键盘导航。`animation_curve_host_tests` 验证原生相机精确键值、单帧保持和阶跃，以及 PMM 往返。
@@ -47,6 +53,21 @@
 `runtime_log_tests <尚不存在的输出目录>` 只在独立子进程触发故障，拦截交互弹窗并核对退出码、UTF-8 日志及恢复结果。覆盖正常退出、SEH、Fatal、terminate、abort、关闭期异常、无法创建日志、多线程写入和持有日志槽位时故障。最后两类逐条核对日志内容；单槽竞争只能丢弃记录，不能等待故障线程。`MMS_RUNTIME_LOG_TESTS` 仅为此测试目标定义，不进入正式程序。
 
 共同代码分别在 `full` 和 `mmd932` 构建档验证。静态导入检查和本机运行不能代替 Win7、AMD 真机验收。
+
+### SAVE-02：Windows 真实 MME 保存与重开
+
+在已具备 x64 Windows、D3D9 和本地原版 MME 0.37 的独立测试环境运行。先在对应的 `full` 或 `mmd932` 构建目录配置 `-DMIKUMIKUSTUDIO_BUILD_UI_TESTS=ON`，然后从仓库根目录执行（示例为完整档）：
+
+```powershell
+cmake --build build/cmake --config Release --target scene_lifecycle_mme_tests MMSAdapter
+python tests/run_mme_save_pair.py --profile full --host build/cmake/tests/mme/Release/MikuMikuDance.exe --adapter build/cmake/Release/MMSAdapter.dll --originals C:\LocalMME037 --output C:\MMSVerify
+```
+
+另测 `mmd932` 时，用该档各自产物并指定 `--profile mmd932`。使用内置桥接时，另构建同一配置的 `MMSLegacyMMHack`，添加 `--bridge <同一构建的 MMHack.dll>`；此模式仍需本地真实 `MMEffect.dll`。输出目录须为本地盘上的短 ASCII 路径。每个用例新建隔离安装、独立设置和原创 PMX/FX 夹具，用生产旧插件包加载器启动改名的隐藏宿主，不写入原始 DLL、项目或安装目录。不注册默认 CTest；可以追加 `--case incremental`、`--case timer` 或 `--case overlap`。
+
+常规用例检查增量编号、已有孤立 EMM 保留原样，以及定时备份锁冲突后重试。重叠用例保留一份可重开的旧备份，在定时器已捕获 PMM 后、完成前新增第二个模型并修改 FOV；在完成后、下一次效果渲染前再新增第三个模型并修改 FOV。只接受同一捕获的 PMM/EMM 在成功回报时已经一起存在，或明确失败且没有新成员、旧备份未变。另启进程核对真实 PMM 模型和镜头、EMM 对象与效果行、完整档侧车中的 PMM SHA-256，以及开关 MME 后的 D3D9 像素变化。`results.json` 和各阶段日志保留校验结果，`.ppm` 是实际后备缓冲区裁图，`-effect-off.ppm` 是禁用效果的对照。
+
+`overlap` 是 SAVE-02 放行条件，不能将当前异步旧通知导致的失败标成通过。此用例不证明已实现冻结提供者、请求级回执或断电恢复。保存和另存的重叠、外部 EMM 在保留轮换期间出现的保护，以及真实中断恢复仍有各自独立的验收边界。
 
 ## 附件顺序与选中项回归
 

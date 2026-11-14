@@ -658,8 +658,14 @@ bool BuildRecordingGraph(DShowRecorder* rec, HWND hwnd, unsigned char english,
     if (rec->selectedCodec == kNativePngMovCodec) {
         const auto* output = static_cast<const std::int32_t*>(config);
         std::wstring error;
-        if (StartPngMovRecording(rec, static_cast<const wchar_t*>(outPath), output[1], output[2], fps, error))
+        bool destinationChanged = false;
+        if (StartPngMovRecording(rec, static_cast<const wchar_t*>(outPath), output[1], output[2], fps,
+                                 error, approved, &destinationChanged))
             return true;
+        if (destinationChanged) {
+            recording_output_path::ReportChangedSelection(hwnd, approved->path.c_str(), uiLanguage);
+            return false;
+        }
         MessageBoxW(hwnd, error.c_str(), L"MOV export", MB_OK | MB_ICONERROR);
         return false;
     }

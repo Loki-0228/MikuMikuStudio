@@ -167,8 +167,8 @@ void CheckBonePlaybackInterpolation() {
                     const auto collisionFlags = body.getCollisionFlags();
                     const auto bodyMode = rigid.mode;
                     const auto boneMode = bone.physicsDisabled;
-                    SampleModelPlaybackVisual(raw, 6.0 / 30, physicsMode);
-                    SampleModelPlaybackVisual(raw, 6.25 / 30, physicsMode);
+                    SampleModelPlaybackVisual(raw, 6.0 / 30, {});
+                    SampleModelPlaybackVisual(raw, 6.25 / 30, {});
                     Check(collisionFlags == body.getCollisionFlags() && bodyMode == rigid.mode &&
                           boneMode == bone.physicsDisabled && active != 0,
                           "exact and terminal display samples leave the next physics switch pending");

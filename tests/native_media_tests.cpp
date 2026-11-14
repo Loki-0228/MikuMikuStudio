@@ -3,6 +3,8 @@
 #include "mikumikustudio/wic_mov_recorder.hpp"
 #include "mikumikustudio/wave_audio_context.hpp"
 #include "mikumikustudio/local_data_path.hpp"
+#include "mikumikustudio/recording_output_path.hpp"
+#include <objbase.h>
 #include <filesystem>
 #include <fstream>
 #include <cstdio>
@@ -15,12 +17,124 @@
 #include <cstring>
 #include <thread>
 #include <set>
+#include <iterator>
 using namespace mikumikustudio;
 namespace fs = std::filesystem;
 void Check(bool ok, const char* why) { if (!ok) { std::printf("FAIL %s\n", why); std::exit(1); } }
 void CheckResult(bool ok, const std::wstring& error, const char* why) {
     if (!ok) std::fwprintf(stderr, L"%s\n", error.c_str()); Check(ok, why);
 }
+
+void CheckMovPublication(const fs::path& directory) {
+    GUID id{};
+    wchar_t name[40]{};
+    Check(SUCCEEDED(CoCreateGuid(&id)) && StringFromGUID2(id, name, 40) != 0, "name a private MOV fixture directory");
+    const auto root = fs::absolute(directory) / name;
+    Check(fs::create_directory(root), "create a private MOV fixture directory");
+    const auto output = root / L"protected.mov";
+    const auto parked = root / L"previous.mov";
+    auto* recorder = reinterpret_cast<DShowRecorder*>(static_cast<std::uintptr_t>(1));
+    const std::array<unsigned char, 3 * 3 * 4> pixels{};
+    std::wstring error;
+    const auto approval = [&] {
+        recording_output_path::Selection selected;
+        Check(recording_output_path::ReadSelection(output.c_str(), selected) == ERROR_SUCCESS, "capture MOV destination approval");
+        return selected;
+    };
+    const auto start = [&](const recording_output_path::Selection& selected, bool* changed = nullptr) {
+        return StartPngMovRecording(recorder, output.c_str(), 3, 3, 30, error, &selected, changed);
+    };
+    const auto encode = [&](const recording_output_path::Selection& selected) {
+        CheckResult(start(selected), error, "stage WIC MOV with selected destination identity");
+        Check(WritePngMovFrame(recorder, pixels.data(), pixels.size()), "stage one real WIC PNG frame");
+    };
+    const auto files = [&] {
+        std::set<fs::path> names;
+        for (const auto& entry : fs::directory_iterator(root)) names.insert(entry.path());
+        return names;
+    };
+    const auto read = [](const fs::path& path) {
+        std::ifstream input(path, std::ios::binary);
+        Check(input.is_open(), "read the owned MOV fixture");
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    };
+    const auto write = [&](const char* bytes, std::ios::openmode mode = std::ios::trunc) {
+        std::ofstream file(output, std::ios::binary | mode);
+        file << bytes;
+        file.close();
+        Check(file.good(), "write the owned MOV fixture");
+    };
+    const auto refused = [&] {
+        Check(!FinishPngMovRecording(recorder, 1, error) && !IsPngMovRecording(recorder) &&
+            error.find(output.native()) != std::wstring::npos, "failed MOV publication reports the selected path and ends recording");
+    };
+    constexpr char old[] = "approved MOV fixture";
+    constexpr char external[] = "external MOV fixture";
+    static_assert(sizeof(old) == sizeof(external));
+
+    const auto newPath = approval();
+    Check(!newPath.existing, "initial MOV destination is absent");
+    write(external);
+    bool changed = false;
+    Check(!start(newPath, &changed) && changed && !IsPngMovRecording(recorder) &&
+        read(output) == external && files() == std::set{output}, "arrival after consent and before startup is refused without staging");
+    Check(fs::remove(output), "retire the owned early-arrival fixture");
+
+    encode(approval());
+    Check(!fs::exists(output), "new MOV path has no placeholder during encoding");
+    write(external);
+    refused();
+    Check(read(output) == external && files() == std::set{output}, "a late arrival at a new path is untouched and staging is cleaned");
+
+    write(old);
+    const auto prior = approval();
+    encode(prior);
+    Check(read(output) == old, "approved previous MOV remains available during encoding");
+    const auto modified = fs::last_write_time(output);
+    fs::rename(output, parked);
+    write(external);
+    fs::last_write_time(output, modified);
+    refused();
+    Check(read(output) == external && read(parked) == old && files() == std::set{output, parked},
+        "a different file with the same size and timestamp is not overwritten");
+    Check(fs::remove(output), "retire the owned replacement fixture");
+    fs::rename(parked, output);
+
+    encode(approval());
+    write(" changed", std::ios::app);
+    refused();
+    const std::string edited = std::string(old) + " changed";
+    Check(read(output) == edited && files() == std::set{output}, "an in-place edit is not overwritten");
+
+    encode(approval());
+    fs::rename(output, parked);
+    refused();
+    Check(!fs::exists(output) && read(parked) == edited && files() == std::set{parked},
+        "a disappeared destination is not recreated after it was moved away");
+    fs::rename(parked, output);
+
+    encode(approval());
+    const HANDLE lock = CreateFileW(output.c_str(), GENERIC_READ, FILE_SHARE_READ,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Check(lock != INVALID_HANDLE_VALUE, "hold the previous MOV open against replacement");
+    const bool publishedWhileLocked = FinishPngMovRecording(recorder, 1, error);
+    Check(CloseHandle(lock) != FALSE, "release the owned destination lock");
+    Check(!publishedWhileLocked && !error.empty() && read(output) == edited && files() == std::set{output},
+        "a locked destination remains byte-identical and staging is cleaned");
+
+    encode(approval());
+    AbortPngMovRecording(recorder);
+    Check(!IsPngMovRecording(recorder) && read(output) == edited && files() == std::set{output},
+        "cancel preserves the previous MOV and cleans staging");
+
+    encode(approval());
+    CheckResult(FinishPngMovRecording(recorder, 1, error), error, "fresh approval replaces the unchanged destination");
+    const auto encoded = read(output);
+    Check(encoded.find("ftyp") == 4 && files() == std::set{output}, "successful replacement publishes a MOV and retires staging and the prior file");
+    Check(fs::remove(output) && fs::remove(root), "retire the private MOV publication fixture");
+    std::puts("PASS WIC MOV publication, consent changes, late arrivals, cancellation and retry");
+}
+
 void ProbeVideo(const fs::path& source) {
     auto* app = reinterpret_cast<MMDApp*>(static_cast<std::uintptr_t>(1));
     int w = 0, h = 0; double duration = 0; std::wstring error;
@@ -65,6 +179,7 @@ void ProbeVideo(const fs::path& source) {
 }
 int wmain(int argc, wchar_t** argv) {
     if (argc == 3 && std::wcscmp(argv[1], L"--video") == 0) { ProbeVideo(argv[2]); return 0; }
+    if (argc == 3 && std::wcscmp(argv[1], L"--mov-publication") == 0) { CheckMovPublication(argv[2]); return 0; }
     Check(argc == 2, "fixture directory required");
     const fs::path directory = argv[1];
     Check(media::IsAudioPath(L"song.Mp3") && media::IsAudioPath(L"song.AAC") && !media::IsAudioPath(L"song.mp3.txt"), "exact audio extensions");
@@ -169,4 +284,5 @@ int wmain(int argc, wchar_t** argv) {
     Check(WritePngMovFrame(recorder, pixels.data(), pixels.size()), "write incomplete frame");
     Check(!FinishPngMovRecording(recorder, 30, error) && !fs::exists(directory / L"incomplete.mov"), "incomplete recording is not reported as success");
     std::puts("PASS WIC PNG/MOV encoding, cancellation, and incomplete export");
+    CheckMovPublication(directory);
 }

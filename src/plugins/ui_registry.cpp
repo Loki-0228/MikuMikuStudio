@@ -687,6 +687,8 @@ MmsResult UiRegistry::Element(UiClient& c, const MmsUiElementV1* input, MmsHandl
     if (!MenuOverflowAllowed(tree.at(id), tree)) return MMS_E_UNSUPPORTED;
     auto merged = MergePreferences(tree, preferences_->entries, next, false); if (merged) return merged;
     for (auto& [key, element] : tree) if (!element.nativeObserved) element.desc.generation = generation_++;
+    // Descriptor replacement keeps its handle, so invalidate dependent previews
+    // explicitly. Rebuilding storage for unchanged registrations is not replacement.
     if (replace) { RevokeLayoutPreviewFields(replace, 15, MMS_LAYOUT_SESSION_TARGET_CHANGED); ForgetStateContent(replace); refresh_.InvalidateTarget(replace); DestroyView(id); }
     ReconcileLayoutPreviews(tree);
     elements.swap(tree); next_ = next; *out = elements[id].handle; Changed(); return MMS_OK;

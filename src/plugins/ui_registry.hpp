@@ -127,8 +127,7 @@ class UiRegistry {
     std::deque<std::string> layoutUndo_, layoutRedo_;
     struct LayoutParentDependency {
         MmsHandle element = 0, dependency = 0;
-        std::shared_ptr<Arena> arena;
-        MmsString parent{};
+        std::string parentId;
     };
     struct LayoutPreview {
         UiClient* owner = nullptr;

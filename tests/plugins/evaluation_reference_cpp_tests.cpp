@@ -12,7 +12,7 @@ struct ReferenceFake : MaterialFake {
     MmsResult referenceResult=MMS_OK;
     ReferenceFake() {
         std::memcpy(&reference,&material,sizeof(material));reference.h={sizeof(reference),1,7};
-        reference.getReferenceCapabilities=Caps17;reference.createReferenceSceneSource=Create;
+        reference.getReferenceCapabilities=Caps17;reference.createReferenceSceneSource=Create17;
         reference.readMaterialReferences=Read17;reference.readToonTable=Table17;
     }
     MmsHostV1 ReferenceHost(){auto host=Host();host.queryService=Query17;return host;}
@@ -21,6 +21,7 @@ struct ReferenceFake : MaterialFake {
         f.queryMajor=major;f.queryMinor=minor;f.queryBytes=bytes;f.queriedName=name.bytes==18&&!std::memcmp(name.data,"mms.scene.evaluate",18);
         if(!out||bytes<sizeof(f.reference))return MMS_E_ARGUMENT;std::memcpy(out,&f.reference,sizeof(f.reference));return f.queryResult;
     }
+    static MmsResult MMS_CALL Create17(void* context,const MmsEvaluationSceneQueryV1* query,MmsHandle* out){return Create(context,query,out);}
     static MmsResult MMS_CALL Caps17(void* context,MmsEvaluationReferenceCapsV1* out){auto& f=Self17(context);
         *out={H<MmsEvaluationReferenceCapsV1>(),MMS_EVALUATION_REFERENCE_CAP_RUNTIME_FIELDS,0};if(f.fault==1)out->reserved=1;return f.referenceResult;
     }
@@ -149,6 +150,21 @@ void References(){
     auto badCaps=Poison<MmsEvaluationReferenceCapsV1>();fake.fault=1;CHECK(service.Capabilities(badCaps)==MMS_E_FAILED&&Unchanged(badCaps));fake.fault=0;
     sdk::EvaluationReferenceSource source;CHECK(service.Capture(source,1234)==MMS_OK&&source.get());
     CHECK(source.Material().get()==source.get()&&source.Material().Mesh().get()==source.get()&&fake.captureQuery.maxRetainedBytes==1234);
+    // Borrowed C tables describe their own prefix, with the same callbacks and
+    // context as a direct C query for that version and the same source handle.
+    CheckApiTable(source.api(),fake.reference);
+    CheckApiTable(source.Material().api(),fake.material);
+    CheckApiTable(source.Material().Mesh().api(),fake.mesh);
+    MmsEvaluationMaterialIdV1 id{};
+    const auto& material=source.Material().api();
+    CHECK(material.materialAt(material.context,source.get(),0,1,&id)==MMS_OK&&id.material.hi==201);
+    sdk::EvaluationMaterialFrame frame;
+    CHECK(source.Material().Evaluate({1,2},frame)==MMS_OK&&frame.Mesh().get()==frame.get());
+    CheckApiTable(frame.api(),fake.material);
+    CheckApiTable(frame.Mesh().api(),fake.mesh);
+    std::vector<MmsEvaluationMaterialV1> values;
+    CHECK(frame.ReadMaterials(0,1,1,values)==MMS_OK&&values.size()==1&&values[0].material.hi==201);
+    CHECK(frame.Release()==MMS_OK);
     CHECK(service.Capture(source)==MMS_E_BUSY);
     MmsEvaluationMaterialReferencesV1 refs{};CHECK(source.ReadMaterialReferences(0,1,refs)==MMS_OK&&refs.index==1&&refs.texturePath[0]==0x9ad8);
     MmsEvaluationToonTableV1 table{};CHECK(source.ReadToonTable(0,table)==MMS_OK&&table.fileNames[9][99]==0x81);
@@ -158,6 +174,8 @@ void References(){
     for(int fault:{10,11}){fake.fault=fault;CHECK(source.ReadToonTable(0,poisonTable)==(fault==10?MMS_E_VERSION:MMS_E_FAILED)&&Unchanged(poisonTable));}
     fake.fault=0;fake.referenceResult=MMS_E_CANCELLED;CHECK(source.ReadMaterialReferences(0,1,poisonRefs)==MMS_E_CANCELLED&&Unchanged(poisonRefs));fake.referenceResult=MMS_OK;
     sdk::EvaluationReferenceSource retained;CHECK(source.Retain(retained)==MMS_OK&&retained.get()!=source.get());
+    CheckApiTable(retained.Material().api(),fake.material);
+    CheckApiTable(retained.Material().Mesh().api(),fake.mesh);
     CHECK(source.Retain(retained)==MMS_E_BUSY);
     const auto original=source.get();fake.results[Release]=MMS_E_BUSY;CHECK(source.Release()==MMS_E_BUSY&&source.get()==original);
     fake.results[Release]=MMS_OK;CHECK(source.Release()==MMS_OK&&!source);

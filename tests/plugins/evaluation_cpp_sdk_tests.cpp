@@ -22,6 +22,10 @@ unsigned checks=0;const char* stage="setup";
 #define CHECK(x) do{++checks;if(!(x)){std::fprintf(stderr,"FAIL %s line %d: %s\n",stage,__LINE__,#x);std::exit(1);}}while(false)
 template<class T>constexpr MmsHeader H(){return {sizeof(T),1,0};}
 template<class T>bool Same(const T& a,const T& b){return !std::memcmp(&a,&b,sizeof(T));}
+template<class T>void CheckApiTable(const T& actual,const T& expected){
+    CHECK(actual.h.size==sizeof(T)&&actual.h.major==1&&actual.h.minor==expected.h.minor);
+    CHECK(Same(actual,expected));
+}
 template<class T>T Poison(){T out;std::memset(&out,0xa5,sizeof(out));return out;}
 template<class T>bool Unchanged(const T& out){const auto before=Poison<T>();return Same(out,before);}
 enum Op{Query,Caps,Capture,SourceInfo,SourceModel,SourceBone,Evaluate,FrameInfo,FrameModel,Read,Retain,Release,Count};
@@ -305,7 +309,7 @@ struct MeshFake : Fake {
     int fault=0;MmsResult queryResult=MMS_OK;
     MeshFake(){
         std::memcpy(&mesh,&table,sizeof(table));mesh.h={sizeof(mesh),1,5};
-        mesh.getMeshCapabilities=Caps15;mesh.createMeshSceneSource=Create;
+        mesh.getMeshCapabilities=Caps15;mesh.createMeshSceneSource=Create15;
         mesh.describeMesh=Info15;mesh.readMeshIndices=Indices15;mesh.readMeshMaterials=Materials15;
         mesh.readMeshBindVertices=Bind15;mesh.readMeshVertices=Vertices15;
     }
@@ -315,6 +319,7 @@ struct MeshFake : Fake {
         f.queryMajor=major;f.queryMinor=minor;f.queryBytes=bytes;f.queriedName=name.bytes==18&&!std::memcmp(name.data,"mms.scene.evaluate",18);
         if(!out||bytes<sizeof(f.mesh))return MMS_E_ARGUMENT;std::memcpy(out,&f.mesh,sizeof(f.mesh));return f.queryResult;
     }
+    static MmsResult MMS_CALL Create15(void* context,const MmsEvaluationSceneQueryV1* query,MmsHandle* out){return Create(context,query,out);}
     static MmsResult MMS_CALL Caps15(void* context,MmsEvaluationMeshCapsV1* out){auto& f=Self15(context);++f.meshCalls[MeshCaps];
         *out={H<MmsEvaluationMeshCapsV1>(),MMS_EVALUATION_MESH_TOPOLOGY|MMS_EVALUATION_MESH_CPU_VERTICES,4,{0,0}};
         if(f.fault==1)out->h.major=2;if(f.fault==2)out->maxItemsPerRead=0;if(f.fault==3)out->reserved[0]=1;
@@ -399,7 +404,7 @@ struct MaterialFake : MeshFake {
     int materialFault=0;unsigned materialCapsCalls=0,materialIdCalls=0,materialReadCalls=0;
     MaterialFake(){
         std::memcpy(&material,&mesh,sizeof(mesh));material.h={sizeof(material),1,6};
-        material.getMaterialCapabilities=Caps16;material.createMaterialSceneSource=Create;
+        material.getMaterialCapabilities=Caps16;material.createMaterialSceneSource=Create16;
         material.materialAt=At16;material.readFrameMaterials=Read16;
     }
     MmsHostV1 MaterialHost(){auto host=Host();host.queryService=Query16;return host;}
@@ -408,6 +413,7 @@ struct MaterialFake : MeshFake {
         f.queryMajor=major;f.queryMinor=minor;f.queryBytes=bytes;f.queriedName=name.bytes==18&&!std::memcmp(name.data,"mms.scene.evaluate",18);
         if(!out||bytes<sizeof(f.material))return MMS_E_ARGUMENT;std::memcpy(out,&f.material,sizeof(f.material));return f.queryResult;
     }
+    static MmsResult MMS_CALL Create16(void* context,const MmsEvaluationSceneQueryV1* query,MmsHandle* out){return Create(context,query,out);}
     static MmsResult MMS_CALL Caps16(void* context,MmsEvaluationMaterialCapsV1* out){auto& f=Self16(context);++f.materialCapsCalls;
         *out={H<MmsEvaluationMaterialCapsV1>(),MMS_EVALUATION_MATERIAL_CAP_CPU_VALUES|MMS_EVALUATION_MATERIAL_CAP_PMD|MMS_EVALUATION_MATERIAL_CAP_PMX,4,{0,0}};
         if(f.materialFault==1)out->h.major=2;if(f.materialFault==2)out->maxItemsPerRead=0;if(f.materialFault==3)out->reserved[1]=1;
@@ -441,10 +447,15 @@ void MaterialSdk(){
     MmsEvaluationMaterialCapsV1 caps{};CHECK(service.Capabilities(caps)==MMS_OK&&caps.flags==7&&caps.maxItemsPerRead==4);
     sdk::EvaluationMaterialSource source;CHECK(service.Capture(source,1234)==MMS_OK&&source.get());
     CHECK(fake.captureQuery.maxRetainedBytes==1234&&source.Mesh().get()==source.get());
+    CheckApiTable(source.api(),fake.material);
+    CheckApiTable(source.Mesh().api(),fake.mesh);
+    CheckApiTable(sdk::evaluation_detail::Prefix(source.Mesh().api()),fake.table);
     MmsEvaluationMaterialIdV1 id{};CHECK(source.MaterialAt(0,1,id)==MMS_OK&&id.index==1&&id.material.lo==100&&id.material.hi==201);
     MmsEvaluationMeshInfoV1 info{};CHECK(source.Mesh().MeshInfo(0,info)==MMS_OK&&info.materialCount==2);
     std::vector<uint32_t> indices;CHECK(source.Mesh().ReadIndices(0,0,3,indices)==MMS_OK&&indices==std::vector<uint32_t>({0,1,2}));
     sdk::EvaluationMaterialFrame frame;CHECK(source.Evaluate({1,2},frame)==MMS_OK&&frame.Mesh().get()==frame.get());
+    CheckApiTable(frame.api(),fake.material);
+    CheckApiTable(frame.Mesh().api(),fake.mesh);
     MmsEvaluationScenePoseV1 pose{};CHECK(frame.Mesh().ReadBonePose(0,0,pose)==MMS_OK);
     std::vector<MmsEvaluationMaterialV1> values;CHECK(frame.ReadMaterials(0,0,2,values)==MMS_OK&&values.size()==2);
     CHECK(values[1].index==1&&values[1].material.hi==201&&values[1].flags==MMS_EVALUATION_MATERIAL_FORMAT_PMX&&values[1].nativeDiffuse[0]==1.5f);

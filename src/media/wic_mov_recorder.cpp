@@ -4,15 +4,19 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 #include "mikumikustudio/wic_mov_recorder.hpp"
-#include "mikumikustudio/dshow_recorder.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "staged_output_publication.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace mikumikustudio {
@@ -34,7 +38,8 @@ std::size_t Full(Bytes& b, const char* type, std::uint32_t flags = 0) { const au
 void Matrix(Bytes& b) { for (std::uint32_t n : {0x10000u, 0u, 0u, 0u, 0x10000u, 0u, 0u, 0u, 0x40000000u}) U32(b, n); }
 struct Recording {
     HANDLE file = INVALID_HANDLE_VALUE;
-    std::wstring destination, temporary;
+    std::wstring destination, temporary, spare;
+    std::optional<recording_output_path::FileIdentity> originalDestination;
     int width = 0, height = 0;
     std::uint32_t fpsNum = 0, fpsDen = 1;
     std::uint64_t frames = 0, position = 0;
@@ -66,6 +71,57 @@ struct Recording {
     }
     void Sample(const Bytes& data) { Need(!data.empty() && data.size() <= UINT32_MAX, "Invalid PNG sample"); offsets.push_back(position); sizes.push_back(static_cast<std::uint32_t>(data.size())); Write(data); }
 };
+
+void CreateStagingFile(Recording& recording) {
+    const auto directory = std::filesystem::path(recording.destination).parent_path();
+    const auto room = MAX_PATH - 1 - static_cast<std::ptrdiff_t>(directory.native().size()) - 1 - 4;
+    const auto digits = static_cast<std::size_t>((std::clamp)(room, std::ptrdiff_t{1}, std::ptrdiff_t{8}));
+    for (unsigned attempt = 0; attempt < 32; ++attempt) {
+        GUID id{};
+        Hr(CoCreateGuid(&id), "Create MOV temporary name");
+        wchar_t name[9]{};
+        swprintf_s(name, L"%08lX", id.Data1);
+        const std::wstring stem(name, digits);
+        std::wstring temporary = (directory / (stem + L".tmp")).native();
+        std::wstring spare;
+        if (recording.originalDestination) spare = (directory / (stem + L".bak")).native();
+        if (_wcsicmp(temporary.c_str(), recording.destination.c_str()) == 0 ||
+            (!spare.empty() && _wcsicmp(spare.c_str(), recording.destination.c_str()) == 0)) continue;
+        const HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+                                        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE) {
+            recording.file = file;
+            recording.temporary.swap(temporary);
+            recording.spare.swap(spare);
+            return;
+        }
+        const DWORD status = GetLastError();
+        Need(status == ERROR_FILE_EXISTS || status == ERROR_ALREADY_EXISTS, "Create MOV temporary file");
+    }
+    throw Failure("Create MOV temporary file");
+}
+
+std::wstring PublicationError(const std::wstring& destination, HRESULT result,
+                              const std::wstring& retained, unsigned char language) {
+    std::wstring message = language == kUiChinese
+        ? L"无法将 MOV 写入当前目标。请重新选择输出路径，或确认覆盖后重试。"
+        : language == kUiJapanese
+        ? L"指定した出力先に MOV を書き込めませんでした。出力先を選び直すか、上書きを確認して再試行してください。"
+        : L"The MOV could not be written to the selected destination. Choose the path again or confirm replacement and retry.";
+    message += L"\n\n";
+    message += destination;
+    wchar_t status[32]{};
+    swprintf_s(status, L"\n\nHRESULT 0x%08lX", static_cast<unsigned long>(result));
+    message += status;
+    if (!retained.empty()) {
+        message += language == kUiChinese ? L"\n\n先前的视频保留在：\n"
+            : language == kUiJapanese ? L"\n\n以前の動画の保存先：\n"
+                                     : L"\n\nThe previous video was kept at:\n";
+        message += retained;
+    }
+    return message;
+}
+
 std::unordered_map<const DShowRecorder*, std::unique_ptr<Recording>> active;
 std::uint32_t Duration(std::uint64_t frames, std::uint32_t num, std::uint32_t den) { const auto v = (frames * den * 1000 + num - 1) / num; Need(v <= UINT32_MAX, "MOV duration too long"); return static_cast<std::uint32_t>(v); }
 void Track(Bytes& b, const Recording& r) {
@@ -84,17 +140,29 @@ void Track(Bytes& b, const Recording& r) {
 }
 bool IsPngMovRecording(const DShowRecorder* rec) { return active.find(rec) != active.end(); }
 void AbortPngMovRecording(DShowRecorder* rec) { active.erase(rec); }
-bool StartPngMovRecording(DShowRecorder* rec, const wchar_t* path, int width, int height, float fps, std::wstring& error) {
+bool StartPngMovRecording(DShowRecorder* rec, const wchar_t* path, int width, int height,
+                          float fps, std::wstring& error,
+                          const recording_output_path::Selection* approved, bool* destinationChanged) {
     AbortPngMovRecording(rec); error.clear();
+    if (destinationChanged) *destinationChanged = false;
     try {
         Need(rec && path && *path && width >= 2 && height >= 2 && width <= 16384 && height <= 16384 && std::isfinite(fps) && fps >= .001f && fps <= 240, "Invalid PNG/MOV settings");
-        auto r = std::make_unique<Recording>(); r->destination = std::filesystem::absolute(path).wstring(); r->width = width; r->height = height;
+        recording_output_path::Selection current;
+        Need(recording_output_path::ReadSelection(path, current) == ERROR_SUCCESS, "Unable to inspect MOV output path");
+        if (approved && !recording_output_path::SameSelection(*approved, current)) {
+            if (destinationChanged) *destinationChanged = true;
+            error = L"The MOV output file changed after confirmation.";
+            return false;
+        }
+        auto r = std::make_unique<Recording>();
+        r->destination = std::move(current.path);
+        r->originalDestination = current.existing;
+        r->width = width; r->height = height;
         r->fpsNum = static_cast<std::uint32_t>(std::lround(fps * 1000)); r->fpsDen = 1000; const auto divisor = std::gcd(r->fpsNum, r->fpsDen); r->fpsNum /= divisor; r->fpsDen /= divisor;
         r->pixels.resize(static_cast<std::size_t>(width) * height * 4);
         const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); r->com = SUCCEEDED(initialized); if (initialized != RPC_E_CHANGED_MODE) Hr(initialized, "Initialize COM");
         Hr(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&r->factory)), "Create Windows PNG encoder");
-        const auto parent = std::filesystem::path(r->destination).parent_path(); wchar_t temporary[MAX_PATH]{}; Need(GetTempFileNameW(parent.c_str(), L"MMS", 0, temporary) != 0, "Create MOV temporary file"); r->temporary = temporary;
-        r->file = CreateFileW(temporary, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr); Need(r->file != INVALID_HANDLE_VALUE, "Open MOV temporary file");
+        CreateStagingFile(*r);
         Bytes header; const auto ftyp = Box(header, "ftyp"); Four(header, "qt  "); U32(header, 0); Four(header, "qt  "); End(header, ftyp); U32(header, 1); Four(header, "mdat"); U64(header, 0); r->Write(header);
         active.emplace(rec, std::move(r)); return true;
     } catch (const std::exception& e) { error = Wide(e.what()); return false; }
@@ -107,14 +175,23 @@ bool WritePngMovFrame(DShowRecorder* rec, const void* data, std::size_t size) {
         r.Sample(r.EncodePng()); ++r.frames; return true;
     } catch (...) { r.failed = true; return false; }
 }
-bool FinishPngMovRecording(DShowRecorder* rec, std::uint64_t expected, std::wstring& error) {
+bool FinishPngMovRecording(DShowRecorder* rec, std::uint64_t expected, std::wstring& error, unsigned char uiLanguage) {
     error.clear(); const auto found = active.find(rec); if (found == active.end()) return false; auto r = std::move(found->second); active.erase(found);
     try {
         Need(!r->failed, "PNG/MOV frame encoding failed"); Need(expected && r->frames == expected, "MOV export did not reach its requested frame count");
         const auto end = r->position; Bytes length; U64(length, end - 20); r->Seek(28); r->Write(length); r->Seek(end);
         Bytes movie; const auto moov = Box(movie, "moov"), mvhd = Full(movie, "mvhd"); U32(movie, 0); U32(movie, 0); U32(movie, 1000); U32(movie, Duration(r->frames, r->fpsNum, r->fpsDen)); U32(movie, 1 << 16); U16(movie, 0x100); Zero(movie, 10); Matrix(movie); Zero(movie, 24); U32(movie, 2); End(movie, mvhd); Track(movie, *r); End(movie, moov); r->Write(movie);
         Need(FlushFileBuffers(r->file), "Flush MOV failed"); Need(CloseHandle(r->file), "Close MOV failed"); r->file = INVALID_HANDLE_VALUE;
-        Need(MoveFileExW(r->temporary.c_str(), r->destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH), "Unable to replace MOV output"); r->temporary.clear(); return true;
+        std::wstring retained;
+        const HRESULT published = staged_output::Publish(r->temporary, r->destination,
+            r->originalDestination, std::move(r->spare), retained);
+        if (!retained.empty()) runtime_log::WritePath("MOV previous output retained at", retained.c_str());
+        if (FAILED(published)) {
+            error = PublicationError(r->destination, published, retained, uiLanguage);
+            return false;
+        }
+        r->temporary.clear();
+        return true;
     } catch (const std::exception& e) { error = Wide(e.what()); return false; }
 }
 }

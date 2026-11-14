@@ -270,10 +270,11 @@ bool CheckRecordingOutputPath(MMDApp* app, const recording_output_path::Selectio
     if (!recording_output_path::ProtectBackgroundVideo(app->MainWindow(), app->AviOutputPath(),
             app->AviBackgroundPath(), app->EnglishUI())) return false;
     const auto* recorder = app->Recorder();
-    const bool stagedH264 = recorder && (recorder->selectedCodec == kBuiltInH264Codec ||
-                                        recorder->selectedCodec == kSystemH264Codec);
+    const bool staged = recorder && (recorder->selectedCodec == kBuiltInH264Codec ||
+                                     recorder->selectedCodec == kSystemH264Codec ||
+                                     recorder->selectedCodec == kNativePngMovCodec);
     DWORD error = ERROR_SUCCESS;
-    if (stagedH264 && approved) {
+    if (staged && approved) {
         recording_output_path::Selection current;
         error = recording_output_path::ReadSelection(app->AviOutputPath(), current);
         if (error == ERROR_SUCCESS && !recording_output_path::SameSelection(*approved, current)) {
@@ -281,7 +282,7 @@ bool CheckRecordingOutputPath(MMDApp* app, const recording_output_path::Selectio
             return false;
         }
     }
-    if (error == ERROR_SUCCESS) error = recording_output_path::ProbeWritable(app->AviOutputPath(), !stagedH264);
+    if (error == ERROR_SUCCESS) error = recording_output_path::ProbeWritable(app->AviOutputPath(), !staged);
     if (error == ERROR_SUCCESS) return true;
     const auto message = recording_output_path::FailureMessage(
         app->AviOutputPath(), error, app->EnglishUI());

@@ -4,6 +4,7 @@
 | --- | --- |
 | 配置依赖并构建程序 | [仓库构建说明](../../README.md#从源码构建)、[最小构建档](../reference/minimal-build.md#构建) |
 | 按固定 Win7 x64 基础配置构建 | [Win7 构建与验收边界](win7-build.md) |
+| 准备独立的 Windows ABI 候选 | [锁定依赖与构建前检查](windows-abi-build-readiness.md)、[组件与产品验收](windows-abi-candidate-checks.md) |
 | 找到源码、产物与本地证据 | [工作区布局](workspace.md) |
 | 选择适用的回归测试 | [测试与验收](testing.md) |
 | 检查提交并生成完整、最小预发布包 | [整理预发布包](prerelease.md) |

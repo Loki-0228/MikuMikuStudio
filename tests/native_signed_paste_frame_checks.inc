@@ -121,6 +121,29 @@ void SharedOffsetsAndZero() {
     Check(negative==1&&nonnegative==2,"zero belongs only to the nonnegative partition");
 }
 
+void NativeOffsetBoundary() {
+    // A real copy stores native-relative frames, not offsets from the signed
+    // first frame. A later native row can arrive at zero even when the first
+    // native row goes negative. Arithmetic alone is not paste admission.
+    constexpr std::int64_t first=-70,nativeFirst=21;
+    struct Case { std::int64_t origin;std::uint32_t relative;std::int32_t expected; };
+    const Case cases[]={{-97,0,-6},{-97,6,0},{-96,6,1},{-91,0,0},{-90,0,1}};
+    for(const auto& c:cases) {
+        const auto offset=nativeFirst-first+c.relative;
+        Expect(c.origin,offset,true,c.expected,
+            "signed receipt resolves native-relative rows before deciding which pool owns zero");
+        constexpr std::uint32_t untouched=17;
+        std::uint32_t destination=untouched;
+        Check(!mikumikustudio::frame_limits::Add(c.origin,std::uint64_t(offset),destination) && destination==untouched,
+            "the existing native offset helper refuses negative origins without changing output");
+        if(c.expected>=0) {
+            Check(mikumikustudio::frame_limits::Add(0,std::uint64_t(c.expected),destination) &&
+                destination==std::uint32_t(c.expected),
+                "pre-resolving a native row preserves zero ownership but does not make the real playhead nonnegative");
+        }
+    }
+}
+
 void FamilyOffsetsAndMirrorFiltering() {
     // Synthetic timing only: no payload, target mapping, mirror transform, or
     // production 421/422 invocation. Model and global timelines stay separate.
@@ -156,5 +179,6 @@ void NativeSignedPasteFrameChecks() {
     signed_paste_frame_checks::ExplicitBoundaries();
     signed_paste_frame_checks::SafeDomainArithmetic();
     signed_paste_frame_checks::SharedOffsetsAndZero();
+    signed_paste_frame_checks::NativeOffsetBoundary();
     signed_paste_frame_checks::FamilyOffsetsAndMirrorFiltering();
 }

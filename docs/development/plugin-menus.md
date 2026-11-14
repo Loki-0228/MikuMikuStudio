@@ -33,6 +33,10 @@ if (get && get(MMS_MENU_ABI_VERSION, &host)) {
 
 旧版 MME/MMHack 自行通过 Win32 插入菜单的行为保持兼容；本次没有修改这些第三方 DLL。MMV4MMS 已采用此接口，菜单实现位于其独立仓库的 `src/mms/runtime_menu.inl`，ABI 快照位于 `include/mms/plugin_menu.h`。
 
+## 旧版 MMDPlugin 观察者
+
+使用 `window_observer_v3` 的兼容插件通过 `createWM_APP_ID` 动态申请菜单命令号。宿主为它们保留 `0xC000` 至 `0xC7FF`，与内置菜单、旧版 MME、原生 ABI 的 `0xA000` 至 `0xBFFF` 以及上述菜单接口的范围分开。编号仅在当前宿主会话有效，不应硬编码或持久化。宿主只将主窗口的普通菜单命令投给对应插件，并在停止时移除该插件申请的菜单项。
+
 ## 验证
 
 Release x64 隐藏窗口检查覆盖：缺失和损坏 DLL 不显示入口、公开导出和版本检查、三个独立注册者的命令隔离、旧 MME 菜单共存、三语菜单、快捷键、菜单资源替换、重复注册、回调内注销、过期命令和窗口销毁。

@@ -105,6 +105,7 @@ enum class Stage {
     CommittedStaleScene,
     CommittedProviderRetired,
     Completed,
+    PublicationUncertain,
 };
 
 // Main-thread only. Non-copyable and non-movable, with an immutable request.
@@ -216,6 +217,14 @@ public:
         return true;
     }
 
+    // A partial or unverified publication must not be reported as either
+    // committed or untouched. Recovery is outside this live completion path.
+    bool FinishWriteUncertain(std::uint64_t requestId) noexcept {
+        if (requestId != request_.requestId || stage_ != Stage::Writing) return false;
+        stage_ = Stage::PublicationUncertain;
+        return true;
+    }
+
     // The caller runs the real provider callback only after this returns true.
     // A callback that re-enters with the same request sees Acknowledging and is
     // refused. When the scene or provider no longer belongs to the capture, the
@@ -253,6 +262,14 @@ public:
         } else {
             stage_ = Stage::Completed;
         }
+        return true;
+    }
+
+    // The host could not reobserve live state after the callback. Preserve
+    // the disk commit but do not allow any completion side effects.
+    bool FailUnverifiedAcknowledgement(std::uint64_t requestId) noexcept {
+        if (requestId != request_.requestId || stage_ != Stage::Acknowledging) return false;
+        stage_ = Stage::CommittedAcknowledgementFailed;
         return true;
     }
 

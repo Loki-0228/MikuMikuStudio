@@ -1,2 +1,5 @@
 # Original shader resources contain CP932 comments and must keep their bytes.
 res/assets/original/*.fx -text -diff
+
+# Conan hashes the exact recipe bytes together with the exported Bullet sources.
+recipes/bullet275/conanfile.py text eol=lf

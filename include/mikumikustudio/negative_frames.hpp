@@ -28,7 +28,9 @@ void RefreshControls(MMDApp* app);
 void Capture(const MMDApp& app,pmm_extension::Document& document);
 bool Load(MMDApp& app,const pmm_extension::Document& document);
 void SelectRange(MMDApp* app,int first,int last);
-bool Command(MMDApp* app,unsigned id);
+// The window command consumes the owned copy receipt in a bound history session.
+// Internal/legacy callers can still exercise the original side clipboard.
+bool Command(MMDApp* app,unsigned id,bool useCopyReceipt = false);
 void Draw(MMDApp* app,void* dc,void* icons,int columns,int height);
 bool SelectCell(MMDApp* app,int frame,int row,bool additive);
 bool CellSelected(MMDApp* app,int frame,int row);

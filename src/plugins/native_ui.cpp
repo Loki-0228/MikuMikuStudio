@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <array>
 #include "mikumikustudio/ui_control_layout.hpp"
+#include "mikumikustudio/menu_command_ids.hpp"
 
 namespace mikumikustudio::plugins {
 struct NativeUi::Impl {
@@ -35,7 +36,7 @@ struct NativeUi::Impl {
     HWND& toolbar = mounts[ToolbarMount].window;
     HWND& properties = mounts[PropertyMount].window;
     HMENU root = nullptr, popup = nullptr;
-    unsigned nextId = 0xa000;
+    unsigned nextId = menu_command_ids::kNativeAbiFirst;
     uint64_t revision = 0;
     uint64_t layoutContext = 1;
     int baseX = 0, baseWidth = 0, x = 0, width = 0, maximum = 120;
@@ -692,8 +693,9 @@ struct NativeUi::Impl {
             dispatch.erase(it->second); ids.erase(it);
         }
         HMENU menu = GetMenu(main);
-        while (nextId < 0xc000 && menu && GetMenuState(menu, nextId, MF_BYCOMMAND) != UINT(-1)) ++nextId;
-        if (nextId >= 0xc000) throw std::runtime_error("plugin menu command range exhausted");
+        while (nextId < menu_command_ids::kNativeAbiLimit && menu &&
+               GetMenuState(menu, nextId, MF_BYCOMMAND) != UINT(-1)) ++nextId;
+        if (nextId >= menu_command_ids::kNativeAbiLimit) throw std::runtime_error("plugin menu command range exhausted");
         auto value = nextId++; ids.emplace(id, value); dispatch[value] = {id, e.handle}; return value;
     }
     std::vector<std::string> Children(const std::string& parent) const {
