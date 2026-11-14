@@ -389,7 +389,8 @@ void InitModelTrackCursors(unsigned char* model, double cursor, int physicsMode)
 }
 
 // ---- VA 0x004A31D0 --------------------------------------------------------
-static void AdvanceModelPlaybackTracks(unsigned char* model, double cursor, int physicsMode, bool visualOnly) {
+static void AdvanceModelPlaybackTracks(unsigned char* model, double cursor, int physicsMode, bool visualOnly,
+                                      playback_timing::VisualBridgeWindow bridge) {
     // Keep an explicitly sought negative pose. Never extrapolate the native
     // zero-frame self-link (which has a zero interpolation denominator).
     if (!model || !std::isfinite(cursor) || cursor < 0.0) return;
@@ -575,6 +576,12 @@ static void AdvanceModelPlaybackTracks(unsigned char* model, double cursor, int 
             if (frame == (double)curFrame) {
                 // exact hit (0x4A3D32)
                 CopyBoneKeyVerbatim(bone, rec);
+                if (visualOnly && bridge.Contains(curFrame) && bone->hasRigidBody != 0 &&
+                    bone->physicsDisabled != 0 && static_cast<std::uint32_t>(bone->rigidIdx) == curFrame &&
+                    rec.physicsDisabled == 0 && rec.next != 0 && keys[rec.next].physicsDisabled == 1) {
+                    // The fixed tick has already armed this transition.
+                    WriteBonePrevVerbatim(bone, bone->ikWorkingQuat, bone->ikWorkingPos);
+                }
                 if (physicsMode >= 2 && bone->hasRigidBody != 0) {  // 0x4A3DBE
                     const int nextIdx = static_cast<int>(rec.next);
                     const unsigned char cmode = rec.physicsDisabled;
@@ -651,6 +658,18 @@ static void AdvanceModelPlaybackTracks(unsigned char* model, double cursor, int 
                     const unsigned char pmode = prevRec.physicsDisabled;
                     if (bone->physicsDisabled != pmode) NotifyBonePhysicsMode(m, b, pmode);
                     bone->physicsDisabled = pmode;
+                }
+            }
+
+            if (visualOnly && bone->hasRigidBody != 0 && bone->physicsDisabled != 0 &&
+                rec.physicsDisabled == 1 && prevRec.physicsDisabled == 0) {
+                const auto start = static_cast<std::uint32_t>(bone->rigidIdx);
+                if (start >= prevFrame && start < curFrame && start <= frame && bridge.Contains(start)) {
+                    // Read the fixed tick's starting pose, then use the same
+                    // authored curves and quaternion hemisphere as that tick.
+                    std::memcpy(pq, bone->ikWorkingQuat, sizeof pq);
+                    std::memcpy(ppos, bone->ikWorkingPos, sizeof ppos);
+                    prevFrame = start;
                 }
             }
 
@@ -816,11 +835,12 @@ static void AdvanceModelPlaybackTracks(unsigned char* model, double cursor, int 
 }
 
 void AdvanceModelKeyframes(unsigned char* model, double cursor, int physicsMode) {
-    AdvanceModelPlaybackTracks(model, cursor, physicsMode, false);
+    AdvanceModelPlaybackTracks(model, cursor, physicsMode, false, {});
 }
 
-void SampleModelPlaybackVisual(unsigned char* model, double cursor) {
-    AdvanceModelPlaybackTracks(model, cursor, 0, true);
+void SampleModelPlaybackVisual(unsigned char* model, double cursor,
+                               playback_timing::VisualBridgeWindow bridge) {
+    AdvanceModelPlaybackTracks(model, cursor, 0, true, bridge);
 }
 
 }  // namespace mikumikustudio

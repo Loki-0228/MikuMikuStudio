@@ -132,6 +132,33 @@ Result Simulate(int playbackFps, int outputFps, bool recording, bool noise = fal
 }
 
 #if !MMD_ORIGINAL_PROFILE
+void BridgeCaptureWindow() {
+    playback_timing::PhysicsClock clock;
+    clock.Reset(123.0 / playback_timing::kTimelineFps);
+    Check(!clock.VisualBridgeSamples(60, false).Contains(123),
+          "an initial visual draw cannot consume a stale bridge");
+    clock.initialPosePending = false;
+    clock.step = 1;
+    Check(!clock.VisualBridgeSamples(60, false).Contains(124),
+          "a display sample cannot arm a future bridge");
+    clock.step = 2;
+    Check(clock.VisualBridgeSamples(60, false).Contains(124),
+          "an exact fixed sample in the current run qualifies");
+    Check(!clock.VisualBridgeSamples(60, true).Contains(124),
+          "a pending physics reset blocks visual bridge samples");
+    clock.InvalidateVisualBridge(124.0 / playback_timing::kTimelineFps);
+    clock.step = 4;
+    const auto afterReset = clock.VisualBridgeSamples(60, false);
+    Check(!afterReset.Contains(124) && afterReset.Contains(125),
+          "the consumed reset rejects earlier captures but admits a new bridge");
+    clock.Reset(124.5 / playback_timing::kTimelineFps);
+    clock.initialPosePending = false;
+    clock.step = 2;
+    const auto afterSeek = clock.VisualBridgeSamples(60, false);
+    Check(!afterSeek.Contains(124) && afterSeek.Contains(125),
+          "a restart within an old bridge cannot reuse its captured pose");
+}
+
 void CheckCameraInterpolation() {
     curve_editor::Channel channel;
     channel.track.keys = {{4, 10}, {5, 30}};
@@ -156,6 +183,7 @@ int main() {
     CheckRecordingStartKey(31);
     CheckRecordingStartKey(123);
 #if !MMD_ORIGINAL_PROFILE
+    BridgeCaptureWindow();
     CheckCameraInterpolation();
 #endif
     const auto baseline = Simulate(30, 30, true);

@@ -371,12 +371,19 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled,
                             modelsEnabled && s.PlaybackActive() && s.NativePhysicsMode() > 0;
     const int physicsMode = s.NativePhysicsMode();
     const double seconds = s.PlaybackCursorSeconds();
+    playback_timing::VisualBridgeWindow bridge;
+#if !MMD_ORIGINAL_PROFILE
+    if (visualOnly && physicsMode >= 2 && !s.FrameStepPlayback() && !s.RecordingWindow()) {
+        bridge = s.PlaybackPhysicsClock().VisualBridgeSamples(
+            playback_timing::PhysicsRate(s.PlaybackTiming()), s.PhysicsResetPending() != 0);
+    }
+#endif
 
     // ---- 1. per-model keyframe application (0x4175A8) --------------------
     unsigned char** models = s.ModelSlots();
     for (int j = 0; modelsEnabled && j < kModelSlotCount; ++j) {
         if (models[j] == nullptr) continue;
-        if (visualOnly) SampleModelPlaybackVisual(models[j], seconds);
+        if (visualOnly) SampleModelPlaybackVisual(models[j], seconds, bridge);
         else AdvanceModelKeyframes(models[j], seconds, physicsMode);
     }
 

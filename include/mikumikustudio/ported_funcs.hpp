@@ -24,6 +24,7 @@ class MMDApp;
 struct PathResolutionWorkspace;
 struct DShowRecorder;
 namespace recording_output_path { struct Selection; }
+namespace playback_timing { struct VisualBridgeWindow; }
 class D3DRenderer;  // d3d_wrapper.hpp (the "0x1D574" render/locale object)
 class PhysicsScene;  // physics_scene.hpp (the "0x48" physics scene wrapper)
 
@@ -134,7 +135,8 @@ void InitModelTrackCursors(unsigned char* model, double cursor,
                            int physicsMode);  // was Sub4A2CD0, VA 0x004A2CD0
 void AdvanceModelKeyframes(unsigned char* model, double cursor,
                            int physicsMode);  // was Sub4A31D0, VA 0x004A31D0
-void SampleModelPlaybackVisual(unsigned char* model, double cursor);
+void SampleModelPlaybackVisual(unsigned char* model, double cursor,
+                               playback_timing::VisualBridgeWindow bridge);
 float BoneEase(unsigned char* model, int channel, int keyIdx,
                float t);  // was Sub4A05A0, VA 0x004A05A0 (VMD easing)
 void NotifyBonePhysicsMode(unsigned char* model, int boneIdx,

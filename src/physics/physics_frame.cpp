@@ -1400,6 +1400,10 @@ static void RunPhysicsFrame(MMDApp* app, unsigned char selActive, float timeline
 #endif
 
         if (settle) {
+#if !MMD_ORIGINAL_PROFILE
+            if (timeline)
+                s.PlaybackPhysicsClock().InvalidateVisualBridge(s.PlaybackCursorSeconds());
+#endif
             for (int iter = 3; iter >= 1; --iter) {
                 // x64 twin: 255 count-down walk (mov edi, 0FFh at 0x7FF7CB44C7E8).
                 for (int j = 0; j < kModelSlotCount; ++j)

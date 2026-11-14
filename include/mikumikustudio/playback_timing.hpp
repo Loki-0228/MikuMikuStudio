@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/physics_bake_settings.hpp"
 
 #include <algorithm>
@@ -49,6 +50,17 @@ inline int PhysicsRate(const Settings& settings) noexcept {
     return baseRate * settings.physics.rateMultiplier * settings.physics.substeps;
 }
 
+// Frames at or before a reset do not prove the legacy working pose was
+// captured in the current physics run. Future frames have not been sampled.
+struct VisualBridgeWindow {
+    double after = 0;
+    double through = 0;
+
+    bool Contains(std::uint32_t frame) const noexcept {
+        return frame > after && frame <= through;
+    }
+};
+
 struct PhysicsClock {
     double origin = 0;
     std::uint64_t step = 0;
@@ -58,6 +70,9 @@ struct PhysicsClock {
     void Reset(double canonicalSeconds) noexcept {
         *this = {};
         origin = canonicalSeconds;
+#if !MMD_ORIGINAL_PROFILE
+        InvalidateVisualBridge(canonicalSeconds);
+#endif
     }
 
     double Next(int rate) const noexcept { return origin + double(step + 1) / rate; }
@@ -67,10 +82,27 @@ struct PhysicsClock {
         return Next(rate) <= target + tolerance;
     }
 
+#if !MMD_ORIGINAL_PROFILE
+    void InvalidateVisualBridge(double resetSeconds) noexcept {
+        lastBridgeResetSeconds_ = resetSeconds;
+    }
+
+    VisualBridgeWindow VisualBridgeSamples(int rate, bool resetPending) const noexcept {
+        if (initialPosePending || resetPending || step == 0) return {};
+        return {TimelineFrame(lastBridgeResetSeconds_), TimelineFrame(origin + double(step) / rate)};
+    }
+
+#endif
+
     int NextWindRandom() noexcept {
         windSeed = windSeed * 214013u + 2531011u;
         return (windSeed >> 16) & 32767u;
     }
+
+#if !MMD_ORIGINAL_PROFILE
+private:
+    double lastBridgeResetSeconds_ = 0;
+#endif
 };
 
 }  // namespace mikumikustudio::playback_timing
