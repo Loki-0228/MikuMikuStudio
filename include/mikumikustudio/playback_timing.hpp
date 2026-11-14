@@ -7,8 +7,11 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
 
 namespace mikumikustudio::playback_timing {
+
+class PhysicsSamples;
 
 inline constexpr int kTimelineFps = 30;
 inline constexpr int kMinPlaybackFps = 1;
@@ -66,6 +69,9 @@ struct PhysicsClock {
     std::uint64_t step = 0;
     std::uint32_t windSeed = 1;
     bool initialPosePending = true;
+    double lastPresentedSeconds = std::numeric_limits<double>::quiet_NaN();
+    std::shared_ptr<PhysicsSamples> samples;
+    bool visualSampleReady = true;
 
     void Reset(double canonicalSeconds) noexcept {
         *this = {};
@@ -76,6 +82,11 @@ struct PhysicsClock {
     }
 
     double Next(int rate) const noexcept { return origin + double(step + 1) / rate; }
+    double Completed(int rate) const noexcept { return origin + double(step) / rate; }
+
+    bool PresentationDue(double seconds) const noexcept {
+        return seconds != lastPresentedSeconds;
+    }
 
     bool Due(double target, int rate) const noexcept {
         const double tolerance = 2 * std::numeric_limits<double>::epsilon() * (std::max)(1.0, std::abs(target));

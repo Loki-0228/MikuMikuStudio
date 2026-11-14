@@ -515,6 +515,9 @@ PresentResult PresentScene(MMDApp* app) {
     //   else                       -> Present(&RECT@A0D40, same, A06B8, NULL)
     // Device loss waits with a shared message pump, including windowed mode.
     if (device_lost_wait::Pending(app)) return {false, D3DERR_DEVICELOST};
+    // A failed/incomplete scene must leave the previous displayed image intact.
+    if (!build_profile::original && !s.RecordingWindow() && !s.frameRate.ready)
+        return {false, D3D_OK};
     RECT presentation{};
     const bool presentEditor = !s.FullscreenMode() && !s.RecordingWindow() &&
         s.state.messageSeen != 0 && s.AviStereoOutput() == 0;
@@ -896,7 +899,12 @@ void FrameDriver(MMDApp* app) {
     if (advancePlaybackBeforeRender) {
         PlaybackCatchup(app, selActive);
         if (device_lost_wait::Pending(app)) return;
-        if (s.PlaybackActive()) PhysicsFrame(app, selActive);
+        if (s.PlaybackActive()) {
+            // Repainting the same completed sample is not a new playback frame.
+            if (!s.PlaybackPhysicsClock().visualSampleReady ||
+                !s.PlaybackPhysicsClock().PresentationDue(s.PlaybackCursorSeconds())) return;
+            PhysicsFrame(app, selActive);
+        }
     }
     // Poll modern video even while stopped, so the last asynchronous scrub
     // request reaches the screen without another mouse movement.

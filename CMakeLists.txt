@@ -934,6 +934,12 @@ set_target_properties(bone_root_inheritance_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME bone_root_inheritance COMMAND bone_root_inheritance_tests)
 
+add_executable(bone_inheritance_index_tests EXCLUDE_FROM_ALL tests/bone_inheritance_index_tests.cpp)
+target_link_libraries(bone_inheritance_index_tests PRIVATE mikumikustudio_core winmm dsound)
+set_target_properties(bone_inheritance_index_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME bone_inheritance_index COMMAND bone_inheritance_index_tests)
+
 foreach(context_test bone_transform_context_tests bone_transform_context_lifecycle_tests bone_pose_preparation_tests affine_skinning_context_tests)
     add_executable(${context_test} EXCLUDE_FROM_ALL tests/${context_test}.cpp)
     target_link_libraries(${context_test} PRIVATE mikumikustudio_core winmm dsound)
@@ -1672,6 +1678,12 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     set_target_properties(playback_timing_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_test(NAME playback_timing_tests COMMAND playback_timing_tests)
+    add_executable(playback_complete_frame_tests EXCLUDE_FROM_ALL tests/playback_complete_frame_tests.cpp
+        res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+    target_link_libraries(playback_complete_frame_tests PRIVATE mikumikustudio_core winmm dsound)
+    target_link_options(playback_complete_frame_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
+    set_target_properties(playback_complete_frame_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     # Optional real-scene stress runner. No user assets are distributed with it.
     add_executable(physics_scene_tests EXCLUDE_FROM_ALL tests/physics_scene_tests.cpp
         res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
@@ -1818,6 +1830,12 @@ if (MIKUMIKUSTUDIO_BUILD_UI_TESTS)
     target_link_options(scene_lifecycle_tests PRIVATE "/MANIFEST:NO"
         "${MIKUMIKUSTUDIO_GEN_RES}")
     set_target_properties(scene_lifecycle_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+    add_executable(stage_inheritance_load_tests EXCLUDE_FROM_ALL tests/stage_inheritance_load_tests.cpp
+        res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES})
+    target_link_libraries(stage_inheritance_load_tests PRIVATE mikumikustudio_core winmm dsound)
+    target_link_options(stage_inheritance_load_tests PRIVATE "/MANIFEST:NO" "${MIKUMIKUSTUDIO_GEN_RES}")
+    set_target_properties(stage_inheritance_load_tests PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
     add_executable(pmd_selection_render_tests EXCLUDE_FROM_ALL tests/pmd_selection_render_tests.cpp
         res/MMD.rc ${MIKUMIKUSTUDIO_GEN_RES} exports/MikuMikuDance.def)

@@ -178,7 +178,9 @@ void PrepareFrameTextOverlay(MMDApp* app) {  // 0x423420
         float xOffset = 15.0f;
         const float top = static_cast<float>(view.top -
             static_cast<int>(-5.0f * scale));
-        digits(frameText, view.left, xOffset, top, 0.5f, 0.56054688f,
+        constexpr float playbackV0 = (kSceneFontPlaybackRow + .5f) / 512.0f;
+        constexpr float playbackV1 = (kSceneFontPlaybackRow + 30.5f) / 512.0f;
+        digits(frameText, view.left, xOffset, top, playbackV0, playbackV1,
                0xFF000000u, 0xFFFFFFFFu);
         xOffset += 4.0f;
         // Keep the label and punctuation in separate atlas cells. A single
@@ -186,18 +188,28 @@ void PrepareFrameTextOverlay(MMDApp* app) {  // 0x423420
         const auto glyph = [&](int atlasX, int atlasWidth, float width) {
             const float left = view.left + xOffset * scale;
             pair(left, top, left + width * scale, top + 25.0f * scale,
-                 atlasX / 512.0f, 0.5f, (atlasX + atlasWidth) / 512.0f,
-                 0.56054688f, 0xFF000000u, 0xFFFFFFFFu);
+                 (atlasX + .5f) / 512.0f, playbackV0, (atlasX + atlasWidth - .5f) / 512.0f,
+                 playbackV1, 0xFF000000u, 0xFFFFFFFFu);
             xOffset += width;
         };
-        glyph(160, 127, 75.0f);
+        SceneFontCell frameLabel{};
+        if (SceneFontLabelCell("frame (", scale, &frameLabel)) {
+            const float width = (frameLabel.u1 - frameLabel.u0) * 512.0f * (25.0f / 31.0f);
+            const float left = view.left + xOffset * scale;
+            pair(left, top, left + width * scale, top + 25.0f * scale,
+                 frameLabel.u0, playbackV0, frameLabel.u1, playbackV1,
+                 0xFF000000u, 0xFFFFFFFFu);
+            xOffset += width + 3.0f;
+        } else {
+            glyph(160, 127, 75.0f);
+        }
         const int seconds = static_cast<int>(app->PlaybackCursorSeconds() /
             playback_timing::Speed(app->PlaybackTiming()));
         const int parts[] = {seconds / 3600, (seconds / 60) % 60, seconds % 60};
         for (int i = 0; i < 3; ++i) {
             char timePart[32]{};
             std::snprintf(timePart, sizeof(timePart), "%02d", parts[i]);
-            digits(timePart, view.left, xOffset, top, 0.5f, 0.56054688f,
+            digits(timePart, view.left, xOffset, top, playbackV0, playbackV1,
                    0xFF000000u, 0xFFFFFFFFu);
             if (i < 2) glyph(288, 15, 12.5f);
         }

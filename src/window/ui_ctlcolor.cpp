@@ -126,6 +126,20 @@ LRESULT HandleCtlColor(HWND control, HDC dc) {
             reinterpret_cast<std::intptr_t>(app->UiBrush(index)));
     };
 
+    // Disabled edits always use the native gray foreground. Give their client
+    // area a neutral background instead of the dark panel gradient; retain the
+    // native border and disabled input behavior, including combo-box fields.
+    if (!build_profile::original && app->PlaybackActive() && !IsWindowEnabled(ctrl)) {
+        wchar_t className[32]{};
+        GetClassNameW(ctrl, className, 32);
+        if (_wcsicmp(className, L"Edit") == 0 || _wcsicmp(className, L"ComboBox") == 0) {
+            SetBkMode(dc, OPAQUE);
+            SetBkColor(dc, GetSysColor(COLOR_BTNFACE));
+            SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
+            return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
+        }
+    }
+
     // Restore the toolbar gradient before each transparent STATIC text draw.
     // NULL_BRUSH alone leaves old glyphs behind after font/language changes.
     if (GetDlgCtrlID(ctrl) == 570) {

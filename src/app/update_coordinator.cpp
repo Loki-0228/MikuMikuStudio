@@ -63,7 +63,8 @@ DWORD Period(MMDApp* app) {
     if (Exporting(app)) return 1;
     float fps = app->EffectiveDisplayFps();
     if (!std::isfinite(fps) || fps < 1) fps = 60;
-    return std::clamp<DWORD>(DWORD(1000.0f / fps), 1, 1000);
+    // Round up: a requested limit must not become a higher refresh rate.
+    return std::clamp<DWORD>(DWORD(std::ceil(1000.0 / fps)), 1, 1000);
 }
 void Wake() {
     if (!state.posted && state.wake) state.posted = PostMessageW(state.wake, kWake, 0, 0) != FALSE;
@@ -203,8 +204,9 @@ void SafePoint(MMDApp* app) {
         // Skip missed slots without moving the cadence after a late wake.
         // Rebasing each tick on a coarse Windows timeout can alternate between
         // one and two timer quanta even when the frame itself is fast.
-        const auto lateness = now >= state.nextTick ? (now - state.nextTick) % period : 0;
-        state.nextTick = now + period - lateness;
+        const auto completed = Now();
+        const auto lateness = completed >= state.nextTick ? (completed - state.nextTick) % period : 0;
+        state.nextTick = completed + period - lateness;
         if (device_lost_wait::Pending(app) || (state.repaintOnly && app->frameRate.presentedFrames == presentedBefore))
             return native_ui::UpdateOutcome{native_ui::UpdateResult::Retry, 0, state.nextTick};
         return native_ui::UpdateOutcome{native_ui::UpdateResult::Done, request.flags};

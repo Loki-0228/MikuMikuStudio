@@ -367,13 +367,19 @@ void QuatMul(D3& d3, float out[4], const float q1[4], const float q2[4]) {
 
 // ---- shared pieces --------------------------------------------------------
 
+bool ValidBoneIndex(int index, int boneCount) {
+    return index >= 0 && index < boneCount;
+}
+
 // quat of the source bone's +116 matrix scaled about its own axis by
 // `rate`, post-multiplied onto q (0x493B12..0x493CA4 pattern).
 // x64 (0x7FF7CB4DA373..0x7FF7CB4DA476): acosf/sqrtf/sinf/cosf and a
 // divss sin/len - single precision end to end; kPiF is the float image
 // 0x4048F5C3 (dword_7FF7CB552B90).
 void InheritRotQuat(D3& d3, float q[4], const mdl::BoneRecord* bones,
-                    int srcIdx, float rate) {
+                    int boneCount, int srcIdx, float rate) {
+    if (!ValidBoneIndex(srcIdx, boneCount))
+        return;
     D3DXMATRIXF rot;
     std::memcpy(&rot, bones[srcIdx].matLocal, sizeof(rot));
     float sq[4];
@@ -624,10 +630,11 @@ void BoneTransform_PhysicsSweptLocals(D3& d3, mdl::BoneRecord* boneRecords,
             continue;
         float q[4] = {bone.physicsQuat[0], bone.physicsQuat[1], bone.physicsQuat[2], bone.physicsQuat[3]};
         if (bone.flags & mdl::kBoneFlagRotInherit)
-            InheritRotQuat(d3, q, boneRecords, bone.tailIdx,
+            InheritRotQuat(d3, q, boneRecords, boneCount, bone.tailIdx,
                            bone.inheritRatio);
         MatRotQuat(d3, reinterpret_cast<D3DXMATRIXF*>(bone.matLocal), q);
-        if (bone.flags & mdl::kBoneFlagTransInherit) {
+        if ((bone.flags & mdl::kBoneFlagTransInherit) &&
+            ValidBoneIndex(bone.tailIdx, boneCount)) {
             mdl::BoneRecord& src = boneRecords[bone.tailIdx];
             const float r = bone.inheritRatio;
             D3DXMATRIXF tmp, cur;
@@ -668,7 +675,8 @@ void BoneTransform_StandardLocals(D3& d3, mdl::BoneRecord* boneRecords,
             bone.rotQuat2[0] = bone.rotQuat2[1] = bone.rotQuat2[2] = 0.0f;
             bone.rotQuat2[3] = 1.0f;
         }
-        if (bone.type == mdl::BoneType::CoRotate) {    // 0x493F1F
+        if (bone.type == mdl::BoneType::CoRotate &&
+            ValidBoneIndex(bone.tailBone, boneCount)) { // 0x493F1F
             // x64 0x7FF7CB4DD069..0x7FF7CB4DD18A: acosf/sqrtf/sinf/cosf,
             // ((float)rate * angle) / 100.0f (divss), single precision.
             const mdl::BoneRecord& tail = boneRecords[bone.tailBone];
@@ -698,7 +706,8 @@ void BoneTransform_StandardLocals(D3& d3, mdl::BoneRecord* boneRecords,
             }
         }
         float q[4] = {bone.physicsQuat[0], bone.physicsQuat[1], bone.physicsQuat[2], bone.physicsQuat[3]};
-        if (bone.type == mdl::BoneType::RotateGrant) { // 0x49412F
+        if (bone.type == mdl::BoneType::RotateGrant &&
+            ValidBoneIndex(bone.tailIdx, boneCount)) { // 0x49412F
             const mdl::BoneRecord& src = boneRecords[bone.tailIdx];
             float sq[4] = {src.physicsQuat[0], src.physicsQuat[1], src.physicsQuat[2], src.physicsQuat[3]};
             float out[4];
@@ -709,11 +718,12 @@ void BoneTransform_StandardLocals(D3& d3, mdl::BoneRecord* boneRecords,
             q[3] = out[3];
         }
         if (bone.flags & mdl::kBoneFlagRotInherit)
-            InheritRotQuat(d3, q, boneRecords, bone.tailIdx,
+            InheritRotQuat(d3, q, boneRecords, boneCount, bone.tailIdx,
                            bone.inheritRatio);
         MatRotQuat(d3, reinterpret_cast<D3DXMATRIXF*>(bone.matLocal), q);
         float inhX = 0.0f, inhY = 0.0f, inhZ = 0.0f;
-        if (bone.flags & mdl::kBoneFlagTransInherit) {
+        if ((bone.flags & mdl::kBoneFlagTransInherit) &&
+            ValidBoneIndex(bone.tailIdx, boneCount)) {
             const mdl::BoneRecord& src = boneRecords[bone.tailIdx];
             const float r = bone.inheritRatio;
             inhX = src.physicsOffset[0] * r;
@@ -735,7 +745,8 @@ void BoneTransform_StandardLocals(D3& d3, mdl::BoneRecord* boneRecords,
         d3.translation(&tmp, bone.position[0], bone.position[1],
                        bone.position[2]);
         d3.mul(reinterpret_cast<D3DXMATRIXF*>(bone.matLocal), &cur, &tmp);
-        if (bone.flags & mdl::kBoneFlagTransInherit) { // 0x4944F0
+        if ((bone.flags & mdl::kBoneFlagTransInherit) &&
+            ValidBoneIndex(bone.tailIdx, boneCount)) { // 0x4944F0
             bone.physicsOffset[0] += inhX;
             bone.physicsOffset[1] += inhY;
             bone.physicsOffset[2] += inhZ;
@@ -1288,7 +1299,8 @@ void BoneTransform_PostIkPass(D3& d3, mdl::BoneRecord* boneRecords,
         if (bone.layer != layer || bone.type == mdl::BoneType::UnderIk ||
             bone.hasFlag == 0)
             continue;
-        if (bone.type == mdl::BoneType::CoRotate) {    // 0x4968F3
+        if (bone.type == mdl::BoneType::CoRotate &&
+            ValidBoneIndex(bone.tailBone, boneCount)) { // 0x4968F3
             // x64 twin of the phase-B block (acosf/sqrtf/sinf/cosf).
             const mdl::BoneRecord& tail = boneRecords[bone.tailBone];
             const float* sourceQuat =
@@ -1320,7 +1332,8 @@ void BoneTransform_PostIkPass(D3& d3, mdl::BoneRecord* boneRecords,
             }
         }
         float q[4] = {bone.physicsQuat[0], bone.physicsQuat[1], bone.physicsQuat[2], bone.physicsQuat[3]};
-        if (bone.type == mdl::BoneType::RotateGrant) { // 0x496B53
+        if (bone.type == mdl::BoneType::RotateGrant &&
+            ValidBoneIndex(bone.tailIdx, boneCount)) { // 0x496B53
             const mdl::BoneRecord& src = boneRecords[bone.tailIdx];
             const float* sourceQuat =
                 src.type == mdl::BoneType::UnderIk ? src.rotQuat2 : src.physicsQuat;
@@ -1334,11 +1347,12 @@ void BoneTransform_PostIkPass(D3& d3, mdl::BoneRecord* boneRecords,
             q[3] = out[3];
         }
         if (bone.flags & mdl::kBoneFlagRotInherit)
-            InheritRotQuat(d3, q, boneRecords, bone.tailIdx,
+            InheritRotQuat(d3, q, boneRecords, boneCount, bone.tailIdx,
                            bone.inheritRatio);
         MatRotQuat(d3, reinterpret_cast<D3DXMATRIXF*>(bone.matLocal), q);
         float inhX = 0.0f, inhY = 0.0f, inhZ = 0.0f;
-        if (bone.flags & mdl::kBoneFlagTransInherit) {
+        if ((bone.flags & mdl::kBoneFlagTransInherit) &&
+            ValidBoneIndex(bone.tailIdx, boneCount)) {
             const mdl::BoneRecord& src = boneRecords[bone.tailIdx];
             const float r = bone.inheritRatio;
             inhX = src.physicsOffset[0] * r;
@@ -1360,7 +1374,8 @@ void BoneTransform_PostIkPass(D3& d3, mdl::BoneRecord* boneRecords,
         d3.translation(&tmp, bone.position[0], bone.position[1],
                        bone.position[2]);
         d3.mul(reinterpret_cast<D3DXMATRIXF*>(bone.matLocal), &cur, &tmp);
-        if (bone.flags & mdl::kBoneFlagTransInherit) {
+        if ((bone.flags & mdl::kBoneFlagTransInherit) &&
+            ValidBoneIndex(bone.tailIdx, boneCount)) {
             bone.physicsOffset[0] += inhX;
             bone.physicsOffset[1] += inhY;
             bone.physicsOffset[2] += inhZ;
