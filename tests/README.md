@@ -1,5 +1,9 @@
 # 测试保留与清理说明
 
+`bone_inheritance_index_tests` 是长期保留的无窗口 CPU 回归，覆盖 A/B/E 继承索引边界和自身姿态保留，注册为 CTest `bone_inheritance_index`。`stage_inheritance_load_tests <工程.pmm> [轮数]` 是需要实际素材的隐藏窗口手动回归，启用 `MIKUMIKUSTUDIO_BUILD_UI_TESTS` 后显式构建，不注册到默认 CTest。工程必须含有非法继承源；先备份输入，在独立测试目录串行运行。它只载入、求值和退出，不保存工程；不能替代真实 MME 和视觉验收。只有继承功能或对应载入路径被移除时才评估删除这两个测试。记录见 [Stage 继承索引修复](../docs/records/stage-inheritance-index-2026-11-14.md)。
+
+`stage_inheritance_runner.py --self-test` 验证原版兼容导入信息提示的精确匹配及拒绝规则。实际运行要求显式指定现有测试 EXE、隔离工程目录、新输出目录及二者预期 SHA-256；仅处理自身私有桌面上的指定中文信息通知，不处理导入拒绝或未知警告。当前 LOVE 的现有 Stage 宿主在真实私有桌面启动时出现 `0xC0000142`，因此该驱动尚未完成真实 Stage 物理回归；不要把匹配自测当成集成通过。仅保留为诊断与测试侧脚本，待进程内宿主处理取代后再评估删除。
+
 `transparent_policy_tests` 在 `MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS=ON` 时提供，显式构建该 `EXCLUDE_FROM_ALL` 目标后可运行 CTest `transparent_policy_regressions`。它是无窗口、无 GPU 的独立 CPU 专项，覆盖显式排序范围、桶、外侧面、来源字段和分配失败发布。旧 `transparent_geometry_tests` 继续保留原入口全集。两者不能替代真实渲染与工程保存验收；布局成本、四个反例和数值限制见[CPU 策略记录](../docs/records/abi-transparent-policy-2026-10-23.md)。
 
 `menu_initial_paint_tests` 和 `menu_initial_paint_integration_tests` 是 `EXCLUDE_FROM_ALL` 的 UI 专项目标，不注册到默认 CTest。显式构建后复制到独立安装目录，继承 Default 桌面串行运行，无参数。核心测试使用真实子类、菜单句柄、计时器及分配失败；接入测试调用实际主窗口 WM_CREATE 和效果编辑器安装函数，只替换重型 UI 初始化。弹出窗口元数据和绘制通过私有接口模拟，不代表真实菜单像素验收。范围、三个反例和平台限制见[菜单验收记录](../docs/records/abi-menu-initial-paint-2026-10-23.md)。
@@ -114,6 +118,8 @@
 | `affine_skinning_tests.cpp` | 非均匀缩放和斜切的独立数值参考；BDEF、PMD、SDEF 的位置和法线、极分解及单位缩放旧路径一致性。 |
 | `physics_bake_tests.cpp` | 烧录事务、撤销重做与三语隐藏对话框。另传 PMM 和输出目录时验证离线模拟、取消隔离、参数生效、范围、选择、回放与 PMM/VMD 往返；不修改输入素材。 |
 | `dense_keyframe_checks.hpp` | `physics_bake_tests --dense-playback`，完整档注册为 `dense_keyframe_playback`。验证 0–500 帧密集轨道的半帧姿势、非线性缩放、边界、重播、随机跳帧、末端骨骼及无效游标回退；打印轨道求值耗时，不换算为播放 FPS。 |
+| `playback_bone_interpolation_checks.inc` | 由 `playback_timing_tests` 调用。检查 60、120、240 FPS 输出和模拟 480 FPS 实时调用中的最终骨骼矩阵；覆盖密集位置/旋转、物理到关键帧过渡、非线性曲线、精确端点、动态刚体缓存补间及缓存命中时不修改刚体。不代表实际渲染吞吐或真实工程视觉验收。 |
+| `playback_complete_frame_tests.cpp` | 可选隐藏生产宿主回归，参数为 `<模型.pmx> <动作.vmd>`。以模拟 600 Hz 调用推进至 660 帧，检查完整物理采样区间、600–660 帧的中间姿态、有限矩阵和重复时间戳不提交／不计 FPS。使用外部资产，不打包或改写模型、动作；不作为渲染吞吐基准。 |
 | `bake_playback_tests.cpp` | 隐藏生产宿主加载 PMX，实际烘焙 0–500 帧，比较总长 3845 帧工程的区间内外及边界。参数为 `<模型.pmx> <keyframes\|physics> [播放物理模式 0–2] [scale]`；`scale` 添加一条缩放测试轨道。记录 CPU/GPU 等待耗时和逐帧骨骼矩阵摘要；`MMS_BAKE_PROFILE_ONE_MODE=1` 只测模型编辑面板。原模型不改写。 |
 | `physics_bake_settings_tests.cpp` | Bullet 默认值、严格 UTF-8 JSON、数值边界、Unicode、格式错误、原子保存及失败保护。 |
 | `bone_registration_tests.cpp` | 骨骼选择、重叠骨骼点击轮选、登记、首帧保护、移动、撤销/重做和跳帧。`--pick-cycle` 单独运行 PMD、PMX 在主视口与独立视口中的轮选回归。 |

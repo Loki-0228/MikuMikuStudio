@@ -23,6 +23,11 @@ namespace evaluation_detail {
 template<class T> constexpr MmsHeader Header() noexcept {
     return {static_cast<std::uint32_t>(sizeof(T)),1,0};
 }
+// A wrapper may own only a prefix of the advertised service table. Publish
+// the size and version of that local table, preserving its context/callbacks.
+template<class T> void NormalizeApiHeader(T& api,std::uint16_t minor) noexcept {
+    api.h={static_cast<std::uint32_t>(sizeof(T)),1,minor};
+}
 template<class F> MmsResult Call(F&& function) noexcept {
     try { return function(); }
     catch(const std::bad_alloc&) { return MMS_E_MEMORY; }
@@ -212,6 +217,7 @@ public:
             if(result!=MMS_OK) return result;
             if(table.h.size<sizeof(table) || table.h.major!=1 || table.h.minor<4) return MMS_E_VERSION;
             if(!evaluation_detail::Complete(table)) return MMS_E_UNSUPPORTED;
+            evaluation_detail::NormalizeApiHeader(table,4);
             EvaluationServices candidate;candidate.api_=table;candidate.ready_=true;out=candidate;return MMS_OK;
         });
     }
@@ -242,6 +248,7 @@ inline MmsEvaluationApiV1_4 Prefix(const MmsEvaluationApiV1_5& api) noexcept {
     MmsEvaluationApiV1_4 result{};
     static_assert(offsetof(MmsEvaluationApiV1_5,getMeshCapabilities)==sizeof(result),"evaluation prefix");
     std::memcpy(&result,&api,sizeof(result));
+    NormalizeApiHeader(result,4);
     return result;
 }
 inline bool CompleteMesh(const MmsEvaluationApiV1_5& api) noexcept {
@@ -409,6 +416,7 @@ public:
             if(result!=MMS_OK)return result;
             if(table.h.size<sizeof(table)||table.h.major!=1||table.h.minor<5)return MMS_E_VERSION;
             if(!evaluation_detail::CompleteMesh(table))return MMS_E_UNSUPPORTED;
+            evaluation_detail::NormalizeApiHeader(table,5);
             EvaluationMeshServices candidate;candidate.api_=table;candidate.ready_=true;out=candidate;return MMS_OK;
         });
     }
@@ -434,7 +442,9 @@ namespace evaluation_detail {
 inline MmsEvaluationApiV1_5 MeshPrefix(const MmsEvaluationApiV1_6& api) noexcept {
     MmsEvaluationApiV1_5 result{};
     static_assert(offsetof(MmsEvaluationApiV1_6,getMaterialCapabilities)==sizeof(result),"evaluation material prefix");
-    std::memcpy(&result,&api,sizeof(result));return result;
+    std::memcpy(&result,&api,sizeof(result));
+    NormalizeApiHeader(result,5);
+    return result;
 }
 inline bool CompleteMaterial(const MmsEvaluationApiV1_6& api) noexcept {
     return CompleteMesh(MeshPrefix(api)) && api.getMaterialCapabilities && api.createMaterialSceneSource && api.materialAt && api.readFrameMaterials;
@@ -551,6 +561,7 @@ public:
             if(result!=MMS_OK)return result;
             if(table.h.size<sizeof(table)||table.h.major!=1||table.h.minor<6)return MMS_E_VERSION;
             if(!evaluation_detail::CompleteMaterial(table))return MMS_E_UNSUPPORTED;
+            evaluation_detail::NormalizeApiHeader(table,6);
             EvaluationMaterialServices candidate;candidate.api_=table;candidate.ready_=true;out=candidate;return MMS_OK;
         });
     }
@@ -575,7 +586,9 @@ namespace evaluation_detail {
 inline MmsEvaluationApiV1_6 MaterialPrefix(const MmsEvaluationApiV1_7& api) noexcept {
     MmsEvaluationApiV1_6 result{};
     static_assert(offsetof(MmsEvaluationApiV1_7,getReferenceCapabilities)==sizeof(result),"evaluation reference prefix");
-    std::memcpy(&result,&api,sizeof(result));return result;
+    std::memcpy(&result,&api,sizeof(result));
+    NormalizeApiHeader(result,6);
+    return result;
 }
 inline bool CompleteReference(const MmsEvaluationApiV1_7& api) noexcept {
     return CompleteMaterial(MaterialPrefix(api)) && api.getReferenceCapabilities && api.createReferenceSceneSource &&
@@ -635,6 +648,7 @@ public:
             if(result!=MMS_OK)return result;
             if(table.h.size<sizeof(table)||table.h.major!=1||table.h.minor<7)return MMS_E_VERSION;
             if(!evaluation_detail::CompleteReference(table))return MMS_E_UNSUPPORTED;
+            evaluation_detail::NormalizeApiHeader(table,7);
             EvaluationReferenceServices candidate;candidate.api_=table;candidate.ready_=true;out=candidate;return MMS_OK;
         });
     }

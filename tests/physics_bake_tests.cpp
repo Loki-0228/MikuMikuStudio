@@ -4,12 +4,13 @@
 // Modes: no argument runs the unit/dialog suite; `--ui <dir>` adds screenshots;
 // `<model.pmx> <output-directory>` runs the full scene integration;
 // `--capacity` runs the runtime bone-key pool acceptance without a scene;
-// `--warnings` drives native and layer-cut warning gates with fixture MMV.dll;
+// `--warnings` checks native routes with and without the fixture MMV layer API;
 // `--scene-physics` also checks detached free-curve copying in the ABI profile;
 // `--capacity-scene <model.pmx> <output-directory>` runs the scene integration
 // with a bone-key pool grown past the original capacity.
 #define NOMINMAX
 #include "mikumikustudio/physics_bake.hpp"
+#include "../src/window/baking_menu_commands.hpp"
 #include "mikumikustudio/native_mesh.hpp"
 #include "mikumikustudio/physics_scene.hpp"
 #include "mikumikustudio/affine_skinning.hpp"
@@ -41,12 +42,12 @@ namespace mikumikustudio {
 void StepFrame(MMDApp* app, bool forward);
 }
 namespace {
-int failures=0,dialogs=0,language=0;bool inspect=false;std::filesystem::path images;MMDApp* inspectApp=nullptr;
+int failures=0,dialogs=0,language=0;bool inspect=false,inspectPhysics=false;std::filesystem::path images;MMDApp* inspectApp=nullptr;
 // One real bake is driven through the hidden dialog to observe the interface
 // lock while Compute holds it.  `runBakeStep` is set by the progress bar
 // subclass below, which is entered from inside that lock.
 bool runBake=false,runBakeCancel=false,runBakeStep=false;HWND runBakeMainWindow=nullptr;WNDPROC runBakeBarProc=nullptr;
-int warningMode=0,fxWarnings=0,warningMorphCase=-1;bool warningProgress=false;WNDPROC warningBarProc=nullptr;std::wstring warningText;
+int warningMode=0,fxWarnings=0;bool warningProgress=false;WNDPROC warningBarProc=nullptr;
 LRESULT CALLBACK WarningProgress(HWND window,UINT message,WPARAM wp,LPARAM lp){
     if(message==PBM_SETRANGE32){warningProgress=true;SendMessageW(GetParent(window),WM_COMMAND,IDCANCEL,0);}
     return CallWindowProcW(warningBarProc,window,message,wp,lp);
@@ -140,42 +141,32 @@ LRESULT CALLBACK DialogHook(int code,WPARAM wp,LPARAM lp){
                 if(selectOnlyBeforePicker)CheckDlgButton(m.hwnd,105,BST_CHECKED);
                 else Check(IsDlgButtonChecked(m.hwnd,105)==BST_UNCHECKED,"global select all removes selected-bones restriction");
                 SendMessageW(m.hwnd,WM_COMMAND,IDOK,0);
-            }else if(GetDlgItem(m.hwnd,103)){
+            }else if(GetDlgItem(m.hwnd,100)){
                 SendMessageW(m.hwnd,WM_COMMAND,108,0);
                 SendMessageW(m.hwnd,WM_COMMAND,141,0);
-                Check(IsDlgButtonChecked(m.hwnd,104)==BST_CHECKED,"select all enables bone keyframe baking");
+                wchar_t summary[256]{};GetDlgItemTextW(m.hwnd,142,summary,256);
+                Check(wcslen(summary)>0&&!GetDlgItem(m.hwnd,104),"select all is reflected in the keyframe channel summary");
                 selectOnlyBeforePicker=false;
                 SendMessageW(m.hwnd,WM_COMMAND,108,0);
                 EndDialog(m.hwnd,IDCANCEL);
             }else{Check(false,"unexpected picker dialog");EndDialog(m.hwnd,IDCANCEL);}
             return CallNextHookEx(nullptr,code,wp,lp);
         }
-        if(scenePhysicsDialog&&!wcscmp(cls,L"#32770")&&GetDlgItem(m.hwnd,103)){
+        if(scenePhysicsDialog&&!wcscmp(cls,L"#32770")&&GetDlgItem(m.hwnd,106)){
             ++dialogs;
-            Check(IsWindowEnabled(GetDlgItem(m.hwnd,103)),"scene physics switch is enabled with dynamic models");
-            Check(IsWindowEnabled(GetDlgItem(m.hwnd,106)),"scene physics preset is enabled");
-            Check(IsDlgButtonChecked(m.hwnd,103)==BST_UNCHECKED,"scene physics starts unchecked");
-            CheckDlgButton(m.hwnd,103,BST_CHECKED);
-            SendMessageW(m.hwnd,WM_COMMAND,MAKEWPARAM(103,BN_CLICKED),0);
-            Check(IsDlgButtonChecked(m.hwnd,103)==BST_CHECKED,"scene physics stays checked after selection");
-            if(scenePhysicsRun){CheckDlgButton(m.hwnd,104,BST_UNCHECKED);SetDlgItemTextW(m.hwnd,100,L"1");SetDlgItemTextW(m.hwnd,101,L"4");SendMessageW(m.hwnd,WM_COMMAND,IDOK,0);}
+            Check(IsWindowEnabled(GetDlgItem(m.hwnd,106)),"scene physics preset is enabled with dynamic models");
+            Check(!GetDlgItem(m.hwnd,103)&&IsDlgButtonChecked(m.hwnd,104)==BST_UNCHECKED,
+                "scene physics is implicit and optional scene resampling starts off");
+            Check(!IsWindowEnabled(GetDlgItem(m.hwnd,141)),"scene channels are inactive in physics-only mode");
+            if(scenePhysicsRun){SetDlgItemTextW(m.hwnd,100,L"1");SetDlgItemTextW(m.hwnd,101,L"4");SendMessageW(m.hwnd,WM_COMMAND,IDOK,0);}
             else EndDialog(m.hwnd,IDCANCEL);
             return CallNextHookEx(nullptr,code,wp,lp);
         }
         if(warningMode&&!wcscmp(cls,L"#32770")){
-            const bool mesh=warningMode>=3;
-            if(GetDlgItem(m.hwnd,160)){
-                HWND groups=GetDlgItem(m.hwnd,160);
-                SendMessageW(groups,LB_SETSEL,TRUE,1);SendMessageW(groups,LB_SETSEL,warningMorphCase==1,2);
-                SendMessageW(m.hwnd,WM_COMMAND,MAKEWPARAM(160,LBN_SELCHANGE),reinterpret_cast<LPARAM>(groups));
-                SendMessageW(m.hwnd,WM_COMMAND,IDOK,0);
-            }else if(GetDlgItem(m.hwnd,mesh?127:103)){
+            const bool mesh=warningMode==3;
+            if(GetDlgItem(m.hwnd,mesh?127:100)){
                 SetDlgItemTextW(m.hwnd,mesh?120:100,L"1");SetDlgItemTextW(m.hwnd,mesh?121:101,L"2");
-                const int layers=mesh?133:144;
-                Check(SendDlgItemMessageW(m.hwnd,layers,CB_GETCURSEL,0,0)<=0,"ordinary baking is the default with MMV loaded");
-                if(warningMode==2||warningMode==4)SendDlgItemMessageW(m.hwnd,layers,CB_SETCURSEL,1,0);
-                if(warningMode==2)CheckDlgButton(m.hwnd,104,BST_CHECKED);
-                if(warningMode==2&&warningMorphCase>=0)SendMessageW(m.hwnd,WM_COMMAND,141,0);
+                Check(!GetDlgItem(m.hwnd,mesh?133:144),"native dialog has no obsolete layer selector with MMV loaded");
                 if(mesh){
                     CheckDlgButton(m.hwnd,126,BST_UNCHECKED);CheckDlgButton(m.hwnd,127,BST_CHECKED);
                     HWND objects=GetDlgItem(m.hwnd,129);
@@ -185,7 +176,6 @@ LRESULT CALLBACK DialogHook(int code,WPARAM wp,LPARAM lp){
                 SendMessageW(m.hwnd,WM_COMMAND,IDOK,0);if(IsWindow(m.hwnd))EndDialog(m.hwnd,IDCANCEL);
             }else{
                 wchar_t text[2048]{};GetDlgItemTextW(m.hwnd,65535,text,2048);
-                warningText=text;
                 if(wcsstr(text,L"FX")||wcsstr(text,L"MMVGetLayerBakeApi"))++fxWarnings;
                 EndDialog(m.hwnd,IDCANCEL);
             }
@@ -222,30 +212,51 @@ LRESULT CALLBACK DialogHook(int code,WPARAM wp,LPARAM lp){
                 SetDlgItemTextW(m.hwnd,123,L"100000");SetDlgItemTextW(m.hwnd,124,L"100000");GetDlgItemTextW(m.hwnd,125,text,80);Check(!wcscmp(text,L"—"),"invalid inputs never overflow derived frequency");
                 SetDlgItemTextW(m.hwnd,123,L"2");SetDlgItemTextW(m.hwnd,124,L"60");SetDlgItemTextW(m.hwnd,120,L"2e-1");SendMessageW(m.hwnd,WM_COMMAND,IDOK,0);
             }else if(inspect && GetDlgItem(m.hwnd,100)){
-                wchar_t title[80]{};GetWindowTextW(m.hwnd,title,80);
-                Check(!wcscmp(title,language==2?L"关键帧烧录":language==1?L"Keyframe baking":L"キー焼き込み"),"native dialog language");
-                Check(IsDlgButtonChecked(m.hwnd,103)==BST_CHECKED,"physics enabled initially");
-                // The main dialog must state its own scope in the active
-                // language and lay that text out where the buttons are not.
-                // The wording follows the page the main window shows, so the
-                // expectation is picked from the scope of the app under test.
-                const bool modelPage = inspectApp==nullptr || inspectApp->state.optflag[0]==0;
-                wchar_t note[512]{};GetDlgItemTextW(m.hwnd,133,note,512);
-                Check(!wcscmp(note,language==2
-                    ?(modelPage?L"模型页只烧录当前模型：骨骼、表情与「显示・IK」可在「通道…」中逐项选择。网格烘焙和 ABC 导出请用「烘焙 → 烘焙网格…」。"
-                               :L"相机、灯光、附件页烧录场景轨道：相机、灯光、自阴影、重力，以及每个 .x 附件及其子参数。网格烘焙和 ABC 导出请用「烘焙 → 烘焙网格…」。")
-                    :language==1
-                    ?(modelPage?L"Model page bakes the current model only: bones, morphs and the visibility/IK track are picked item by item in the Channels dialog. Use Baking → Bake mesh for mesh baking and ABC export."
-                               :L"The camera/light/accessory page bakes the scene tracks: camera, light, self shadow, gravity, and every .x object with its own sub-parameters. Use Baking → Bake mesh for mesh baking and ABC export.")
-                    :(modelPage?L"モデルページは現在のモデルのみを焼き込みます：ボーン・モーフ・「表示・IK」は「チャンネル…」で個別に選びます。メッシュのベイクと ABC 書き出しには「ベイク → メッシュ焼き込み…」を使います。"
-                               :L"カメラ・照明・アクセサリのページはシーンのトラックを焼き込みます：カメラ・照明・セルフ影・重力、および各 .x アクセサリとその子パラメータです。メッシュのベイクと ABC 書き出しには「ベイク → メッシュ焼き込み…」を使います。")),
-                    "bake scope explanation follows the UI language and the page");
-                RECT noteRect{},okRect{},client{};GetClientRect(m.hwnd,&client);
-                GetWindowRect(GetDlgItem(m.hwnd,133),&noteRect);GetWindowRect(GetDlgItem(m.hwnd,IDOK),&okRect);
-                MapWindowPoints(nullptr,m.hwnd,reinterpret_cast<POINT*>(&noteRect),2);MapWindowPoints(nullptr,m.hwnd,reinterpret_cast<POINT*>(&okRect),2);
-                Check(noteRect.left>=client.left&&noteRect.right<=client.right&&noteRect.bottom<=client.bottom,"bake scope explanation fits inside the dialog");
-                Check(noteRect.bottom<=okRect.top,"bake scope explanation does not overlap the buttons");
-                Capture(m.hwnd,L"-main");SendMessageW(m.hwnd,WM_COMMAND,107,0);EndDialog(m.hwnd,IDCANCEL);
+                const wchar_t* titles[][3]={
+                    {L"キー焼き込み",L"Keyframe baking",L"关键帧烧录"},
+                    {L"物理焼き込み",L"Physics baking",L"物理烧录"}};
+                const wchar_t* scopes[][3]={
+                    {L"現在のモデル：ボーン・モーフ・表示・IK。",L"Current model: bones, morphs, visibility and IK.",L"当前模型：骨骼、表情、显示与 IK。"},
+                    {L"現在のモデルに記録します。全モデルが衝突に参加します。",L"Writes to the current model. All scene models participate in collisions.",L"写入当前模型。场景中的所有模型参与碰撞。"}};
+                wchar_t title[80]{},note[160]{},summary[160]{};
+                GetWindowTextW(m.hwnd,title,80);GetDlgItemTextW(m.hwnd,133,note,160);
+                Check(!wcscmp(title,titles[inspectPhysics][language]),"each command opens its own localized window");
+                Check(!wcscmp(note,scopes[inspectPhysics][language]),"localized scope describes only this operation");
+                for(int id:{104,106,107,145})
+                    Check((GetDlgItem(m.hwnd,id)!=nullptr)==inspectPhysics,"physics-only controls do not exist in Keyframes");
+                Check(!GetDlgItem(m.hwnd,103)&&!GetDlgItem(m.hwnd,144),"no mode switch or retired Native selector");
+                Check(IsDlgButtonChecked(m.hwnd,104)==BST_UNCHECKED,"extra resampling does not start on in Physics");
+                GetDlgItemTextW(m.hwnd,142,summary,160);
+                Check(wcslen(summary)>0,"the model's bone channel starts selected");
+                RECT client{};GetClientRect(m.hwnd,&client);
+                for(int id:{100,101,102,133,140,141,142,108,109,110,IDOK,IDCANCEL}){
+                    const HWND child=GetDlgItem(m.hwnd,id);RECT rect{};
+                    Check(child&&GetWindowRect(child,&rect),"a common control exists");
+                    MapWindowPoints(nullptr,m.hwnd,reinterpret_cast<POINT*>(&rect),2);
+                    Check(rect.left>=0&&rect.top>=0&&rect.right<=client.right&&rect.bottom<=client.bottom,"common controls fit inside the dialog");
+                }
+                const auto rectOf=[&](int id){
+                    RECT rect{};GetWindowRect(GetDlgItem(m.hwnd,id),&rect);
+                    MapWindowPoints(nullptr,m.hwnd,reinterpret_cast<POINT*>(&rect),2);
+                    return rect;
+                };
+                Check(rectOf(133).bottom<rectOf(141).top&&rectOf(141).bottom<rectOf(142).top&&
+                      rectOf(142).bottom<rectOf(110).top&&rectOf(110).bottom<rectOf(109).top&&
+                      rectOf(109).bottom<rectOf(IDOK).top,"scope, options, progress and footer do not overlap");
+                HWND label=GetDlgItem(m.hwnd,133);HDC dc=GetDC(label);
+                if(dc){
+                    const int saved=SaveDC(dc);
+                    SetBkColor(dc,RGB(11,19,31));
+                    const auto base=SendMessageW(m.hwnd,WM_CTLCOLORDLG,reinterpret_cast<WPARAM>(dc),reinterpret_cast<LPARAM>(m.hwnd));
+                    const auto text=SendMessageW(m.hwnd,WM_CTLCOLORSTATIC,reinterpret_cast<WPARAM>(dc),reinterpret_cast<LPARAM>(label));
+                    Check(base&&text==base&&GetBkColor(dc)==GetSysColor(COLOR_3DFACE)&&
+                          GetTextColor(dc)==GetSysColor(COLOR_BTNTEXT),"text and dialog share the system dialog-face background");
+                    if(saved)RestoreDC(dc,saved);
+                    ReleaseDC(label,dc);
+                }else Check(false,"dialog label provides a paint DC");
+                Capture(m.hwnd,inspectPhysics?L"-physics":L"-keyframes");
+                if(inspectPhysics)SendMessageW(m.hwnd,WM_COMMAND,107,0);
+                EndDialog(m.hwnd,IDCANCEL);
             }else if(inspect && GetDlgItem(m.hwnd,132)){
                 wchar_t title[80]{},text[512]{};
                 GetWindowTextW(m.hwnd,title,80);
@@ -383,7 +394,7 @@ void ScenePhysicsUnit(){
     };
     setup(a,rigidA,bodyA,0);setup(b,rigidB,bodyB,1);
     auto* previous=g_Block;g_Block=app.get();
-    const int initialDialogs=dialogs;scenePhysicsDialog=true;bake::ShowDialog(app.get());scenePhysicsDialog=false;
+    const int initialDialogs=dialogs;scenePhysicsDialog=true;bake::HandleCommand(app.get(),bake::kBakePhysicsMenuCommand);scenePhysicsDialog=false;
     Check(dialogs==initialDialogs+1,"camera page opens physics bake without scene tracks");
     const auto beforeA=a.keys,beforeB=b.keys;const auto poseA=bodyA.getWorldTransform(),poseB=bodyB.getWorldTransform();
     bake::Request request;request.firstFrame=0;request.lastFrame=4;request.physics=true;request.keyframes=false;
@@ -440,7 +451,7 @@ void ScenePhysicsUnit(){
         Check(Equal(afterA,a.keys.data())&&Equal(afterB,b.keys.data()),"scene results preserve per-model redo");
     }
     int restoreFrame=0;UndoModelEdit(a.raw(),&restoreFrame);UndoModelEdit(b.raw(),&restoreFrame);
-    scenePhysicsDialog=true;scenePhysicsRun=true;bake::ShowDialog(app.get());scenePhysicsRun=scenePhysicsDialog=false;
+    scenePhysicsDialog=true;scenePhysicsRun=true;bake::HandleCommand(app.get(),bake::kBakePhysicsMenuCommand);scenePhysicsRun=scenePhysicsDialog=false;
     Check(!Equal(beforeA,a.keys.data())&&!Equal(beforeB,b.keys.data()),"camera-page physics-only dialog writes both models without scene channels");
     Check(app->SelectedModelSlot()==2&&app->state.optflag[0]==1,"camera-page bake preserves selected page and model slot");
     g_Block=previous;world.removeRigidBody(&bodyA);world.removeRigidBody(&bodyB);
@@ -461,29 +472,18 @@ void WarningLogic(){
         _putenv_s("MMV_TEST_LAYER_BAKE",support);_putenv_s("MMV_TEST_LAYERS","3,1,0");
         for(language=0;language<3;++language){
             app->EnglishUI()=static_cast<unsigned char>(language);
-            for(int mode : {1,3,2,4}){
-                if(support[0]=='m'&&(mode==2||mode==4))continue;
-                warningMode=mode;fxWarnings=0;warningProgress=false;warningText.clear();
-                if(mode<3)bake::ShowDialog(app.get());else alembic_export::ShowBakeDialog(app.get());
-                if(mode==1||mode==3){Check(fxWarnings==0,"native/range bake never warns about deleting FX or a missing layer API");Check(warningProgress,"ordinary partial bake reaches the sampling path");}
-                else{
-                    Check(fxWarnings==1&&!warningProgress,"explicit layer cuts retain their genuine loss-of-output warning");
-                    if(mode==2)Check(warningText.find(L"表情")==warningText.npos&&warningText.find(L"morph")==warningText.npos&&warningText.find(L"モーフ")==warningText.npos,"a model without morphs does not need a nonexistent morph channel");
-                }
+            for(int mode : {1,2,3}){
+                warningMode=mode;fxWarnings=0;warningProgress=false;
+                if(mode==3)alembic_export::ShowBakeDialog(app.get());
+                else bake::HandleCommand(app.get(),mode==2?bake::kBakePhysicsMenuCommand:bake::kBakeMenuCommand);
+                Check(fxWarnings==0,"native bake does not warn about deleting FX or a missing layer API");
+                Check(warningProgress,"native partial bake reaches the progress path");
             }
         }
     }
-    std::array<mdl::MorphRecord,2> morphs{};f.model->morphCount=2;f.model->morphs=morphs.data();
-    _putenv_s("MMV_TEST_LAYER_BAKE","1");app->EnglishUI()=2;
-    for(int all : {0,1}){
-        warningMode=2;warningMorphCase=all;fxWarnings=0;warningProgress=false;warningText.clear();
-        bake::ShowDialog(app.get());
-        Check(fxWarnings==1&&!warningProgress,"a partial layer cut is refused before sampling");
-        Check((warningText.find(L"表情")!=warningText.npos)==(all==0),"layer removal requires all actual morph channels, not merely the first");
-    }
-    warningMorphCase=-1;f.model->morphCount=0;f.model->morphs=nullptr;
     warningMode=0;native_mesh::Shutdown();DestroyWindow(app->MainWindow());g_Block=nullptr;
-    std::puts("warning logic: hidden native physics and range mesh defaults, missing layer API, explicit cuts, three languages");
+    std::puts("warning logic: hidden native Keyframes, Physics and Mesh, optional MMV API present and missing, three languages");
+
 }
 // ---- interface lock --------------------------------------------------------
 // The lock covers every enabled top-level window of this GUI thread, leaves the
@@ -959,8 +959,20 @@ void Unit(){
     PoolGrowthCommit();
     auto app=std::make_unique<MMDApp>();app->state=MMDAppState{};app->ModelSlot(0)=f.raw();app->SelectedModelSlot()=0;
     app->MainWindow()=CreateWindowExW(0,L"STATIC",L"bake tests",WS_OVERLAPPED,0,0,800,600,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
-    inspect=true;const int prior=dialogs;for(language=0;language<3;++language){app->EnglishUI()=static_cast<unsigned char>(language);bake::ShowDialog(app.get());}inspect=false;
-    Check(dialogs-prior==6,"three languages and advanced dialogs run hidden");DestroyWindow(app->MainWindow());
+    btDefaultCollisionConfiguration configuration;btCollisionDispatcher dispatcher(&configuration);
+    btDbvtBroadphase broadphase;btSequentialImpulseConstraintSolver solver;
+    btDiscreteDynamicsWorld world(&dispatcher,&broadphase,&solver,&configuration);
+    PhysicsScene physics{};physics.world=&world;app->Physics()=&physics;
+    btSphereShape shape(1);btRigidBody body(btRigidBody::btRigidBodyConstructionInfo(1,nullptr,&shape));
+    mdl::RigidRecord rigid{};rigid.boneIndex=0;rigid.body=&body;f.model->rigidTable=&rigid;f.model->rigidCount=1;f.bones[0].hasRigidBody=1;
+    inspect=true;const int prior=dialogs;
+    for(language=0;language<3;++language){
+        app->EnglishUI()=static_cast<unsigned char>(language);
+        inspectPhysics=false;Check(bake::HandleCommand(app.get(),bake::kBakeMenuCommand),"Keyframes command is recognized");
+        inspectPhysics=true;Check(bake::HandleCommand(app.get(),bake::kBakePhysicsMenuCommand),"Physics command is recognized");
+    }
+    inspectPhysics=inspect=false;
+    Check(dialogs-prior==9,"three languages open both windows and Physics advanced settings");DestroyWindow(app->MainWindow());
     UiLock();
     std::puts("unit transaction and localized dialog checks complete");
 }
@@ -1236,15 +1248,17 @@ void MenuRegression(MMDApp* app){
     // neighbour is checked instead.
     const int helpIndex=TopLevelIndexWithCommand(menu,kHelpAboutCommand);
     Check(baking&&index>=0&&helpIndex>=0&&index+1==helpIndex,"the baking popup sits directly in front of Help");
-    Check(baking&&GetMenuItemCount(baking)==4&&CommandItems(baking,bake::kBakeMenuCommand)==1&&CommandItems(baking,bake::kExportMenuCommand)==1&&CommandItems(baking,bake::kBakeMeshMenuCommand)==1&&CommandItems(baking,bake::kClearMeshBakeMenuCommand)==1,"each baking command appears exactly once");
-    if(baking){MENUITEMINFOW first{sizeof first};first.fMask=MIIM_ID;GetMenuItemInfoW(baking,0,TRUE,&first);
-        Check(first.wID==bake::kBakeMenuCommand,"bake keyframes is the first entry");
-        // The mesh bake is a peer of the ABC export, never merged into the key
-        // bake: the two entries produce different results.
-        MENUITEMINFOW second{sizeof second};second.fMask=MIIM_ID;GetMenuItemInfoW(baking,1,TRUE,&second);
-        MENUITEMINFOW third{sizeof third};third.fMask=MIIM_ID;GetMenuItemInfoW(baking,2,TRUE,&third);
-        Check(second.wID==bake::kExportMenuCommand&&third.wID==bake::kBakeMeshMenuCommand,
-            "the mesh bake follows the ABC export");}
+    const unsigned commands[]={bake::kBakeMenuCommand,bake::kBakePhysicsMenuCommand,
+                               bake::kBakeMeshMenuCommand,bake::kClearMeshBakeMenuCommand};
+    Check(baking&&GetMenuItemCount(baking)==4&&CommandItems(baking,bake::kExportMenuCommand)==0,
+          "four baking entries with no duplicate ABC command");
+    const auto checkOrder=[&]{
+        for(unsigned pos=0;baking&&pos<std::size(commands);++pos){
+            Check(GetMenuItemID(baking,pos)==commands[pos]&&CommandItems(baking,commands[pos])==1,
+                  "each localized baking command keeps its unique position");
+        }
+    };
+    checkOrder();
     // The clear entry is only offered while the mesh cache holds something, gated
     // by the export guard that also covers an export in flight.  This session
     // never installs a cache.
@@ -1254,7 +1268,7 @@ void MenuRegression(MMDApp* app){
         "clear entry tracks the cache and the export guard");
     const wchar_t* titles[]={L"ベイク",L"Baking",L"烘焙"};
     const wchar_t* bakes[]={L"キー焼き込み…",L"Bake keyframes…",L"烧录关键帧…"};
-    const wchar_t* exports[]={L"ABC 書き出し…",L"Export ABC…",L"导出 ABC…"};
+    const wchar_t* physics[]={L"物理焼き込み…",L"Bake physics…",L"烧录物理…"};
     const wchar_t* meshes[]={L"メッシュ焼き込み…",L"Bake mesh…",L"烘焙网格…"};
     const wchar_t* clears[]={L"ベイク解除…",L"Clear mesh bake…",L"清除网格烧录…"};
     const unsigned char savedLanguage=app->EnglishUI();
@@ -1271,7 +1285,8 @@ void MenuRegression(MMDApp* app){
         if(!baking)continue;
         Check(LabelIs(menu,bake::kBakingMenuId,false,titles[language]),"baking caption follows the UI language");
         Check(LabelIs(baking,bake::kBakeMenuCommand,false,bakes[language]),"bake caption follows the UI language");
-        Check(LabelIs(baking,bake::kExportMenuCommand,false,exports[language]),"export caption follows the UI language");
+        Check(LabelIs(baking,bake::kBakePhysicsMenuCommand,false,physics[language]),"physics caption follows the UI language");
+        checkOrder();
         Check(LabelIs(baking,bake::kBakeMeshMenuCommand,false,meshes[language]),"mesh bake caption follows the UI language");
         Check(LabelIs(baking,bake::kClearMeshBakeMenuCommand,false,clears[language]),"clear caption follows the UI language");}
     app->EnglishUI()=savedLanguage;
@@ -1285,13 +1300,17 @@ void MenuRegression(MMDApp* app){
         const int quiet=dialogs;
         app->PlaybackActive()=1;bake::RefreshMenu(app);
         Check(!bake::CanBake(app),"playback refuses baking");
-        Check(!CommandEnabled(baking,bake::kBakeMenuCommand),"playback disables the bake entry");
-        Check(bake::HandleCommand(app,bake::kBakeMenuCommand)&&dialogs==quiet,"playback refuses the direct bake command");
+        for(unsigned command:{bake::kBakeMenuCommand,bake::kBakePhysicsMenuCommand}){
+            Check(!CommandEnabled(baking,command),"playback disables each key/physics entry");
+            Check(bake::HandleCommand(app,command)&&dialogs==quiet,"playback refuses each direct key/physics command");
+        }
         app->PlaybackActive()=0;
         app->RecordingWindow()=app->MainWindow();bake::RefreshMenu(app);
         Check(!bake::CanBake(app),"a recording window refuses baking");
-        Check(!CommandEnabled(baking,bake::kBakeMenuCommand),"a recording window disables the bake entry");
-        Check(bake::HandleCommand(app,bake::kBakeMenuCommand)&&dialogs==quiet,"a recording window refuses the direct bake command");
+        for(unsigned command:{bake::kBakeMenuCommand,bake::kBakePhysicsMenuCommand}){
+            Check(!CommandEnabled(baking,command),"a recording window disables each key/physics entry");
+            Check(bake::HandleCommand(app,command)&&dialogs==quiet,"a recording window refuses each direct key/physics command");
+        }
         app->RecordingWindow()=nullptr;
         auto& record=*mdl::Mdl(model);const std::uint32_t boneCount=record.boneCount;mdl::BoneRecord* const boneTable=record.boneTable;
         record.boneCount=0;bake::RefreshMenu(app);
@@ -1302,12 +1321,18 @@ void MenuRegression(MMDApp* app){
         Check(!bake::CanBake(app),"a model without a bone table refuses baking");
         record.boneTable=boneTable;bake::RefreshMenu(app);
         Check(bake::CanBake(app)&&CommandEnabled(baking,bake::kBakeMenuCommand),"restoring the bone data restores the bake entry");
+        auto* const rigidTable=record.rigidTable;
+        record.rigidTable=nullptr;bake::RefreshMenu(app);
+        Check(CommandEnabled(baking,bake::kBakeMenuCommand)&&!CommandEnabled(baking,bake::kBakePhysicsMenuCommand),
+              "a model without dynamic bone targets keeps just the keyframe entry enabled");
+        Check(bake::HandleCommand(app,bake::kBakePhysicsMenuCommand)&&dialogs==quiet,"no rigid targets refuse direct Physics");
+        record.rigidTable=rigidTable;
         app->ModelSlot(0)=nullptr;bake::RefreshMenu(app);
         Check(!bake::CanBake(app)&&!CommandEnabled(baking,bake::kBakeMenuCommand),"no selected model refuses baking");
-        Check(CommandEnabled(baking,bake::kExportMenuCommand)==alembic_export::CanExport(app),"export state tracks CanExport without a model");
+        Check(CommandEnabled(baking,bake::kBakeMeshMenuCommand)==alembic_export::CanExport(app),"mesh state tracks CanExport without a model");
         app->ModelSlot(0)=model;bake::RefreshMenu(app);
         Check(bake::CanBake(app)&&CommandEnabled(baking,bake::kBakeMenuCommand),"a selected model restores the bake entry");
-        Check(CommandEnabled(baking,bake::kExportMenuCommand)==alembic_export::CanExport(app),"export state tracks CanExport with a model");}
+        Check(CommandEnabled(baking,bake::kBakeMeshMenuCommand)==alembic_export::CanExport(app),"mesh state tracks CanExport with a model");}
     // While a bake holds the interface lock every other baking entry stays
     // disabled, and a directly dispatched clear command is refused as well.
     if(baking){
@@ -1317,14 +1342,16 @@ void MenuRegression(MMDApp* app){
             Check(bake::UiLocked(),"the regression holds the interface lock");
             Check(!bake::CanBake(app),"CanBake refuses a held interface lock");
             Check(!CommandEnabled(baking,bake::kBakeMenuCommand),"the lock disables the bake entry");
-            Check(!CommandEnabled(baking,bake::kExportMenuCommand),"the lock disables the export entry");
+            Check(!CommandEnabled(baking,bake::kBakePhysicsMenuCommand),"the lock disables the Physics entry");
+            Check(!CommandEnabled(baking,bake::kBakeMeshMenuCommand),"the lock disables the Mesh entry");
             Check(!CommandEnabled(baking,bake::kClearMeshBakeMenuCommand),"the lock disables the clear entry");
             const int quiet=dialogs;
-            Check(bake::HandleCommand(app,bake::kClearMeshBakeMenuCommand)&&dialogs==quiet,"the lock refuses the direct clear command");
+            for(unsigned command:commands)
+                Check(bake::HandleCommand(app,command)&&dialogs==quiet,"the lock refuses each direct baking command");
         }
         bake::RefreshMenu(app);
         Check(!bake::UiLocked(),"the menu regression released the interface lock");
-        Check(CommandEnabled(baking,bake::kExportMenuCommand)==alembic_export::CanExport(app),"the export entry recovers after the lock");
+        Check(CommandEnabled(baking,bake::kBakeMeshMenuCommand)==alembic_export::CanExport(app),"the Mesh entry recovers after the lock");
     }
     // Drive the scope dialog itself: it must mirror the cache state, offer only
     // the scopes that hold data, and clear nothing when it is cancelled.  While
@@ -1512,7 +1539,7 @@ void Scene(const wchar_t* source,const std::filesystem::path& output){
     // and BakeStepHook inspects the interface from inside the lock.
     runBakeMainWindow=app->MainWindow();runBake=true;runBakeCancel=false;runBakeStep=false;
     const int lockedDialogs=dialogs;
-    Check(bake::HandleCommand(app.get(),bake::kBakeMenuCommand),"the bake command starts a locked run");
+    Check(bake::HandleCommand(app.get(),bake::kBakePhysicsMenuCommand),"the Physics command starts a locked run");
     runBake=false;
     Check(runBakeStep,"the locked run reached the simulation");
     Check(dialogs>lockedDialogs,"the running bake opened its own dialog");
@@ -1521,7 +1548,7 @@ void Scene(const wchar_t* source,const std::filesystem::path& output){
     // nothing: the bake dialog stays open instead of closing itself.
     const auto undoBefore=mdl::Mdl(app->ModelSlot(0))->undoState[0];
     runBake=true;runBakeCancel=true;runBakeStep=false;
-    Check(bake::HandleCommand(app.get(),bake::kBakeMenuCommand),"the bake command starts a cancellable run");
+    Check(bake::HandleCommand(app.get(),bake::kBakePhysicsMenuCommand),"the Physics command starts a cancellable run");
     runBake=false;runBakeCancel=false;
     Check(runBakeStep&&!bake::UiLocked(),"cancelling a locked run releases the interface lock");
     Check(IsWindowEnabled(runBakeMainWindow)==TRUE,"the interface is usable again after a cancelled bake");

@@ -314,6 +314,8 @@ struct SceneFontCell {
 };
 constexpr float kSceneFontAtlasSize = 512.0f;
 constexpr float kSceneFontRowHeight = 32.0f;
+// Isolated playback row, below the large coordinate captions with a gutter.
+constexpr int kSceneFontPlaybackRow = 472;
 // Looks up a string drawn into the atlas and reports its measured extent, from
 // whichever of the two caption tiers better matches the HUD scale the caller is
 // painting at.  Returns false when the atlas does not contain that exact text

@@ -16,13 +16,23 @@ cmake --build --preset win7-x64-release --target MikuMikuStudio
 
 完整档在构建时会先用 D3DX9 预编译内嵌效果再生成资源（`MIKUMIKUSTUDIO_PRECOMPILE_EFFECTS` 默认开启）。本机实测 117 号效果瞬时完成，118 号约 5 分钟，120 号约 11 分钟，整轮约 16 分钟，期间没有输出，不要当成卡死中断。产物在 `build/cmake/generated/resources`，比资源输入新时该步骤会跳过。
 
-`build/release` 是发布目录，只放 `MikuMikuDance.exe`、`licenses/` 和 `mms-adaptive-ui-template.zip`。用下面的脚本重建：
+`build/release` 是专用 ABI 发布预备目录。它包含主程序、随当前产品构建的兼容组件、默认扫描配置、许可文件和 GUI 源码模板。用 PowerShell 7 和 PATH 上的 Python 3.10+（`python` 命令）重建：
 
 ```powershell
 ./scripts/package_abi_release.ps1 -Force
 ```
 
-脚本默认读取 `build/cmake`，可用 `-BuildDirectory` 指向另一份完整档 x64 构建。构建树、测试产物和 `build/verification` 中的日志、证据都不进发布目录。`cmake --install` 还会写入 `PLUGINS/config.json`，因此发布目录由脚本直接复制文件，不使用安装规则。
+脚本不编译、不安装到系统，也不发布。默认读取 `build/cmake`，可用 `-BuildDirectory` 指向当前源码的另一份完整档 x64 构建。下列各项都必须存在：
+
+- 同一构建的 `Release/MikuMikuDance.exe`、`Release/MMSAdapter.dll`、`Release/MMHack.dll`、`Release/legacy-mmdplugin/MMDPlugin.dll`。发布预备目录保留它们相对 `Release/` 的布局。缺文件时重新构建 `MikuMikuStudio` 目标；不要用旧插件 DLL 补齐。
+- 源码中的根 `LICENSE`、`PLUGINS/config.json` 和 `licenses/` 中列入清单的许可文件。
+- `mms-adaptive-ui-template.zip`。默认路径下缺少时，脚本调用项目的[模板打包器](../guides/cpp-adaptive-ui-template.md)；若 `-UiTemplateArchive` 指向另一个路径，须事先生成该源码 ZIP。
+
+脚本校验四个产品文件的 x64 PE 头并打印全部打包文件的 SHA-256、字节数和相对路径。校验失败不替换既有目录；`-Force` 也不覆盖含工程、日志、插件或其他非打包文件的目录。构建树、PDB、开发插件、测试产物和验证证据不入包。
+
+此脚本不调用 `cmake --install`，不带用户提供的原版 MMEffect、原版 MMHack、D3D9 启动代理、NVIDIA 辅助 DLL，也不从系统目录复制 VC/UCRT/OpenMP 或 DirectX 运行库。旧 MME 的用户补充步骤见[安装说明](../LEGACY_MME_PACKAGES.md#安装)，运行库与实际加载另按[部署审计](../reference/win7-deployment.md)验证。当前源码内置的 MMHack 移植来源和再分发条件仍须在对外发布前确认；本目录清单与 PE 头检查不表示已取得第三方许可或通过真实 Windows、Win7、AMD 或 MME 验收。
+
+可用 `python -B tests/package_abi_release_tests.py -v` 在 Windows 或 Linux 中检验文件清单、校验值与失败保护。测试使用不可运行的 PE 文件头夹具，不生成或上传真正的发布物。
 
 默认保留 Release PDB。只需验证且本机符号工具不可用时，可以在配置时使用 `-DMIKUMIKUSTUDIO_DEBUG_SYMBOLS=OFF`；发布时仍应保留匹配程序的符号文件，不能把旧 PDB 与新 EXE 配对。Release exe 内嵌 PDB 的绝对路径，搬动构建目录或重新链接后，同一份源码生成的 exe 哈希会变化，发布前要按实际文件重新核对。
 

@@ -174,7 +174,8 @@ bool IsHudCaption(const char* text) {
 
 void RecordMeasuredLabel(const char* text, int x, int y, int band, int scan,
                          int advance) {
-    if (text == nullptr || advance <= 0 || !IsHudCaption(text) ||
+    if (text == nullptr || advance <= 0 ||
+        (!IsHudCaption(text) && !(y == kSceneFontPlaybackRow && std::strcmp(text, "frame (") == 0)) ||
         g_measuredLabelCount >= kMaxMeasuredLabels)
         return;
     MeasuredLabel& slot = g_measuredLabels[g_measuredLabelCount++];
@@ -246,7 +247,7 @@ bool SceneFontLabelCell(const char* text, float scale, SceneFontCell* out) {
         return false;
     // Every caption is stored twice in the atlas.
     // Pick the copy whose baked size is closest to the size being painted for the sharpest result.
-    const short band = scale >= kCaptionLargeTierScale ? kCaptionLargeBand
+    const short band = scale >= kCaptionLargeTierScale && std::strcmp(text, "frame (") != 0 ? kCaptionLargeBand
                                                        : kCaptionSmallBand;
     for (int i = 0; i < g_measuredLabelCount; ++i) {
         const MeasuredLabel& label = g_measuredLabels[i];
@@ -332,6 +333,19 @@ bool InitSceneFontTexture(MMDApp* app) {
         RecordMeasuredLabel(g.s, g.x, g.y, kCaptionLargeBand, kCaptionLargeScan,
                             advance);
     }
+
+    // The old playback row touched the descenders of the row above. Keep a
+    // separately painted copy with empty neighboring rows so filtering cannot
+    // introduce stray fragments over the frame number or time.
+    const int playbackDc = SaveDC(hdc);
+    IntersectClipRect(hdc, 0, kSceneFontPlaybackRow, 512, kSceneFontPlaybackRow + 32);
+    for (const Glyph& g : kAtlas) {
+        if (g.y != 256) continue;
+        const int advance = DrawUiGlyph(app, g.s, hdc, 30, g.x,
+            kSceneFontPlaybackRow, 0, 0, 255, 1, UiGlyphFace::Label);
+        RecordMeasuredLabel(g.s, g.x, kSceneFontPlaybackRow, 32, 32, advance);
+    }
+    RestoreDC(hdc, playbackDc);
 
     // The surface owns this DC, so ReleaseDC is the matching call: it hands the
     // DC back to Direct3D's pool.  DeleteDC destroyed a DC that

@@ -1,3 +1,4 @@
+#include "baking_menu_commands.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 #define WIN32_LEAN_AND_MEAN
@@ -25,30 +26,26 @@
 
 namespace mikumikustudio::bake {
 namespace {
-constexpr int Start=100,End=101,Last=102,Physics=103,Keys=104,Selected=105,Presets=106,Advanced=107,Details=108,
+constexpr int Start=100,End=101,Last=102,Keys=104,Selected=105,Presets=106,Advanced=107,Details=108,
     Bar=109,Status=110,Erp=120,Cfm=121,Substeps=122,Multiplier=123,BaseRate=124,Rate=125,Name=126,Save=127,Load=128,Help=129,
-    ClearCurrent=130,ClearAll=131,ClearNote=132,Info=133,Preview=145,
-    // Channel bake of the main dialog: the step, the "Channels..." button, the
-    // summary line of what is selected and the line that names the page the
-    // list follows.
-    Step=140,Channels=141,ChannelSummary=142,ModeNote=143,
-    // Channel selection dialog.
-    GroupList=160,FieldList=161,FieldAll=162,FieldNone=163,ChannelNote=164,GroupLabel=165,FieldLabel=166,GroupAll=167,
-    // Native baking mode (the SDK layer selector has been removed).
-    Layers=144;
+    ClearCurrent=130,ClearAll=131,ClearNote=132,Info=133,
+    Step=140,Channels=141,ChannelSummary=142,Preview=145,
+    GroupList=160,FieldList=161,FieldAll=162,FieldNone=163,ChannelNote=164,GroupLabel=165,GroupAll=167;
+enum class BakeKind { Keyframes, Physics };
+constexpr int OptionsRow(BakeKind kind) { return kind==BakeKind::Physics?152:66; }
+constexpr int MainHeight(BakeKind kind) { return OptionsRow(kind)+118; }
 bool previewEnabled = true;
 struct Context {
     MMDApp* app{};Request request;bool advanced=false,details=false,running=false,cancel=false,clear=false,channels=false;
-    bool sceneKeyframes=true;
+    BakeKind kind=BakeKind::Keyframes;
+    bool sceneKeyframes=false;
     HWND tooltip{};std::map<int,std::wstring> tips;
-    // Channel list of the page this dialog belongs to, and the entry whose
-    // sub-parameters the field list shows.
     std::vector<channel_bake::Group> groups;
     int shown=-1;
 };
-// Defined with the bake run below; InitMain needs it to leave the model-only
-// controls disabled on the camera/light/accessory page.
 void EnableInputs(HWND d,Context& c,bool enabled);
+bool IsPhysics(const Context& c) { return c.kind==BakeKind::Physics; }
+bool IsModel(const Context& c) { return c.request.channelScope==channel_bake::Scope::Model; }
 const wchar_t* Text(const Context& c,const wchar_t* zh,const wchar_t* en,const wchar_t* ja) {
     return c.app->EnglishUI()==kUiChinese?zh:c.app->EnglishUI()==kUiEnglish?en:ja;
 }
@@ -85,7 +82,11 @@ std::wstring Wide(const std::string& input) {
     std::wstring out(size_t(n),L'\0');MultiByteToWideChar(CP_UTF8,0,input.c_str(),-1,out.data(),n);
     out.resize(size_t(n)-1);return out;
 }
-void ErrorBox(HWND dlg,Context& c,const wchar_t* message){MessageBoxW(dlg,message,Text(c,L"物理烧录",L"Physics baking",L"物理焼き込み"),MB_OK|MB_ICONWARNING);}
+const wchar_t* MainTitle(const Context& c) {
+    return IsPhysics(c)?Text(c,L"物理烧录",L"Physics baking",L"物理焼き込み")
+                       :Text(c,L"关键帧烧录",L"Keyframe baking",L"キー焼き込み");
+}
+void ErrorBox(HWND dlg,Context& c,const wchar_t* message){MessageBoxW(dlg,message,MainTitle(c),MB_OK|MB_ICONWARNING);}
 // ---- channel selection -----------------------------------------------------
 // The list of selectable channels follows the page the main window shows.  The
 // model page offers the selected model's own tracks only, so a bake started
@@ -128,49 +129,19 @@ void DeriveBoneScope(Context& c,const channel_bake::Group& bones) {
     choice.coverage=channel_bake::Coverage::Explicit;
     choice.indices=checked;
 }
-// Keeps the bone entry, its scope and the two switches that touch the bone
-// pools in agreement.  `keyBake` is the "Bake keyframes" checkbox; physics
-// depends on the bone pools too, so either switch keeps the entry alive.
-void SyncBones(Context& c,bool keyBake,const channel_bake::Group* bones) {
-    c.request.keyframes=keyBake;
-    if(!bones||!(keyBake||c.request.physics)){
-        c.request.channels.Remove(channel_bake::Kind::Bones,0);
-        return;
-    }
-    c.request.channels.Touch(channel_bake::Kind::Bones,0,bones->fields.size());
-    DeriveBoneScope(c,*bones);
-}
 bool GroupIncluded(const Context& c,const channel_bake::Group& group) {
-    if(group.kind==channel_bake::Kind::Bones)return c.request.keyframes||c.request.physics;
     return c.request.channels.Active(group.kind,group.slot);
 }
 void SetIncluded(Context& c,const channel_bake::Group& group,bool on) {
-    if(group.kind==channel_bake::Kind::Bones){
-        // Turning the bone row off turns both bone-affecting options off, so the
-        // dialog never claims to bake bones it is not allowed to touch.
-        if(!on){c.request.keyframes=false;c.request.physics=false;
-            c.request.channels.Remove(channel_bake::Kind::Bones,0);return;}
-        c.request.channels.Touch(channel_bake::Kind::Bones,0,group.fields.size());
-        DeriveBoneScope(c,group);
-        c.request.keyframes=true;
-        return;
-    }
-    if(on)c.request.channels.Touch(group.kind,group.slot,group.fields.size());
-    else c.request.channels.Remove(group.kind,group.slot);
+    if(on) {
+        c.request.channels.Touch(group.kind,group.slot,group.fields.size());
+        if(group.kind==channel_bake::Kind::Bones)DeriveBoneScope(c,group);
+    }else c.request.channels.Remove(group.kind,group.slot);
 }
 void RefreshChannels(HWND d,Context& c) {
-    std::wstring message;
-    if(channel_bake::Enumerate(*c.app,c.request.channelScope,c.groups,message)!=channel_bake::Error::None)
-        c.groups.clear();
+    const bool scenePhysicsOnly=IsPhysics(c)&&!IsModel(c)&&!c.sceneKeyframes;
+    if(scenePhysicsOnly){Set(d,ChannelSummary,L"");return;}
     Set(d,ChannelSummary,channel_bake::Summary(*c.app,c.request.channelScope,c.groups,c.request.channels));
-    const bool model=c.request.channelScope==channel_bake::Scope::Model;
-    Set(d,ModeNote,model
-        ?Text(c,L"模型页：只作用于当前模型。复选框烧录骨骼，「通道…」可另选该模型的其他轨道。",
-              L"Model page: the current model only. The checkbox bakes bones; \"Channels...\" adds its other tracks.",
-              L"モデルページ：現在のモデルのみ。ボーンはチェックボックス、「チャンネル…」で他のトラックを選びます。")
-        :Text(c,L"相机、灯光、附件页：可选择场景轨道与每个 .x 附件。",
-              L"Camera / light / accessory page: the scene tracks and every .x object can be selected.",
-              L"カメラ・照明・アクセサリのページ：シーンのトラックと各 .x を選べます。"));
 }
 // The field list of the shown entry, and the write-back of both lists into the
 // request.  Selecting an entry includes it; the field list is its
@@ -199,10 +170,8 @@ void SyncFields(HWND d,Context& c,bool includeGroup=true) {
     // mask and then derives the scope from it.
     if(group.kind==channel_bake::Kind::Bones){
         if(selected<=0){
-            // No bone ticked: the entry covers nothing, so the row and the two
-            // switches that touch the bone pools go off together.
+            // No bone ticked: remove the channel without changing the dialog mode.
             SendMessageW(GetDlgItem(d,GroupList),LB_SETSEL,FALSE,static_cast<LPARAM>(c.shown));
-            c.request.keyframes=false;c.request.physics=false;
             c.request.channels.Remove(channel_bake::Kind::Bones,0);
             return;
         }
@@ -213,7 +182,6 @@ void SyncFields(HWND d,Context& c,bool includeGroup=true) {
         SendMessageW(fields,LB_GETSELITEMS,static_cast<WPARAM>(selected),reinterpret_cast<LPARAM>(indices.data()));
         for(const int index:indices)
             if(index>=0&&index<static_cast<int>(choice.fields.size()))choice.fields[static_cast<std::size_t>(index)]=true;
-        c.request.keyframes=true;
         DeriveBoneScope(c,group);
         return;
     }
@@ -314,96 +282,57 @@ void InitAdvanced(HWND d,Context& c) {
     Tip(d,c,BaseRate,Text(c,L"支持 30 或 60 Hz，默认 60 Hz。此设置不改变视频输出帧率。",L"Use 30 or 60 Hz. Default: 60 Hz. This does not change the exported video frame rate.",L"30 または 60 Hz。既定値は 60 Hz。出力動画のフレームレートは変わりません。"));
     FillSettings(d,c);Set(d,Help,c.tips[Erp]);
 }
-// Scope note of the main dialog (id 133).  It has to follow the page, because
-// what a bake can reach depends on it: the model page offers the selected
-// model's own tracks, the camera/light/accessory page the scene-wide tracks and
-// every .x object. Both texts direct geometry and ABC export to the mesh dialog.
-const wchar_t* ScopeNote(Context& c) {
-    if(c.request.channelScope==channel_bake::Scope::Model)
-        return Text(c,
-            L"模型页只烧录当前模型：骨骼、表情与「显示・IK」可在「通道…」中逐项选择。网格烘焙和 ABC 导出请用「烘焙 → 烘焙网格…」。",
-            L"Model page bakes the current model only: bones, morphs and the visibility/IK track are picked item by item in the Channels dialog. Use Baking → Bake mesh for mesh baking and ABC export.",
-            L"モデルページは現在のモデルのみを焼き込みます：ボーン・モーフ・「表示・IK」は「チャンネル…」で個別に選びます。メッシュのベイクと ABC 書き出しには「ベイク → メッシュ焼き込み…」を使います。");
-    return Text(c,
-        L"相机、灯光、附件页烧录场景轨道：相机、灯光、自阴影、重力，以及每个 .x 附件及其子参数。网格烘焙和 ABC 导出请用「烘焙 → 烘焙网格…」。",
-        L"The camera/light/accessory page bakes the scene tracks: camera, light, self shadow, gravity, and every .x object with its own sub-parameters. Use Baking → Bake mesh for mesh baking and ABC export.",
-        L"カメラ・照明・アクセサリのページはシーンのトラックを焼き込みます：カメラ・照明・セルフ影・重力、および各 .x アクセサリとその子パラメータです。メッシュのベイクと ABC 書き出しには「ベイク → メッシュ焼き込み…」を使います。");
-}
-// Resting text of the status line (id 110).  On the model page it describes the
-// simulation the physics and bone options run; on the camera/light/accessory
-// page the optional physics pass writes every loaded model.
-const wchar_t* StatusNote(Context& c) {
-    if(c.request.channelScope==channel_bake::Scope::Model)
-        return Text(c,
-            L"从第 0 帧顺序模拟，写入所选范围并补充物理边界帧；全部模型参与碰撞。",
-            L"Simulates from frame 0, writes keys in the range and physics boundary keys; all models collide.",
-            L"0 フレームから順に計算し、指定範囲と物理境界キーを記録します。全モデルが衝突に参加します。");
-    return Text(c,
-        L"勾选物理烧录可一次记录全场景模型的物理骨骼；场景通道由关键帧烧录选项控制。",
-        L"Physics baking records all models. Bake keyframes controls the selected scene channels.",
-        L"物理焼き込みは全モデルの物理ボーンを記録します。キー焼き込みは選択したシーンチャンネルを記録します。");
+const wchar_t* ScopeNote(const Context& c) {
+    if(IsPhysics(c))return IsModel(c)
+        ?Text(c,L"写入当前模型。场景中的所有模型参与碰撞。",L"Writes to the current model. All scene models participate in collisions.",L"現在のモデルに記録します。全モデルが衝突に参加します。")
+        :Text(c,L"烧录场景中所有模型的物理骨骼。",L"Bakes physics-driven bones on all scene models.",L"シーンの全モデルの物理ボーンを焼き込みます。");
+    return IsModel(c)
+        ?Text(c,L"当前模型：骨骼、表情、显示与 IK。",L"Current model: bones, morphs, visibility and IK.",L"現在のモデル：ボーン・モーフ・表示・IK。")
+        :Text(c,L"场景：相机、灯光、自阴影、重力和附件。",L"Scene: camera, light, self shadow, gravity and accessories.",L"シーン：カメラ・照明・セルフ影・重力・アクセサリ。");
 }
 void InitMain(HWND d,Context& c) {
-    SetWindowTextW(d,Text(c,L"关键帧烧录",L"Keyframe baking",L"キー焼き込み"));
+    SetWindowTextW(d,MainTitle(c));
     Label(d,Text(c,L"起始帧",L"Start frame",L"開始フレーム"),12,16,75);
     Control(d,L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,Start,91,13,65,18);
     Label(d,Text(c,L"结束帧",L"End frame",L"終了フレーム"),169,16,75);
     Control(d,L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,End,250,13,65,18);
     Control(d,L"BUTTON",Text(c,L"末帧",L"Last",L"最終"),WS_TABSTOP|BS_PUSHBUTTON,Last,325,12,40,20);
-    Control(d,L"BUTTON",Text(c,L"物理烧录",L"Bake physics",L"物理焼き込み"),WS_TABSTOP|BS_AUTOCHECKBOX,Physics,12,43,165,16);
-    Control(d,L"BUTTON",Text(c,L"视窗滚动预览",L"Viewport preview",L"ビューポートプレビュー"),WS_TABSTOP|BS_AUTOCHECKBOX,Preview,190,43,175,16);
-    c.request.preview=previewEnabled;
-    CheckDlgButton(d,Preview,c.request.preview?BST_CHECKED:BST_UNCHECKED);
-    Tip(d,c,Preview,Text(c,L"随烘焙进度显示模拟结果。关闭可减少绘制开销，不影响烘焙结果。",L"Shows simulation samples as baking progresses. Turn off to reduce drawing cost without changing the baked result.",L"焼き込みの進行に合わせて計算結果を表示します。無効にすると描画負荷を減らせます。結果は変わりません。"));
-    Control(d,L"BUTTON",Text(c,L"烧录物理设置",L"Physics settings for baking",L"焼き込み用物理演算設定"),BS_GROUPBOX,-1,12,65,353,70);
-    Control(d,L"COMBOBOX",L"",WS_TABSTOP|CBS_DROPDOWNLIST|WS_VSCROLL,Presets,24,84,215,75);
-    SendDlgItemMessageW(d,Presets,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Text(c,L"Bullet 默认",L"Bullet defaults",L"Bullet 既定値")));
-    SendDlgItemMessageW(d,Presets,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(L"MMD 60 Hz"));
-    SendDlgItemMessageW(d,Presets,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Text(c,L"自定义 / 已读取预设",L"Custom / loaded preset",L"カスタム / 読み込み済み")));
-    SendDlgItemMessageW(d,Presets,CB_SETCURSEL,0,0);
-    Control(d,L"BUTTON",Text(c,L"高级设置…",L"Advanced…",L"詳細設定…"),WS_TABSTOP|BS_PUSHBUTTON,Advanced,247,82,106,22);
-    Label(d,c.request.channelScope==channel_bake::Scope::Model?Text(c,L"在独立物理世界中计算，完成后写入当前模型。",L"Simulates separately, then writes keys to the current model.",L"独立した物理ワールドで計算し、現在のモデルに記録します。"):Text(c,L"共用离线物理世界，一次烧录所有模型的物理骨骼。",L"One offline world bakes physics bones on all scene models.",L"共通の物理ワールドで全モデルの物理ボーンを焼き込みます。"),24,111,328,18);
-    Control(d,L"BUTTON",Text(c,L"关键帧烧录",L"Bake keyframes",L"キー焼き込み"),WS_TABSTOP|BS_AUTOCHECKBOX,Keys,12,150,206,16);
-    Control(d,L"BUTTON",Text(c,L"关键帧烧录设置…",L"Keyframe settings…",L"キー焼き込み設定…"),WS_TABSTOP|BS_PUSHBUTTON,Details,225,146,140,23);
-    Control(d,L"STATIC",StatusNote(c),0,Status,12,181,353,28);
-    // Visible scope note of this dialog.  It states what this page can bake and
-    // what belongs to the other entries, so the key bake is never mistaken for
-    // the mesh bake or for the ABC export.
-    Control(d,L"STATIC",ScopeNote(c),0,Info,12,213,353,44);
-    // Channel bake row: the step of the resample, the channel list of the page
-    // the main window shows, and what that list currently holds.
-    Label(d,Text(c,L"步长",L"Step",L"ステップ"),12,265,42);
-    Control(d,L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,Step,56,262,52,18);
-    Control(d,L"STATIC",L"",SS_LEFT,ChannelSummary,120,265,110,16);
-    Label(d,Text(c,L"烘焙方式",L"Bake mode",L"ベイク方法"),236,265,50);
-    Control(d,L"COMBOBOX",L"",WS_DISABLED|CBS_DROPDOWNLIST,Layers,288,258,77,120);
-    SendDlgItemMessageW(d,Layers,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Text(c,L"原生",L"Native",L"標準")));
-    SendDlgItemMessageW(d,Layers,CB_SETCURSEL,0,0);
-    Control(d,L"BUTTON",Text(c,L"通道…",L"Channels…",L"チャンネル…"),WS_TABSTOP|BS_PUSHBUTTON,Channels,12,288,110,22);
-    Control(d,L"STATIC",L"",0,ModeNote,130,288,235,22);
-    Control(d,PROGRESS_CLASSW,L"",0,Bar,12,314,353,12);ShowWindow(GetDlgItem(d,Bar),SW_HIDE);
-    Control(d,L"BUTTON",Text(c,L"开始烧录",L"Start baking",L"焼き込み開始"),WS_TABSTOP|BS_DEFPUSHBUTTON,IDOK,181,338,96,23);
-    Control(d,L"BUTTON",Text(c,L"取消",L"Cancel",L"キャンセル"),WS_TABSTOP|BS_PUSHBUTTON,IDCANCEL,287,338,78,23);
+
+    if(IsPhysics(c)){
+        Control(d,L"BUTTON",Text(c,L"物理设置",L"Physics settings",L"物理演算設定"),BS_GROUPBOX,-1,12,42,353,62);
+        Control(d,L"COMBOBOX",L"",WS_TABSTOP|CBS_DROPDOWNLIST|WS_VSCROLL,Presets,24,56,215,75);
+        SendDlgItemMessageW(d,Presets,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Text(c,L"Bullet 默认",L"Bullet defaults",L"Bullet 既定値")));
+        SendDlgItemMessageW(d,Presets,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(L"MMD 60 Hz"));
+        SendDlgItemMessageW(d,Presets,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(Text(c,L"自定义 / 已读取预设",L"Custom / loaded preset",L"カスタム / 読み込み済み")));
+        SendDlgItemMessageW(d,Presets,CB_SETCURSEL,0,0);
+        Control(d,L"BUTTON",Text(c,L"高级设置…",L"Advanced…",L"詳細設定…"),WS_TABSTOP|BS_PUSHBUTTON,Advanced,247,54,106,22);
+        Control(d,L"BUTTON",Text(c,L"视窗滚动预览",L"Viewport preview",L"ビューポートプレビュー"),WS_TABSTOP|BS_AUTOCHECKBOX,Preview,24,80,329,16);
+        CheckDlgButton(d,Preview,c.request.preview?BST_CHECKED:BST_UNCHECKED);
+        Tip(d,c,Preview,Text(c,L"随烘焙进度显示模拟结果。关闭预览不影响烧录结果。",L"Shows simulation samples as baking progresses. Turning preview off does not change the baked result.",L"焼き込みの進行に合わせて計算結果を表示します。無効にしても結果は変わりません。"));
+        Tip(d,c,Presets,Text(c,L"Bullet 默认使用 ERP 0.2、CFM 0、1 个子步和 60 Hz。MMD 60 Hz 采用同样频率，不保证与原版运动结果逐位一致。",L"Bullet defaults: ERP 0.2, CFM 0, one substep, 60 Hz. MMD 60 Hz uses the same rate; motion is not guaranteed to match MMD bit for bit.",L"Bullet 既定値：ERP 0.2、CFM 0、サブステップ 1、60 Hz。MMD とのビット単位の一致は保証しません。"));
+        Control(d,L"BUTTON",IsModel(c)
+            ?Text(c,L"同时重采样骨骼关键帧",L"Also resample bone keys",L"ボーンキーも再サンプリング")
+            :Text(c,L"同时重采样场景通道",L"Also resample scene channels",L"シーンチャンネルも再サンプリング"),
+            WS_TABSTOP|BS_AUTOCHECKBOX,Keys,12,130,353,16);
+    }
+    const int y=OptionsRow(c.kind);
+    Control(d,L"STATIC",ScopeNote(c),0,Info,12,IsPhysics(c)?111:43,353,16);
+    Label(d,Text(c,L"步长",L"Step",L"ステップ"),12,y+4,42);
+    Control(d,L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,Step,56,y+1,52,18);
+    Control(d,L"BUTTON",Text(c,L"通道…",L"Channels…",L"チャンネル…"),WS_TABSTOP|BS_PUSHBUTTON,Channels,120,y,110,22);
+    if(IsModel(c))Control(d,L"BUTTON",Text(c,L"骨骼范围…",L"Bone scope…",L"ボーンの範囲…"),
+        WS_TABSTOP|BS_PUSHBUTTON,Details,240,y,125,22);
+    Control(d,L"STATIC",L"",SS_LEFT,ChannelSummary,12,y+28,353,16);
+    Control(d,L"STATIC",L"",SS_LEFT,Status,12,y+50,353,14);
+    HWND bar=Control(d,PROGRESS_CLASSW,L"",0,Bar,12,y+66,353,10);
+    ShowWindow(bar,SW_HIDE);
+    Control(d,L"BUTTON",Text(c,L"开始烧录",L"Start baking",L"焼き込み開始"),WS_TABSTOP|BS_DEFPUSHBUTTON,IDOK,181,y+86,96,23);
+    Control(d,L"BUTTON",Text(c,L"取消",L"Cancel",L"キャンセル"),WS_TABSTOP|BS_PUSHBUTTON,IDCANCEL,287,y+86,78,23);
     Set(d,Start,std::to_wstring(c.request.firstFrame));Set(d,End,std::to_wstring(c.request.lastFrame));
     Set(d,Step,std::to_wstring(c.request.step));
-    // Scene physics is opt-in; the keyframe switch controls scene channels.
-    const bool modelPage=c.request.channelScope==channel_bake::Scope::Model;
-    c.request.physics=modelPage;
-    CheckDlgButton(d,Physics,modelPage?BST_CHECKED:BST_UNCHECKED);
-    // The bone row follows whichever switch touches the bone pools, and its
-    // sub-parameters are the bones themselves, so the picker is usable straight
-    // from the start of a model-page bake.
-    SyncBones(c,c.request.keyframes,modelPage?BonesGroup(c.groups):nullptr);
-    CheckDlgButton(d,Keys,(modelPage?c.request.keyframes:c.sceneKeyframes)?BST_CHECKED:BST_UNCHECKED);
-    Tip(d,c,Keys,modelPage
-        ?Text(c,L"逐帧重采样当前模型的骨骼动画，保留 IK 和表情轨道。物理烧录优先写入物理骨骼。",L"Resamples the model's bone animation every frame, preserving IK and morph tracks. Physics baking takes priority for physics bones.",L"ボーンアニメーションを毎フレーム再サンプリングします。IK とモーフのトラックは保持します。")
-        :Text(c,L"按步长重采样已选择的相机、灯光、附件等场景通道。",L"Resamples the selected camera, light, accessory and other scene channels at the chosen step.",L"選択したカメラ・照明・アクセサリなどのシーンチャンネルを指定間隔で再サンプリングします。"));
-    Tip(d,c,Step,Text(c,L"每几个帧记录一个关键帧，最小为 1。范围外的关键帧与未选择的轨道不会被改动；离散通道始终按 Step 保留。",L"One key every this many frames, minimum 1. Keys outside the range and unselected tracks are left alone; discrete channels stay on Step keys.",L"この間隔でキーを記録します（最小 1）。範囲外のキーと未選択のトラックは変更しません。離散チャンネルは Step のままです。"));
-    Tip(d,c,Channels,Text(c,L"选择本次要烧录的通道与子参数。列表跟随当前页面：模型页只作用于当前模型，相机、灯光、附件页提供场景轨道与每个 .x 附件。",L"Choose the channels and sub-parameters of this bake. The list follows the current page: the model page covers the current model only, the camera/light/accessory page offers the scene tracks and every .x object.",L"今回焼き込むチャンネルと子パラメータを選びます。一覧は現在のページに従います。"));
+    Tip(d,c,Step,Text(c,L"每隔多少帧记录一个关键帧，最小为 1。",L"Frames between recorded keys, at least 1.",L"キーを記録する間隔（最小 1）。"));
     RefreshChannels(d,c);
-    // Scene channels remain usable even when no model has physics.
     EnableInputs(d,c,true);
-    Tip(d,c,Presets,Text(c,L"Bullet 默认使用 ERP 0.2、CFM 0、1 个子步和 60 Hz。MMD 60 Hz 采用同样频率，不保证与原版运动结果逐位一致。",L"Bullet defaults: ERP 0.2, CFM 0, one substep, 60 Hz. MMD 60 Hz uses the same rate; motion is not guaranteed to match MMD bit for bit.",L"Bullet 既定値：ERP 0.2、CFM 0、サブステップ 1、60 Hz。MMD とのビット単位の一致は保証しません。"));
 }
 // Channel selection dialog.  Two native multi-select lists: the left one holds
 // the channels of the current page, the right one the sub-parameters of the
@@ -412,9 +341,9 @@ void InitMain(HWND d,Context& c) {
 void InitChannels(HWND d,Context& c) {
     SetWindowTextW(d,Text(c,L"烧录通道",L"Channels to bake",L"焼き込むチャンネル"));
     Control(d,L"STATIC",Text(c,
-        L"左栏选择要烧录的通道，右栏选择该通道的子参数；范围与步长在主对话框设置。模型页的骨骼通道可逐只勾选；取消骨骼行会同时关闭物理烧录与关键帧烧录。",
-        L"Pick the channels on the left and their sub-parameters on the right; the range and the step come from the bake window. On the model page every bone can be ticked individually, and turning the bone row off switches both physics baking and keyframe baking off.",
-        L"左の一覧でチャンネル、右の一覧でその子パラメータを選びます。範囲とステップは元の画面で指定します。モデルページではボーンを 1 本ずつ選べます。ボーン行を外すと物理焼き込みとキー焼き込みの両方が切れます。"),
+        L"左栏选择通道，右栏选择该通道的子参数或单根骨骼。",
+        L"Choose a channel on the left, then its parameters or individual bones on the right.",
+        L"左でチャンネルを、右でパラメータやボーンを選びます。"),
         0,ChannelNote,12,10,416,26);
     Label(d,Text(c,L"通道",L"Channels",L"チャンネル"),12,42,200,12);
     Label(d,Text(c,L"子参数",L"Sub-parameters",L"子パラメータ"),236,42,192,12);
@@ -464,24 +393,12 @@ void InitClear(HWND d,Context& c) {
     Control(d,L"BUTTON",Text(c,L"取消",L"Cancel",L"キャンセル"),WS_TABSTOP|BS_PUSHBUTTON,IDCANCEL,287,110,78,23);
     EnableWindow(GetDlgItem(d,IDOK),current||!mesh_bake_cache::Empty()?TRUE:FALSE);
 }
-bool ScenePhysicsAvailable(MMDApp& app) {
-    if(!app.Physics()||!app.Physics()->world)return false;
-    for(int slot=0;slot<kModelSlotCount;++slot)if(auto* raw=app.ModelSlot(slot)){
-        const auto& m=*mdl::Mdl(raw);
-        for(unsigned i=0;m.rigidTable&&i<m.rigidCount;++i){const auto& r=m.rigidTable[i];
-            if(!r.staticFlag&&r.body&&r.boneIndex>=0&&unsigned(r.boneIndex)<m.boneCount&&m.boneTable&&m.boneTable[r.boneIndex].hasRigidBody)return true;
-        }
-    }
-    return false;
-}
-// Scene physics uses every loaded model; scene keyframes use the channel picker.
 void EnableInputs(HWND d,Context& c,bool enabled) {
-    EnableWindow(GetDlgItem(d,Preview),enabled);
-    const bool model=c.request.channelScope==channel_bake::Scope::Model;
-    for(int id:{Start,End,Last,Step,Keys,Channels,IDOK})EnableWindow(GetDlgItem(d,id),enabled);
-    for(int id:{Physics,Presets,Advanced})EnableWindow(GetDlgItem(d,id),enabled&&(model||ScenePhysicsAvailable(*c.app)));
-    EnableWindow(GetDlgItem(d,Details),enabled&&(model||c.sceneKeyframes));
-    EnableWindow(GetDlgItem(d,Layers),FALSE);
+    const auto enable=[&](int id,bool on){if(HWND child=GetDlgItem(d,id))EnableWindow(child,enabled&&on);};
+    for(int id:{Start,End,Last,Step,Preview,Presets,Advanced,IDOK})enable(id,true);
+    enable(Keys,IsModel(c)||!c.groups.empty());
+    enable(Details,BonesGroup(c.groups)!=nullptr);
+    enable(Channels,!c.groups.empty()&&(!IsPhysics(c)||IsModel(c)||c.sceneKeyframes));
 }
 const wchar_t* BakeError(Context& c,Error e){switch(e){
     case Error::NoBones:return Text(c,L"没有可烧录的骨骼。请检查模型、所选骨骼及烧录选项。",L"No bones to bake. Check the model, bone selection, and bake options.",L"焼き込むボーンがありません。モデル、選択と設定を確認してください。");
@@ -496,19 +413,21 @@ void Run(HWND d,Context& c) {
     if(!Integer(d,Step,c.request.step)||c.request.step<1||c.request.step>frame_limits::maximum){
         ErrorBox(d,c,Text(c,L"步长须为有效的正整数。",L"Use a valid positive integer step.",L"ステップは有効な正の整数を入力してください。"));return;
     }
-    // Scene physics collects every model independently of the selected page.
-    const bool modelPage=c.request.channelScope==channel_bake::Scope::Model;
-    if(!modelPage)c.sceneKeyframes=IsDlgButtonChecked(d,Keys)==BST_CHECKED;
-    c.request.physics=IsDlgButtonChecked(d,Physics)==BST_CHECKED;
+    const bool modelPage=IsModel(c);
+    c.request.physics=IsPhysics(c);
     const bool scenePhysics=!modelPage&&c.request.physics;
+    c.sceneKeyframes=!modelPage&&(!c.request.physics||IsDlgButtonChecked(d,Keys)==BST_CHECKED);
     const auto* bones=modelPage?BonesGroup(c.groups):nullptr;
-    SyncBones(c,modelPage&&IsDlgButtonChecked(d,Keys)==BST_CHECKED,bones);
+    const bool bonesIncluded=bones&&GroupIncluded(c,*bones);
+    c.request.keyframes=bonesIncluded&&(!c.request.physics||IsDlgButtonChecked(d,Keys)==BST_CHECKED);
+    if(c.request.physics&&modelPage&&!bonesIncluded){ErrorBox(d,c,BakeError(c,Error::NoBones));return;}
+    if(bonesIncluded)DeriveBoneScope(c,*bones);
     // The picker is resolved into a concrete bone list and handed to Compute, so
     // the bone transaction and the per-bone FX keys cover exactly the ticked
     // bones - physics only included.  An explicit list supersedes the coarse
     // "selected bones only" switch, which would otherwise intersect two
     // different notions of the target set.
-    if(bones&&(c.request.keyframes||c.request.physics)){
+    if(bonesIncluded){
         std::vector<int> targets;std::wstring boneMessage;
         const channel_bake::Error resolved=channel_bake::ResolveBones(*c.app,c.request.channels,targets,boneMessage);
         if(resolved!=channel_bake::Error::None){
@@ -524,7 +443,7 @@ void Run(HWND d,Context& c) {
         }
     }
     const bool channels=(modelPage||c.sceneKeyframes)&&!c.request.channels.Empty();
-    if(!c.request.physics&&!c.request.keyframes&&!channels){ErrorBox(d,c,Text(c,L"请选择至少一种烧录方式。",L"Select at least one baking option.",L"焼き込み方法を選択してください。"));return;}
+    if(!c.request.physics&&!c.request.keyframes&&!channels){ErrorBox(d,c,Text(c,L"请至少选择一个通道。",L"Select at least one channel to bake.",L"焼き込むチャンネルを 1 つ以上選択してください。"));return;}
     bool existing=HasExistingKeys(c.app->SelectedModel(),c.request);
     if(scenePhysics){Request all=c.request;all.selectedOnly=false;all.boneCoverage=channel_bake::Coverage::Whole;all.boneIndices.clear();
         existing=false;for(int slot=0;slot<kModelSlotCount;++slot)if(auto* raw=c.app->ModelSlot(slot))existing=HasExistingKeys(raw,all)||existing;
@@ -564,7 +483,9 @@ void Run(HWND d,Context& c) {
         Result result;SceneResult sceneResult;
         const auto progress=[&](int frame,int last){
             SendDlgItemMessageW(d,Bar,PBM_SETRANGE32,0,std::max(1,last));SendDlgItemMessageW(d,Bar,PBM_SETPOS,frame,0);
-            Set(d,Status,std::wstring(Text(c,L"模拟帧：",L"Simulating frame: ",L"計算中："))+std::to_wstring(frame)+L" / "+std::to_wstring(last));
+            const auto prefix=c.request.physics?Text(c,L"模拟帧：",L"Simulating frame: ",L"計算中：")
+                                               :Text(c,L"采样帧：",L"Sampling frame: ",L"サンプリング中：");
+            Set(d,Status,std::wstring(prefix)+std::to_wstring(frame)+L" / "+std::to_wstring(last));
             MSG msg{};while(PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) {
                 if(msg.message==WM_QUIT){c.cancel=true;PostQuitMessage(static_cast<int>(msg.wParam));break;}
                 if(!IsDialogMessageW(d,&msg)){TranslateMessage(&msg);DispatchMessageW(&msg);}
@@ -628,19 +549,31 @@ INT_PTR CALLBACK Proc(HWND d,UINT msg,WPARAM wp,LPARAM lp) {
         if(c->clear)InitClear(d,*c);
         else if(c->advanced)InitAdvanced(d,*c);
         else if(c->channels)InitChannels(d,*c);
-        else if(c->details){SetWindowTextW(d,Text(*c,L"关键帧烧录设置",L"Keyframe baking settings",L"キー焼き込み設定"));
-            Control(d,L"BUTTON",Text(*c,L"只烧录选中的骨骼（也应用于物理烧录）",L"Bake selected bones only (also applies to physics)",L"選択ボーンのみ（物理焼き込みにも適用）"),WS_TABSTOP|BS_AUTOCHECKBOX,Selected,12,15,353,18);
+        else if(c->details){
+            SetWindowTextW(d,Text(*c,L"骨骼范围",L"Bone scope",L"ボーンの範囲"));
+            Control(d,L"BUTTON",Text(*c,L"只烧录当前选中的骨骼",L"Bake selected bones only",L"選択したボーンだけを焼き込む"),WS_TABSTOP|BS_AUTOCHECKBOX,Selected,12,15,353,18);
             CheckDlgButton(d,Selected,c->request.selectedOnly?BST_CHECKED:BST_UNCHECKED);
-            Label(d,Text(*c,L"按主窗口步长采样。未勾选的轨道保持原样，不自动精简关键帧。",L"Samples at the main window step. Unchecked tracks are preserved; keys are not simplified.",L"メイン画面のステップで記録。未選択のトラックは保持し、キー削減は行いません。"),12,43,353,28);
+            Label(d,Text(*c,L"在「通道…」中逐根指定骨骼时，使用通道中的选择。",L"An explicit bone list in Channels takes precedence.",L"「チャンネル…」で個別に指定したボーンが優先されます。"),12,43,353,24);
             Control(d,L"BUTTON",Text(*c,L"确定",L"OK",L"OK"),WS_TABSTOP|BS_DEFPUSHBUTTON,IDOK,199,88,78,22);
             Control(d,L"BUTTON",Text(*c,L"取消",L"Cancel",L"キャンセル"),WS_TABSTOP|BS_PUSHBUTTON,IDCANCEL,287,88,78,22);
         }else InitMain(d,*c);return TRUE;}
     if(!c)return FALSE;
+    if(!c->clear&&msg==WM_CTLCOLORDLG)return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_3DFACE));
+    if(!c->clear&&msg==WM_CTLCOLORSTATIC){
+        wchar_t cls[16]{};
+        GetClassNameW(reinterpret_cast<HWND>(lp),cls,static_cast<int>(std::size(cls)));
+        if(!_wcsicmp(cls,L"STATIC")){
+            auto dc=reinterpret_cast<HDC>(wp);
+            SetTextColor(dc,GetSysColor(COLOR_BTNTEXT));
+            SetBkColor(dc,GetSysColor(COLOR_3DFACE));
+            return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_3DFACE));
+        }
+    }
     if(msg==WM_CLOSE){if(c->running)c->cancel=true;else EndDialog(d,IDCANCEL);return TRUE;}
     if(msg==WM_COMMAND){const int id=LOWORD(wp),code=HIWORD(wp);
         if(id==IDCANCEL){if(c->running)c->cancel=true;else EndDialog(d,IDCANCEL);return TRUE;}
         if(c->running)return TRUE;
-        if(id==Preview&&code==BN_CLICKED){
+        if(id==Preview&&code==BN_CLICKED&&GetDlgItem(d,Preview)){
             previewEnabled=c->request.preview=IsDlgButtonChecked(d,Preview)==BST_CHECKED;
             return TRUE;
         }
@@ -699,36 +632,33 @@ INT_PTR CALLBACK Proc(HWND d,UINT msg,WPARAM wp,LPARAM lp) {
         }else if(c->details){if(id==IDOK){c->request.selectedOnly=IsDlgButtonChecked(d,Selected)==BST_CHECKED;EndDialog(d,IDOK);return TRUE;}}
         else {
             if(id==Last){Set(d,End,std::to_wstring(channel_bake::SceneLastFrame(*c->app)));return TRUE;}
-            if(id==Keys&&code==BN_CLICKED){
-                // The keyframe switch and the bone row of the selector are one
-                // decision, so the summary line follows the checkbox.
-                if(c->request.channelScope==channel_bake::Scope::Model)
-                    SyncBones(*c,IsDlgButtonChecked(d,Keys)==BST_CHECKED,BonesGroup(c->groups));
-                else c->sceneKeyframes=IsDlgButtonChecked(d,Keys)==BST_CHECKED;
+            if(id==Keys&&code==BN_CLICKED&&IsPhysics(*c)){
+                if(!IsModel(*c))c->sceneKeyframes=IsDlgButtonChecked(d,Keys)==BST_CHECKED;
                 RefreshChannels(d,*c);
                 EnableInputs(d,*c,true);
                 return TRUE;
             }
-            if(id==Physics&&code==BN_CLICKED){
-                // Physics touches the bone pools too, so it keeps the bone row
-                // (and its per-bone picker) alive on its own.
-                c->request.physics=IsDlgButtonChecked(d,Physics)==BST_CHECKED;
-                if(c->request.channelScope==channel_bake::Scope::Model)SyncBones(*c,c->request.keyframes,BonesGroup(c->groups));
-                RefreshChannels(d,*c);
+            if(IsPhysics(*c)&&id==Presets&&code==CBN_SELCHANGE){
+                const int selected=static_cast<int>(SendDlgItemMessageW(d,Presets,CB_GETCURSEL,0,0));
+                if(selected>=0&&selected<2){c->request.settings=BulletDefaults();if(selected==1)c->request.settings.name=L"MMD 60 Hz";}
                 return TRUE;
             }
-            if(id==Presets&&code==CBN_SELCHANGE){int selected=static_cast<int>(SendDlgItemMessageW(d,Presets,CB_GETCURSEL,0,0));if(selected<2){c->request.settings=BulletDefaults();if(selected==1)c->request.settings.name=L"MMD 60 Hz";}return TRUE;}
-            if(id==Advanced||(id==Details&&c->request.channelScope==channel_bake::Scope::Model)){Context child;child.app=c->app;child.request=c->request;child.advanced=id==Advanced;child.details=id==Details;child.groups=c->groups;
-                if(Dialog(d,child,child.advanced?314:122)==IDOK){c->request=child.request;if(child.advanced)SendDlgItemMessageW(d,Presets,CB_SETCURSEL,2,0);}return TRUE;}
-            if(id==Channels||id==Details){Context child;child.app=c->app;child.request=c->request;child.channels=true;child.groups=c->groups;
-                if(Dialog(d,child,330)==IDOK){
+            if((id==Advanced&&IsPhysics(*c))||(id==Details&&IsModel(*c)&&BonesGroup(c->groups))){
+                Context child;child.app=c->app;child.request=c->request;child.kind=c->kind;
+                child.advanced=id==Advanced;child.details=id==Details;
+                if(Dialog(d,child,child.advanced?314:122)==IDOK){
                     c->request=child.request;
-                    // The bone row, its per-bone picker and the two switches that
-                    // touch the bone pools are one state; show it as it now is.
-                    CheckDlgButton(d,Keys,(c->request.channelScope==channel_bake::Scope::Model?c->request.keyframes:c->sceneKeyframes)?BST_CHECKED:BST_UNCHECKED);
-                    CheckDlgButton(d,Physics,c->request.physics?BST_CHECKED:BST_UNCHECKED);
+                    if(child.advanced)SendDlgItemMessageW(d,Presets,CB_SETCURSEL,2,0);
+                    if(const auto* bones=BonesGroup(c->groups);bones&&GroupIncluded(*c,*bones))DeriveBoneScope(*c,*bones);
                     RefreshChannels(d,*c);
-                }return TRUE;}
+                }
+                return TRUE;
+            }
+            if(id==Channels&&IsWindowEnabled(GetDlgItem(d,Channels))){
+                Context child;child.app=c->app;child.request=c->request;child.kind=c->kind;child.channels=true;child.groups=c->groups;
+                if(Dialog(d,child,330)==IDOK){c->request=child.request;RefreshChannels(d,*c);}
+                return TRUE;
+            }
             if(id==IDOK){Run(d,*c);return TRUE;}
         }
     }
@@ -736,7 +666,7 @@ INT_PTR CALLBACK Proc(HWND d,UINT msg,WPARAM wp,LPARAM lp) {
     return FALSE;
 }
 }
-// The three baking commands share one top-level popup that sits directly to the
+// The baking commands share one top-level popup that sits directly to the
 // left of the Help popup, in every language.  Help is located through one of its
 // stable original commands, never through a fixed index: inserting in front of
 // Help is exactly what moves Help one slot to the right.
@@ -752,8 +682,7 @@ INT_PTR CALLBACK Proc(HWND d,UINT msg,WPARAM wp,LPARAM lp) {
 // RefreshMenuLanguage in src/window/enhance_model_io.cpp, the startup state of
 // that submenu in src/window/ui_init.cpp, and SetPhysicsMenuState in
 // src/window/ui_model_reload.cpp.  Keep new lookups on that command too, because
-// GetSubMenu(menu, 7) now returns this popup, whose item 2 is a command and not
-// a submenu.  No caller parks this popup any more: RefreshMenuLanguage ends by
+// GetSubMenu(menu, 7) now returns this popup rather than Help.  No caller parks this popup any more: RefreshMenuLanguage ends by
 // calling this function, which leaves the popup in front of Help for the whole
 // pass.
 namespace {
@@ -785,70 +714,75 @@ int HelpMenuPosition(HMENU menu) {
     }
     return -1;
 }
-void PutCommand(HMENU popup,unsigned id,const wchar_t* text,UINT state) {
+void PutCommand(HMENU popup,unsigned id,const wchar_t* text,UINT state,int position=-1) {
     MENUITEMINFOW info{sizeof info};info.fMask=MIIM_ID|MIIM_STRING|MIIM_STATE;
     info.wID=id;info.dwTypeData=const_cast<wchar_t*>(text);info.fState=state;
     MENUITEMINFOW old{sizeof old};old.fMask=MIIM_ID;
     if(GetMenuItemInfoW(popup,id,FALSE,&old))SetMenuItemInfoW(popup,id,FALSE,&info);
-    else InsertMenuItemW(popup,GetMenuItemCount(popup),TRUE,&info);
+    else InsertMenuItemW(popup,position<0?GetMenuItemCount(popup):position,TRUE,&info);
 }
-// True when the bake options of this dialog can reach at least one bone of
-// `model`.  This mirrors the target selection of bake::Compute with both bake
-// modes enabled: the dialog requires physics, keyframes, or both, so the entry
-// and the dialog may only be offered when some mode has a bone to write.
-bool HasBakeTargets(const mdl::ModelRecord& model) {
-    if(!model.boneTable || !model.boneKeys || model.boneCount==0)return false;
-    for(unsigned bone=0;bone<model.boneCount;++bone) {
-        const auto& record=model.boneTable[bone];
-        if(record.type!=mdl::BoneType::InertTip)return true;  // keyframe resampling
-        if(!record.hasRigidBody || !model.rigidTable)continue;
-        for(unsigned rigid=0;rigid<model.rigidCount;++rigid) {
-            const auto& body=model.rigidTable[rigid];
-            if(body.boneIndex==static_cast<int>(bone) && !body.staticFlag && body.body)return true;
-        }
+bool HasBonePool(const mdl::ModelRecord& model) {
+    return model.boneTable&&model.boneKeys&&model.boneCount>0;
+}
+bool HasKeyframeTargets(const mdl::ModelRecord& model) {
+    if(!HasBonePool(model))return false;
+    for(unsigned bone=0;bone<model.boneCount;++bone)
+        if(model.boneTable[bone].type!=mdl::BoneType::InertTip)return true;
+    return false;
+}
+bool HasPhysicsTargets(const mdl::ModelRecord& model) {
+    if(!HasBonePool(model)||!model.rigidTable)return false;
+    for(unsigned i=0;i<model.rigidCount;++i){
+        const auto& body=model.rigidTable[i];
+        if(!body.staticFlag&&body.body&&body.boneIndex>=0&&unsigned(body.boneIndex)<model.boneCount&&
+           model.boneTable[body.boneIndex].hasRigidBody)return true;
     }
     return false;
 }
-// The scene-wide tracks live in their own arrays and need no model at all, so
-// the camera/light/accessory page can bake with an empty scene.  The pools are
-// allocated by the new-scene pass, so their absence means there is nothing to
-// resample yet.
-bool SceneTracksAvailable(MMDApp* app) {
-    return app && (app->CameraKeys() || app->LightKeys() || app->ShadowKeys() || app->GravityKeys());
+bool SceneTracksAvailable(MMDApp& app) {
+    if(app.CameraKeys()||app.LightKeys()||app.ShadowKeys()||app.GravityKeys())return true;
+    for(int slot=0;slot<255;++slot)if(app.AccessorySlot(slot))return true;
+    return false;
 }
-// One gate for the "Bake mesh..." entry and for a directly dispatched command:
-// the mesh bake writes a scene cache and stages FX keys, so it may only start
-// while the scene is idle (nothing playing, no recording window, no export in
-// flight, no bake holding the interface lock) and a scene object exists.
-// Whichever sources it offers, and how it stages FX 0/1 keys, belongs to
-// alembic_export; nothing here runs a local Bullet simulation for it.
+bool CanOpenBake(MMDApp* app,BakeKind kind) {
+    if(!app||UiLocked()||app->PlaybackActive()||app->RecordingWindow()||alembic_export::IsExporting())return false;
+    const bool physics=kind==BakeKind::Physics;
+    if(physics&&(!app->Physics()||!app->Physics()->world))return false;
+    if(channel_bake::CurrentScope(*app)==channel_bake::Scope::Scene){
+        if(!physics)return SceneTracksAvailable(*app); // Scene tracks need no model.
+        for(int slot=0;slot<kModelSlotCount;++slot)
+            if(auto* model=app->ModelSlot(slot);model&&HasPhysicsTargets(*mdl::Mdl(model)))return true;
+        return false;
+    }
+    // As before, don't change live model keys while its mesh cache owns the
+    // displayed result. Scene-scope behavior and mesh bake stay independent.
+    const auto* selected=app->SelectedModel();
+    if(!selected||mesh_bake_cache::Has(selected))return false;
+    return physics?HasPhysicsTargets(*mdl::Mdl(selected)):HasKeyframeTargets(*mdl::Mdl(selected));
+}
+// One gate for the "Bake mesh..." entry and for a directly dispatched command.
 bool CanBakeMesh(MMDApp* app) {
     return app && !UiLocked() && alembic_export::CanExport(app);
 }
+void ShowBakeDialog(MMDApp* app,BakeKind kind) {
+    if(!CanOpenBake(app,kind))return;
+    Context c;c.app=app;c.kind=kind;c.request.settings=BulletDefaults();
+    c.request.physics=IsPhysics(c);
+    c.request.preview=c.request.physics&&previewEnabled;
+    c.request.channelScope=channel_bake::CurrentScope(*app);
+    c.sceneKeyframes=!IsModel(c)&&!c.request.physics;
+    c.request.firstFrame=std::max(0,app->CurrentFrame());
+    c.request.lastFrame=std::max(c.request.firstFrame,channel_bake::SceneLastFrame(*app));
+    std::wstring message;
+    if(channel_bake::Enumerate(*app,c.request.channelScope,c.groups,message)!=channel_bake::Error::None)
+        c.groups.clear();
+    channel_bake::DefaultSelection(*app,c.request.channelScope,c.groups,c.request.channels);
+    c.request.keyframes=IsModel(c)&&!c.request.physics;
+    c.request.step=1;
+    Dialog(app->MainWindow(),c,MainHeight(kind));
 }
-bool CanBake(MMDApp* app){
-    if(!app||UiLocked())return false;
-    if(channel_bake::CurrentScope(*app)==channel_bake::Scope::Scene){
-        if(!SceneTracksAvailable(app)&&!ScenePhysicsAvailable(*app))return false;
-        // With an object in the scene, CanExport carries every idle gate,
-        // including the ABC export in flight.  Without one an export cannot be
-        // running at all - Export refuses an empty scene - so only the playback
-        // and recording gates have to be repeated here.
-        if(alembic_export::CanExport(app))return true;
-        return !app->PlaybackActive() && !app->RecordingWindow();
-    }
-    // Model page: unchanged.  CanExport already refuses playback, a recording
-    // window and an ABC export in flight, and requires a selected model whose
-    // bones can be targeted.
-    if(!alembic_export::CanExport(app))return false;
-    auto* selected=app->SelectedModel();
-    if(!selected)return false;
-    // With a baked mesh cache the picture comes from the cached geometry, so
-    // baking the live bones would rewrite the motion while the view stays
-    // identical.  "Clear mesh bake" is the way out of that state.
-    if(mesh_bake_cache::Has(selected))return false;
-    return HasBakeTargets(*mdl::Mdl(selected));
 }
+bool CanBake(MMDApp* app){return CanOpenBake(app,BakeKind::Keyframes);}
 void RefreshMenu(MMDApp* app){
     if(!app||!app->MainWindow())return;HMENU menu=GetMenu(app->MainWindow());if(!menu)return;
     // The legacy entry is removed inside the Edit popup only, so an adapter
@@ -883,15 +817,11 @@ void RefreshMenu(MMDApp* app){
     }
     MENUITEMINFOW caption{sizeof caption};caption.fMask=MIIM_STRING;caption.dwTypeData=const_cast<wchar_t*>(title);
     SetMenuItemInfoW(menu,kBakingMenuId,FALSE,&caption);
-    // The entry and the dialog share CanBake, so what the menu shows is what
-    // ShowDialog accepts.  Keeping the caption is deliberate: the command
-    // bakes the resampled model animation, physics baking included.
     PutCommand(baking,kBakeMenuCommand,Text(c,L"烧录关键帧…",L"Bake keyframes…",L"キー焼き込み…"),
         CanBake(app)?MFS_ENABLED:MFS_DISABLED);
-    // The interface lock owns the thread while a bake runs: Export and Clear
-    // are refused then too, because both would write into the scene the running
-    // bake is about to commit.
-    // Remove the former duplicate entry even from an already-created popup.
+    PutCommand(baking,kBakePhysicsMenuCommand,Text(c,L"烧录物理…",L"Bake physics…",L"物理焼き込み…"),
+        CanOpenBake(app,BakeKind::Physics)?MFS_ENABLED:MFS_DISABLED,1);
+    // Mesh baking still owns optional ABC export; don't recreate the old peer.
     DeleteMenu(baking,kExportMenuCommand,MF_BYCOMMAND);
     // Mesh baking and optional ABC export share this dialog.
     PutCommand(baking,kBakeMeshMenuCommand,Text(c,L"烘焙网格…",L"Bake mesh…",L"メッシュ焼き込み…"),
@@ -903,28 +833,7 @@ void RefreshMenu(MMDApp* app){
     PutCommand(baking,kClearMeshBakeMenuCommand,Text(c,L"清除网格烧录…",L"Clear mesh bake…",L"ベイク解除…"),
         !UiLocked() && !mesh_bake_cache::Empty() && alembic_export::CanExport(app)?MFS_ENABLED:MFS_DISABLED);
 }
-void ShowDialog(MMDApp* app){
-    if(!CanBake(app))return;
-    Context c;c.app=app;c.request.settings=BulletDefaults();c.request.preview=previewEnabled;
-    // The channel list follows the page the main window shows, and the range
-    // starts where the timeline is.  The last-frame button and the default end
-    // frame cover the scene timeline, including model animation even when the
-    // camera or accessory page has only frame-zero keys.
-    c.request.channelScope=channel_bake::CurrentScope(*app);
-    c.request.firstFrame=std::max(0,app->CurrentFrame());
-    c.request.lastFrame=std::max(c.request.firstFrame,channel_bake::SceneLastFrame(*app));
-    std::wstring message;
-    if(channel_bake::Enumerate(*app,c.request.channelScope,c.groups,message)!=channel_bake::Error::None)
-        c.groups.clear();
-    channel_bake::DefaultSelection(*app,c.request.channelScope,c.groups,c.request.channels);
-    // A fresh dialog starts with the bone channel off, exactly as before: the
-    // "Bake keyframes" checkbox owns that switch, and Run syncs the scope of
-    // whatever the source lists selected back into the selection.
-    c.request.channels.Remove(channel_bake::Kind::Bones,0);
-    c.request.keyframes=false;
-    c.request.step=1;
-    Dialog(app->MainWindow(),c,372);
-}
+void ShowDialog(MMDApp* app){ShowBakeDialog(app,BakeKind::Keyframes);}
 // The scope dialog stays reachable with an empty cache so the disabled scopes
 // remain visible, but an export in flight must refuse it outright.
 void ClearMeshBakeDialog(MMDApp* app){
@@ -933,6 +842,7 @@ void ClearMeshBakeDialog(MMDApp* app){
 }
 bool HandleCommand(MMDApp* app,unsigned command){
     if(command==kBakeMenuCommand){ShowDialog(app);return true;}
+    if(command==kBakePhysicsMenuCommand){ShowBakeDialog(app,BakeKind::Physics);return true;}
     if(command==kExportMenuCommand){alembic_export::ShowDialog(app);return true;}
     // The mesh bake dialog belongs to alembic_export; it is refused here with
     // the same gate the menu entry uses, so a stale menu or a shortcut can never

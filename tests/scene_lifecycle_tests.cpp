@@ -9,6 +9,8 @@
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/sequence_scatter.hpp"
+#include "mikumikustudio/negative_frames.hpp"
+#include "mikumikustudio/native_edit_history.hpp"
 #include "mikumikustudio/morph_curve.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/effect_api.hpp"

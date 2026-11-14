@@ -14,6 +14,8 @@ struct State {
     int rate = 0;
     bool started = false;
     bool ready = false;
+    bool playbackSampleValid = false;
+    double playbackSample = 0;
 
     bool Tick(double now) {
         if (!started || now < epoch) {
@@ -26,7 +28,7 @@ struct State {
         epoch = now; elapsed = 0; frames = 0;
         return true;
     }
-    void Begin() { ready = false; }
+    void Begin() { ready = false; playbackSampleValid = false; }
     void Complete() { ready = true; }
     bool Present(bool success) {
         const bool count = ready && success;

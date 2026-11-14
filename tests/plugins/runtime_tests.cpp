@@ -502,6 +502,11 @@ int wmain(int argc, wchar_t** argv) {
             VersionStorageChecks(root);
             std::cout << "PASS version storage checks=" << checks << "\n"; return 0;
         }
+        if (argc == 2 && std::wstring(argv[1]) == L"--frozen-storage-only") {
+            CHECK(!fs::exists(root)); fs::create_directories(root);
+            frozen_storage_checks::Run(root);
+            std::cout << "PASS SAVE-02 frozen storage checks=" << checks << "\n"; return 0;
+        }
         if (argc == 2 && std::wstring(argv[1]) == L"--binding-observation-only") {
             BindingObservationChecks();
             std::cout << "PASS binding observation checks=" << checks << "\n"; return 0;

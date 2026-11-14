@@ -3,11 +3,13 @@
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/recording_state.hpp"
+#include "mikumikustudio/frame_rate.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/animation/native_camera_sampling.hpp"
 #endif
 
 #include <btBulletDynamicsCommon.h>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -176,12 +178,43 @@ void CheckCameraInterpolation() {
 }
 #endif
 
+#include "playback_bone_interpolation_checks.inc"
+
+void CheckCompletedPresentation() {
+    auto app = std::make_unique<MMDApp>();
+    app->state = MMDAppState{};
+    app->PlaybackActive() = 1;
+    app->PlaybackPhysicsClock().Reset(0);
+    auto& clock = app->PlaybackPhysicsClock();
+    app->PlaybackCursorSeconds() = 1.0 / 60;
+    Check(clock.PresentationDue(app->PlaybackCursorSeconds()), "first complete pose needs presentation");
+    frame_rate::BeginScene(app.get());
+    frame_rate::Presented(app.get(), true);
+    Check(app->frameRate.presentedFrames == 0 && clock.PresentationDue(app->PlaybackCursorSeconds()),
+          "an incomplete render neither counts FPS nor consumes the pending pose");
+    frame_rate::BeginScene(app.get());
+    frame_rate::CompleteScene(app.get());
+    frame_rate::Presented(app.get(), false);
+    Check(app->frameRate.presentedFrames == 0 && clock.PresentationDue(app->PlaybackCursorSeconds()),
+          "failed presentation keeps the previous frame and permits a retry");
+    frame_rate::BeginScene(app.get());
+    frame_rate::CompleteScene(app.get());
+    frame_rate::Presented(app.get(), true);
+    Check(app->frameRate.presentedFrames == 1 && !clock.PresentationDue(1.0 / 60),
+          "only successful complete scenes commit their playback timestamp");
+    Check(clock.PresentationDue(2.0 / 60), "the next computed pose is eligible");
+    clock.Reset(1.0 / 60);
+    Check(clock.PresentationDue(1.0 / 60), "a seek or playback restart can present its initial pose");
+}
+
 }  // namespace
 
 int main() {
     // The conversion to seconds and back can round up at 31 and down at 123.
     CheckRecordingStartKey(31);
     CheckRecordingStartKey(123);
+    CheckBonePlaybackInterpolation();
+    CheckCompletedPresentation();
 #if !MMD_ORIGINAL_PROFILE
     BridgeCaptureWindow();
     CheckCameraInterpolation();
