@@ -30,7 +30,12 @@ if (-not $sourceRoot -or [IO.Path]::GetFullPath($sourceRoot) -ne $repo) {
 if ($profile -ne 'full') { throw "发布目录要求完整档构建，当前 MIKUMIKUSTUDIO_PROFILE 为 '$profile'：$build" }
 if ($platform -ne 'x64') { throw "发布目录要求 x64 构建：$build" }
 $exe = Join-Path $build 'Release/MikuMikuDance.exe'
-if (-not (Test-Path -LiteralPath $exe)) { throw "缺少 Release 程序：$exe" }
+if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "缺少 Release 程序：$exe" }
+$legacyMmdRelativePath = 'legacy-mmdplugin/MMDPlugin.dll'
+$legacyMmdProvider = Join-Path $build "Release/$legacyMmdRelativePath"
+if (-not (Test-Path -LiteralPath $legacyMmdProvider -PathType Leaf)) {
+    throw "缺少旧版 MMDPlugin 兼容 DLL：$legacyMmdProvider"
+}
 
 # The release directory holds the shipped files only. Anything else there
 # belongs to the build tree or the verification evidence.
@@ -40,9 +45,12 @@ if ((Test-Path -LiteralPath $release) -and @(Get-ChildItem -LiteralPath $release
 }
 New-Item -ItemType Directory -Path $release -Force | Out-Null
 
-# Copy only the three shipped items. The build tree stays under
-# build/cmake and the verification evidence under build/verification.
+# Keep the provider in the host's expected private directory.
+# The build tree and verification evidence stay out of the release.
 Copy-Item -LiteralPath $exe -Destination (Join-Path $release 'MikuMikuDance.exe')
+$legacyMmdDestination = Join-Path $release $legacyMmdRelativePath
+New-Item -ItemType Directory -Path (Split-Path -Parent $legacyMmdDestination) | Out-Null
+Copy-Item -LiteralPath $legacyMmdProvider -Destination $legacyMmdDestination
 Copy-Item -LiteralPath (Join-Path $repo 'licenses') -Destination $release -Recurse
 
 # The GUI module source package is the only zip in the release directory.
@@ -57,15 +65,15 @@ if (-not (Test-Path -LiteralPath $template)) {
 }
 Copy-Item -LiteralPath $template -Destination (Join-Path $release 'mms-adaptive-ui-template.zip')
 
-$expected = @('licenses', 'MikuMikuDance.exe', 'mms-adaptive-ui-template.zip')
+$expected = @('legacy-mmdplugin', 'licenses', 'MikuMikuDance.exe', 'mms-adaptive-ui-template.zip')
 $actual = @(Get-ChildItem -LiteralPath $release -Force | ForEach-Object Name)
 $difference = @(Compare-Object -ReferenceObject $expected -DifferenceObject $actual)
 if ($difference.Count -gt 0) {
     $names = ($difference | ForEach-Object InputObject) -join '、'
-    throw "发布目录只能包含程序、licenses 和 GUI 模块压缩包，发现多余或缺少：$names"
+    throw "发布目录只能包含程序、旧版 MMDPlugin 兼容 DLL、licenses 和 GUI 模块压缩包，发现多余或缺少：$names"
 }
 
-foreach ($name in @('MikuMikuDance.exe', 'mms-adaptive-ui-template.zip')) {
+foreach ($name in @('MikuMikuDance.exe', $legacyMmdRelativePath, 'mms-adaptive-ui-template.zip')) {
     $path = Join-Path $release $name
     $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
     Write-Output ("{0}  {1}  {2}" -f $hash, (Get-Item -LiteralPath $path).Length, $name)

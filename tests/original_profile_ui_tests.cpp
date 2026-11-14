@@ -8,20 +8,31 @@
 #include <commdlg.h>
 #include <MinHook.h>
 #include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/globals.hpp"
+#include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ui_language.hpp"
+#include "mikumikustudio/undo_storage.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <cwchar>
 #include <cwctype>
+#include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
 static_assert(MMD_ORIGINAL_PROFILE, "This UI test requires the mmd932 profile");
 using namespace mikumikustudio;
+namespace mikumikustudio {
+void CmdControl500(MMDApp*, HWND, std::uint16_t, std::uint16_t);
+void DispatchSeparateWindowCommand(MMDApp*, unsigned short);
+}
 namespace {
 int checks = 0, failures = 0;
 unsigned blockedActivations = 0;
@@ -218,10 +229,13 @@ void CheckOriginalShadow(MMDApp* app) {
 }
 
 #include "original_version_crash_checks.inc"
+#include "original_bone_axis_reset_checks.inc"
 
 int wmain(int argc, wchar_t** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    if (argc == 2 && std::wcscmp(argv[1], L"--bone-axis-reset-only") == 0)
+        return OriginalBoneAxisResetChecks();
     if (argc > 1) return original_version_crash::Dispatch(argc, argv);
     SetProcessDPIAware();
     Require(!GetModuleHandleW(L"MMEffect.dll") && !GetModuleHandleW(L"MMHack.dll"), "test runtime contains no native MME proxy");

@@ -442,6 +442,8 @@ void CrossModelJournal(){
 #include "native_frame_copy_batch_checks.inc"
 #include "native_global_paste_payload_checks.inc"
 #include "native_signed_paste_frame_checks.inc"
+#include "native_signed_paste_authoring_checks.inc"
+#include "native_signed_paste_command_checks.inc"
 #include "native_gravity_paste_checks.inc"
 #include "native_morph_paste_part_checks.inc"
 #include "native_model_paste_family_checks.inc"
@@ -1096,8 +1098,13 @@ int main(int argc,char** argv){
         run("NativeGlobalPastePayloadChecks",NativeGlobalPastePayloadChecks);
         std::printf("PASS native global paste payload capture: %u checks\n",checks);return 0;
     }
+    if(argc==2&&!std::strcmp(argv[1],"--signed-paste-command-only")) {
+        run("NativeSignedPasteCommandChecks",NativeSignedPasteCommandChecks);
+        std::printf("PASS bound signed paste command: %u checks\n",checks);return 0;
+    }
     if(argc==2&&!std::strcmp(argv[1],"--signed-paste-frame-only")) {
         run("NativeSignedPasteFrameChecks",NativeSignedPasteFrameChecks);
+        run("NativeSignedPasteAuthoringChecks",NativeSignedPasteAuthoringChecks);
         std::printf("PASS native signed paste frame conversion: %u checks\n",checks);return 0;
     }
     if(argc==2&&!std::strcmp(argv[1],"--scene-identity-allocation-only")) {
@@ -1193,6 +1200,8 @@ int main(int argc,char** argv){
     run("NativeNegativeSamplingChecks",NativeNegativeSamplingChecks);
     run("NativeGlobalPastePayloadChecks",NativeGlobalPastePayloadChecks);
     run("NativeSignedPasteFrameChecks",NativeSignedPasteFrameChecks);
+    run("NativeSignedPasteAuthoringChecks",NativeSignedPasteAuthoringChecks);
+    run("NativeSignedPasteCommandChecks",NativeSignedPasteCommandChecks);
     run("NativeGravityPasteChecks",NativeGravityPasteChecks);
     run("NativeMorphPastePartChecks",NativeMorphPastePartChecks);
     run("NativeModelPasteFamilyChecks",NativeModelPasteFamilyChecks);

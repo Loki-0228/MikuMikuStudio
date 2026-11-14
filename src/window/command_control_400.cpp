@@ -3221,7 +3221,7 @@ void CmdControl400(MMDApp* app, HWND hwnd, std::uint16_t id,
 #if !MMD_ORIGINAL_PROFILE
     sharedUndo=(id==400 || id==401) && plugins::BoundNativePoseHistory(app);
 #endif
-    if(id!=420 && !sharedUndo && negative_frames::Command(app,id))return;
+    if(id!=420 && !sharedUndo && negative_frames::Command(app,id,true))return;
     curve_host::LegacyRegistrationBatch registrationBatch(app);
     switch (id) {
     case 400:  // undo (0x00482766) -> Cmd400_Undo

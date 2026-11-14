@@ -160,6 +160,77 @@ void PermissionsAndLifecycle(){
     CHECK(a==MMS_E_THREAD&&b==MMS_E_THREAD&&c==MMS_E_THREAD&&Same(output,initial)&&f.Info(active).revision==rev);
     CHECK(f.old.rollback(f.old.context,active,rev)==MMS_OK&&f.old.release(f.old.context,active)==MMS_OK);
 }
+void ParentClaimSurvivesRegistryRebuilds(){
+    for(unsigned rebuild=0;rebuild<3;++rebuild){
+        Fixture f;
+        // User-created layout groups are rebuilt from preferences too. Their
+        // strings and descriptor generations may change without changing identity.
+        MmsHandle tx=0;CHECK(f.ui.beginLayout(f.ui.context,f.registry.Revision(),&tx)==MMS_OK);
+        MmsLayoutOpV1 group{};group.h=Header<MmsLayoutOpV1>();group.operation=MMS_LAYOUT_CREATE_GROUP;
+        group.elementId=S("p.saved-group");group.parentId=S("mms.toolbar.main.extensions");group.value.groupLabel=S("Saved group");
+        CHECK(f.ui.applyLayout(f.ui.context,tx,&group)==MMS_OK&&f.ui.commitLayout(f.ui.context,tx)==MMS_OK);
+        const auto savedGroup=f.registry.elements.at("p.saved-group").handle;
+        const auto unrelated=rebuild==1?f.Element(f.owner,"p.unrelated","mms.toolbar.main.extensions"):0;
+        const auto target=Target(f.item,savedGroup);const auto value=Value(f.item,savedGroup);
+        const auto session=f.Begin(target);const auto revision=rebuild==0?1u:2u;
+        if(rebuild!=0) CHECK(f.api.applyEx(f.api.context,session,1,Span(&value))==MMS_OK);
+        if(rebuild==0){
+            CHECK(f.Element(f.owner,"p.unrelated","mms.toolbar.main.extensions")!=0);
+        }else if(rebuild==1){
+            auto description=f.registry.elements.at("p.unrelated").desc;description.label=S("New label");
+            CHECK(f.ui.updateElement(f.ui.context,unrelated,&description)==MMS_OK);
+        }else{
+            // Hints on a destination change its sizing, not its parent edge.
+            auto layout=f.registry.LayoutApi(f.owner);MmsUiLayoutHintsV1 hints{};hints.h=Header<MmsUiLayoutHintsV1>();hints.preferred[0]=75;
+            CHECK(layout.setDefaultHints(layout.context,S("p.saved-group"),&hints)==MMS_OK);
+        }
+        const auto info=f.Info(session);
+        CHECK(info.state==MMS_LAYOUT_SESSION_ACTIVE&&info.revision==revision&&!info.reasons&&info.activeTargetCount==1);
+        auto claim=Ex<MmsUiLayoutSessionTargetV1_2>();
+        CHECK(f.api.queryClaimEx(f.api.context,session,revision,0,&claim)==MMS_OK&&claim.fields==PreviewParent&&claim.parent==savedGroup);
+        CHECK(f.Parent()==(rebuild==0?"p.a":"p.saved-group")&&String(f.registry.elements.at("p.item").desc.parentId)=="p.a");
+        if(rebuild==0) CHECK(f.api.applyEx(f.api.context,session,1,Span(&value))==MMS_OK);
+        CHECK(f.api.commit(f.api.context,session,2)==MMS_OK&&f.Parent()=="p.saved-group");
+        CHECK(f.api.release(f.api.context,session)==MMS_OK);
+    }
 }
-int main(){try{CapabilitiesAndIdentity();MalformedRecords();PermissionsAndLifecycle();}catch(...){CHECK(false);}
+void ParentClaimTracksActualDependencyChanges(){
+    for(unsigned change=0;change<4;++change){
+        Fixture f;
+        const auto ancestor=f.Element(f.owner,"p.ancestor","mms.toolbar.main.extensions",MMS_UI_GROUP);
+        const auto destination=f.Element(f.owner,"p.destination","p.ancestor",MMS_UI_GROUP);
+        const auto target=Target(f.item,destination,PreviewParent|PreviewVisible);
+        auto value=Value(f.item,destination,target.fields);value.visible=0;
+        const auto session=f.Begin(target);
+        CHECK(f.api.applyEx(f.api.context,session,1,Span(&value))==MMS_OK&&f.Parent()=="p.destination");
+        if(change==0){
+            // The preview is still mount-valid, but its destination ancestry changed.
+            MmsHandle tx=0;CHECK(f.ui.beginLayout(f.ui.context,f.registry.Revision(),&tx)==MMS_OK);
+            MmsLayoutOpV1 move{};move.h=Header<MmsLayoutOpV1>();move.operation=MMS_LAYOUT_MOVE;
+            move.elementId=S("p.ancestor");move.parentId=S("p.b");move.expectedGeneration=f.registry.elements.at("p.ancestor").desc.generation;
+            CHECK(f.ui.applyLayout(f.ui.context,tx,&move)==MMS_OK&&f.ui.commitLayout(f.ui.context,tx)==MMS_OK);
+        }else if(change==1){
+            auto description=f.registry.elements.at("p.ancestor").desc;
+            CHECK(f.ui.updateElement(f.ui.context,ancestor,&description)==MMS_OK&&f.registry.elements.at("p.ancestor").handle==ancestor);
+        }else if(change==2){
+            CHECK(f.ui.unregisterItem(f.ui.context,destination)==MMS_OK);
+            CHECK(f.Element(f.owner,"p.destination","p.ancestor",MMS_UI_GROUP)!=destination);
+        }else{
+            auto description=f.registry.elements.at("p.item").desc;
+            CHECK(f.ui.updateElement(f.ui.context,f.item,&description)==MMS_OK&&f.registry.elements.at("p.item").handle==f.item);
+        }
+        const auto info=f.Info(session);auto claim=Ex<MmsUiLayoutSessionTargetV1_2>();
+        CHECK(info.revision>2&&info.reasons==(change==0?MMS_LAYOUT_SESSION_PERSISTENT_EDIT:MMS_LAYOUT_SESSION_TARGET_CHANGED));
+        CHECK(f.api.queryClaimEx(f.api.context,session,info.revision,0,&claim)==MMS_OK&&!claim.parent&&f.Parent()=="p.a");
+        if(change<3){
+            CHECK(info.state==MMS_LAYOUT_SESSION_ACTIVE&&claim.fields==PreviewVisible&&!f.registry.EffectiveLayout(f.registry.elements.at("p.item")).visible);
+            CHECK(f.api.rollback(f.api.context,session,info.revision)==MMS_OK);
+        }else{
+            CHECK(info.state==MMS_LAYOUT_SESSION_REVOKED&&!claim.fields&&f.registry.EffectiveLayout(f.registry.elements.at("p.item")).visible);
+        }
+        CHECK(f.api.release(f.api.context,session)==MMS_OK);
+    }
+}
+}
+int main(){try{CapabilitiesAndIdentity();MalformedRecords();PermissionsAndLifecycle();ParentClaimSurvivesRegistryRebuilds();ParentClaimTracksActualDependencyChanges();}catch(...){CHECK(false);}
     std::printf("layout_session_parent_tests: %u checks, %u failures\n",checks,failures);return failures?1:0;}

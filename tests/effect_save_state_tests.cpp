@@ -1,14 +1,14 @@
 // MAINTENANCE: pure-CPU coverage for the private effect save protocol.
 //
 // The provider, scene and completion consumer in this file are fakes. They
-// exercise only the tracker's bookkeeping contract; nothing here reads or
+// exercise only capture and completion contracts; nothing here reads or
 // writes files, the registry, a window or the GPU, nothing loads MME, and
 // nothing here proves real EMM persistence.
 //
 // Failures are collected per scenario and printed at the end; the process
 // exits non-zero when any check fails.
 
-#include "io/effect_save_capture.hpp"
+#include "io/effect_save_pair.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -944,6 +944,7 @@ void RunCompletedRevalidationChecks(Checker& checker) {
 }
 
 #include "effect_save_capture_checks.inc"
+#include "effect_save_pair_checks.inc"
 
 struct ScenarioCase {
     const char* name;
@@ -970,6 +971,10 @@ int main() {
         {"capture seals host-owned effect bytes, identity and digest", RunImmutableCaptureChecks},
         {"capture rejects stale, malformed, unsupported and cancelled attempts", RunCaptureRejections},
         {"capture accepts an exact-size payload at the hard budget", RunCaptureBudgetBoundary},
+        {"pair seal requires matching staged PMM and valid sidecar evidence", RunPairSealChecks},
+        {"published PMM and EMM use the same captured identity", RunPairSuccessChecks},
+        {"pair write receipt rejects incomplete, foreign and uncertain publication", RunPairWriteReceiptChecks},
+        {"pair acknowledgement is request-bound and rechecks live state", RunPairAcknowledgementChecks},
     };
     const int scenarioCount = static_cast<int>(sizeof(scenarios) / sizeof(scenarios[0]));
 

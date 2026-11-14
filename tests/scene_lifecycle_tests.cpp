@@ -22,6 +22,14 @@
 #include "mikumikustudio/viewport_render_scale.hpp"
 #include <MinHook.h>
 #include "mikumikustudio/build_profile.hpp"
+#if defined(REQUIRE_MME) && defined(_WIN64)
+#include "mikumikustudio/autosave.hpp"
+#include "mikumikustudio/background_save.hpp"
+#include "mikumikustudio/local_data_path.hpp"
+#include "mikumikustudio/pmm_paths.hpp"
+#include <iterator>
+#include <string_view>
+#endif
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/plugins/native_pose_scope.hpp"
 #include "../src/plugins/native_object_commands.hpp"
@@ -67,6 +75,9 @@ void Check(bool ok, const char* what) {
 }
 
 #include "bone_gizmo_scene_checks.hpp"
+#if defined(REQUIRE_MME) && defined(_WIN64)
+#include "mme_save_pair_checks.inc"
+#endif
 
 void CheckCoordinateReset(MMDApp* app, const std::filesystem::path& output) {
     const HWND main = app->MainWindow();
@@ -1778,9 +1789,18 @@ int wmain(int argc, wchar_t** argv) {
         (argc > 3 && std::wcscmp(argv[3], L"--pmm-camera-load") == 0);
     const bool legacyProbe = argc > 3 && std::wcscmp(argv[3], L"--legacy-package") == 0;
     const bool rayGizmo = argc > 3 && std::wcscmp(argv[3], L"--bone-gizmo-ray") == 0;
-    HHOOK cameraLoadHook = (cameraLoad || legacyProbe || rayGizmo) ? SetWindowsHookExW(WH_CBT,
+    const bool savePair = argc > 3 && std::wcscmp(argv[3], L"--mme-save-pair") == 0;
+    if (savePair) {
+#if defined(REQUIRE_MME) && defined(_WIN64)
+        if (argc != 6) return 2;
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+#else
+        return 2;
+#endif
+    }
+    HHOOK cameraLoadHook = (cameraLoad || legacyProbe || rayGizmo || savePair) ? SetWindowsHookExW(WH_CBT,
         GuardCameraLoadProbe, nullptr, GetCurrentThreadId()) : nullptr;
-    if (cameraLoad || legacyProbe || rayGizmo)
+    if (cameraLoad || legacyProbe || rayGizmo || savePair)
         Check(cameraLoadHook != nullptr, "install hidden integration dialog guard");
     const bool menusOnly = std::wcscmp(argv[1], L"--menus-only") == 0;
     HHOOK menuHook = menusOnly ? SetWindowsHookExW(WH_CBT, RejectMenuProbeDialog,
@@ -1799,6 +1819,14 @@ int wmain(int argc, wchar_t** argv) {
         const DWORD length = GetFullPathNameW(argv[1], 256, scenePath, nullptr);
         Check(length > 0 && length < 256, "resolve scene path before app changes current directory");
     }
+#if defined(REQUIRE_MME) && defined(_WIN64)
+    if (savePair) {
+        const auto root = std::filesystem::path(scenePath).make_preferred();
+        Check(root == local_data::ExecutableDirectory().make_preferred() &&
+              std::filesystem::is_regular_file(root / L"mme-save-pair.fixture"),
+              "run only inside the runner-created isolated test installation");
+    }
+#endif
     if (argc > 4 && std::wcscmp(argv[3], L"--bone-multiply") == 0)
         multiplyOutput = std::filesystem::absolute(argv[4]);
     auto* app = new MMDApp();
@@ -1807,9 +1835,23 @@ int wmain(int argc, wchar_t** argv) {
     app->InitDefaults();
     if (cameraStartup) wcscpy_s(app->EnvFileName(), 256, scenePath);
     if (rayGizmo) std::puts("Ray gizmo: initialize hidden renderer");
-    if (!InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE)) return 3;
+    if (!InitMainWindowAndD3D(app, GetModuleHandleW(nullptr), SW_HIDE)) {
+        if (savePair) std::fprintf(stderr, "Windows host initialization failed: %s\n",
+                                   plugins::LegacyMmeStatus().error.c_str());
+        return 3;
+    }
     ShowWindow(app->MainWindow(), SW_HIDE);
 
+#if defined(REQUIRE_MME) && defined(_WIN64)
+    if (savePair) {
+        const auto root = std::filesystem::path(scenePath).make_preferred();
+        mme_save_pair_checks::Run(app, root, argv[4], argv[5]);
+        ShutdownCleanup(app); delete app; g_Block = nullptr;
+        Check(UnhookWindowsHookEx(cameraLoadHook) != FALSE, "remove the hidden integration dialog guard");
+        std::printf("PASS Windows real MME save pair case=%ls phase=%ls\n", argv[5], argv[4]);
+        return 0;
+    }
+#endif
     if (argc > 3 && std::wcscmp(argv[3], L"--legacy-package") == 0) {
         const auto& legacy = plugins::LegacyMmeStatus();
         if (!legacy.error.empty()) std::printf("legacy startup: %s\n", legacy.error.c_str());

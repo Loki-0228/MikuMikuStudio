@@ -393,13 +393,13 @@ std::vector<UiRegistry::LayoutParentDependency> UiRegistry::CaptureParentDepende
     const std::vector<LayoutPreviewValue>& values) const {
     std::vector<LayoutParentDependency> result;
     for (const auto& value : values) if (value.fields & PreviewParent) {
-        // Retain both the saved ancestry and the proposed effective ancestry.
-        // Keeping arenas prevents pointer reuse from disguising re-registration.
+        // Track handles and saved parent edges on both ancestry paths. Arenas
+        // and public generations also change during unrelated tree rebuilds.
         for (bool effective : {false, true}) {
             auto current = FindElement(elements, effective ? value.parent : value.element);
             for (size_t depth = 0; current != elements.end() && depth <= elements.size(); ++depth) {
                 const auto& e = current->second;
-                result.push_back({value.element, e.handle, e.arena, e.desc.parentId});
+                result.push_back({value.element, e.handle, String(e.desc.parentId)});
                 current = FindId(elements, effective ? PreviewParentOf(e, elements, &values) : e.desc.parentId);
             }
         }
@@ -419,8 +419,8 @@ void UiRegistry::ReconcileParentPreviews(const std::map<std::string, ElementReco
                     bool valid = true;
                     for (const auto& dependency : session.parents) if (dependency.element == value.element) {
                         const auto found = FindElement(tree, dependency.dependency);
-                        if (found == tree.end() || found->second.arena != dependency.arena ||
-                            !SameText(found->second.desc.parentId, dependency.parent)) { valid = false; break; }
+                        if (found == tree.end() ||
+                            !SameText(found->second.desc.parentId, Text(dependency.parentId))) { valid = false; break; }
                     }
                     if (valid && session.applied) {
                         const auto source = FindElement(tree, value.element);

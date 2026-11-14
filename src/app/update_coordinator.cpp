@@ -4,6 +4,7 @@
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/menu_command_ids.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
@@ -149,7 +150,7 @@ void ObserveMessage(MMDApp* app, UINT message, WPARAM wp, LPARAM lp) {
         // menu/accelerator messages (no control window, HIWORD 0 or 1); an
         // already existing MessageSeen=1 is left untouched.
         const bool resourceCommand = (id == 263 || id == 278) && !lp && notification <= 1;
-        changed = !resourceCommand && !(id >= 0xa000 && id <= 0xbfff) &&
+        changed = !resourceCommand && !menu_command_ids::IsNativeAbi(id) &&
             (!lp || (notification != EN_SETFOCUS && notification != EN_KILLFOCUS));
     }
     // MainWndProc's HandleNotify only paints native control labels

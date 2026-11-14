@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include "mikumikustudio/plugin_menu.h"
 #include "mikumikustudio/plugin_menu.hpp"
+#include "mikumikustudio/menu_command_ids.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include <commctrl.h>
 #include <algorithm>
@@ -25,7 +26,7 @@ struct Entry {
 std::vector<std::shared_ptr<Entry>> entries;
 std::map<HWND,uint32_t> languages;
 uint64_t nextToken=1;
-UINT nextCommand=0xd000;
+UINT nextCommand=menu_command_ids::kPluginMenuFirst;
 bool refreshing=false;
 bool UiThread(HWND window){return window&&GetWindowThreadProcessId(window,nullptr)==GetCurrentThreadId();}
 bool Alive(const std::shared_ptr<Entry>& e){return std::find(entries.begin(),entries.end(),e)!=entries.end();}
@@ -92,12 +93,12 @@ uint64_t __cdecl Register(const MmsPluginMenu* api){
         // Keep allocated ranges distinct, including retired registrations, so
         // queued WM_COMMANDs can never invoke a replacement DLL's command.
         HMENU root=GetMenu(api->owner);
-        for(;nextCommand+MMS_MENU_COMMAND_COUNT<=0xf000;nextCommand+=MMS_MENU_COMMAND_COUNT){
+        for(;nextCommand+MMS_MENU_COMMAND_COUNT<=menu_command_ids::kPluginMenuLimit;nextCommand+=MMS_MENU_COMMAND_COUNT){
             bool collision=false;
             for(UINT i=0;i<MMS_MENU_COMMAND_COUNT;++i)if(root&&GetMenuState(root,nextCommand+i,MF_BYCOMMAND)!=UINT(-1)){collision=true;break;}
             if(!collision)break;
         }
-        if(nextCommand+MMS_MENU_COMMAND_COUNT>0xf000)return 0;
+        if(nextCommand+MMS_MENU_COMMAND_COUNT>menu_command_ids::kPluginMenuLimit)return 0;
         e=std::make_shared<Entry>();e->api=*api;e->id=api->pluginId;e->api.pluginId=e->id.c_str();
         HMODULE module=nullptr;
         if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(api->populate),&module))return 0;

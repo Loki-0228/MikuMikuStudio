@@ -16,13 +16,13 @@ cmake --build --preset win7-x64-release --target MikuMikuStudio
 
 完整档在构建时会先用 D3DX9 预编译内嵌效果再生成资源（`MIKUMIKUSTUDIO_PRECOMPILE_EFFECTS` 默认开启）。本机实测 117 号效果瞬时完成，118 号约 5 分钟，120 号约 11 分钟，整轮约 16 分钟，期间没有输出，不要当成卡死中断。产物在 `build/cmake/generated/resources`，比资源输入新时该步骤会跳过。
 
-`build/release` 是发布目录，只放 `MikuMikuDance.exe`、`licenses/` 和 `mms-adaptive-ui-template.zip`。用下面的脚本重建：
+`build/release` 是发布目录，只放 `MikuMikuDance.exe`、`legacy-mmdplugin/MMDPlugin.dll`、`licenses/` 和 `mms-adaptive-ui-template.zip`。用下面的脚本重建：
 
 ```powershell
 ./scripts/package_abi_release.ps1 -Force
 ```
 
-脚本默认读取 `build/cmake`，可用 `-BuildDirectory` 指向另一份完整档 x64 构建。构建树、测试产物和 `build/verification` 中的日志、证据都不进发布目录。`cmake --install` 还会写入 `PLUGINS/config.json`，因此发布目录由脚本直接复制文件，不使用安装规则。
+脚本默认读取 `build/cmake`，可用 `-BuildDirectory` 指向另一份完整档 x64 构建。脚本和 `cmake --install` 均将旧插件所需的兼容 DLL 放在程序旁的 `legacy-mmdplugin/`，不要把 DLL 放在程序根目录或 `PLUGINS/` 下。脚本在替换发布目录前检查该文件，并输出其 SHA-256。构建树、测试产物和 `build/verification` 中的日志、证据都不进发布目录。`cmake --install` 还会写入 `PLUGINS/config.json`，因此发布目录由脚本直接复制文件。
 
 默认保留 Release PDB。只需验证且本机符号工具不可用时，可以在配置时使用 `-DMIKUMIKUSTUDIO_DEBUG_SYMBOLS=OFF`；发布时仍应保留匹配程序的符号文件，不能把旧 PDB 与新 EXE 配对。Release exe 内嵌 PDB 的绝对路径，搬动构建目录或重新链接后，同一份源码生成的 exe 哈希会变化，发布前要按实际文件重新核对。
 

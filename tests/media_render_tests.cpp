@@ -3,6 +3,7 @@
 #include "mikumikustudio/globals.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/wic_mov_recorder.hpp"
+#include "mikumikustudio/recording_output_path.hpp"
 #include "mikumikustudio/native_media.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/model.hpp"
@@ -547,8 +548,15 @@ int wmain(int argc,wchar_t** argv) {
         app->AviRecordStartFrame() = 0; app->AviRecordEndFrame() = 29;
         app->AviRecordFps() = static_cast<float>(fps);
         app->AviIncludeWave() = 0; app->AviCloseAfterExport() = 0;
-        StartAviRecordWindow(app);
+        recording_output_path::Selection approved;
+        Check(recording_output_path::ReadSelection(recording.c_str(), approved) == ERROR_SUCCESS,
+            "inspect the production MOV destination at consent");
+        StartAviRecordWindow(app, &approved);
         Check(IsPngMovRecording(app->Recorder()), "start through production export entry");
+        recording_output_path::Selection during;
+        Check(recording_output_path::ReadSelection(recording.c_str(), during) == ERROR_SUCCESS &&
+            recording_output_path::SameSelection(approved, during),
+            "production MOV start neither creates a placeholder nor touches a previous export");
         for (int i = 0; i < 180 && IsPngMovRecording(app->Recorder()); ++i) {
             app->state.messageSeen = 1; FrameDriver(app);
         }

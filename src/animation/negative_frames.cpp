@@ -26,6 +26,8 @@
 #include "negative_history.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "negative_copy_source.hpp"
+#include "negative_paste_authoring.hpp"
+#include "../plugins/frame_copy_batch.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
 #include "../plugins/native_global_key_delete.hpp"
 #include "../plugins/native_model_keys.hpp"
@@ -1177,7 +1179,19 @@ void RefreshControls(MMDApp* app) {
     if(!app || !app->MainWindow())return;auto found=states.find(app);if(found==states.end())return;
     const auto& state=found->second;
     const bool selected=std::any_of(state.keys.begin(),state.keys.end(),[&](const Key& key){return key.selected && Current(*app,key);});
-    const bool pasted=!state.clipboard.empty(),undo=!state.undo.empty(),redo=!state.redo.empty();
+    bool pasted=!state.clipboard.empty();
+#if !MMD_ORIGINAL_PROFILE
+    if(plugins::BoundNativePoseHistory(app)) {
+        const auto mode=app->CameraMode()?frame_clipboard::CopyMode::Global:frame_clipboard::CopyMode::Model;
+        std::shared_ptr<const plugins::FrameCopyBatch> batch;
+        const auto status=plugins::ReadFrameCopyBatch(*app,mode,batch);
+        if(status!=frame_clipboard::CopyBatchStatus::Unavailable) {
+            pasted=batch && batch->negative && !batch->negative->keys.empty() &&
+                (batch->hasNative || plugins::FrameCopyBatchCurrent(*app,*batch));
+        }
+    }
+#endif
+    const bool undo=!state.undo.empty(),redo=!state.redo.empty();
     const bool history=app->CurrentFrame()<0 || (undo && state.undo.back().drag) || (redo && state.redo.back().drag);
     const auto window=app->MainWindow();
     // EnableWindow sends synchronous messages: callbacks may replace State.
@@ -1349,10 +1363,12 @@ CopyResult CopySelected(MMDApp* app, bool refreshControls) noexcept try {
     ClearClipboard(app);
     return CopyResult::Failed;
 }
-bool Command(MMDApp* app,unsigned id) try {
+bool Command(MMDApp* app,unsigned id,bool useCopyReceipt) try {
     if(id==420)return CopySelected(app)!=CopyResult::Empty;
 #if !MMD_ORIGINAL_PROFILE
-    if(TryBoundNegativeCommand(app,id))return true;
+    if(TryBoundNegativeCommand(app,id,useCopyReceipt))return true;
+#else
+    (void)useCopyReceipt;
 #endif
     if(id==421 && app->CurrentFrame()<0) {
         auto& state=states[app];if(state.clipboard.empty()) {

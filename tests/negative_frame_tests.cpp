@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include "negative_native_frame_zero_checks.inc"
 using namespace mikumikustudio;
 static unsigned checks=0;
 void Check(bool value,const char* message){++checks;if(!value){std::fprintf(stderr,"FAIL %s\n",message);std::exit(1);}}
@@ -370,6 +371,7 @@ int main(int argc,char** argv) {
           "one redo reapplies the whole drag");
 
     negative_frames::Reset(app.get());bone_scale::Forget(model);g_Block=previous;
+    CheckNativeFrameZeroProjection(Check);
     DuplicateCrossModelNegativePaste();
     CheckSelectionPersistence();
     CheckAccessorySlotIdentity(true);

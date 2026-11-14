@@ -242,6 +242,8 @@ inline MmsEvaluationApiV1_4 Prefix(const MmsEvaluationApiV1_5& api) noexcept {
     MmsEvaluationApiV1_4 result{};
     static_assert(offsetof(MmsEvaluationApiV1_5,getMeshCapabilities)==sizeof(result),"evaluation prefix");
     std::memcpy(&result,&api,sizeof(result));
+    // Keep the original callbacks and context, but describe this shorter table.
+    result.h={static_cast<std::uint32_t>(sizeof(result)),1,4};
     return result;
 }
 inline bool CompleteMesh(const MmsEvaluationApiV1_5& api) noexcept {
@@ -434,7 +436,9 @@ namespace evaluation_detail {
 inline MmsEvaluationApiV1_5 MeshPrefix(const MmsEvaluationApiV1_6& api) noexcept {
     MmsEvaluationApiV1_5 result{};
     static_assert(offsetof(MmsEvaluationApiV1_6,getMaterialCapabilities)==sizeof(result),"evaluation material prefix");
-    std::memcpy(&result,&api,sizeof(result));return result;
+    std::memcpy(&result,&api,sizeof(result));
+    result.h={static_cast<std::uint32_t>(sizeof(result)),1,5};
+    return result;
 }
 inline bool CompleteMaterial(const MmsEvaluationApiV1_6& api) noexcept {
     return CompleteMesh(MeshPrefix(api)) && api.getMaterialCapabilities && api.createMaterialSceneSource && api.materialAt && api.readFrameMaterials;
@@ -575,7 +579,9 @@ namespace evaluation_detail {
 inline MmsEvaluationApiV1_6 MaterialPrefix(const MmsEvaluationApiV1_7& api) noexcept {
     MmsEvaluationApiV1_6 result{};
     static_assert(offsetof(MmsEvaluationApiV1_7,getReferenceCapabilities)==sizeof(result),"evaluation reference prefix");
-    std::memcpy(&result,&api,sizeof(result));return result;
+    std::memcpy(&result,&api,sizeof(result));
+    result.h={static_cast<std::uint32_t>(sizeof(result)),1,6};
+    return result;
 }
 inline bool CompleteReference(const MmsEvaluationApiV1_7& api) noexcept {
     return CompleteMaterial(MaterialPrefix(api)) && api.getReferenceCapabilities && api.createReferenceSceneSource &&

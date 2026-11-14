@@ -1,12 +1,14 @@
 #include "mikumikustudio/legacy_mmd_plugin.hpp"
 #include "mikumikustudio/local_data_path.hpp"
+#include "mikumikustudio/antialias.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/nvidia_antialias_menu.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/scene_ownership.hpp"
+#include "legacy_mmd_menu.hpp"
 #include "loader_win32.hpp"
 
 #include <algorithm>
-#include <bitset>
 #include <memory>
 
 namespace mikumikustudio::legacy_mmd_plugin {
@@ -20,9 +22,16 @@ using Observer = void(__cdecl*)(void*, CWPSTRUCT*);
 // MSVC x64 MMDPluginDLL3 slots for the audited observer profile.
 // Checked from compiler output for the read-only reference header and sample.
 constexpr unsigned startSlot = 240, stopSlot = 241, observerSlot = 243;
-// Keep these menu command IDs outside the native ABI's 0xa000..0xbfff range
-// and MME's 40000-series commands. They are never reused within a host session.
-constexpr unsigned firstMenuId = 0x8800, menuIdCount = 0x800;
+// Guard the native antialiasing family, which overlapped the old observer range.
+static_assert(antialias::kFirstCommand + unsigned(antialias::Algorithm::Count) <=
+              menu_command_ids::kLegacyObserverFirst &&
+              antialias::kSmaaCommand < menu_command_ids::kLegacyObserverFirst &&
+              antialias::kOffCommand < menu_command_ids::kLegacyObserverFirst &&
+              antialias::kOutlineCommand < menu_command_ids::kLegacyObserverFirst &&
+              antialias::kOutlineFxaaCommand < menu_command_ids::kLegacyObserverFirst &&
+              antialias::kOutlineMsaaCommand < menu_command_ids::kLegacyObserverFirst &&
+              nvidia_antialias_menu::kInstallCommand < menu_command_ids::kLegacyObserverFirst &&
+              nvidia_antialias_menu::kUninstallCommand < menu_command_ids::kLegacyObserverFirst);
 template<class Function>
 Function Method(void* object, unsigned slot) {
     return reinterpret_cast<Function>((*static_cast<void***>(object))[slot]);
@@ -33,7 +42,7 @@ struct Session {
     plugins::LoadedPackage code;
     void* object = nullptr;
     Destroy destroy = nullptr;
-    std::bitset<menuIdCount> menuIds;
+    MenuIds menuIds;
     bool started = false;
     bool retiring = false;
 };
@@ -45,7 +54,7 @@ struct Host {
     std::vector<std::unique_ptr<Session>> packages;
     Session* active = nullptr;
     HHOOK hook = nullptr;
-    unsigned nextMenuId = firstMenuId;
+    MenuIdAllocator menuIds;
     bool busy = true;
     bool stopRequested = false;
 };
@@ -62,9 +71,8 @@ void Log(const std::string& message) noexcept {
 
 bool Observed(const Host& current, const Session& package, const CWPSTRUCT& message) {
     if (message.message == WM_COMMAND) {
-        const unsigned id = LOWORD(message.wParam);
-        return message.hwnd == current.window && !message.lParam && !HIWORD(message.wParam) &&
-            id >= firstMenuId && id < firstMenuId + menuIdCount && package.menuIds[id - firstMenuId];
+        return package.menuIds.ObservesCommand(LOWORD(message.wParam), HIWORD(message.wParam),
+            message.lParam != 0, message.hwnd == current.window);
     }
     if (message.message != WM_SHOWWINDOW && message.message != WM_WINDOWPOSCHANGED &&
         message.message != WM_CTLCOLORSTATIC && message.message != WM_CTLCOLOREDIT) return false;
@@ -88,9 +96,8 @@ void Retire(Host& current, std::unique_ptr<Session>& package) noexcept {
         package->code.Pin();
         Log("teardown threw; retaining loaded code until exit");
     }
-    if (HMENU menu = GetMenu(current.window); menu && package->menuIds.any()) {
-        for (unsigned i = 0; i < menuIdCount; ++i)
-            if (package->menuIds[i]) DeleteMenu(menu, firstMenuId + i, MF_BYCOMMAND);
+    if (HMENU menu = GetMenu(current.window); menu && package->menuIds.Any()) {
+        package->menuIds.RemoveAll([menu](unsigned id) { DeleteMenu(menu, id, MF_BYCOMMAND); });
         DrawMenuBar(current.window);
     }
     current.active = nullptr;
@@ -215,11 +222,11 @@ void Stop() noexcept {
 HWND CurrentWindow() noexcept { return host && IsWindow(host->window) ? host->window : nullptr; }
 
 int AllocateMenuId() noexcept {
-    if (!host || !host->active || host->active->retiring || host->stopRequested ||
-        host->nextMenuId >= firstMenuId + menuIdCount) return -1;
-    const auto id = host->nextMenuId++;
-    host->active->menuIds[id - firstMenuId] = true;
-    return static_cast<int>(id);
+    if (!host || !host->active || host->active->retiring || host->stopRequested) return -1;
+    const HMENU menu = GetMenu(host->window);
+    return host->menuIds.Allocate(host->active->menuIds, [menu](unsigned id) {
+        return menu && GetMenuState(menu, id, MF_BYCOMMAND) != UINT(-1);
+    });
 }
 }
 

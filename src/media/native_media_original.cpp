@@ -71,12 +71,17 @@ bool FinishBuiltInH264Recording(DShowRecorder*, std::uint64_t, std::int32_t* fai
     if (failure) *failure = 0;
     return false;
 }
-bool StartPngMovRecording(DShowRecorder*, const wchar_t*, int, int, float, std::wstring& error) {
+bool StartPngMovRecording(DShowRecorder*, const wchar_t*, int, int, float, std::wstring& error,
+                          const recording_output_path::Selection*, bool* destinationChanged) {
+    if (destinationChanged) *destinationChanged = false;
     error = kUnavailable;
     return false;
 }
 bool IsPngMovRecording(const DShowRecorder*) { return false; }
 bool WritePngMovFrame(DShowRecorder*, const void*, std::size_t) { return false; }
-bool FinishPngMovRecording(DShowRecorder*, std::uint64_t, std::wstring& error) { error = kUnavailable; return false; }
+bool FinishPngMovRecording(DShowRecorder*, std::uint64_t, std::wstring& error, unsigned char) {
+    error = kUnavailable;
+    return false;
+}
 void AbortPngMovRecording(DShowRecorder*) {}
 }

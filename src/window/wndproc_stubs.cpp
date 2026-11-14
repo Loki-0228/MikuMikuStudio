@@ -188,6 +188,7 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
                 unsigned char* flags =
                     mikumikustudio::mdl::Mdl(model)->bonePhysicsState;
                 flags[bone] = 1;
+                s.SceneModified() = 1;
                 PostViewRefresh(app);
             } else {
                 PostViewRefresh(app);                            // 0x46252E
@@ -205,6 +206,8 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
         if (plugins::TryResetUnboundBoneRotationAxis(app, axis,
             plugins::NativePoseAxisSource::FloatingWindow)) break;
 #endif
+        const HWND owner = separate ? separate : main;
+        SendDlgItemMessageA(owner, panel::kReadoutRotXEdit + axis, EM_SETMODIFY, FALSE, 0);
         if (s.CameraMode() == 0) {
             unsigned char* model = s.SelectedModel();
             const std::int32_t bone = mikumikustudio::mdl::Mdl(model)->selectedBone;
@@ -247,6 +250,7 @@ void DispatchSeparateWindowCommand(MMDApp* app, unsigned short id) {  // was Sub
                 unsigned char* flags =
                     mikumikustudio::mdl::Mdl(model)->bonePhysicsState;
                 flags[bone] = 1;
+                s.SceneModified() = 1;
             }
             PostViewRefresh(app);                                // 0x46252E
         } else {

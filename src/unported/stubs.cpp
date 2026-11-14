@@ -120,7 +120,8 @@ void FinishAviRecord(MMDApp* app, bool reachedRequestedEnd) {  // was Sub464A00
     std::wstring movError;
     bool movComplete = false;
     if (movRecording) {
-        if (reachedRequestedEnd) movComplete = FinishPngMovRecording(s.Recorder(), expectedFrames, movError);
+        if (reachedRequestedEnd)
+            movComplete = FinishPngMovRecording(s.Recorder(), expectedFrames, movError, s.EnglishUI());
         else AbortPngMovRecording(s.Recorder());
     }
     ReleaseTransparentCapture(app);
