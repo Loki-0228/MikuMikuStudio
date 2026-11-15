@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -80,6 +81,55 @@ class CheckpointBatchTests(unittest.TestCase):
             with self.subTest(paths=[path.name for path in paths]):
                 self.assertEqual(self.run_cli(2, *paths), [expected[path] for path in paths])
         self.assertEqual(self.run_cli(2, self.missing), [missing])
+
+    def test_later_checkpoint_references_preserved_predecessor(self):
+        earlier, = self.run_cli(0, self.valid)
+        earlier_payload = self.valid.read_bytes()[128:]
+        owner = bytes(range(1, 17))
+        previous_digest = evidence.sha(earlier_payload)
+        file_index = 0x1122334455667788  # Declared NTFS identity, not the fixture inode.
+        volume = 0x10203040
+        previous = struct.pack(
+            "<37s3xI4x16s32s32sQI4xQQ", self.valid.name.encode("ascii"), 5,
+            b"MMSCatalogHead01", bytes([3]) + bytes(31), previous_digest,
+            len(earlier_payload), volume, file_index, 128 + len(earlier_payload))
+
+        # A second maintenance checkpoint refers to an earlier checkpoint blob,
+        # not a 368-byte ordinary commit. It retains the same live snapshot and
+        # may carry both old heads and snapshots still owed retirement.
+        for number, count in ((32, 3), (33, 192)):
+            with self.subTest(retired_count=count):
+                retired_snapshots = b"".join(
+                    evidence.wire_ref(f"{n:032x}.blob", 3, owner, 1, 19, n)
+                    for n in range(100, 100 + count - 2)
+                )
+                payload = (
+                    struct.pack("<16sI4xQ16s", b"MMSCacheBase0001", 1, 21, owner)
+                    + earlier_payload[48:208] + previous + struct.pack("<I4x", count)
+                    + previous + earlier_payload[208:368] + retired_snapshots
+                )
+                later = self.evidence / f"{number:032x}.blob"
+                blob = evidence.synthetic_blob(later, payload)
+                later.write_bytes(blob)
+
+                previous_row, later_row = self.run_cli(0, self.valid, later)
+                self.assertEqual(previous_row, earlier)
+                self.assertEqual(later_row["status"], "checkpoint_codec_ok")
+                self.assertEqual(later_row["bytes"], 128 + 376 + 160 * count)
+                self.assertEqual(later_row["sha256"], evidence.sha(blob).hex())
+                self.assertEqual(later_row["declared_payload_bytes"], len(payload))
+                decoded = later_row["decoded"]
+                self.assertEqual(decoded["revision"], earlier["decoded"]["revision"] + 1)
+                self.assertEqual(decoded["owner"], earlier["decoded"]["owner"])
+                self.assertEqual(decoded["snapshot"], earlier["decoded"]["snapshot"])
+                self.assertEqual(decoded["retired_count"], count)
+                self.assertEqual(decoded["previous"], dict(
+                    name=self.valid.name, kind=5, payload_sha256=previous_digest.hex(),
+                    payload_bytes=len(earlier_payload), declared_volume=volume,
+                    declared_file_index=file_index, declared_file_bytes=earlier["bytes"]))
+                # Both files remain independent observations in input order.
+                # Neither observation requires the absent reference files.
+                self.assertEqual(self.run_cli(0, later, self.valid), [later_row, earlier])
 
     def test_unreadable_input_does_not_hide_other_observations(self):
         unreadable = self.write_blob(23)
