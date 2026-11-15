@@ -16,7 +16,6 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
-#include <new>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -24,42 +23,20 @@
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/d3d12_skinning.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
+#include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/graphics_runtime.hpp"
+#include "mikumikustudio/main_panel_layout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/processor_settings.hpp"
+#include "mikumikustudio/ui_scale.hpp"
 #include "mikumikustudio/view_options.hpp"
+#include "mikumikustudio/viewport_bounds.hpp"
 
 #ifndef MMD_ENABLE_DX12
 #error The test target must define MMD_ENABLE_DX12 to match mikumikustudio_core.
 #endif
-
-// Match the repository's native_edit_history_tests allocation seam. Only the
-// current thread's narrowly armed interval rejects ordinary new/new[]. Other
-// threads and all cleanup outside that interval retain normal allocation.
-namespace native_policy_allocation {
-thread_local bool reject = false;
-thread_local unsigned attempts = 0;
-struct Reject {
-    bool previous = reject;
-    Reject() { reject = true; }
-    ~Reject() { reject = previous; }
-};
-}
-void* operator new(std::size_t size) {
-    if (native_policy_allocation::reject) {
-        ++native_policy_allocation::attempts;
-        throw std::bad_alloc();
-    }
-    if (void* memory = std::malloc(size ? size : 1)) return memory;
-    throw std::bad_alloc();
-}
-void* operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void* memory) noexcept { std::free(memory); }
-void operator delete[](void* memory) noexcept { std::free(memory); }
-void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
-void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 
 using namespace mikumikustudio;
 namespace fs = std::filesystem;
@@ -84,6 +61,7 @@ void DefaultDesktop() {
 }
 
 struct Host {
+    static constexpr UINT width = 800, height = 600;
     std::unique_ptr<MMDApp> app = std::make_unique<MMDApp>();
     std::unique_ptr<D3DRenderer> renderer = std::make_unique<D3DRenderer>();
     MMDApp* previous = g_Block;
@@ -95,10 +73,12 @@ struct Host {
         new (&app->state) MMDAppState{};
         identity._11 = identity._22 = identity._33 = identity._44 = 1;
         window = CreateWindowExW(WS_EX_NOACTIVATE, L"STATIC", L"MMS native sort policy test",
-            WS_POPUP, 0, 0, 96, 96, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+            WS_POPUP, 0, 0, width, height, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         Check(window != nullptr, "create self-owned hidden parent");
         app->MainWindow() = window; app->Renderer() = nullptr;
-        app->ViewportRect() = {0, 0, 96, 96};
+        app->ViewportRect() = {0, 0, width, height};
+        app->RenderWidth() = width;
+        app->RenderHeight() = height;
         app->viewportRender.automatic = true; app->viewportRender.percent = 100;
         app->state.blackBackgroundEnabled = 1;
         app->LightDirection()[2] = -1;
@@ -140,7 +120,7 @@ struct SettingsSnapshot {
         Check(app.TransparentMaterialSortPrecision() == precision && app.TransparentSortCrossObjects() == cross,
               "renderer preserves requested transparency settings");
         Check(app.SceneModified() == modified && app.SceneRevision() == revision && app.SceneGeneration() == generation,
-              "renderer fallback does not edit the project");
+              "rendering does not edit the project");
     }
 };
 
@@ -172,89 +152,30 @@ struct InitializationProbe {
     }
 };
 
-void AllocationFreeFirstFallback(Host& host, InitializationProbe& probe) {
-    // Calibrate the actual allocation seam before relying on zero attempts.
-    // Calling an operator function through a volatile pointer avoids new-
-    // expression allocation elision. No renderer has been called yet.
-    void* (*volatile allocate)(std::size_t) = &::operator new;
-    bool intercepted = false;
-    native_policy_allocation::attempts = 0;
-    {
-        native_policy_allocation::Reject reject;
-        try { void* memory = allocate(64); ::operator delete(memory); }
-        catch (const std::bad_alloc&) { intercepted = true; }
-    }
-    Check(intercepted && native_policy_allocation::attempts == 1,
-          "current-thread ordinary new failure injection is active");
-    host.app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Low;
-    host.app->TransparentSortCrossObjects() = true;
-    const SettingsSnapshot before(*host.app);
-    EnableD3D12Native(true);
-    native_policy_allocation::attempts = 0;
-    probe.calls = 0; probe.armed = true;
-    bool rendered = true, escaped = false, exactStatus = false;
-    {
-        native_policy_allocation::Reject reject;
-        try {
-            rendered = RenderD3D12Native(host.app.get(), host.World());
-            exactStatus = std::strcmp(D3D12NativeStatus(),
-                "D3D9 fallback: transparent sorting policy") == 0;
-        } catch (...) { escaped = true; }
-    } // Restore allocation before assertions, printing, or native teardown.
-    probe.armed = false;
-    std::printf("first-policy-fallback allocation-attempts=%u escaped=%d rendered=%d status=%s\n",
-        native_policy_allocation::attempts, escaped, rendered, D3D12NativeStatus());
-    Check(!escaped && !rendered && exactStatus && native_policy_allocation::attempts == 0,
-          "first non-Off fallback and its exact status need no ordinary new allocation");
-    Check(probe.calls == 0 && host.Child() == nullptr, "allocation-free gate still precedes native initialization");
-    before.Verify(*host.app);
-
-    // Prove enabled was retained without touching a graphics device. Off must
-    // reach the existing recording-mode rejection before Native::Initialize;
-    // a silently disabled request would return early with the policy reason.
-    host.app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Off;
-    host.app->RecordingWindow() = host.window;
-    const bool recordingRendered = RenderD3D12Native(host.app.get(), host.World());
-    host.app->RecordingWindow() = nullptr;
-    Check(!recordingRendered && std::strstr(D3D12NativeStatus(), "recording/floating/fullscreen") != nullptr,
-          "policy fallback retains enabled request for the next eligible Off call");
-    EnableD3D12Native(true);
-    host.app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Low;
-    Check(!RenderD3D12Native(host.app.get(), host.World()) &&
-          std::strcmp(D3D12NativeStatus(), "D3D9 fallback: transparent sorting policy") == 0,
-          "explicit re-enable permits a fresh policy fallback");
-    EnableD3D12Native(false);
-    Check(std::strcmp(D3D12NativeStatus(), "disabled") == 0,
-          "explicit disable clears the policy-fallback status");
-}
-
 void RouteChecks(Host& host) {
     processor::ResetForTesting();
     Check(host.app->Renderer() == nullptr && host.Child() == nullptr, "routing fixture has no renderer or native child");
     InitializationProbe probe;
-    AllocationFreeFirstFallback(host, probe);
+    host.app->RecordingWindow() = host.window;
     EnableD3D12Native(true);
-    for (auto precision : {TransparentSortPrecision::Low, TransparentSortPrecision::Standard,
-                           TransparentSortPrecision::High, TransparentSortPrecision::Maximum,
-                           static_cast<TransparentSortPrecision>(200)}) {
-        for (bool cross : {false, true}) {
-            host.app->TransparentMaterialSortPrecision() = precision;
-            host.app->TransparentSortCrossObjects() = cross;
-            const SettingsSnapshot before(*host.app);
-            probe.calls = 0; probe.armed = true;
-            const bool rendered = RenderD3D12Native(host.app.get(), host.World());
-            probe.armed = false;
-            std::printf("route precision=%u cross=%d rendered=%d init-queries=%u status=%s\n",
-                unsigned(precision), cross, rendered, probe.calls, D3D12NativeStatus());
-            Check(!rendered && probe.calls == 0, "non-Off returns before native initialization");
-            Check(std::strstr(D3D12NativeStatus(), "transparent") != nullptr,
-                  "non-Off has an explicit transparent-policy fallback reason");
-            Check(host.Child() == nullptr && !WaitD3D12Native() && !ValidateD3D12Native(nullptr),
-                  "policy fallback leaves no native child or valid stale frame");
-            before.Verify(*host.app); Hidden(host);
-        }
+    for (auto precision : {TransparentSortPrecision::Off, TransparentSortPrecision::Low,
+                           TransparentSortPrecision::Standard, TransparentSortPrecision::High,
+                           TransparentSortPrecision::Maximum}) {
+        host.app->TransparentMaterialSortPrecision() = precision;
+        const SettingsSnapshot before(*host.app);
+        probe.calls = 0;
+        probe.armed = true;
+        const bool rendered = RenderD3D12Native(host.app.get(), host.World());
+        probe.armed = false;
+        Check(!rendered && probe.calls == 0 && host.Child() == nullptr,
+              "unsupported recording mode precedes native initialization");
+        Check(std::strstr(D3D12NativeStatus(), "recording/floating/fullscreen") != nullptr,
+              "recording fallback preserves the actual admission reason for every sorting setting");
+        before.Verify(*host.app);
     }
+    host.app->RecordingWindow() = nullptr;
     EnableD3D12Native(false);
+    Hidden(host);
     std::puts("PASS route-before-initialization (no graphics device created)");
 }
 
@@ -305,9 +226,11 @@ DWORD ReadCenter(const fs::path& path) {
     BITMAPFILEHEADER file{}; BITMAPINFOHEADER info{};
     stream.read(reinterpret_cast<char*>(&file), sizeof file);
     stream.read(reinterpret_cast<char*>(&info), sizeof info);
-    Check(bool(stream) && file.bfType == 0x4d42 && info.biWidth == 96 && info.biHeight == -96 &&
+    Check(bool(stream) && file.bfType == 0x4d42 && info.biWidth > 0 && info.biWidth <= LONG(Host::width) &&
+        info.biHeight < 0 && info.biHeight >= -LONG(Host::height) &&
         info.biBitCount == 32 && info.biCompression == BI_RGB, "native capture has the owned expected BMP shape");
-    stream.seekg(std::streamoff(file.bfOffBits) + (48 * 96 + 48) * 4);
+    const auto center = std::streamoff(-info.biHeight/2) * info.biWidth + info.biWidth/2;
+    stream.seekg(std::streamoff(file.bfOffBits) + center * 4);
     DWORD pixel = 0; stream.read(reinterpret_cast<char*>(&pixel), sizeof pixel);
     Check(bool(stream), "read the actual native center pixel");
     return pixel;
@@ -347,7 +270,9 @@ bool HardwareChecks(Host& host, const fs::path& output) {
     if (FAILED(debugResult)) { std::puts("SKIP hardware: native capture validation requires the unavailable D3D12 debug component"); return false; }
     D3DPRESENT_PARAMETERS parameters{};
     parameters.Windowed = TRUE; parameters.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    parameters.hDeviceWindow = host.window; parameters.BackBufferWidth = parameters.BackBufferHeight = 96;
+    parameters.hDeviceWindow = host.window;
+    parameters.BackBufferWidth = Host::width;
+    parameters.BackBufferHeight = Host::height;
     parameters.BackBufferFormat = D3DFMT_A8R8G8B8;
     Hr(host.factory->CreateDevice(ordinal, D3DDEVTYPE_HAL, host.window,
         D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE, &parameters, &host.device),
@@ -356,6 +281,16 @@ bool HardwareChecks(Host& host, const fs::path& output) {
     host.renderer->device = host.device; host.renderer->d3d9 = host.factory;
     host.renderer->hwnd = host.window; host.renderer->aspectRatio = 1;
     host.app->Renderer() = host.renderer.get();
+    RECT client{};
+    Check(GetClientRect(host.window, &client) != FALSE, "read owned viewport client");
+    const auto panels = MainPanelLayout(host.app.get(), client.bottom);
+    const auto rows = FitViewportToolbarRows(panels.bottomTop, ui_scale::Percent());
+    FrameViewportGeometry geometryBounds;
+    Check(CalculateFrameViewport(client, host.app->SidebarWidth(), 0, FrameViewportMode::Docked,
+        host.app->RenderWidth(), host.app->RenderHeight(), geometryBounds,
+        0, 0, 0, panels.bottomExtra, rows), "calculate an admissible editor viewport");
+    host.app->ViewportRect() = geometryBounds.scene;
+    Check(FrameViewportRenderable(host.app.get()), "main viewport size is admitted by the actual route");
     Hr(host.device->SetTransform(D3DTS_WORLD, &host.identity), "set owned world transform");
     Hr(host.device->SetTransform(D3DTS_VIEW, &host.identity), "set owned view transform");
     Hr(host.device->SetTransform(D3DTS_PROJECTION, &host.identity), "set owned projection transform");
@@ -383,27 +318,27 @@ bool HardwareChecks(Host& host, const fs::path& output) {
     Check(geometry.indices == sourceIndices, "fixture restores exact nonsequential PMD source indices and companion words");
     Capture(host, output / L"before-switch.bmp");
     const HWND oldChild = host.Child();
-    host.app->TransparentMaterialSortPrecision() = TransparentSortPrecision::High;
     host.app->TransparentSortCrossObjects() = true;
-    // Before the next Render, validation still describes the previously
-    // submitted Off frame, not the newly requested UI setting.
-    Check(ValidateD3D12Native(nullptr), "validation uses last submitted Off frame after settings change");
-    const SettingsSnapshot changed(*host.app);
-    Check(!RenderD3D12Native(host.app.get(), host.World()), "new non-Off frame requests D3D9 fallback");
-    Check(!IsWindow(oldChild) && host.Child() == nullptr, "policy transition destroys the old native child");
-    const auto stale = output / L"must-not-exist.bmp";
-    Check(!ValidateD3D12Native(stale.c_str()) && !fs::exists(stale) && !WaitD3D12Native(),
-          "fallback cannot validate or save a stale native frame");
-    changed.Verify(*host.app); Hidden(host);
-    // Do not call Enable again: the user's native-preview request must survive
-    // the temporary policy fallback and recover when Off becomes applicable.
+    for (auto precision : {TransparentSortPrecision::Low, TransparentSortPrecision::Standard,
+                           TransparentSortPrecision::High, TransparentSortPrecision::Maximum}) {
+        host.app->TransparentMaterialSortPrecision() = precision;
+        Check(ValidateD3D12Native(nullptr), "validation uses the last submitted ordering after a UI setting changes");
+        const SettingsSnapshot changed(*host.app);
+        const DWORD sorted = Capture(host, output / (L"sorted-" + std::to_wstring(unsigned(precision)) + L".bmp"));
+        Check(IsWindow(oldChild) && host.Child() == oldChild, "sorting keeps the original DX12 viewport alive");
+        for (unsigned shift : {0u, 8u, 16u})
+            Check(std::abs(int((sorted >> shift) & 255) - int((farFirst >> shift) & 255)) <= 2,
+                  "DX12 sorts the overlapping transparent faces far first");
+        Check(geometry.indices == sourceIndices, "GPU sorting keeps author indices intact");
+        changed.Verify(*host.app);
+    }
     host.app->TransparentMaterialSortPrecision() = TransparentSortPrecision::Off;
     const DWORD resumed = Capture(host, output / L"resumed-off.bmp");
     for (unsigned shift : {0u, 8u, 16u})
         Check(std::abs(int((resumed >> shift) & 255) - int((nearFirst >> shift) & 255)) <= 2,
               "returning to Off restores authored order while retaining cross-object preference");
     Check(host.app->TransparentSortCrossObjects(), "Off does not erase stored cross-object preference");
-    std::puts("PASS optional hardware Off order, child teardown, stale-frame rejection and recovery");
+    std::puts("PASS optional hardware authored order, stable sorting and DX12 viewport continuity");
     return true;
 }
 } // namespace

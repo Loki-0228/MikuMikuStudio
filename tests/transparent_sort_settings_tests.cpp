@@ -457,7 +457,7 @@ int wmain(int argc,wchar_t** argv) {
     const bool fallback=!wcscmp(argv[1],L"--d3d12-fallback");
     { Guards guards; Host host(fallback || !wcscmp(argv[1],L"--project-roundtrip"));
       if (fallback) {
-          std::puts("RUN real-frame D3D12 sorting fallback"); D3D12FrameFallbackChecks(*host.app);
+          std::puts("RUN real-frame DX9 transparent sorting"); D3D9TransparentSortFrameChecks(*host.app);
       } else {
           std::puts("RUN native transparent settings menus"); MenuChecks(*host.app,host.project);
       }

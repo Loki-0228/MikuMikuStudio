@@ -99,10 +99,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     int argc = 0;
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     const wchar_t* scenePath = nullptr;
+    bool forceDx9 = false;
     for (int i = 1; argv && i < argc; ++i) {
-        if (wcscmp(argv[i], L"--d3d12-preview") == 0) EnableD3D12Native(true);
+        if (wcscmp(argv[i], L"--dx9") == 0) forceDx9 = true;
+        else if (wcscmp(argv[i], L"--d3d12-preview") == 0) continue;
         else if (!scenePath) scenePath = argv[i];
     }
+    EnableD3D12Native(!forceDx9);
     if (scenePath) {
         wcscpy_s(app->EnvFileName(), 0x100, scenePath);
     } else {

@@ -64,11 +64,13 @@ struct Native {
     ComPtr<ID3D12DescriptorHeap> rtvs,dsvs,srvs;
     ComPtr<ID3D12RootSignature> drawRoot;
     std::array<ComPtr<ID3D12PipelineState>,12> drawPso;
+    ComPtr<ID3D12RootSignature> sortRoot;
+    ComPtr<ID3D12PipelineState> sortPso;
     ComPtr<ID3D12Fence> fence;
     HANDLE event=nullptr;UINT64 sequence=0;
     unsigned width=0,height=0,rtvStep=0,srvStep=0;
     struct Frame {
-        ComPtr<ID3D12Resource> color,depth,sourceIndices,indices,constants,capture;
+        ComPtr<ID3D12Resource> color,depth,sourceIndices,indices,constants,capture,sortKeys;
         ComPtr<ID3D12CommandAllocator> allocator;
         ComPtr<ID3D12GraphicsCommandList> list;
         ComPtr<ID3D12GraphicsCommandList> effectList, presentList;
@@ -102,6 +104,9 @@ struct Native {
     std::uint64_t geometryRevision=0;
     unsigned lastSlot=0;
     bool captureEnabled=false;
+    bool lastSorted=false;
+    gpu::Ticket lastTicket{};
+    std::array<float,4> lastDepth{};
     bool pluginUsed = false;
     const uint64_t generation = ++nextGeneration;
     struct Constants {
@@ -347,6 +352,68 @@ struct Native {
             Check12(list->Reset(frame.allocator.Get(), nullptr), "native viewport pass reset");
         }
     }
+    void InitializeSort() {
+        if (sortPso) return;
+        D3D12_ROOT_PARAMETER parameters[5]{};
+        for (UINT i=0; i<2; ++i) {
+            parameters[i].ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV;
+            parameters[i].Descriptor.ShaderRegister=i;
+            parameters[i+2].ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV;
+            parameters[i+2].Descriptor.ShaderRegister=i;
+        }
+        parameters[4].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        parameters[4].Constants.Num32BitValues=12;
+        Root(parameters,5,sortRoot);
+        const auto code=Compile(kSortShader,"main","cs_5_1");
+        D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
+        desc.pRootSignature=sortRoot.Get();
+        desc.CS={code->GetBufferPointer(),code->GetBufferSize()};
+        Check12(Device()->CreateComputePipelineState(&desc,IID_PPV_ARGS(&sortPso)),"native transparent sort PSO");
+    }
+    D3D12_RESOURCE_STATES SortTransparent(Frame& frame,gpu::Ticket ticket,const D3DMATRIX& view) {
+        constexpr UINT threads=64;
+        constexpr UINT maxTriangles=1u<<21;
+        unsigned maxPadded=1;
+        for (const auto& draw:draws) if (draw.alpha && draw.count>3) {
+            const auto triangles=draw.count/3;
+            if (triangles>maxTriangles) throw std::runtime_error("Native transparent material too large");
+            unsigned padded=1;
+            while (padded<triangles) padded*=2;
+            maxPadded=std::max(maxPadded,padded);
+        }
+        if (maxPadded==1) return D3D12_RESOURCE_STATE_COPY_DEST;
+        InitializeSort();
+        Buffer(frame.sortKeys,UINT64(maxPadded)*8,D3D12_HEAP_TYPE_DEFAULT,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        auto* commands=frame.list.Get();
+        auto barrier=Barrier(frame.indices.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        commands->ResourceBarrier(1,&barrier);
+        commands->SetPipelineState(sortPso.Get());
+        commands->SetComputeRootSignature(sortRoot.Get());
+        commands->SetComputeRootShaderResourceView(0,skin.OutputResource(ticket)->GetGPUVirtualAddress());
+        commands->SetComputeRootShaderResourceView(1,frame.sourceIndices->GetGPUVirtualAddress());
+        commands->SetComputeRootUnorderedAccessView(2,frame.sortKeys->GetGPUVirtualAddress());
+        commands->SetComputeRootUnorderedAccessView(3,frame.indices->GetGPUVirtualAddress());
+        D3D12_RESOURCE_BARRIER uav{};
+        uav.Type=D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        for (const auto& draw:draws) if (draw.alpha && draw.count>3) {
+            struct Constants { unsigned first,count,padded,mode,k,j,reserved[2]; float depth[4]; };
+            Constants values{draw.first,draw.count/3,1,0,0,0,{}, {view._13,view._23,view._33,view._43}};
+            while (values.padded<values.count) values.padded*=2;
+            const auto dispatch=[&] {
+                commands->SetComputeRoot32BitConstants(4,12,&values,0);
+                commands->Dispatch((values.padded+threads-1)/threads,1,1);
+                commands->ResourceBarrier(1,&uav);
+            };
+            dispatch();
+            values.mode=1;
+            for (values.k=2;values.k<=values.padded;values.k*=2)
+                for (values.j=values.k/2;values.j;values.j/=2) dispatch();
+            values.mode=2;
+            dispatch();
+        }
+        return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
     void Render(MMDApp* app,const float world[16]) {
         Resize(app);unsigned slot=swap->GetCurrentBackBufferIndex();auto& f=frames[slot];Wait(f.done);f.uploads.clear();
         f.ClearRetained();
@@ -356,15 +423,15 @@ struct Native {
         auto& api=d3dx::Get();api.Load();api.multiply(reinterpret_cast<d3dx::D3DXMATRIXF*>(&wv),reinterpret_cast<const d3dx::D3DXMATRIXF*>(world),reinterpret_cast<const d3dx::D3DXMATRIXF*>(&view));
         api.multiply(reinterpret_cast<d3dx::D3DXMATRIXF*>(&wvp),reinterpret_cast<const d3dx::D3DXMATRIXF*>(&wv),reinterpret_cast<const d3dx::D3DXMATRIXF*>(&projection));
         gpu::Ticket ticket;const bool geometry=!packed.vertices.empty()&&!indices.empty();
+        const bool sorting=static_cast<const MMDApp&>(*app).TransparentMaterialSortPrecision()!=TransparentSortPrecision::Off;
         if(geometry){if(!skin.Submit(packed.vertices,packed.bones,packed.materials,packed.parameters,ticket))throw std::runtime_error(skin.Error());
             Upload(f.sourceIndices,indices.data(),indices.size()*4);
-            if(Buffer(f.indices,indices.size()*4,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COPY_DEST))f.indicesReady=false;
+            if(Buffer(f.indices,indices.size()*4,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS))f.indicesReady=false;
             if(f.indicesReady){auto b=Barrier(f.indices.Get(),kSceneIndices,D3D12_RESOURCE_STATE_COPY_DEST);f.list->ResourceBarrier(1,&b);}
             f.list->CopyBufferRegion(f.indices.Get(),0,f.sourceIndices.Get(),0,indices.size()*4);
-            // Every admitted frame runs with sorting off, so the authored
-            // order is the submitted order: copy it straight to the index
-            // buffer and skip the former compute sort.
-            auto b=Barrier(f.indices.Get(),D3D12_RESOURCE_STATE_COPY_DEST,kSceneIndices);f.list->ResourceBarrier(1,&b);f.indicesReady=true;
+            const auto state=sorting?SortTransparent(f,ticket,wv):D3D12_RESOURCE_STATE_COPY_DEST;
+            auto b=Barrier(f.indices.Get(),state,kSceneIndices);f.list->ResourceBarrier(1,&b);f.indicesReady=true;
         }
         auto b=Barrier(f.color.Get(),D3D12_RESOURCE_STATE_PRESENT,D3D12_RESOURCE_STATE_RENDER_TARGET);f.list->ResourceBarrier(1,&b);
         auto rtv=rtvs->GetCPUDescriptorHandleForHeapStart();rtv.ptr+=slot*rtvStep;
@@ -437,10 +504,16 @@ struct Native {
         Check12(skin.Queue()->Signal(fence.Get(),++sequence),"native signal");f.done=sequence;
         if(geometry&&!skin.RetainForQueuedGraphics(ticket))throw std::runtime_error(skin.Error());
         lastSlot=slot;
+        lastTicket=ticket;
+        lastSorted=sorting;
+        lastDepth={wv._13,wv._23,wv._33,wv._43};
         Check12(swap->Present(0,0),"native present");
     }
     void Validate(const wchar_t* path) {
         WaitAll();auto& f=frames[lastSlot];
+        std::vector<gpu::Output> skinned;
+        if (lastSorted && lastTicket.fence && !skin.Readback(lastTicket,skinned))
+            throw std::runtime_error(skin.Error());
         Check12(f.allocator->Reset(),"validation allocator");Check12(f.list->Reset(f.allocator.Get(),nullptr),"validation list");
         ComPtr<ID3D12Resource> readIndices;
         if(!indices.empty()){
@@ -456,14 +529,21 @@ struct Native {
         if(readIndices){
             void* mapped;D3D12_RANGE range{0,indices.size()*4};Check12(readIndices->Map(0,&range,&mapped),"validation index map");
             std::vector<unsigned> actual(indices.size());memcpy(actual.data(),mapped,indices.size()*4);readIndices->Unmap(0,nullptr);
-            // Every admitted frame runs with sorting off, so the submitted
-            // index buffer must reproduce the authored order for every draw.
-            for(const auto& d:draws)
-                for(unsigned i=0;i<d.count;++i)
-                    if(actual[d.first+i]!=indices[d.first+i]){
-                        char error[256];sprintf_s(error,"GPU index order mismatch material first=%u index=%u actual=%u expected=%u",d.first,i,actual[d.first+i],indices[d.first+i]);
-                        throw std::runtime_error(error);
+            for (const auto& draw:draws) {
+                std::vector<unsigned> order(draw.count/3);
+                std::iota(order.begin(),order.end(),0);
+                if (lastSorted && draw.alpha) {
+                    std::vector<float> depths(order.size());
+                    for (unsigned i=0;i<order.size();++i) for (unsigned n=0;n<3;++n) {
+                        const auto& p=skinned[indices[draw.first+3*i+n]].position;
+                        depths[i]+=(p[0]*lastDepth[0]+p[1]*lastDepth[1]+p[2]*lastDepth[2]+lastDepth[3])*(1.f/3.f);
                     }
+                    std::stable_sort(order.begin(),order.end(),[&](unsigned a,unsigned b){return depths[a]>depths[b];});
+                }
+                for (unsigned i=0;i<order.size();++i) for (unsigned n=0;n<3;++n)
+                    if (actual[draw.first+3*i+n]!=indices[draw.first+3*order[i]+n])
+                        throw std::runtime_error("GPU transparent index order mismatch");
+            }
         }
         if(path){
             if(!f.capture)throw std::runtime_error("capture requires validation mode");
@@ -487,15 +567,13 @@ bool enabled=false;
 bool validationEnabled=false;
 std::unique_ptr<Native> native;
 std::string status="disabled";
-bool policyFallback=false;
 }
-void EnableD3D12Native(bool value,bool validation){policyFallback=false;enabled=value;validationEnabled=validation;if(!value)ShutdownD3D12Native();status=value?"requested":"disabled";}
+void EnableD3D12Native(bool value,bool validation){enabled=value;validationEnabled=validation;if(!value)ShutdownD3D12Native();status=value?"requested":"disabled";}
 bool ValidateD3D12Native(const wchar_t* path){
     if(!native)return false;
     try{native->Validate(path);return true;}catch(const std::exception& e){status=e.what();return false;}
 }
 const char* D3D12NativeStatus(){
-    if(policyFallback)return "D3D9 fallback: transparent sorting policy";
     return status.c_str();
 }
 bool WaitD3D12Native(){
@@ -506,21 +584,17 @@ bool WaitD3D12Native(){
 void ShutdownD3D12Native(){native.reset();}
 bool RenderD3D12Native(MMDApp* app,const float world[16]) {
     if(!enabled || !FrameViewportRenderable(app))return false;
-    // The native preview submits the authored index order, so it mirrors the
-    // renderer only while transparent sorting is off.  Any other policy,
-    // including an unknown stored value, belongs to the D3D9 path.  Release
-    // the device but keep the request so switching back to Off restarts it.
-    // The reported reason is a fixed literal: this path must fall back even
-    // when allocating the status string itself would fail.
-    const MMDApp& settings=*app;
-    if(settings.TransparentMaterialSortPrecision()!=TransparentSortPrecision::Off){
-        native.reset();policyFallback=true;return false;
-    }
-    policyFallback=false;
     try {
-        if(mikumikustudio::LegacyMmeModule())throw std::runtime_error("D3D12 native requires a directory without the MME proxy");
-        if(app->RecordingWindow()||app->FloatingWindow()||app->FullscreenMode())throw std::runtime_error("Native recording/floating/fullscreen is not available");
-        for(int i=0;i<255;++i)if(app->AccessorySlot(i))throw std::runtime_error("Native accessory rendering is not yet available");
+        const auto fallback=[&](const char* reason) {
+            native.reset();
+            status=reason;
+            return false;
+        };
+        if(mikumikustudio::LegacyMmeModule())return fallback("D3D9 fallback: original MME");
+        if(app->RecordingWindow()||app->FloatingWindow()||app->FullscreenMode())
+            return fallback("D3D9 fallback: recording/floating/fullscreen");
+        for(int i=0;i<255;++i)if(app->AccessorySlot(i))
+            return fallback("D3D9 fallback: accessories");
         if(!native){native=std::make_unique<Native>();native->Initialize(app->MainWindow(),validationEnabled);}
         native->Render(app,world);status="D3D12 native active";return true;
     }catch(const std::exception& e){status=e.what();runtime_log::Write("D3D12 native fallback: %s",status.c_str());native.reset();enabled=false;return false;}

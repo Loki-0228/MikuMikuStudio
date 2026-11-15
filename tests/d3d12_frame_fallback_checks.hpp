@@ -6,7 +6,7 @@
 // The target must receive the same MMD_ENABLE_DX12 value as its linked core.
 #if !MMD_ORIGINAL_PROFILE && defined(MMD_ENABLE_DX12) && MMD_ENABLE_DX12
 namespace d3d12_frame_fallback {
-constexpr char fallbackStatus[]="D3D9 fallback: transparent sorting policy";
+constexpr char fallbackStatus[]="disabled";
 
 void ViewportDiagnostic(MMDApp& app,const char* phase) {
     RECT client{};
@@ -115,7 +115,7 @@ public:
         auto& self=*active;
         const bool mine=self.Mine(d);
         if (mine && std::strcmp(D3D12NativeStatus(),fallbackStatus))
-            self.error="D3D9 BeginScene occurred before the actual sorting fallback gate";
+            self.error="D3D9 BeginScene ran with the native preview still requested";
         const auto result=self.begin(d);
         if (mine) {
             if (FAILED(result)) self.error="native D3D9 BeginScene failed";
@@ -151,7 +151,7 @@ public:
 } // namespace d3d12_frame_fallback
 #endif
 
-void D3D12FrameFallbackChecks(MMDApp& app) {
+void D3D9TransparentSortFrameChecks(MMDApp& app) {
 #if !MMD_ORIGINAL_PROFILE && defined(MMD_ENABLE_DX12) && MMD_ENABLE_DX12
     using namespace d3d12_frame_fallback;
     Check(Owned(app.MainWindow()) && app.Renderer() && app.Renderer()->device,
@@ -183,16 +183,15 @@ void D3D12FrameFallbackChecks(MMDApp& app) {
             const auto scopeEdited=app.PmmProjectSettings().sortingCrossObjectsEdited;
             const auto precisionEdited=app.PmmProjectSettings().sortingPrecisionEdited;
             calls.Reset();
-            EnableD3D12Native(true);
-            Check(!std::strcmp(D3D12NativeStatus(),"requested"),"compiled native preview records a fresh request before each real frame");
+            EnableD3D12Native(false);
             app.state.messageSeen=1;
             calls.armed=true;
             RenderFrameScene(&app);
             calls.armed=false;
-            Check(!std::strcmp(D3D12NativeStatus(),fallbackStatus),"actual RenderFrameScene reached the native sorting gate");
+            Check(!std::strcmp(D3D12NativeStatus(),fallbackStatus),"DX9 selection remains active through RenderFrameScene");
             Check(!calls.error,calls.error?calls.error:"owned downstream D3D9 calls succeeded");
             Check(calls.begins>0 && calls.ends==calls.begins && calls.depth==0 && calls.groundSubmissions>0,
-                  "after native rejection the real frame submits ground geometry inside completed D3D9 scenes");
+                  "the DX9 frame submits ground geometry inside completed D3D9 scenes");
             Check(app.CurrentFrame()==frame && app.SceneRevision()==revision && app.SceneGeneration()==generation && app.state.sceneModified==dirty,
                   "fallback rendering preserves playhead, revision, generation, and dirty state");
             Check(Scope(app)==cross && app.TransparentMaterialSortPrecision()==precision &&
