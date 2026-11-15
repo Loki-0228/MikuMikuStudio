@@ -43,13 +43,15 @@ MSVC x64 的重置槽为 17/136；ABI 3 start/stop/观察槽保持 240/241/243�
 
 | 插件 / 固定源码 | 实际依赖及缺口 | 本轮范围 |
 | --- | --- | --- |
-| [EffekseerForMMD c55b2f4](https://github.com/oigami/EffekseerForMMD/tree/c55b2f4e0e26cee473931624f0180eec84c297e2) | ABI 2；构造 AddRef、析构 Release 设备；BeginScene、EndScene、DrawIndexedPrimitive、Reset/PostReset；设备矩阵；ExpGetFrameTime、模型/排序/ID/文件名、骨骼与表情、当前对象/材质/technic；getHWND；CRT 文件及拖放 API hook；Effekseer 运行库。其 PostReset 未判断 HRESULT 即重建资源 | 借用其重置回调契约实现合成插件，不运行原插件、不宣称粒子渲染可用。剩余绘制、资源、文件通知应接 MMS 明确接口，不能补伪造地址 |
-| [FirstPersonCamera f71c300](https://github.com/MikuMikuShaders/FirstPersonCamera/tree/f71c300f31eaa5c0e1543839854056774035f119) | ABI 4 工厂；键盘、鼠标回调；构造即 getMMDMainData，直接写 xyz/rxyz/length 并读 is_camera_mode；GetKeyState、鼠标位置和可见性；D3DX 数学。未覆盖 D3DX 特效回调 | 未支持。需用 MMS 相机状态读取、相机编辑及历史事务代替私有结构，并处理输入焦点和光标释放；本轮没有该源码适配 |
+| [EffekseerForMMD c55b2f4](https://github.com/oigami/EffekseerForMMD/tree/c55b2f4e0e26cee473931624f0180eec84c297e2) | ABI 2；构造 AddRef、析构 Release 设备；BeginScene、EndScene、DrawIndexedPrimitive、Reset/PostReset；设备矩阵；ExpGetFrameTime、模型/排序/ID/文件名、骨骼与表情、当前对象/材质/technic；getHWND；CRT 文件及拖放 API hook；Effekseer 运行库。其 PostReset 未判断 HRESULT 即重建资源 | 借用其重置回调契约实现合成插件。真实 v0.21 DLL 已做产品加载测试，停在 WinSxS GDI+ 路径预检，未进入工厂或粒子渲染。剩余绘制、资源、文件通知应接 MMS 明确接口，不能补伪造地址 |
+| [FirstPersonCamera f71c300](https://github.com/MikuMikuShaders/FirstPersonCamera/tree/f71c300f31eaa5c0e1543839854056774035f119) | ABI 4 工厂；键盘、鼠标回调；构造即 getMMDMainData，直接写 xyz/rxyz/length 并读 is_camera_mode；GetKeyState、鼠标位置和可见性；D3DX 数学。未覆盖 D3DX 特效回调 | 未支持。真实 v0.01 DLL 的 ABI 4 工厂不能通过 ABI 3 预检；需用 MMS 相机状态读取、相机编辑及历史事务代替私有结构，并处理输入焦点和光标释放；没有该源码适配 |
 | [MMDUtility 核心 0bff277](https://github.com/oigami/MMDUtility/tree/0bff27755a5d86dbb8a5be3f264101ee4bf52f86/MMDUtility) | ABI 3，getHWND/createWM_APP_ID，构造创建菜单。MsgProc 处理菜单选择；getDLL3Object 用于其他模块查询 | 核心菜单加载属于已有观察范围；MsgProc 和子插件互查仍不支持。不能把核心可加载扩大成全部子插件可用 |
 | [ExamplePlugin 242115c](https://github.com/PTOM76/mmdplugin-ExamplePlugin/tree/242115c99faabf2bc195e1a24a82bd63f5e4718d) | 源码导出 create3/destroy3，但 version 声明及菜单消息需要适配；getHWND、菜单命令、INI 路径 | 基线记录中的 ABI 3 适配版保持原边界；本轮不将上游原样二进制计为已通过 |
 | [DispPlayingFrame 64d7305](https://github.com/Soul-chan/MMDPluginDLL/blob/64d73053739dac0dc126a2c712f5adb72bcd2e78/DispPlayingFrame/DispPlayingFrame.cpp) | ABI 3、窗口/子控件、10ms 定时器，stop 清除定时器；原样检查 MMD 9.31 并读取 MMDMainData 的播放字段 | 已有源码适配使用 MMSAcquireLegacyPlaybackMap 的不可变只读快照，不复刻 MMDMainData；本轮未重跑该适配版的帧号控件 |
 | [CameraModeUndo / OutsideParentReaderWriter / SetCameraFollowBone / SwapOutsideParent，64d7305](https://github.com/Soul-chan/MMDPluginDLL/tree/64d73053739dac0dc126a2c712f5adb72bcd2e78) | 都是 ABI 3，窗口/消息/输入接口，原版版本检查和 MMDMainData；分别依赖相机历史、外亲读写、相机跟随骨骼、外亲交换。声明回调不代表每个都有非空逻辑 | 原样未支持。需要分别接 MMS 相机、场景、外亲、选择及历史接口；不暴露假结构指针 |
 | [AutoSave，0bff277](https://github.com/oigami/MMDUtility/blob/0bff27755a5d86dbb8a5be3f264101ee4bf52f86/AutoSave/AutoSave.cpp) | ABI 3，getDLL3Object、MouseProc 定时触发、CRT hook；从当前 EXE 基址 + 0x750D0 调保存并传 MMDMainData | 未支持。应走 MMS 保存/备份事务接口，不能调用该偏移；线程及 hook 清理还需单独验证 |
+
+真实发布 DLL 的来源、42 组产品加载检查、WinSxS 阻塞及未执行功能见[Effekseer / FirstPersonCamera 测试记录](records/mmdfacade-real-plugins-2026-11-15.md)。
 
 ## 本轮可独立验收的扩展
 
