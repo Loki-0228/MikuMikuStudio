@@ -26,6 +26,8 @@ retime_test := $(BUILD_DIR)/tests/animation_retime_tests
 format_inspect := $(BUILD_DIR)/mms_format_inspect
 format_inspect_obj := $(BUILD_DIR)/obj/tools/mms_format_inspect.o
 format_inspect_test := $(BUILD_DIR)/tests/test_mms_pmm_directory
+pmx_metadata_test := $(BUILD_DIR)/tests/test_mms_pmx_metadata
+pmx_metadata_test_obj := $(BUILD_DIR)/obj/tools/test_mms_pmx_metadata.o
 format_codec_obj := $(BUILD_DIR)/obj/src/io/pmm_container.o
 format_test_objs := $(BUILD_DIR)/obj/tools/test_mms_pmm_directory.o $(format_codec_obj)
 
@@ -34,13 +36,17 @@ all: $(curve_library) $(test_bins) $(format_inspect)
 
 format-inspect: $(format_inspect)
 
-check-format-inspect: $(format_inspect) $(format_inspect_test)
+check-format-inspect: $(format_inspect) $(format_inspect_test) $(pmx_metadata_test)
 	$(PYTHON) "$(source_dir)/tools/test_mms_format_inspect.py" "$<"
 	$(PYTHON) "$(source_dir)/tools/test_mms_pmm_directory.py" "$<" "$(format_inspect_test)"
+	"$(pmx_metadata_test)"
+	$(PYTHON) "$(source_dir)/tools/test_mms_pmx_metadata.py" "$<"
 
 $(format_codec_obj): private override CPPFLAGS += -D_FILE_OFFSET_BITS=64 -I"$(source_dir)/linux/test_compat"
 
 $(format_inspect_test): $(format_test_objs)
+$(pmx_metadata_test): $(pmx_metadata_test_obj)
+$(format_inspect_test) $(pmx_metadata_test):
 	@mkdir -p "$(@D)"
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o "$@"
 
@@ -71,4 +77,4 @@ $(BUILD_DIR)/obj/%.o: $(source_dir)/%.cpp
 	$(CXX) $(CPPFLAGS) -I"$(source_dir)/include" -I"$(source_dir)/src" \
 		$(CXXFLAGS) -std=c++17 -pthread -MMD -MP -c "$<" -o "$@"
 
--include $(curve_objects:.o=.d) $(test_objects:.o=.d) $(format_inspect_obj:.o=.d) $(format_test_objs:.o=.d)
+-include $(curve_objects:.o=.d) $(test_objects:.o=.d) $(format_inspect_obj:.o=.d) $(format_test_objs:.o=.d) $(pmx_metadata_test_obj:.o=.d)

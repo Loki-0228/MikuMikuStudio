@@ -37,6 +37,7 @@
 make -C linux format-inspect
 linux/build/mms_format_inspect -- ./example.pmm
 linux/build/mms_format_inspect --json -- ./example.pmx
+linux/build/mms_format_inspect --pmx-metadata --json -- ./example.pmx
 linux/build/mms_format_inspect --pmm-directory --json -- ./example.pmm
 linux/build/mms_format_inspect --pmm-verify-payloads --json -- ./example.pmm
 make -C linux check-format-inspect
@@ -85,7 +86,25 @@ make -C linux check-format-inspect
 
 本模式的 JSON 保留头部字段，`validation` 为 `pmm_block_payload_crc32`，`pmm_payloads` 包含 `status` 和 `bytes_examined`（成功读取的载荷字节数）。顶层 `bytes_examined` 统计成功读取的元数据与载荷字节总数；部分短读不计入。结果只报告上述范围内的校验，不提供文件快照或真实性证明。请使用检查期间不会被修改的文件。
 
-这一步不验证整份文件是否可加载，不加载场景或模型，也不写入文件或修改工程、工作区、设置、历史。它不是 `mms.format` 服务或提供者注册，未新增公开 ABI。只读预览、编辑、转换和导出仍需分别实现和验收。
+#### 可选的 PMX 模型文本预览
+
+`--pmx-metadata` 按顺序只读取四个字段：本地名称（`name_local`）、英文名称（`name_en`）、本地注释（`comment_local`）和英文注释（`comment_en`）。以内容识别，不依赖扩展名。此模式只支持标准的 17 字节 PMX 2.0/2.1 头（`PMX ` 魔数、8 项全局设置、附加 UV 为 0–4、各索引宽度为 1/2/4），以及 UTF-16LE 和 UTF-8。字段长度是有符号小端 32 位字节数：单个字段最多 64 KiB，四个文本合计最多 256 KiB。读取和分配之前检查长度、剩余文件大小和预算。头部识别结果及两个原生配置的入口判断并不因此改变，预览成功也不表示原生加载器能导入。
+
+| PMX 预览状态 | 返回码 | 含义 |
+| --- | --- | --- |
+| `metadata_ok` | 0 | 四个字段均已读完并通过 Unicode 验证；允许空字符串。 |
+| `absent` | 1 | 未识别到 PMX 头；对其他格式最多采样 30 字节，不检查 PMM 尾标。 |
+| `unsupported` | 1 | PMX 版本、编码或扩展设置布局不在预览支持范围内。 |
+| `truncated` | 1 | PMX 固定头、字段长度或字段内容不完整。 |
+| `invalid` | 1 | 标准头设置、字段长度或 Unicode 序列不合法。 |
+| `io_error` | 2 | 文件打开或读取失败。参数错误也返回 2，仅输出用法。 |
+| `budget_exceeded` | 3 | 字段超过文本预算，未读取超限字段的内容。 |
+
+JSON 的 `validation` 为 `pmx_model_metadata_only`，新增 `pmx_metadata.status`，且仅成功时输出全部四个字段。顶层 `bytes_examined` 统计成功读取的字节数，部分短读不计入。文本与 JSON 均以 UTF-8 输出；字段采用 JSON 字符串转义，控制字符、Unicode 换行和文字方向控制符不会原样输出。解析 JSON 可还原原始 Unicode 字符，包括字段中间的 NUL，不做正规化或语言回退。
+
+预览在第四个文本字段结束后停止，既不读顶点计数或模型正文，也不打开模型引用的纹理等其他文件；不回显输入路径，拒绝输入路径最后一段是符号链接（Windows 上为重解析点）的文件。检查不提供稳定快照，使用期间请勿修改文件。本选项不能与 PMM 检查选项组合，运行 `mms_format_inspect --pmx-metadata --help` 查看用法；默认模式和已有 PMM 模式不变。
+
+这一步不验证整份文件是否可加载，不加载场景或模型，也不写入文件或修改工程、工作区、设置、历史。它不是 `mms.format` 服务或提供者注册，未新增公开 ABI。完整导入预览、编辑、转换和导出仍需分别实现和验收。
 
 导入分为文件读取、私有候选验证、只读预览、编辑事务发布。预览可以包含专用数据查看器，关闭预览只释放候选。
 转换可以作用于候选文档，也可以准备当前工程的编辑候选。前者不产生工程历史；后者必须明确提交到共同历史。
