@@ -3,6 +3,7 @@
 #include "scene_digest.hpp"
 #include "../io/effect_pair_transaction.hpp"
 #include "../io/pmm_save_versions.hpp"
+#include "../io/project_recovery_cleanup.hpp"
 #include <array>
 #include <cstddef>
 #include <fstream>
@@ -319,13 +320,11 @@ void Cleanup(const Paths& p,const StageHashes& hashes,const JournalRecord& journ
     }
     // The successful journal move already consumed tempJournal. A file that
     // later appears at that name was never part of this recovery.
-    for(auto& stage:stages) {
-        if(stage.value==INVALID_HANDLE_VALUE)continue;
+    project_recovery::CompleteCleanup(stages,[](Handle& stage) {
+        if(stage.value==INVALID_HANDLE_VALUE)return;
         Check(MarkStageForDeletion(stage.value)!=FALSE,"remove recovery stage");
         stage.Close();
-    }
-    finishStages();
-    RemoveJournal(p.journal,journal);
+    },finishStages,[&]{RemoveJournal(p.journal,journal);});
 }
 void Cleanup(const Paths& p,const StageHashes& hashes,const JournalRecord& journal){Cleanup(p,hashes,journal,[]{});}
 void ResolvePair(const Paths& p,const std::string& nm,const std::string& ns,const std::string& om,const std::string& os,bool forward){

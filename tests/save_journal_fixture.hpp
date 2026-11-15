@@ -54,6 +54,17 @@ inline void ArmDecisionBarrier(const std::filesystem::path& journal, HANDLE noti
         throw std::runtime_error("hook recovery decision flush");
 }
 
+inline bool MatchesHandlePath(HANDLE file, const std::filesystem::path& expected) {
+    wchar_t path[32768];
+    const DWORD length = GetFinalPathNameByHandleW(file, path, 32768, FILE_NAME_NORMALIZED);
+    if (!length || length >= 32768) return false;
+    std::wstring_view source(path, length);
+    constexpr std::wstring_view prefix = LR"(\\?\)";
+    if (source.substr(0, prefix.size()) == prefix && expected.native().substr(0, prefix.size()) != prefix)
+        source.remove_prefix(prefix.size());
+    return source == expected.native();
+}
+
 inline bool MatchesHandleRename(HANDLE file, FILE_INFO_BY_HANDLE_CLASS type, const void* data,
                                 DWORD size, const std::filesystem::path& from, const std::filesystem::path& to) {
     if (type != FileRenameInfo || !data || size < sizeof(FILE_RENAME_INFO)) return false;
@@ -62,14 +73,7 @@ inline bool MatchesHandleRename(HANDLE file, FILE_INFO_BY_HANDLE_CLASS type, con
         rename.FileNameLength > size - offsetof(FILE_RENAME_INFO, FileName) ||
         std::wstring_view(rename.FileName, rename.FileNameLength / sizeof(wchar_t)) != to.native())
         return false;
-    wchar_t path[32768];
-    const DWORD length = GetFinalPathNameByHandleW(file, path, 32768, FILE_NAME_NORMALIZED);
-    if (!length || length >= 32768) return false;
-    std::wstring_view source(path, length);
-    constexpr std::wstring_view prefix = LR"(\\?\)";
-    if (source.substr(0, prefix.size()) == prefix && from.native().substr(0, prefix.size()) != prefix)
-        source.remove_prefix(prefix.size());
-    return source == from.native();
+    return MatchesHandlePath(file, from);
 }
 
 namespace rename_barrier {
@@ -135,4 +139,57 @@ inline void ArmRenameBarrier(const std::filesystem::path& from, const std::files
         MH_EnableHook(MH_ALL_HOOKS) != MH_OK)
         throw std::runtime_error("hook completed archive rename");
 }
+
+namespace deletion_barrier {
+inline std::filesystem::path stage;
+inline HANDLE reached, stop;
+inline DWORD wait;
+inline decltype(&SetFileInformationByHandle) originalSet;
+inline decltype(&CloseHandle) originalClose;
+inline HANDLE markedFile = INVALID_HANDLE_VALUE;
+
+inline BOOL WINAPI Set(HANDLE file, FILE_INFO_BY_HANDLE_CLASS type, LPVOID data, DWORD size) {
+    const DWORD incoming = GetLastError();
+    const bool match = type == FileDispositionInfo && data && size == sizeof(FILE_DISPOSITION_INFO) &&
+        static_cast<const FILE_DISPOSITION_INFO*>(data)->DeleteFile && MatchesHandlePath(file, stage);
+    SetLastError(incoming);
+    const BOOL ok = originalSet(file, type, data, size);
+    if (match && ok) markedFile = file;
+    return ok;
+}
+
+inline BOOL WINAPI Close(HANDLE file) {
+    const BOOL ok = originalClose(file);
+    const DWORD error = GetLastError();
+    if (file == markedFile) {
+        markedFile = INVALID_HANDLE_VALUE;
+        // A successful disposition only schedules deletion; wait until the
+        // real handle is closed so the parent can verify an absent name.
+        if (ok) {
+            SignalObjectAndWait(reached, stop, wait, FALSE);
+            ExitProcess(75);
+        }
+    }
+    SetLastError(error);
+    return ok;
+}
+}
+
+inline void ArmDeletionBarrier(const std::filesystem::path& stage, HANDLE notification,
+                               HANDLE parked, DWORD timeout) {
+    deletion_barrier::stage = stage;
+    deletion_barrier::reached = notification;
+    deletion_barrier::stop = parked;
+    deletion_barrier::wait = timeout;
+    auto* set = reinterpret_cast<void*>(&SetFileInformationByHandle);
+    auto* close = reinterpret_cast<void*>(&CloseHandle);
+    if (MH_Initialize() != MH_OK ||
+        MH_CreateHook(set, reinterpret_cast<void*>(&deletion_barrier::Set),
+                      reinterpret_cast<void**>(&deletion_barrier::originalSet)) != MH_OK ||
+        MH_CreateHook(close, reinterpret_cast<void*>(&deletion_barrier::Close),
+                      reinterpret_cast<void**>(&deletion_barrier::originalClose)) != MH_OK ||
+        MH_EnableHook(MH_ALL_HOOKS) != MH_OK)
+        throw std::runtime_error("hook completed recovery stage deletion");
+}
+
 }

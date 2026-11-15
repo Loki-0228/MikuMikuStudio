@@ -378,3 +378,5 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 ## 手动编号保存专项
 
 `plugin_abi_tests --version-storage-only` 检查串 1 和数字轮转、三成员配对、锁与恢复；仅操作进程专属临时目录，保留文件供复查。`project_save_export_tests <独立输出目录> --numbered-only` 使用自有隐藏窗口实际保存并重开编号工程，适合原始配置，避免运行该配置禁用的最近工程断言。两者仍需复制 EXE 到独立安装、空 PLUGINS、受控 TEMP 和 Default 桌面。中央设置和三语言对话框沿用 autosave 专项。证据和未覆盖范围见[编号保存记录](../docs/records/abi-numbered-save-2026-10-23.md)。
+
+`plugin_abi_tests --version-original-cleanup-crash-only` 单独验证无 EMM、无插件旁车的原始 schema3 前滚恢复。实际发布者在新 PMM 改名后被终止，随后实际恢复进程在删除重复暂存且关闭文件句柄后被终止。恢复日志原字节须保留；两个新进程各恢复两次，检查当前、1、11 代 PMM 字节不变、111 代不存在，且暂存与日志均清理。该专项也包含在 `--version-storage-crash-only` 中；只验证文件级进程中断，不替代可见工程重开或断电验收。
