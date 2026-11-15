@@ -137,7 +137,11 @@ void V2RelocationCases(const fs::path& emptyV1, const fs::path& emptyV2,
         Check(message == UiMessage::OpenModelError && detail && fs::path(detail) == truncatedPath &&
               monitor && inputOpen, "real selected-model error identifies the truncated PMX");
         const auto* partial = app->ModelSlot(0);
-        Check(partial && mdl::Mdl(partial)->boneCount == 1 && !mdl::Mdl(partial)->loadComplete &&
+        // loadComplete is visibility and ModelInitDefaults starts it at one.
+        // Animation pools and key indices appear only after the PMX tail succeeds.
+        Check(partial && mdl::Mdl(partial)->boneCount == 1 && !mdl::Mdl(partial)->boneKeys &&
+              !mdl::Mdl(partial)->morphKeys && !mdl::Mdl(partial)->displayKeys &&
+              !mdl::Mdl(partial)->boneKeyIndices && !mdl::Mdl(partial)->morphKeyIndices &&
               !RelocationTicket::Capture(*app).Current(*app),
               "late PMX failure does not complete the candidate or publish a relocation owner");
         ++errors;

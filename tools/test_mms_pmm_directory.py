@@ -1,5 +1,6 @@
 """Container metadata and payload CRC32 regression tests. The good fixture uses the shipping writer."""
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -7,6 +8,8 @@ import sys
 import tempfile
 import unittest
 import zlib
+
+from format_inspect_test_support import allocated_bytes, make_sparse
 
 BINARY = Path(sys.argv.pop(1)).resolve()
 FIXTURE_TOOL = Path(sys.argv.pop(1)).resolve()
@@ -104,6 +107,7 @@ class PmmDirectory(unittest.TestCase):
         metadata = WRAPPER_BYTES
         zeros = bytes(64 * 1024)
         with self.path.open("wb") as stream:
+            make_sparse(stream)
             stream.write(PREFIX)
             stream.seek(gap, 1)
             for i, size in enumerate(sizes):
@@ -118,6 +122,9 @@ class PmmDirectory(unittest.TestCase):
                 metadata += BLOCK_HEADER.size + len(key)
             toc = toc_bytes(rows)
             stream.write(toc + footer_bytes(toc, stream.tell()))
+            stream.flush()
+            os.fsync(stream.fileno())
+        self.assertLess(allocated_bytes(self.path), self.path.stat().st_size)
         return metadata + len(toc)
 
     def with_toc(self, toc, before=None):
@@ -370,15 +377,20 @@ class PmmDirectory(unittest.TestCase):
         toc = toc_bytes([row(key, len(PREFIX), payload_size)])
         toc_offset = len(PREFIX) + BLOCK_HEADER.size + len(key) + payload_size
         with self.path.open("wb") as stream:
+            make_sparse(stream)
             stream.write(PREFIX + BLOCK_HEADER.pack(len(key), 1, 0, 0, payload_size, 0, 0) + key)
             stream.seek(toc_offset)
             stream.write(toc + footer_bytes(toc, toc_offset))
+            stream.flush()
+            os.fsync(stream.fileno())
         before = self.path.stat()
+        allocation = allocated_bytes(self.path)
+        self.assertLess(allocation, before.st_size)
         data = self.inspect(0, "metadata_ok", WRAPPER_BYTES + len(toc) + BLOCK_HEADER.size + len(key))
         self.assertEqual(data["pmm_directory"]["blocks"][0]["payload_bytes"], payload_size)
         after = self.path.stat()
-        self.assertEqual((before.st_size, before.st_mtime_ns, before.st_blocks),
-                         (after.st_size, after.st_mtime_ns, after.st_blocks))
+        self.assertEqual((before.st_size, before.st_mtime_ns, allocation),
+                         (after.st_size, after.st_mtime_ns, allocated_bytes(self.path)))
         self.verify(3, "budget_exceeded", 0, data["bytes_examined"])
         subprocess.run([FIXTURE_TOOL, "--check-payload-budget", self.path], timeout=10, check=True)
 

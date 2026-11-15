@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 
+from format_inspect_test_support import allocated_bytes, make_sparse
+
 BINARY = Path(sys.argv.pop(1)).resolve()
 PMM_MAGIC = b"Polygon Movie maker"
 VMD_MAGIC = b"Vocaloid Motion Data "
@@ -158,18 +160,24 @@ class FormatInspect(unittest.TestCase):
         size = (5 << 30) + 13
         header = pmm(b"0003")
         with path.open("wb") as stream:
+            make_sparse(stream)
             stream.write(header)
             stream.seek(size - len(FOOTER))
             stream.write(FOOTER)
+            # Finish fixture allocation before measuring read-only inspection.
+            stream.flush()
+            os.fsync(stream.fileno())
         before = path.stat()
+        allocation = allocated_bytes(path)
         self.assertEqual(before.st_size, size)
+        self.assertLess(allocation, size)
         self.check_json(
             path.name, 0, result("recognized", "pmm", "0003", full="accepted", original="rejected",
                                  footer="marker_only", count=94),
         )
         after = path.stat()
-        self.assertEqual((after.st_size, after.st_mtime_ns, after.st_blocks),
-                         (before.st_size, before.st_mtime_ns, before.st_blocks))
+        self.assertEqual((after.st_size, after.st_mtime_ns, allocated_bytes(path)),
+                         (before.st_size, before.st_mtime_ns, allocation))
         with path.open("rb") as stream:
             self.assertEqual(stream.read(30), header)
             stream.seek(-64, os.SEEK_END)

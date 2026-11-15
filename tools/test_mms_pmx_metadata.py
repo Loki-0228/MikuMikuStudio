@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 
+from format_inspect_test_support import allocated_bytes, make_sparse
+
 sys.dont_write_bytecode = True
 from pmxlib import PmxModel
 
@@ -124,7 +126,8 @@ class PmxMetadata(unittest.TestCase):
                     for run in (plain, structured):
                         self.assertIn(f"\\u{ord(ch):04x}".encode(), run.stdout)
                         if ch != "\n":
-                            self.assertNotIn(ch.encode(), run.stdout)
+                            # Windows CRT text output terminates lines with CRLF.
+                            self.assertNotIn(ch.encode(), run.stdout.replace(b"\r\n", b"\n"))
                 for expected, key in zip(model_fields, FIELDS):
                     marker = f"  {key}: "
                     text = plain.stdout.decode("utf-8")
@@ -191,16 +194,21 @@ class PmxMetadata(unittest.TestCase):
         end = HEADER_SIZE + 16 + 4 * LIMIT
         tail_size = (5 << 30) + 71
         with path.open("wb") as sparse:
+            make_sparse(sparse)
             sparse.write(model.to_bytes()[:end])
             sparse.write(b"\xff\xff\xff\xff")  # Invalid, unread vertex count.
             sparse.seek(tail_size - 1)
             sparse.write(b"X")
+            sparse.flush()
+            os.fsync(sparse.fileno())
         before = path.stat()
+        allocation = allocated_bytes(path)
+        self.assertLess(allocation, before.st_size)
         self.assertEqual(before.st_size, tail_size)
         self.check_json(path.name, "metadata_ok", end, values)
         after = path.stat()
-        self.assertEqual((before.st_size, before.st_blocks, before.st_mode, before.st_mtime_ns),
-                         (after.st_size, after.st_blocks, after.st_mode, after.st_mtime_ns))
+        self.assertEqual((before.st_size, allocation, before.st_mode, before.st_mtime_ns),
+                         (after.st_size, allocated_bytes(path), after.st_mode, after.st_mtime_ns))
         self.assertEqual(list(self.folder.iterdir()), [path])
         with path.open("rb") as model_file:
             self.assertEqual(model_file.read(end + 4),
@@ -222,17 +230,29 @@ class PmxMetadata(unittest.TestCase):
             self.assertEqual(run.returncode, 2, run)
             self.assertEqual(run.stdout, b"")
             self.assertTrue(run.stderr.startswith(b"Usage:"))
-        for name in ("missing", "subdir", "named_pipe", "linked_source.pmx"):
+        for name in ("missing", "subdir"):
             if name == "subdir":
                 (self.folder / name).mkdir()
-            if name == "named_pipe":
-                os.mkfifo(self.folder / name)
-            if name == "linked_source.pmx":
-                target = self.folder / "link_target.pmx"
-                wire_model().save(target)
-                (self.folder / name).symlink_to(target)
-                self.assertEqual(self.run_cli(name).returncode, 0)
             self.check_json(name, "io_error", 0, header_status="io_error")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO is unavailable on this platform")
+    def test_fifo_rejection(self):
+        name = "named_pipe"
+        os.mkfifo(self.folder / name)
+        self.check_json(name, "io_error", 0, header_status="io_error")
+
+    def test_symlink_rejection(self):
+        name = "linked_source.pmx"
+        target = self.folder / "link_target.pmx"
+        wire_model().save(target)
+        try:
+            (self.folder / name).symlink_to(target)
+        except OSError as error:
+            if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+                self.skipTest("Windows symlink creation requires Developer Mode or privilege")
+            raise
+        self.assertEqual(self.run_cli(name).returncode, 0)
+        self.check_json(name, "io_error", 0, header_status="io_error")
 
 
 if __name__ == "__main__":

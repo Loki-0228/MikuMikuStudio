@@ -1440,10 +1440,12 @@ int wmain(int argc, wchar_t** argv) {
             sequenceDialog = sequence;
             // Exercise pristine empty projects as well as unsaved edits.
             app->EnvFileName()[0] = 0; app->SceneModified() = sequence ? 1 : 0;
-            seq::DialogContext context{app}; context.options.directory = root.wstring();
+            seq::DialogContext context{app, app->SceneGeneration()}; context.options.directory = root.wstring();
             context.options.width = 640; context.options.height = 480;
+            // AVI owns a different context type; this dialog-only probe uses
+            // its null-context entry instead of passing image-sequence data.
             Check(UiDialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(sequence ? seq::kDialog : language ? 654 : 608),
-                app->MainWindow(), Probe, reinterpret_cast<LPARAM>(&context)) == IDCANCEL, "export dialog remains usable after saving");
+                app->MainWindow(), Probe, sequence ? reinterpret_cast<LPARAM>(&context) : 0) == IDCANCEL, "export dialog remains usable after saving");
         }
     }
     Check(!IsWindowVisible(app->MainWindow()), "production host remains hidden");
