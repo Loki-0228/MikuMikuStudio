@@ -1,4 +1,7 @@
 #include "project_storage.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
+#include "../io/backup_removal_guard.hpp"
 #include "json.hpp"
 #include "scene_digest.hpp"
 #include "../io/effect_pair_transaction.hpp"
@@ -858,6 +861,28 @@ PluginProject ReadPluginProject(const fs::path& target){
     }
     if(!fs::exists(PluginSidecar(target))){PluginProject p;p.projectId=StorageId();return p;}
     auto p=DecodeProject(ReadFile(PluginSidecar(target),kMaxSidecar));if(FileHash(target)!=p.mainHash)throw std::runtime_error("PMM and plugin sidecar hashes differ; explicit association required");return p;
+}
+
+BackupRemoval DeletePluginBackup(const fs::path& target, bool (*isOwned)(const fs::path&),
+                                 void (*afterDelete)(const fs::path&) noexcept) {
+    Lock lock(target);
+    // Do not recover a pending transaction here. Recovery could replace the
+    // ownership-marked file with a manual save, which rotation must not delete.
+    if (!project_recovery::BackupJournalAbsent(target) || !isOwned(target))
+        return BackupRemoval::NotRemoved;
+
+    fs::path side;
+    bool hasSide=false;
+    if (!build_profile::original) {
+        side=PluginSidecar(target);
+        hasSide=fs::exists(side);
+        if (hasSide && DecodeProject(ReadFile(side,kMaxSidecar)).mainHash!=FileHash(target))
+            return BackupRemoval::NotRemoved;
+    }
+    if (!DeleteFileW(target.c_str())) return BackupRemoval::NotRemoved;
+    const auto result=hasSide && !DeleteFileW(side.c_str()) ? BackupRemoval::SidecarLeft : BackupRemoval::Removed;
+    if (afterDelete) afterDelete(target);
+    return result;
 }
 
 effect_save::EffectDigest FrozenEffectSha256(effect_save::EffectBytes bytes) {

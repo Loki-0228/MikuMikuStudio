@@ -52,7 +52,9 @@
 
 `autosave_tests <独立输出目录> --partial-rotation` 检查同步和后台轮换按修改时间优先、同时间按文件名排序，以及旧备份被其他句柄占用时保留现有内容和后续重试。
 
-Linux 的 `make -C linux check` 包含 `autosave_rotation_tests`。它使用生产轮换计划检查修改时间快照、同时间文件名排序、备份消失或读取权限故障时不覆盖，以及容量边界。不运行 Windows 保存、文件锁或界面。
+`autosave_tests <独立输出目录> --pending-save-rotation` 检查同步和后台轮换保留有待恢复保存记录或仍被工程保存锁占用的备份。显式恢复前检查 PMM、旁车、暂存和日志不变；解除占用后，正常轮换并重开新备份。适用于完整与原始兼容配置。
+
+Linux 的 `make -C linux check` 包含 `autosave_rotation_tests`。它使用生产轮换计划检查修改时间快照、同时间文件名排序、备份消失或读取权限故障时不覆盖，以及容量边界；也验证待恢复日志、目录及悬空链接均禁止删除备份。不运行 Windows 保存、文件锁或界面。
 
 `runtime_log_tests <尚不存在的输出目录>` 只在独立子进程触发故障，拦截交互弹窗并核对退出码、UTF-8 日志及恢复结果。覆盖正常退出、SEH、Fatal、terminate、abort、关闭期异常、无法创建日志、多线程写入和持有日志槽位时故障。最后两类逐条核对日志内容；单槽竞争只能丢弃记录，不能等待故障线程。`MMS_RUNTIME_LOG_TESTS` 仅为此测试目标定义，不进入正式程序。
 

@@ -1,6 +1,7 @@
 // MAINTENANCE: portable coverage of autosave's timestamp ranking and rotation plan.
 
 #include "app/autosave_rotation.hpp"
+#include "io/backup_removal_guard.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -89,6 +90,28 @@ public:
     fs::path path;
 };
 
+void CheckJournalBoundary() {
+    const ScratchFolder scratch;
+    const auto backup = scratch.path / "saved.pmm";
+    auto journal = backup;
+    journal += ".mms-save.json";
+    using mikumikustudio::project_recovery::BackupJournalAbsent;
+    Check(BackupJournalAbsent(backup), "no journal reserves this backup");
+
+    std::ofstream(journal) << "interrupted save";
+    Check(!BackupJournalAbsent(backup), "an interrupted save reserves this backup");
+    Check(!BackupJournalAbsent(journal / "nested.pmm"), "a failed path lookup is not proven absence");
+    fs::remove(journal);
+    fs::create_directory(journal);
+    Check(!BackupJournalAbsent(backup), "a directory at the journal path blocks removal");
+    fs::remove(journal);
+    fs::create_symlink(scratch.path / "missing", journal);
+    Check(!BackupJournalAbsent(backup), "a dangling journal symlink blocks removal");
+    fs::remove(journal);
+
+    Check(BackupJournalAbsent(backup), "ordinary rotation can resume once the journal is gone");
+}
+
 void CheckUnavailableAge() {
     const ScratchFolder scratch;
     const auto a = scratch.path / "a.pmm", b = scratch.path / "b.pmm";
@@ -142,6 +165,7 @@ int main() {
         CheckSnapshotOrder();
         CheckCapacityBoundary();
         CheckUnavailableAge();
+        CheckJournalBoundary();
         std::printf("PASS autosave rotation (%u checks)\n", checks);
     } catch (const std::exception& error) {
         std::fprintf(stderr, "FAIL autosave rotation: %s\n", error.what());

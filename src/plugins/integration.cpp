@@ -1022,18 +1022,4 @@ bool ResetPluginProject(MMDApp* app) {
     currentProject={};QueueProjectEvent(app,MMS_EVENT_SCENE_RESET,L"");return true;
 }
 void PluginProjectSaved(MMDApp* app,const wchar_t* path){QueueProjectEvent(app,MMS_EVENT_PROJECT_SAVED,path);}
-bool DeletePluginBackup(const wchar_t* path) {
-    if (!path || !*path) return false;
-    if(build_profile::original)return DeleteFileW(path)!=FALSE;
-    // Caller has already checked the native PMM ownership marker. Only remove
-    // an accompanying extension if its hash proves it belongs to this PMM.
-    return Boundary([&]() -> MmsResult {
-        const fs::path target(path); const auto side=PluginSidecar(target);
-        const bool hasSide=fs::exists(side);
-        if(hasSide) ReadPluginProject(target);
-        if(!DeleteFileW(path))return MMS_E_FAILED;
-        if(hasSide && !DeleteFileW(side.c_str()))LogMessage("obsolete autosave sidecar could not be removed");
-        return MMS_OK;
-    }) == MMS_OK;
-}
 }

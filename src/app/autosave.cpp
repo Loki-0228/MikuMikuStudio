@@ -179,6 +179,18 @@ rotation::Plan PrepareRotation(const fs::path& directory, const Settings& value)
     return plan;
 }
 
+bool RemoveOwnedBackup(const fs::path& path, bool removeEffects) {
+    try {
+        const auto result = plugins::DeletePluginBackup(path, Owned, removeEffects ? RemoveBackupEffects : nullptr);
+        if (result == plugins::BackupRemoval::SidecarLeft)
+            runtime_log::WritePath("AUTOSAVE obsolete sidecar could not be removed", path.c_str());
+        return result != plugins::BackupRemoval::NotRemoved;
+    } catch (...) {
+        runtime_log::WritePath("AUTOSAVE could not verify or remove backup", path.c_str());
+        return false;
+    }
+}
+
 enum class Rotation { WithinLimit, Replaced, CleanupIncomplete, Full };
 
 Rotation FinishRotation(const std::vector<fs::path>& old, unsigned limit,
@@ -190,13 +202,7 @@ Rotation FinishRotation(const std::vector<fs::path>& old, unsigned limit,
         std::error_code sameError;
         if (_wcsicmp(candidate.c_str(), active.c_str()) == 0 ||
             (!active.empty() && fs::equivalent(candidate, active, sameError))) continue;
-        try {
-            if (!Owned(candidate) || !plugins::DeletePluginBackup(candidate.c_str())) break;
-        } catch (...) {
-            runtime_log::WritePath("AUTOSAVE could not verify or remove old backup", candidate.c_str());
-            break;
-        }
-        RemoveBackupEffects(candidate);
+        if (!RemoveOwnedBackup(candidate, true)) break;
         if (--remaining < limit) return Rotation::Replaced;
     }
 
@@ -204,7 +210,7 @@ Rotation FinishRotation(const std::vector<fs::path>& old, unsigned limit,
     // another generation is held open. If nothing was removed, keep the
     // existing full-folder behavior and withdraw the new candidate.
     if (remaining < old.size()) return Rotation::CleanupIncomplete;
-    if (!plugins::DeletePluginBackup(destination.c_str())) return Rotation::CleanupIncomplete;
+    if (!RemoveOwnedBackup(destination, false)) return Rotation::CleanupIncomplete;
     // MME is notified only after retention. Any EMM at this candidate's
     // path was created independently and does not belong to this rollback.
     return Rotation::Full;
