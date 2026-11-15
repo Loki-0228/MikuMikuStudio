@@ -98,7 +98,8 @@ void CheckProviderLayouts(NativeLoader& loader, const fs::path& provider, const 
     };
     CopyProvider(provider, install.root / L"MMDPlugin.dll");
     CopyProvider(provider, plugins / L"another-package" / L"MMDPlugin.dll");
-    Check(rejectedPath(install.root), "unrecognized provider location was accepted");
+    CheckProvider(loader, install.root, entry, plugins / L"another-package" / L"MMDPlugin.dll");
+    fs::remove(plugins / L"another-package" / L"MMDPlugin.dll");
     Check(rejectedPath(L"."), "relative installation was accepted");
 
     CopyProvider(provider, fallback);

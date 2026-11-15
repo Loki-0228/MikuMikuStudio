@@ -1,0 +1,566 @@
+{
+  "base": "19fb0255efdfd4330bf9be8f9fee35f84a8f9585",
+  "branch": "feature/mmdfacade-original-camera",
+  "build": "build/facade-original-build",
+  "results": {
+    "original-camera-e4uh7_ei/summary.json": {
+      "passed": true,
+      "cases": [
+        {
+          "exe": "MikuMikuDance.exe",
+          "provider": "PLUGINS/LEGACY",
+          "package": "PLUGINS\\LEGACY\\camera",
+          "automatic": true,
+          "exitCode": 0,
+          "originalAndCacheUnchanged": true,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-e4uh7_ei\\0"
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "provider": "PLUGINS/LEGACY",
+          "package": "PLUGINS\\LEGACY\\分组\\相机",
+          "automatic": true,
+          "exitCode": 0,
+          "originalAndCacheUnchanged": true,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-e4uh7_ei\\1"
+        },
+        {
+          "exe": "中文工作室.exe",
+          "provider": "PLUGINS/LEGACY",
+          "package": "PLUGINS\\LEGACY\\相机",
+          "automatic": true,
+          "exitCode": 0,
+          "originalAndCacheUnchanged": true,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-e4uh7_ei\\2"
+        },
+        {
+          "exe": "MikuMikuDance.exe",
+          "provider": "PLUGINS/legacy-mmdplugin",
+          "package": "PLUGINS\\LEGACY\\camera",
+          "automatic": true,
+          "exitCode": 0,
+          "originalAndCacheUnchanged": true,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-e4uh7_ei\\3"
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "provider": "PLUGINS/legacy-mmdplugin",
+          "package": "PLUGINS\\LEGACY\\分组\\相机",
+          "automatic": true,
+          "exitCode": 0,
+          "originalAndCacheUnchanged": true,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-e4uh7_ei\\4"
+        },
+        {
+          "exe": "中文工作室.exe",
+          "provider": "PLUGINS/legacy-mmdplugin",
+          "package": "PLUGINS\\LEGACY\\相机",
+          "automatic": true,
+          "exitCode": 0,
+          "originalAndCacheUnchanged": true,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-e4uh7_ei\\5"
+        },
+        {
+          "exe": "MikuMikuDance.exe",
+          "provider": "legacy-mmdplugin",
+          "package": "PLUGINS\\LEGACY\\camera",
+          "automatic": true,
+          "exitCode": 0,
+          "originalAndCacheUnchanged": true,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-e4uh7_ei\\6"
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "provider": "legacy-mmdplugin",
+          "package": "PLUGINS\\LEGACY\\分组\\相机",
+          "automatic": true,
+          "exitCode": 0,
+          "originalAndCacheUnchanged": true,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-e4uh7_ei\\7"
+        },
+        {
+          "exe": "中文工作室.exe",
+          "provider": "legacy-mmdplugin",
+          "package": "PLUGINS\\LEGACY\\相机",
+          "automatic": true,
+          "exitCode": 0,
+          "originalAndCacheUnchanged": true,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-e4uh7_ei\\8"
+        },
+        {
+          "exe": "MikuMikuDance.exe",
+          "provider": "PLUGINS/components/bridge",
+          "package": "PLUGINS\\LEGACY\\camera",
+          "automatic": true,
+          "exitCode": 0,
+          "originalAndCacheUnchanged": true,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-e4uh7_ei\\9"
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "provider": "PLUGINS/components/bridge",
+          "package": "PLUGINS\\LEGACY\\分组\\相机",
+          "automatic": true,
+          "exitCode": 0,
+          "originalAndCacheUnchanged": true,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-e4uh7_ei\\10"
+        },
+        {
+          "exe": "中文工作室.exe",
+          "provider": "PLUGINS/components/bridge",
+          "package": "PLUGINS\\LEGACY\\相机",
+          "automatic": true,
+          "exitCode": 0,
+          "originalAndCacheUnchanged": true,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-e4uh7_ei\\11"
+        }
+      ]
+    },
+    "original-camera-failures-__jv7jx7/summary.json": [
+      {
+        "mode": "missing-provider",
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "mode": "wrong-provider",
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "mode": "locked-file",
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "mode": "unsupported-version",
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "mode": "duplicate",
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "mode": "ambiguous-provider",
+        "passed": true,
+        "exitCode": 0
+      },
+      {
+        "mode": "disabled",
+        "passed": true,
+        "exitCode": 0
+      }
+    ],
+    "mmdfacade-functional-lrzilt23/summary.json": {
+      "passed": true,
+      "cases": [
+        {
+          "exe": "MikuMikuDance.exe",
+          "layout": "PLUGINS/LEGACY",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-lrzilt23\\0",
+          "passed": true,
+          "exitCode": 0,
+          "sourcesUnchanged": true
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "layout": "PLUGINS/LEGACY",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-lrzilt23\\1",
+          "passed": true,
+          "exitCode": 0,
+          "sourcesUnchanged": true
+        },
+        {
+          "exe": "中文工作室.exe",
+          "layout": "PLUGINS/LEGACY",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-lrzilt23\\2",
+          "passed": true,
+          "exitCode": 0,
+          "sourcesUnchanged": true
+        },
+        {
+          "exe": "MikuMikuDance.exe",
+          "layout": "PLUGINS/legacy-mmdplugin",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-lrzilt23\\3",
+          "passed": true,
+          "exitCode": 0,
+          "sourcesUnchanged": true
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "layout": "PLUGINS/legacy-mmdplugin",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-lrzilt23\\4",
+          "passed": true,
+          "exitCode": 0,
+          "sourcesUnchanged": true
+        },
+        {
+          "exe": "中文工作室.exe",
+          "layout": "PLUGINS/legacy-mmdplugin",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-lrzilt23\\5",
+          "passed": true,
+          "exitCode": 0,
+          "sourcesUnchanged": true
+        },
+        {
+          "exe": "MikuMikuDance.exe",
+          "layout": "legacy-mmdplugin",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-lrzilt23\\6",
+          "passed": true,
+          "exitCode": 0,
+          "sourcesUnchanged": true
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "layout": "legacy-mmdplugin",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-lrzilt23\\7",
+          "passed": true,
+          "exitCode": 0,
+          "sourcesUnchanged": true
+        },
+        {
+          "exe": "中文工作室.exe",
+          "layout": "legacy-mmdplugin",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-lrzilt23\\8",
+          "passed": true,
+          "exitCode": 0,
+          "sourcesUnchanged": true
+        }
+      ]
+    },
+    "mmdfacade-functional-2yajpk9i/summary.json": {
+      "passed": true,
+      "cases": [
+        {
+          "exe": "MikuMikuDance.exe",
+          "layout": "PLUGINS/LEGACY",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-2yajpk9i\\0",
+          "passed": true,
+          "exitCode": 0,
+          "sourcesUnchanged": true
+        }
+      ]
+    },
+    "mmdfacade-product-ozuxcmd8/summary.json": {
+      "passed": true,
+      "cases": [
+        {
+          "exe": "MikuMikuDance.exe",
+          "layout": "PLUGINS/LEGACY",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-ozuxcmd8\\0",
+          "passed": true,
+          "terminated": false,
+          "menuPresent": true,
+          "mmeLoaded": true,
+          "exitCode": 0
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "layout": "PLUGINS/LEGACY",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-ozuxcmd8\\1",
+          "passed": true,
+          "terminated": false,
+          "menuPresent": true,
+          "mmeLoaded": true,
+          "exitCode": 0
+        },
+        {
+          "exe": "中文工作室.exe",
+          "layout": "PLUGINS/LEGACY",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-ozuxcmd8\\2",
+          "passed": true,
+          "terminated": false,
+          "menuPresent": true,
+          "mmeLoaded": true,
+          "exitCode": 0
+        },
+        {
+          "exe": "MikuMikuDance.exe",
+          "layout": "PLUGINS/legacy-mmdplugin",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-ozuxcmd8\\3",
+          "passed": true,
+          "terminated": false,
+          "menuPresent": true,
+          "mmeLoaded": true,
+          "exitCode": 0
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "layout": "PLUGINS/legacy-mmdplugin",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-ozuxcmd8\\4",
+          "passed": true,
+          "terminated": false,
+          "menuPresent": true,
+          "mmeLoaded": true,
+          "exitCode": 0
+        },
+        {
+          "exe": "中文工作室.exe",
+          "layout": "PLUGINS/legacy-mmdplugin",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-ozuxcmd8\\5",
+          "passed": true,
+          "terminated": false,
+          "menuPresent": true,
+          "mmeLoaded": true,
+          "exitCode": 0
+        },
+        {
+          "exe": "MikuMikuDance.exe",
+          "layout": "legacy-mmdplugin",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-ozuxcmd8\\6",
+          "passed": true,
+          "terminated": false,
+          "menuPresent": true,
+          "mmeLoaded": true,
+          "exitCode": 0
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "layout": "legacy-mmdplugin",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-ozuxcmd8\\7",
+          "passed": true,
+          "terminated": false,
+          "menuPresent": true,
+          "mmeLoaded": true,
+          "exitCode": 0
+        },
+        {
+          "exe": "中文工作室.exe",
+          "layout": "legacy-mmdplugin",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-ozuxcmd8\\8",
+          "passed": true,
+          "terminated": false,
+          "menuPresent": true,
+          "mmeLoaded": true,
+          "exitCode": 0
+        }
+      ],
+      "utilitySha256": "c778de083c77a6850b56f98ac8f056d0e8c104c833f24aea420d4715a87612c5"
+    },
+    "first-person-input-k_la0czf/summary.json": {
+      "passed": true,
+      "cases": [
+        {
+          "exe": "MikuMikuDance.exe",
+          "layout": "PLUGINS/LEGACY",
+          "package": "PLUGINS/camera",
+          "exitCode": 0,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\first-person-input-k_la0czf\\0"
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "layout": "PLUGINS/LEGACY",
+          "package": "PLUGINS/optional-plugins/first-person-camera",
+          "exitCode": 0,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\first-person-input-k_la0czf\\1"
+        },
+        {
+          "exe": "中文工作室.exe",
+          "layout": "PLUGINS/LEGACY",
+          "package": "PLUGINS/我的插件/自选相机",
+          "exitCode": 0,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\first-person-input-k_la0czf\\2"
+        },
+        {
+          "exe": "MikuMikuDance.exe",
+          "layout": "PLUGINS/legacy-mmdplugin",
+          "package": "PLUGINS/camera",
+          "exitCode": 0,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\first-person-input-k_la0czf\\3"
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "layout": "PLUGINS/legacy-mmdplugin",
+          "package": "PLUGINS/optional-plugins/first-person-camera",
+          "exitCode": 0,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\first-person-input-k_la0czf\\4"
+        },
+        {
+          "exe": "中文工作室.exe",
+          "layout": "PLUGINS/legacy-mmdplugin",
+          "package": "PLUGINS/我的插件/自选相机",
+          "exitCode": 0,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\first-person-input-k_la0czf\\5"
+        },
+        {
+          "exe": "MikuMikuDance.exe",
+          "layout": "legacy-mmdplugin",
+          "package": "PLUGINS/camera",
+          "exitCode": 0,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\first-person-input-k_la0czf\\6"
+        },
+        {
+          "exe": "Renamed Studio.exe",
+          "layout": "legacy-mmdplugin",
+          "package": "PLUGINS/optional-plugins/first-person-camera",
+          "exitCode": 0,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\first-person-input-k_la0czf\\7"
+        },
+        {
+          "exe": "中文工作室.exe",
+          "layout": "legacy-mmdplugin",
+          "package": "PLUGINS/我的插件/自选相机",
+          "exitCode": 0,
+          "passed": true,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\first-person-input-k_la0czf\\8"
+        }
+      ]
+    },
+    "facade-cost-xly_wmv4/summary.json": {
+      "original": {
+        "startupSeconds": 1.2168804499999624,
+        "scenarioSeconds": 1.8337651000001642,
+        "cpuSeconds": 5.1484375,
+        "sampledPeakWorkingSetMiB": 564.72265625
+      },
+      "adapter": {
+        "startupSeconds": 1.2211635999999544,
+        "scenarioSeconds": 1.839257150000094,
+        "cpuSeconds": 5.046875,
+        "sampledPeakWorkingSetMiB": 564.5234375
+      }
+    },
+    "facade-cost-xly_wmv4/samples.json": [
+      {
+        "kind": "original",
+        "warmup": true,
+        "startupSeconds": 2.3134863000000223,
+        "scenarioSeconds": 2.9477927000002637,
+        "cpuSeconds": 5.171875,
+        "sampledPeakWorkingSetMiB": 565.45703125,
+        "exitCode": 0
+      },
+      {
+        "kind": "adapter",
+        "warmup": true,
+        "startupSeconds": 2.2076615000000857,
+        "scenarioSeconds": 2.844969900000251,
+        "cpuSeconds": 5.0625,
+        "sampledPeakWorkingSetMiB": 565.43359375,
+        "exitCode": 0
+      },
+      {
+        "kind": "original",
+        "warmup": false,
+        "startupSeconds": 1.2135152000000744,
+        "scenarioSeconds": 1.8350036000001637,
+        "cpuSeconds": 4.984375,
+        "sampledPeakWorkingSetMiB": 564.4765625,
+        "exitCode": 0
+      },
+      {
+        "kind": "adapter",
+        "warmup": false,
+        "startupSeconds": 1.2404704000000493,
+        "scenarioSeconds": 1.8602516999999352,
+        "cpuSeconds": 5.109375,
+        "sampledPeakWorkingSetMiB": 565.5,
+        "exitCode": 0
+      },
+      {
+        "kind": "adapter",
+        "warmup": false,
+        "startupSeconds": 1.2215627999999015,
+        "scenarioSeconds": 1.838959000000159,
+        "cpuSeconds": 4.984375,
+        "sampledPeakWorkingSetMiB": 563.76171875,
+        "exitCode": 0
+      },
+      {
+        "kind": "original",
+        "warmup": false,
+        "startupSeconds": 1.2165328999999474,
+        "scenarioSeconds": 1.8325266000001648,
+        "cpuSeconds": 5.09375,
+        "sampledPeakWorkingSetMiB": 565.5546875,
+        "exitCode": 0
+      },
+      {
+        "kind": "original",
+        "warmup": false,
+        "startupSeconds": 1.2172279999999773,
+        "scenarioSeconds": 1.8120747000002666,
+        "cpuSeconds": 5.203125,
+        "sampledPeakWorkingSetMiB": 564.82421875,
+        "exitCode": 0
+      },
+      {
+        "kind": "adapter",
+        "warmup": false,
+        "startupSeconds": 1.2207644000000073,
+        "scenarioSeconds": 1.839555300000029,
+        "cpuSeconds": 5.1875,
+        "sampledPeakWorkingSetMiB": 563.890625,
+        "exitCode": 0
+      },
+      {
+        "kind": "adapter",
+        "warmup": false,
+        "startupSeconds": 1.2071522000001096,
+        "scenarioSeconds": 1.8255669000000125,
+        "cpuSeconds": 4.984375,
+        "sampledPeakWorkingSetMiB": 565.15625,
+        "exitCode": 0
+      },
+      {
+        "kind": "original",
+        "warmup": false,
+        "startupSeconds": 1.2523035999997774,
+        "scenarioSeconds": 1.8713831999998547,
+        "cpuSeconds": 5.21875,
+        "sampledPeakWorkingSetMiB": 564.62109375,
+        "exitCode": 0
+      }
+    ],
+    "validation/facade-original/export-regression.json": {
+      "MMDFacade.dll": {
+        "exportsUnchanged": true,
+        "count": 37
+      },
+      "MMHack.dll": {
+        "exportsUnchanged": true,
+        "count": 22
+      }
+    }
+  },
+  "artifacts": {
+    "MikuMikuDance.exe": {
+      "sha256": "0d4f8e94c02e3e69618f8cd68bc71f16d886e6ced2bb85c96de4fb59d9a26278",
+      "bytes": 13664256
+    },
+    "MMDFacade.dll": {
+      "sha256": "243cd960ab0dc44b1e1a6238ec73a12b80f7337446c1e8591b3329b1f31229d6",
+      "bytes": 107008
+    },
+    "MMHack.dll": {
+      "sha256": "91b7eb652cec2e7299838fbe8b2940b8636613411b7c486993c96f4a144d44b8",
+      "bytes": 323584
+    },
+    "PLUGINS/LEGACY/MMDPlugin.dll": {
+      "sha256": "fa4fe16647642cd5e2a1623d958ab6bd7ea034ba4a3b5c43a91e90ff9e272588",
+      "bytes": 132096
+    }
+  }
+}

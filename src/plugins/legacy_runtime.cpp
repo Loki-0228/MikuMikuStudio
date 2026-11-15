@@ -5,6 +5,7 @@
 #include "legacy_image.hpp"
 #include "legacy_mmd_image.hpp"
 #include "loader_win32.hpp"
+#include "original_camera_memory.hpp"
 #include "../io/cache_files_crypto.hpp"
 #include <array>
 #include <fstream>
@@ -85,9 +86,9 @@ std::string CacheKey(const std::array<Bytes, 3>& images) {
 }
 void Publish(const fs::path& path, const Bytes& bytes) {
     if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        auto temp = path; temp += L".tmp." + std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(GetTickCount64());
+        const auto temp = path.parent_path() / (L"new-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()) + L".tmp");
         HANDLE h = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot stage legacy cache image");
+        if (h == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot stage legacy cache image (Win32 " + std::to_string(GetLastError()) + "): " + Utf8(temp.native()));
         DWORD written = 0;
         const bool ok = WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) &&
             written == bytes.size() && FlushFileBuffers(h);
@@ -224,15 +225,22 @@ LegacyMmdImage PrepareLegacyMmdImage(const Manifest& manifest, const fs::path& i
     if (manifest.kind != Manifest::Kind::LegacyMmdPlugin)
         throw std::invalid_argument("expected legacy MMDPlugin package");
     const auto imports = InspectPe(manifest.entry).imports;
-    if (std::find(imports.begin(), imports.end(), "mikumikudance.exe") == imports.end()) return result;
+    const bool rewriteHost = std::find(imports.begin(), imports.end(), "mikumikudance.exe") != imports.end();
+    const bool originalCamera = manifest.legacyProfile == "first_person_camera_v4" &&
+        manifest.legacyEntrySha256 == kOriginalFirstPersonCameraSha256;
+    if (!rewriteHost && !originalCamera) return result;
     Handles source;
     const auto original = ReadImage(PackageFile(manifest.package, Utf8(manifest.entry.lexically_relative(manifest.package).native())), source);
     if (Sha256(manifest.entry) != manifest.legacyEntrySha256)
         throw std::invalid_argument("legacy MMDPlugin entry SHA-256 mismatch");
-    auto rewritten = RedirectLegacyHostImport(original);
-    if (!rewritten.ok()) throw std::invalid_argument("legacy MMDPlugin import rewrite: " + rewritten.message);
-    const auto facade = PackageFile(install, "MMDFacade.dll");
-    std::array<Bytes, 3> images{std::move(rewritten.image), ReadImage(facade, source), {}};
+    Bytes entryImage = original;
+    if (rewriteHost) {
+        auto rewritten = RedirectLegacyHostImport(original);
+        if (!rewritten.ok()) throw std::invalid_argument("legacy MMDPlugin import rewrite: " + rewritten.message);
+        entryImage = std::move(rewritten.image);
+    }
+    const auto facade = LegacyComponentFile(install, "MMDFacade.dll");
+    std::array<Bytes, 3> images{std::move(entryImage), ReadImage(facade, source), {}};
     if (manifest.legacyProfile == "effekseer_v2")
         images[2] = ReadImage(PackageFile(manifest.package, "efk.pmd"), source);
     auto directory = install;
@@ -281,7 +289,7 @@ bool BootstrapLegacyMme() noexcept {
         if (legacy->legacyHack.empty()) {
             // The built-in bridge resolves the current host directly; it has no
             // MikuMikuDance.exe import to rewrite. Validate its PE before loading.
-            const auto bridge = PackageFile(install, "MMHack.dll");
+            const auto bridge = LegacyComponentFile(install, "MMHack.dll");
             InspectPe(bridge);
             hack.image = ReadImage(bridge, source);
         } else {
@@ -291,7 +299,7 @@ bool BootstrapLegacyMme() noexcept {
         if (!hack.ok()) throw std::runtime_error("MMHack: " + std::string(LegacyImageErrorName(hack.error)) + " " + hack.message);
         if (!effect.ok()) throw std::runtime_error("MMEffect: " + std::string(LegacyImageErrorName(effect.error)) + " " + effect.message);
         std::array<Bytes, 3> images{std::move(hack.image), std::move(effect.image),
-            ReadImage(PackageFile(install, "MMDFacade.dll"), source)};
+            ReadImage(LegacyComponentFile(install, "MMDFacade.dll"), source)};
         auto directory = install;
         HoldDirectory(directory, retainedFiles, false);
         for (const auto& part : {std::wstring(L"data"), std::wstring(L"plugins"), std::wstring(L"legacy_mme"), Wide(CacheKey(images))}) {
@@ -325,6 +333,9 @@ bool BootstrapLegacyMme() noexcept {
         try { status.error = e.what(); LogMessage(status.error); } catch (...) {}
     } catch (...) {
         try { status.error = "legacy MME startup failed"; LogMessage(status.error); } catch (...) {}
+    }
+    if (!status.error.empty()) {
+        try { MessageBoxW(nullptr, Wide(status.id + "\n" + status.error).c_str(), L"MMDFacade：MME 加载失败", MB_OK | MB_ICONERROR); } catch (...) {}
     }
     return safeToContinue;
 }

@@ -36,6 +36,20 @@ install(FILES "$<TARGET_FILE_DIR:mms_first_person_camera>/plugin.json"
     src/legacy_first_person/LICENSE src/legacy_first_person/README.md
     DESTINATION PLUGINS/first-person-camera)
 add_dependencies(MikuMikuStudio mms_first_person_camera)
+add_executable(legacy_auto_discovery_tests EXCLUDE_FROM_ALL tests/plugins/legacy_auto_discovery_tests.cpp)
+target_include_directories(legacy_auto_discovery_tests PRIVATE src/plugins)
+target_link_libraries(legacy_auto_discovery_tests PRIVATE mms_plugin_runtime)
+set_target_properties(legacy_auto_discovery_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_executable(original_camera_preflight_tests EXCLUDE_FROM_ALL tests/plugins/original_camera_preflight_tests.cpp)
+target_include_directories(original_camera_preflight_tests PRIVATE src/plugins)
+target_link_libraries(original_camera_preflight_tests PRIVATE mms_plugin_runtime)
+add_dependencies(original_camera_preflight_tests mms_legacy_mmd_provider)
+set_target_properties(original_camera_preflight_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_executable(original_camera_input_tests EXCLUDE_FROM_ALL tests/plugins/original_camera_input_tests.cpp)
+target_include_directories(original_camera_input_tests PRIVATE third_party/dxsdk-d3dx/include sdk/mms/include)
+target_link_libraries(original_camera_input_tests PRIVATE mikumikustudio_core d3d9 winmm dsound)
+set_target_properties(original_camera_input_tests PROPERTIES ENABLE_EXPORTS ON RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(original_camera_input_tests MMDFacade mms_legacy_mmd_provider)
 add_executable(legacy_image_tests EXCLUDE_FROM_ALL
     tests/plugins/legacy_image_tests.cpp src/plugins/legacy_image.cpp)
 target_compile_features(legacy_image_tests PRIVATE cxx_std_17)
@@ -307,6 +321,8 @@ set_tests_properties(system_settings_store PROPERTIES TIMEOUT 60)
 add_library(mms_plugin_runtime STATIC
     src/plugins/legacy_image.cpp
     src/plugins/legacy_runtime.cpp
+    src/plugins/original_camera_memory.cpp
+    src/plugins/legacy_discovery.cpp
     src/plugins/manifest.cpp
     src/plugins/loader_win32.cpp
     src/plugins/ui_registry.cpp

@@ -24,13 +24,14 @@ struct Manifest {
     std::vector<fs::path> nativeDependencies;
 };
 struct DiscoveryConfig { uint32_t maxDepth = 2; std::set<std::string> disabled, enabled; };
-struct Discovery { DiscoveryConfig config; std::vector<Manifest> packages; std::vector<std::string> diagnostics; };
+struct Discovery { DiscoveryConfig config; std::vector<Manifest> packages; std::vector<std::string> diagnostics, errors; size_t inspectedDlls = 0, cachedDlls = 0; };
 // Requires every component (including the root) to exist and not be a reparse point.
 fs::path PackageFile(const fs::path& root, std::string_view relative);
 // Resolve the app-owned provider from the absolute host installation directory.
 fs::path LegacyMmdProviderFile(const fs::path& install);
+fs::path LegacyComponentFile(const fs::path& install, std::string_view name);
 Manifest ReadManifest(const fs::path&, const Log&);
-Discovery Discover(const fs::path& root);
+Discovery Discover(const fs::path& root, bool useCache = true);
 // Duplicate IDs, invalid ranges, missing dependencies and cycles never load.
 std::vector<size_t> Resolve(const Discovery&, const Log&);
 }

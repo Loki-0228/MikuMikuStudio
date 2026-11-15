@@ -35,7 +35,10 @@ size_t Difference(const std::vector<uint32_t>& a,const std::vector<uint32_t>& b)
 }
 void Run(MMDApp* app,const wchar_t* effect) {
     const auto dialogHook=SetWindowsHookExW(WH_CBT,RejectDialog,nullptr,GetCurrentThreadId());
-    Check(GetModuleHandleW(L"MMSFirstPersonCamera.dll") && GetModuleHandleW(L"EffekseerForMMD.dll"),"both real plugins started");
+    const bool original = GetEnvironmentVariableW(L"MMDFACADE_TEST_ORIGINAL_CAMERA", nullptr, 0) != 0;
+    const auto cameraName = original ? L"MMDFirstPersonCamera.dll" : L"MMSFirstPersonCamera.dll";
+    BYTE savedKeys[256]{}, keys[256]{}; GetKeyboardState(savedKeys); SetKeyboardState(keys);
+    Check(GetModuleHandleW(cameraName) && GetModuleHandleW(L"EffekseerForMMD.dll"),"both real plugins started");
     Check(plugins::LegacyMmeStatus().loaded || GetEnvironmentVariableW(L"MMDFACADE_TEST_NO_MME",nullptr,0),"MME coexistence control");
     if(GetEnvironmentVariableW(L"MMDFACADE_TEST_MME_OFF",nullptr,0))
         SendMessageW(app->MainWindow(),WM_COMMAND,40006,0);
@@ -43,20 +46,25 @@ void Run(MMDApp* app,const wchar_t* effect) {
     app->CameraPositionX()=app->CameraPositionY()=app->CameraPositionZ()=0;
     SetFocus(app->MainWindow());
     SendMessageW(app->MainWindow(),WM_KEYDOWN,'W',1);
-    Check(std::abs(app->CameraPositionZ()-1)<.0001f,"real window routes camera W");
+    Check(std::abs(app->CameraPositionZ()-(original ? 4.f : 1.f))<.0001f,"real window routes camera W");
     SendMessageW(app->MainWindow(),WM_KEYUP,'W',LPARAM(1)<<31);
-    Check(std::abs(app->CameraPositionZ()-1)<.0001f,"real window ignores key release");
+    Check(std::abs(app->CameraPositionZ()-(original ? 8.f : 1.f))<.0001f,"real window preserves actual plugin key release behavior");
     { FrameSceneOutputScope viewport(app); Check(viewport.Ready(),"hidden camera viewport scope");
     const auto rect=app->ViewportRect(); const POINT p{(rect.left+rect.right)/2,(rect.top+rect.bottom)/2};
+    POINT originalCursor{}; GetCursorPos(&originalCursor);
     SendMessageW(app->MainWindow(),WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(p.x,p.y));
     std::printf("camera viewport=%ld,%ld,%ld,%ld capture=%d\n",rect.left,rect.top,rect.right,rect.bottom,GetCapture()==app->MainWindow());
     SendMessageW(app->MainWindow(),WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(p.x+50,p.y+25));
     std::printf("camera mouse yaw=%g pitch=%g capture=%d\n",app->CameraYaw(),app->CameraPitch(),GetCapture()==app->MainWindow());
-    Check(std::abs(app->CameraYaw()+.1f)<.0001f && std::abs(app->CameraPitch()+.05f)<.0001f,"real window routes camera mouse look");
+    POINT end{p.x+50,p.y+25}; ClientToScreen(app->MainWindow(), &end);
+    const float yaw = original ? -(end.x-originalCursor.x)/500.f : -.1f;
+    const float pitch = original ? -(end.y-originalCursor.y)/500.f : -.05f;
+    Check(std::abs(app->CameraYaw()-yaw)<.0001f && std::abs(app->CameraPitch()-pitch)<.0001f,"real window routes camera mouse look");
     SendMessageW(app->MainWindow(),WM_CANCELMODE,0,0);
     Check(!GetCapture(),"real window releases camera capture");
     }
     std::puts("PASS real window camera keyboard and mouse routing");
+    SetKeyboardState(savedKeys);
     LoadModelFile(app,effect,false);
     auto* raw=static_cast<unsigned char*>(app->ModelSlot(0));
     Check(raw!=nullptr,"explicit .efk model import");
@@ -90,7 +98,7 @@ void Run(MMDApp* app,const wchar_t* effect) {
     render(20);
     const auto reset=Pixels(app,L"effekseer-reset.ppm");
     legacy_mmd_plugin::Stop();
-    Check(!GetModuleHandleW(L"EffekseerForMMD.dll") && !GetModuleHandleW(L"MMSFirstPersonCamera.dll"),"real plugins unloaded");
+    Check(!GetModuleHandleW(L"EffekseerForMMD.dll") && !GetModuleHandleW(cameraName),"real plugins unloaded");
     render(20);
     const auto disabled=Pixels(app,L"effekseer-disabled.ppm");
     std::printf("Effekseer rendered difference enabled=%zu reset=%zu\n",Difference(enabled,disabled),Difference(reset,disabled));

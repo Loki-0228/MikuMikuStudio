@@ -1,4 +1,5 @@
 #include "manifest.hpp"
+#include "legacy_discovery.hpp"
 #include <charconv>
 #include <iterator>
 
@@ -65,7 +66,26 @@ fs::path LegacyMmdProviderFile(const fs::path& install) {
         }
         if (!missing) return PackageFile(install, Utf8(parts.native()));
     }
-    return PackageFile(install, "PLUGINS/LEGACY/MMDPlugin.dll");
+    return LegacyComponentFile(install, "MMDPlugin.dll");
+}
+fs::path LegacyComponentFile(const fs::path& install, std::string_view name) {
+    if (!install.is_absolute()) throw std::invalid_argument("component installation path must be absolute");
+    if (name != "MMDPlugin.dll" && fs::exists(install / Wide(name))) return PackageFile(install, name);
+    const auto root = install / L"PLUGINS";
+    std::vector<fs::path> found;
+    size_t count = 0;
+    if (fs::exists(root)) {
+        if (!Plain(root)) throw std::invalid_argument("invalid component root");
+        for (fs::recursive_directory_iterator it(root), end; it != end; ++it) {
+            if (++count > 32768 || it.depth() > 64) throw std::invalid_argument("component discovery limit");
+            if (!Plain(it->path())) { it.disable_recursion_pending(); continue; }
+            if (Lower(it->path().filename().native()) == Lower(Wide(name)))
+                found.push_back(PackageFile(install, Utf8(it->path().lexically_relative(install).native())));
+        }
+    }
+    if (found.size() != 1) throw std::invalid_argument(std::string(name) +
+        (found.empty() ? " compatibility component is missing" : " has ambiguous locations in PLUGINS"));
+    return found.front();
 }
 Manifest ReadManifest(const fs::path& file, const Log& log) {
     Manifest m; m.file = fs::absolute(file).lexically_normal(); m.package = m.file.parent_path();
@@ -97,6 +117,11 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
             throw std::invalid_argument("legacy MMDPlugin requires x64 and restart");
         const auto profile = j.At("profile").String();
         m.legacyProfile = profile;
+        if (j.object.count("optIn")) {
+            const auto& optIn = j.At("optIn");
+            if (optIn.kind != Json::Boolean) throw std::invalid_argument("optIn must be a boolean");
+            m.optIn = optIn.text == "true";
+        }
         if (profile == "device_reset_v2" || profile == "effekseer_v2") m.major = 2;
         else if (profile == "first_person_camera_v4") m.major = 4;
         else if (profile != "window_observer_v3")
@@ -108,7 +133,7 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
         if (m.legacyEntrySha256.size() != 64 || m.legacyEntrySha256.find_first_not_of("0123456789abcdef") != std::string::npos)
             throw std::invalid_argument("legacy MMDPlugin requires a lowercase SHA-256");
         constexpr std::string_view allowed[] = {"schemaVersion", "id", "name", "version", "kind", "entry", "sha256",
-            "profile", "architecture", "minWindows", "reloadPolicy"};
+            "profile", "architecture", "minWindows", "reloadPolicy", "optIn"};
         for (const auto& field : j.object)
             if (std::find(std::begin(allowed), std::end(allowed), field.first) == std::end(allowed))
                 throw std::invalid_argument("unsupported legacy MMDPlugin field: " + field.first);
@@ -152,11 +177,12 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
     Unknown(j, {"schemaVersion", "id", "name", "version", "kind", "abi", "entry", "architecture", "minWindows", "capabilities", "requiresServices", "dependencies", "nativeDependencies", "reloadPolicy", "optIn"}, log);
     return m;
 }
-Discovery Discover(const fs::path& directory) {
+Discovery Discover(const fs::path& directory, bool useCache) {
     Discovery result; const fs::path root = fs::absolute(directory).lexically_normal();
     auto log = [&](const std::string& s) { result.diagnostics.push_back(s); };
+    auto fail = [&](const std::string& s) { log(s); result.errors.push_back(s); };
     if (!fs::exists(root)) return result;
-    if (!Plain(root)) { log("plugin root is a reparse point or unreadable"); return result; }
+    if (!Plain(root)) { fail("plugin root is a reparse point or unreadable"); return result; }
     const auto config = root / L"config.json";
     if (fs::exists(config)) try {
         PackageFile(root, "config.json"); auto j = Json::Parse(ReadFile(config)); DiscoveryConfig c;
@@ -168,33 +194,44 @@ Discovery Discover(const fs::path& directory) {
             for (const auto& item : j.At("enabledPlugins").Items()) { auto id = item.String(); CheckId(id); c.enabled.insert(id); }
         Unknown(j, {"schemaVersion", "maxDepth", "disabledPlugins", "enabledPlugins"}, log); result.config = std::move(c);
     } catch (const std::exception& e) { log(std::string("config: ") + e.what() + "; using defaults"); }
+    LegacyDiscovery automatic(root, result, useCache);
     size_t visited = 0;
-    std::function<void(const fs::path&, uint32_t)> scan = [&](const fs::path& dir, uint32_t depth) {
+    std::function<void(const fs::path&, uint32_t, bool)> scan = [&](const fs::path& dir, uint32_t depth, bool legacy) {
         if (++visited > 32768) throw std::runtime_error("discovery directory limit");
-        if (depth && Plain(dir / L"plugin.json") && fs::is_regular_file(dir / L"plugin.json")) {
+        if ((depth || legacy) && GetFileAttributesW((dir / L"plugin.json").c_str()) != INVALID_FILE_ATTRIBUTES) {
             try { result.packages.push_back(ReadManifest(dir / L"plugin.json", log)); }
-            catch (const std::exception& e) { log(Utf8((dir / L"plugin.json").native()) + ": " + e.what()); } return;
+            catch (const std::exception& e) { fail(Utf8((dir / L"plugin.json").native()) + ": " + e.what()); } return;
         }
         std::vector<fs::path> children;
         std::error_code ec;
         for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end; it != end; it.increment(ec)) {
-            if (ec) { log("directory read failed: " + Utf8(dir.native())); break; }
+            if (ec) { fail("directory read failed: " + Utf8(dir.native())); break; }
             children.push_back(it->path());
         }
         std::sort(children.begin(), children.end(), [](const auto& a, const auto& b) { return Lower(a.native()) < Lower(b.native()); });
-        for (const auto& p : children) {
-            if (!Plain(p)) continue;
-            if (fs::is_directory(p)) { if (depth < result.config.maxDepth) scan(p, depth + 1); }
-            else if (!depth) {
+        // Flat manifests take precedence over auto detection too. If one is
+        // invalid, do not bypass it by loading a neighboring DLL automatically.
+        bool flatManifest = false;
+        if (!depth) for (const auto& p : children) {
                 auto name = Lower(p.filename().native()); constexpr std::wstring_view suffix = L".plugin.json";
                 if (name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                    flatManifest = true;
                     try { result.packages.push_back(ReadManifest(p, log)); }
-                    catch (const std::exception& e) { log(Utf8(p.native()) + ": " + e.what()); }
+                    catch (const std::exception& e) { fail(Utf8(p.native()) + ": " + e.what()); }
                 }
-            }
+        }
+        for (const auto& p : children) {
+            if (!Plain(p)) continue;
+            if (fs::is_directory(p)) {
+                // LEGACY is an explicit namespace, with its own depth origin.
+                // Ordinary PLUGINS folders never infer plugins from raw DLLs.
+                if (!legacy && !depth && Lower(p.filename().native()) == L"legacy") scan(p, 0, true);
+                else if (depth < result.config.maxDepth) scan(p, depth + 1, legacy);
+            } else if (legacy && !flatManifest && Lower(p.extension().native()) == L".dll") automatic.Inspect(p);
         }
     };
-    try { scan(root, 0); } catch (const std::exception& e) { log(e.what()); result.packages.clear(); }
+    try { scan(root, 0, false); } catch (const std::exception& e) { fail(e.what()); result.packages.clear(); }
+    automatic.Save();
     return result;
 }
 std::vector<size_t> Resolve(const Discovery& d, const Log& log) {
