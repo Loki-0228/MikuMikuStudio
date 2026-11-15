@@ -2,6 +2,17 @@
 
 `workspace_layout_preview_tests` 验证 UI-08 宿主临时让位的 CPU 核心：只把显式授权的面板移到同根预留空槽，整批替换或拒绝，空计划／取消／失效后以当前宿主布局为准；覆盖固定面板、旧代次、其他所有者和相交的宿主操作。运行 `make -C linux check`，或在 Windows 构建该独立目标后运行 CTest `workspace_layout_preview`。不加载 DLL、不写设置、不移动真实窗口，也不代表 UI-08 产品前台验收。
 
+`workspace_layout_win32_fixture` 是 UI-08 的独立可见 Win32 夹具。它复用上述宿主核心，通过 `SetWindowPos` 将一个原生子控件移到同一父窗口内的预留空槽。原 HWND 和父窗口不变，旧位置不再命中该控件。移出预留槽、松手、Esc、捕获被接管、取消模式、失活及输入源销毁都能恢复原位。卸载按键仅模拟宿主收到拥有者卸载通知，再销毁夹具的输入源窗口；没有加载 DLL、连接 MMS 产品工作区或写入偏好、历史、工程文件。
+
+在已配置的 Windows 工程中启用 `MIKUMIKUSTUDIO_BUILD_UI_TESTS` 并显式构建 `workspace_layout_win32_fixture`。例如，先运行 `cmake --preset win7-x64 -DMIKUMIKUSTUDIO_BUILD_UI_TESTS=ON`，再运行 `cmake --build --preset win7-x64-release --target workspace_layout_win32_fixture`，产物在 `build/cmake/tests/Release/`。也可从仓库根目录用 x64 Native Tools 命令提示符独立编译，无需 Conan、DirectX 或工程素材：
+
+```bat
+cl /nologo /std:c++17 /EHsc /W4 /utf-8 /D_WIN32_WINNT=0x0601 /DWINVER=0x0601 tests\workspace_layout_win32_fixture.cpp src\plugins\workspace_layout_preview.cpp /Feworkspace_layout_win32_fixture.exe user32.lib gdi32.lib
+```
+
+- **消息回归：** 在独立交互桌面的前台运行 `workspace_layout_win32_fixture.exe --self-test`。退出码为 0 时，窗口坐标、槽位命中、同一 HWND、捕获持有与转移、各撤回路径、旧消息无效和重复拖动均通过。鼠标和 Esc 由消息注入，捕获转移与窗口激活使用实际 Win32 API；不纳入默认 CTest，也不替代物理前台输入。
+- **手动前台：** 无参数启动，按住 `Drag grip` 拖到 `Reserved spare slot`，检查控件移位且旧槽为空；拖出预留槽后返回原位，再拖入并松手，确认仍回原位。分别重新拖入，保持按住鼠标时按 Esc、按 C 让另一个 HWND 接管捕获、切换到其他应用、按 U 模拟卸载，每次应恢复且后续拖动不粘住。U 后返回夹具并按 R 重挂，确认新拖动正常。此流程只验收夹具；真实 MMS 面板、产品 DLL 生命周期与多屏 DPI 仍需单独验收。
+
 `bone_inheritance_index_tests` 是长期保留的无窗口 CPU 回归，覆盖 A/B/E 继承索引边界和自身姿态保留，注册为 CTest `bone_inheritance_index`。`stage_inheritance_load_tests <工程.pmm> [轮数]` 是需要实际素材的隐藏窗口手动回归，启用 `MIKUMIKUSTUDIO_BUILD_UI_TESTS` 后显式构建，不注册到默认 CTest。工程必须含有非法继承源；先备份输入，在独立测试目录串行运行。它只载入、求值和退出，不保存工程；不能替代真实 MME 和视觉验收。只有继承功能或对应载入路径被移除时才评估删除这两个测试。记录见 [Stage 继承索引修复](../docs/records/stage-inheritance-index-2026-11-14.md)。
 
 `stage_inheritance_runner.py --self-test` 验证原版兼容导入信息提示的精确匹配及拒绝规则。实际运行要求显式指定现有测试 EXE、隔离工程目录、新输出目录及二者预期 SHA-256；仅处理自身私有桌面上的指定中文信息通知，不处理导入拒绝或未知警告。当前 LOVE 的现有 Stage 宿主在真实私有桌面启动时出现 `0xC0000142`，因此该驱动尚未完成真实 Stage 物理回归；不要把匹配自测当成集成通过。仅保留为诊断与测试侧脚本，待进程内宿主处理取代后再评估删除。

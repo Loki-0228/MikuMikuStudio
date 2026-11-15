@@ -1047,6 +1047,17 @@ set_target_properties(workspace_layout_preview_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_dependencies(plugin_abi_tests workspace_layout_preview_tests)
 add_test(NAME workspace_layout_preview COMMAND workspace_layout_preview_tests)
+# A visible interactive test only. Do not activate a window in the default test suite.
+if(MIKUMIKUSTUDIO_BUILD_UI_TESTS)
+    add_executable(workspace_layout_win32_fixture EXCLUDE_FROM_ALL
+        tests/workspace_layout_win32_fixture.cpp src/plugins/workspace_layout_preview.cpp)
+    target_compile_features(workspace_layout_win32_fixture PRIVATE cxx_std_17)
+    target_compile_definitions(workspace_layout_win32_fixture PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+    target_link_libraries(workspace_layout_win32_fixture PRIVATE user32 gdi32)
+    target_link_options(workspace_layout_win32_fixture PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+    set_target_properties(workspace_layout_win32_fixture PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+endif()
 find_program(MMS_ABI_POWERSHELL NAMES pwsh)
 if(Python3_Interpreter_FOUND AND MMS_ABI_POWERSHELL)
     add_test(NAME abi_release_package_layout
