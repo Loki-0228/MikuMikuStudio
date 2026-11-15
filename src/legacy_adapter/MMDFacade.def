@@ -1,4 +1,4 @@
-; MMSAdapter.dll - 37 host Exp* export thunks.
+; MMDFacade.dll - 37 host Exp* export thunks.
 ;
 ; Names and ordinals are copied from exports/MikuMikuDance.def (ordinal base 1)
 ; and must keep the host numbering. adapter.cpp generates the matching wrappers
@@ -7,7 +7,7 @@
 ;
 ; The host executable is found at load time; this module holds no host import.
 
-LIBRARY MMSAdapter
+LIBRARY MMDFacade
 
 EXPORTS
     ExpGetFrameTime            @21

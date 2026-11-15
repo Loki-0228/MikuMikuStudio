@@ -62,13 +62,13 @@ foreach ($build in $builds) {
     $stage = Join-Path $output $name
     New-Item -ItemType Directory -Path $stage | Out-Null
     Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MikuMikuDance.exe') -Destination $stage
-    Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MMSAdapter.dll') -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MMDFacade.dll') -Destination $stage
     Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MMHack.dll') -Destination $stage
-    $legacyMmdRoot = Join-Path $stage 'legacy-mmdplugin'
-    New-Item -ItemType Directory -Path $legacyMmdRoot | Out-Null
-    Copy-Item -LiteralPath (Join-Path $build.Path 'Release/legacy-mmdplugin/MMDPlugin.dll') -Destination $legacyMmdRoot
     $pluginRoot = Join-Path $stage 'PLUGINS'
     New-Item -ItemType Directory -Path $pluginRoot | Out-Null
+    $legacyMmdRoot = Join-Path $pluginRoot 'LEGACY'
+    New-Item -ItemType Directory -Path $legacyMmdRoot | Out-Null
+    Copy-Item -LiteralPath (Join-Path $build.Path 'Release/PLUGINS/LEGACY/MMDPlugin.dll') -Destination $legacyMmdRoot
     [IO.File]::WriteAllText((Join-Path $pluginRoot 'config.json'), '{"schemaVersion":1,"maxDepth":2,"disabledPlugins":[]}' + "`n")
     Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination $stage
     Copy-Item -LiteralPath (Join-Path $repo 'licenses') -Destination $stage -Recurse

@@ -2,6 +2,8 @@
 
 [返回功能总览](README.md)
 
+本轮兼容产品名为 **MMDFacade**，宿主导出桥为 `MMDFacade.dll`。新增 ABI 2 的有限 `device_reset_v2` 配置，保留 ABI 3 窗口观察；ABI 4 未支持。工厂、回调及插件依赖核对、改名迁移和验证边界见 [MMDFacade](../MMDFACADE.md)。下方历史真实插件结果不自动成为本轮重跑结果。
+
 ## 当前推进范围
 
 ### 旧MME包装剩余验收
@@ -24,7 +26,7 @@
 | MMDUtility 核心，ABI 3，源码 `0bff277` | `MMDPlugin.dll` 的 `getHWND` 和 `createWM_APP_ID`。 | 原样源码构建在 MMS 产品中创建自己的菜单，与另外两个观察包同时加载并正常退出。此行覆盖核心 DLL，子插件和相互查询对象接口另行验证。见[固定版本的源码](https://github.com/oigami/MMDUtility/tree/0bff27755a5d86dbb8a5be3f264101ee4bf52f86/MMDUtility)。 |
 | ExamplePlugin，源码适配 `242115c` | 同一提供者的两个导出，以及归属于该包的 `WM_COMMAND`。 | 适配了 ABI 3 版本声明、菜单消息和 INI 路径的所有权。实测菜单勾选开关、其他包同时运行及退出。保留版本 1 的对照 DLL 被拒绝，有效包继续启动。见[固定版本的源码](https://github.com/PTOM76/mmdplugin-ExamplePlugin/tree/242115c99faabf2bc195e1a24a82bd63f5e4718d)。 |
 | DispPlayingFrame，ABI 3，源码适配 `64d7305` | 兼容提供者的 `getHWND` 和 MMS 宿主的 `MMSAcquireLegacyPlaybackMap`。 | 隔离 Release 程序自动发现并启用包。控件随相机距离控件移动，覆盖负帧跳转、播放推进、停播跳帧及退出。和真实 MME 0.37 x64 共存时，Release 离屏回归实测显示 `-18 → 124 → 125 → 42` 并正常退出。见[固定版本的上游源码](https://github.com/Soul-chan/MMDPluginDLL/blob/64d73053739dac0dc126a2c712f5adb72bcd2e78/DispPlayingFrame/DispPlayingFrame.cpp)。 |
-| EffekseerForMMD，源码 `c55b2f4` | 使用 ABI 2 工厂及 D3D9 设备重置回调。 | 本版窗口观察模式仅支持 ABI 3。此候选已核对源码，实际绘制和设备重置仍待验证。见[固定版本的项目源码](https://github.com/oigami/EffekseerForMMD/tree/c55b2f4e0e26cee473931624f0180eec84c297e2)。 |
+| EffekseerForMMD，源码 `c55b2f4` | ABI 2 工厂、设备重置和绘制回调、模型查询及文件 hook。 | 新增 `device_reset_v2` 只覆盖合成插件的重置契约；原插件整体未支持，粒子绘制未验证。见[固定版本的项目源码](https://github.com/oigami/EffekseerForMMD/tree/c55b2f4e0e26cee473931624f0180eec84c297e2)。 |
 | FirstPersonCamera，源码 `f71c300` | 使用 ABI 4 工厂和鼠标回调。 | 已核对源码。此候选需要单独适配和实测。 |
 | MMDDiscordRPC，源码 `61ce9b9` | 使用 ABI 3 工厂，另加载 Discord SDK、安装线程定时器并替换主窗窗口过程。该提交未找到 `destroy3` 实现。 | 已核对源码。此候选需要明确移除定时器和还原窗口过程的生命周期，尚未执行。 |
 | CameraModeUndo、OutsideParentReaderWriter、SetCameraFollowBone、SwapOutsideParent，源码 `64d7305` | 原样代码读取原版 `MMDMainData`，并检查 MMD 版本。 | 已核对源码依赖，核心操作需要映射到 MMS 的相机、外亲或历史接口，尚无原样运行通过的证据。见[固定版本的项目源码](https://github.com/Soul-chan/MMDPluginDLL/tree/64d73053739dac0dc126a2c712f5adb72bcd2e78)。 |
@@ -38,7 +40,9 @@ DispPlayingFrame 的上游版本检查 MMD 9.31 并读取 `MMDMainData`。源码
 
 ### MMS 窗口观察插件包
 
-适配插件可将自编译的 x64 DLL 和 `plugin.json` 放在 MMS 安装目录的 `PLUGINS/<包目录>/`。MMS 发行构建的 `legacy-mmdplugin/MMDPlugin.dll` 提供 `getHWND` 和 `createWM_APP_ID`，插件可链接该 DLL 的导入库。安装时保留提供者在原目录。其他发布版插件所需的原版 MMDPlugin 运行时依各自文档配置。MMDPlugin 与 MME 所需的 MMHack 分别配置。
+适配插件可将自编译的 x64 DLL 和 `plugin.json` 放在 MMS 安装目录的 `PLUGINS/<包目录>/`。MMS 自己构建的 `MMDPlugin.dll` 提供 `getHWND` 和 `createWM_APP_ID`，插件可链接该 DLL 的导入库。宿主以当前 EXE 所在目录为基准，依次查找 `PLUGINS/LEGACY/MMDPlugin.dll`、`PLUGINS/legacy-mmdplugin/MMDPlugin.dll`、`legacy-mmdplugin/MMDPlugin.dll`。只有路径不存在才继续查找，已有路径读取、校验或加载失败时不会回退。新构建和发行包只在 `PLUGINS/LEGACY/` 带一份 DLL；后两处位置仅兼容旧安装。用户插件包可在 `PLUGINS` 内自行命名和分组，由 `maxDepth` 配置控制递归深度。
+
+提供者不从工作目录或各插件包里搜索。请勿把第三方 DLL 放入上述提供者位置。其他插件所需的原版 MMDPlugin 运行时依各自文档配置。MMDPlugin 与 MME 所需的 MMHack 分别配置；两条兼容路径都不要求 MMS 主程序使用固定文件名。
 
 ```json
 {
@@ -62,7 +66,7 @@ DispPlayingFrame 的上游版本检查 MMD 9.31 并读取 `MMDMainData`。源码
 
 窗口观察包的入口 DLL 必须直接导出 `version`、`create3` 和 `destroy3`。宿主先读取 PE 导出表，再加载 DLL 并调用 `version()` 核对返回值。缺失或转发工厂导出的两个合成包均在 `DllMain` 执行前被拒绝，同目录中的三个有效插件仍正常工作。参见 [Microsoft PE 导出表说明](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#export-address-table)。
 
-仓库中的 `legacy_observer_export_preflight` CTest 用例覆盖直接导出、缺失导出和转发导出。构建目标 `legacy_observer_export_tests` 后即可运行，测试程序和合成 DLL 随目标编译并输出到构建目录的 `tests/` 下，无需第三方插件或 GPU。
+仓库中的 `legacy_observer_export_preflight` CTest 用例覆盖直接导出、缺失导出、转发导出、两个提供者位置的优先顺序以及改名宿主调用。构建目标 `legacy_observer_export_tests` 后即可运行，测试程序和合成 DLL 随目标编译并输出到构建目录的 `tests/` 下，无需第三方插件或 GPU。
 
 复现样本时，使用表中固定提交的 DispPlayingFrame 源码。将原来的 MMD 版本检查替换为映射导出的能力检查，将定时器的数据读取改为下方的只读快照。在 `start` 创建显示控件，保留窗口位置观察回调，并在 `stop` 停止定时器后销毁控件。用 x64 MSVC 构建，包含 MMS 的 `sdk/mms/include`，并使用本构建生成的 `MMDPlugin.lib` 解析 `getHWND`。测试所用的样本 DLL、宿主和提供者的摘要均保存在隔离验收记录中。
 
@@ -87,7 +91,7 @@ Pop-Location
 ```powershell
 python -B tests/plugins/run_legacy_observer_smoke.py `
     --exe 'build/cmake/Release/MikuMikuDance.exe' `
-    --provider 'build/cmake/Release/legacy-mmdplugin/MMDPlugin.dll' `
+    --provider 'build/cmake/Release/PLUGINS/LEGACY/MMDPlugin.dll' `
     --sample "$sample/DispPlayingFrame.dll" `
     --output 'build/legacy-observer-smoke'
 ```

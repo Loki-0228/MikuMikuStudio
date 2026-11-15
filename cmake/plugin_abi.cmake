@@ -1,18 +1,28 @@
 # Native plugin ABI. This target has no renderer, CUDA, NVAPI or DX12 dependency.
 add_subdirectory(src/legacy_adapter)
 add_subdirectory(src/legacy_mmhack)
-set_target_properties(MMSAdapter PROPERTIES
+set_target_properties(MMDFacade PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>")
-target_link_options(MMSAdapter PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
-add_dependencies(MikuMikuStudio MMSAdapter)
+target_link_options(MMDFacade PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+add_dependencies(MikuMikuStudio MMDFacade)
+install(TARGETS MMDFacade MMSLegacyMMHack RUNTIME DESTINATION .)
 add_library(mms_legacy_mmd_provider SHARED src/plugins/legacy_mmd_provider.cpp)
 set_target_properties(mms_legacy_mmd_provider PROPERTIES OUTPUT_NAME MMDPlugin
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>/legacy-mmdplugin"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>/PLUGINS/LEGACY"
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_link_options(mms_legacy_mmd_provider PRIVATE /SUBSYSTEM:WINDOWS,6.01)
 add_dependencies(MikuMikuStudio mms_legacy_mmd_provider)
 # Legacy observers resolve this app-owned provider relative to the host EXE.
-install(TARGETS mms_legacy_mmd_provider RUNTIME DESTINATION legacy-mmdplugin)
+install(TARGETS mms_legacy_mmd_provider RUNTIME DESTINATION PLUGINS/LEGACY)
+add_library(mms_first_person_camera SHARED src/legacy_first_person/first_person.cpp)
+target_include_directories(mms_first_person_camera PRIVATE sdk/mms/include third_party/dxsdk-d3dx/include)
+target_link_libraries(mms_first_person_camera PRIVATE user32)
+target_compile_options(mms_first_person_camera PRIVATE /utf-8)
+target_link_options(mms_first_person_camera PRIVATE /SUBSYSTEM:WINDOWS,6.01)
+set_target_properties(mms_first_person_camera PROPERTIES OUTPUT_NAME MMSFirstPersonCamera
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>/optional-plugins/first-person-camera"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_dependencies(MikuMikuStudio mms_first_person_camera)
 add_executable(legacy_image_tests EXCLUDE_FROM_ALL
     tests/plugins/legacy_image_tests.cpp src/plugins/legacy_image.cpp)
 target_compile_features(legacy_image_tests PRIVATE cxx_std_17)
@@ -29,10 +39,10 @@ foreach(probe legacy_adapter_tests legacy_adapter_missing_tests)
     target_compile_features(${probe} PRIVATE cxx_std_17)
     target_link_options(${probe} PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
     set_target_properties(${probe} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
-    add_dependencies(${probe} MMSAdapter)
+    add_dependencies(${probe} MMDFacade)
 endforeach()
-add_test(NAME legacy_adapter_renamed_host COMMAND legacy_adapter_tests $<TARGET_FILE:MMSAdapter>)
-add_test(NAME legacy_adapter_missing_host_exports COMMAND legacy_adapter_missing_tests $<TARGET_FILE:MMSAdapter>)
+add_test(NAME legacy_adapter_renamed_host COMMAND legacy_adapter_tests $<TARGET_FILE:MMDFacade>)
+add_test(NAME legacy_adapter_missing_host_exports COMMAND legacy_adapter_missing_tests $<TARGET_FILE:MMDFacade>)
 enable_language(C)
 add_executable(render_cpp_extension_tests EXCLUDE_FROM_ALL tests/plugins/render_cpp_extension_tests.cpp)
 add_executable(snapshot_cpp_safety_tests EXCLUDE_FROM_ALL tests/plugins/snapshot_cpp_safety_tests.cpp)
@@ -310,7 +320,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/project_storage.cpp
     src/plugins/native_ui.cpp src/plugins/native_property_input.cpp)
 target_include_directories(mms_plugin_runtime PUBLIC sdk/mms/include include PRIVATE src/plugins)
-target_link_libraries(mms_plugin_runtime PUBLIC mms_system_settings native_ui::win32 user32 gdi32 comctl32 imm32 bcrypt)
+target_link_libraries(mms_plugin_runtime PUBLIC mms_system_settings mikumikustudio_runtime_log native_ui::win32 user32 gdi32 comctl32 imm32 bcrypt)
 target_compile_definitions(mms_plugin_runtime PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
 target_compile_definitions(mms_plugin_runtime PRIVATE MMD_ENABLE_DX12=$<BOOL:${MIKUMIKUSTUDIO_ENABLE_DX12}>)
 
@@ -994,7 +1004,7 @@ endforeach()
 target_compile_definitions(mms_legacy_observer_exports_direct PRIVATE MMS_TEST_LEGACY_DIRECT_DESTROY)
 target_sources(mms_legacy_observer_exports_forwarded PRIVATE tests/plugins/legacy_observer_export_forward.def)
 add_executable(legacy_observer_export_tests EXCLUDE_FROM_ALL tests/plugins/legacy_observer_export_tests.cpp)
-set_target_properties(legacy_observer_export_tests PROPERTIES
+set_target_properties(legacy_observer_export_tests PROPERTIES ENABLE_EXPORTS ON
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 target_include_directories(legacy_observer_export_tests PRIVATE src/plugins)
 target_link_libraries(legacy_observer_export_tests PRIVATE mms_plugin_runtime)
@@ -1007,6 +1017,47 @@ add_test(NAME legacy_observer_export_preflight COMMAND legacy_observer_export_te
     "$<TARGET_FILE:mms_legacy_observer_exports_missing>"
     "$<TARGET_FILE:mms_legacy_observer_exports_forwarded>")
 set_tests_properties(legacy_observer_export_preflight PROPERTIES TIMEOUT 30)
+
+add_library(legacy_sxs_fixture MODULE EXCLUDE_FROM_ALL tests/plugins/legacy_sxs_fixture.cpp)
+target_link_libraries(legacy_sxs_fixture PRIVATE gdiplus)
+set_target_properties(legacy_sxs_fixture PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/sxs/$<CONFIG>")
+add_executable(system_import_tests EXCLUDE_FROM_ALL tests/plugins/system_import_tests.cpp)
+target_include_directories(system_import_tests PRIVATE src/plugins)
+target_link_libraries(system_import_tests PRIVATE mms_plugin_runtime)
+set_target_properties(system_import_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(system_import_tests legacy_sxs_fixture mms_legacy_mmd_provider mms_legacy_observer_exports_missing)
+add_test(NAME legacy_system_imports COMMAND system_import_tests
+    "$<TARGET_FILE:mms_legacy_mmd_provider>" "$<TARGET_FILE:legacy_sxs_fixture>" "$<TARGET_FILE:mms_legacy_observer_exports_missing>")
+
+add_executable(legacy_reset_profile_tests EXCLUDE_FROM_ALL tests/plugins/legacy_reset_profile_tests.cpp)
+target_include_directories(legacy_reset_profile_tests PRIVATE src/plugins)
+target_link_libraries(legacy_reset_profile_tests PRIVATE mms_plugin_runtime)
+set_target_properties(legacy_reset_profile_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME legacy_reset_profile COMMAND legacy_reset_profile_tests)
+
+foreach(abi 2 3)
+    add_library(legacy_callback_fixture_v${abi} MODULE EXCLUDE_FROM_ALL tests/plugins/legacy_callback_fixture.cpp)
+    target_compile_definitions(legacy_callback_fixture_v${abi} PRIVATE MMD_TEST_ABI=${abi})
+    target_compile_options(legacy_callback_fixture_v${abi} PRIVATE /utf-8)
+    set_target_properties(legacy_callback_fixture_v${abi} PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/callbacks/$<CONFIG>"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/callbacks/$<CONFIG>")
+endforeach()
+add_executable(legacy_callback_tests EXCLUDE_FROM_ALL tests/plugins/legacy_callback_tests.cpp)
+target_include_directories(legacy_callback_tests PRIVATE third_party/dxsdk-d3dx/include)
+target_link_libraries(legacy_callback_tests PRIVATE mikumikustudio_core d3d9 winmm dsound)
+set_target_properties(legacy_callback_tests PROPERTIES ENABLE_EXPORTS ON
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(legacy_callback_tests legacy_callback_fixture_v2 legacy_callback_fixture_v3 mms_legacy_mmd_provider)
+add_executable(first_person_camera_tests EXCLUDE_FROM_ALL tests/plugins/first_person_camera_tests.cpp)
+target_include_directories(first_person_camera_tests PRIVATE third_party/dxsdk-d3dx/include sdk/mms/include)
+target_link_libraries(first_person_camera_tests PRIVATE mikumikustudio_core d3d9 winmm dsound)
+set_target_properties(first_person_camera_tests PROPERTIES ENABLE_EXPORTS ON
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(first_person_camera_tests mms_first_person_camera mms_legacy_mmd_provider)
 add_executable(legacy_mmd_menu_tests EXCLUDE_FROM_ALL tests/legacy_mmd_menu_tests.cpp)
 target_include_directories(legacy_mmd_menu_tests PRIVATE include src)
 set_target_properties(legacy_mmd_menu_tests PROPERTIES
@@ -1014,6 +1065,14 @@ set_target_properties(legacy_mmd_menu_tests PROPERTIES
 add_dependencies(plugin_abi_tests legacy_mmd_menu_tests)
 add_test(NAME legacy_mmd_menu_commands COMMAND legacy_mmd_menu_tests)
 find_program(MMS_ABI_POWERSHELL NAMES pwsh)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME mmdfacade_camera_input COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/plugins/run_first_person_camera.py" --build "${CMAKE_BINARY_DIR}")
+    set_tests_properties(mmdfacade_camera_input PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+    add_test(NAME mmdfacade_callback_matrix COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/plugins/run_mmdfacade_callbacks.py" --build "${CMAKE_BINARY_DIR}")
+    set_tests_properties(mmdfacade_callback_matrix PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
 if(Python3_Interpreter_FOUND AND MMS_ABI_POWERSHELL)
     add_test(NAME abi_release_package_layout
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_release_package_tests.py"

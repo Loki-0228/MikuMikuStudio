@@ -61,8 +61,8 @@
 在已具备 x64 Windows、D3D9 和本地原版 MME 0.37 的独立测试环境运行。先在对应的 `full` 或 `mmd932` 构建目录配置 `-DMIKUMIKUSTUDIO_BUILD_UI_TESTS=ON`，然后从仓库根目录执行（示例为完整档）：
 
 ```powershell
-cmake --build build/cmake --config Release --target scene_lifecycle_mme_tests MMSAdapter
-python tests/run_mme_save_pair.py --profile full --host build/cmake/tests/mme/Release/MikuMikuDance.exe --adapter build/cmake/Release/MMSAdapter.dll --originals C:\LocalMME037 --output C:\MMSVerify
+cmake --build build/cmake --config Release --target scene_lifecycle_mme_tests MMDFacade
+python tests/run_mme_save_pair.py --profile full --host build/cmake/tests/mme/Release/MikuMikuDance.exe --adapter build/cmake/Release/MMDFacade.dll --originals C:\LocalMME037 --output C:\MMSVerify
 ```
 
 另测 `mmd932` 时，用该档各自产物并指定 `--profile mmd932`。使用内置桥接时，另构建同一配置的 `MMSLegacyMMHack`，添加 `--bridge <同一构建的 MMHack.dll>`；此模式仍需本地真实 `MMEffect.dll`。输出目录须为本地盘上的短 ASCII 路径。每个用例新建隔离安装、独立设置和原创 PMX/FX 夹具，用生产旧插件包加载器启动改名的隐藏宿主，不写入原始 DLL、项目或安装目录。不注册默认 CTest；可以追加 `--case incremental`、`--case timer` 或 `--case overlap`。

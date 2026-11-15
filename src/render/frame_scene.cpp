@@ -1,3 +1,4 @@
+#include "mikumikustudio/legacy_mmd_plugin.hpp"
 #include "mikumikustudio/mmv4mms.hpp"
 #include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/viewport_render_scale.hpp"
@@ -663,7 +664,7 @@ void RenderFrameScene(MMDApp* app) {
     {
         MMD_PERF_SCOPE(BeginScene);
         ui_metrics::Add(ui_metrics::EffectBegin);
-        if (FAILED(device->BeginScene())) return;
+        if (FAILED(legacy_mmd_plugin::BeginScene(device))) return;
     }
     InstallEffectMenuCompatibility(app);
 
@@ -695,7 +696,7 @@ void RenderFrameScene(MMDApp* app) {
             ComposeSelfShadow(app, sub, device);
             ComposeCallbackTexture(app, device);
         } else if (!mmv4mms::Present(app)) {
-            device->EndScene();
+            legacy_mmd_plugin::EndScene(device);
             return;
         }
     }
@@ -717,7 +718,7 @@ void RenderFrameScene(MMDApp* app) {
     // 0x46E208: the recording/sub-window path ends the scene here; it never
     // draws debug geometry or the dynamic overlay batches.
     if (app->RecordingWindow() != nullptr) {
-        const HRESULT ended = device->EndScene();
+        const HRESULT ended = legacy_mmd_plugin::EndScene(device);
         if (still && FAILED(ended)) return;
         if (antialiasFrame.Complete()) {
             if (!still && !transparent && sub->multisampleAvailable == 0 && sub->captureSurface)
@@ -763,7 +764,7 @@ void RenderFrameScene(MMDApp* app) {
         DrawFrameOverlayBatches(app);
         FillFramePresentationMargins(app, device);
     }
-    { MMD_PERF_SCOPE(EndScene); if (SUCCEEDED(device->EndScene())) {
+    { MMD_PERF_SCOPE(EndScene); if (SUCCEEDED(legacy_mmd_plugin::EndScene(device))) {
         antialiasFrame.Complete();
         if (previewScale.Complete()) {
             if (presentOverlays) {

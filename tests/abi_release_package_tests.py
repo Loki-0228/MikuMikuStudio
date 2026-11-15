@@ -18,7 +18,7 @@ def main():
     powershell, script_name = sys.argv[1:]
     script = pathlib.Path(script_name).resolve()
     source = script.parents[1]
-    provider_path = pathlib.Path("legacy-mmdplugin/MMDPlugin.dll")
+    provider_path = pathlib.Path("PLUGINS/LEGACY/MMDPlugin.dll")
     provider_bytes = fake_pe(provider_path.as_posix())
     with tempfile.TemporaryDirectory(prefix="mms-abi-package-") as temporary:
         root = pathlib.Path(temporary)
@@ -32,7 +32,7 @@ def main():
             "CMAKE_GENERATOR_PLATFORM:STRING=x64\n",
             encoding="utf-8",
         )
-        for name in ("MikuMikuDance.exe", "MMSAdapter.dll", "MMHack.dll"):
+        for name in ("MikuMikuDance.exe", "MMDFacade.dll", "MMHack.dll"):
             (binaries / name).write_bytes(fake_pe(name))
         (binaries / "unused.dll").write_bytes(b"should not ship\n")
         (provider.parent / "unused.pdb").write_bytes(b"should not ship\n")
@@ -55,11 +55,15 @@ def main():
         check(sentinel.is_file(), "missing provider must fail before replacing the release directory")
 
         provider.write_bytes(provider_bytes)
+        camera = binaries / "optional-plugins/first-person-camera/MMSFirstPersonCamera.dll"
+        camera.parent.mkdir(parents=True)
+        camera.write_bytes(fake_pe(camera.name))
         result = subprocess.run(command, capture_output=True, text=True, errors="replace", check=False)
         check(result.returncode == 0, f"fixture packaging failed: {result.stderr}")
         check({item.name for item in release.iterdir()} == {
-            "MikuMikuDance.exe", "MMSAdapter.dll", "MMHack.dll", "legacy-mmdplugin",
+            "MikuMikuDance.exe", "MMDFacade.dll", "MMHack.dll",
             "LICENSE", "PLUGINS", "licenses", "mms-adaptive-ui-template.zip",
+            "optional-plugins",
         }, "unexpected top-level release contents")
         copied = release / provider_path
         check(copied.read_bytes() == provider_bytes, "provider copy has different bytes")

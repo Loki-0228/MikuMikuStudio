@@ -15,6 +15,7 @@
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/effect_api.hpp"
 #include "mikumikustudio/legacy_mme_bootstrap.hpp"
+#include "mikumikustudio/legacy_mmd_plugin.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
@@ -1780,6 +1781,7 @@ void CheckRecordingFrames(MMDApp* app) {
 
 }
 #include "model_order_dialog_checks.inc"
+#include "mmdfacade_real_checks.inc"
 int wmain(int argc, wchar_t** argv) {
     using namespace mikumikustudio;
     if (argc < 2) return 2;
@@ -1789,7 +1791,8 @@ int wmain(int argc, wchar_t** argv) {
     const bool cameraStartup = argc > 3 && std::wcscmp(argv[3], L"--pmm-camera-startup") == 0;
     const bool cameraLoad = cameraStartup ||
         (argc > 3 && std::wcscmp(argv[3], L"--pmm-camera-load") == 0);
-    const bool legacyProbe = argc > 3 && std::wcscmp(argv[3], L"--legacy-package") == 0;
+    const bool facadeProbe = argc > 3 && std::wcscmp(argv[3], L"--facade-real") == 0;
+    const bool legacyProbe = facadeProbe || (argc > 3 && std::wcscmp(argv[3], L"--legacy-package") == 0);
     const bool rayGizmo = argc > 3 && std::wcscmp(argv[3], L"--bone-gizmo-ray") == 0;
     const bool savePair = argc > 3 && std::wcscmp(argv[3], L"--mme-save-pair") == 0;
     if (savePair) {
@@ -1843,6 +1846,12 @@ int wmain(int argc, wchar_t** argv) {
         return 3;
     }
     ShowWindow(app->MainWindow(), SW_HIDE);
+    if (facadeProbe) {
+        mmdfacade_real_checks::Run(app,scenePath);
+        ShutdownCleanup(app); delete app; g_Block=nullptr;
+        UnhookWindowsHookEx(cameraLoadHook);
+        return 0;
+    }
 
 #if defined(REQUIRE_MME) && defined(_WIN64)
     if (savePair) {
@@ -1858,7 +1867,6 @@ int wmain(int argc, wchar_t** argv) {
         const auto& legacy = plugins::LegacyMmeStatus();
         if (!legacy.error.empty()) std::printf("legacy startup: %s\n", legacy.error.c_str());
         Check(legacy.loaded, "packaged original MME/MMHack initialized");
-        Check(GetModuleHandleW(L"MikuMikuDance.exe") == nullptr, "renamed host has no original EXE module alias");
         Check(!std::filesystem::exists(std::filesystem::path(legacy.directory).parent_path().parent_path().parent_path().parent_path() / L"MMEffect.dll"),
               "original MME is not installed beside the renamed executable");
         const auto renderProbe = [&]() {

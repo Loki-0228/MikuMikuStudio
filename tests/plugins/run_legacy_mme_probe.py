@@ -56,7 +56,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--originals", type=Path, required=True)
     parser.add_argument("--host", type=Path, default=ROOT / "build/cmake/tests/mme/Release/MikuMikuDance.exe")
-    parser.add_argument("--adapter", type=Path, default=ROOT / "build/cmake/Release/MMSAdapter.dll")
+    parser.add_argument("--adapter", type=Path, default=ROOT / "build/cmake/Release/MMDFacade.dll")
     parser.add_argument("--ascii-only", action="store_true")
     parser.add_argument("--bridge", type=Path, help="Use the built-in MMHack bridge instead of the original hack")
     args = parser.parse_args()
@@ -64,7 +64,7 @@ def main():
     before = {name: digest(path) for name, path in originals.items()}
     root = Path(tempfile.mkdtemp(prefix="legacy-mme-", dir=ROOT / "build/verification"))
     report = {"root": str(root), "originals": before, "cases": []}
-    names = ["An arbitrarily named MMS.exe"]
+    names = ["MikuMikuDance.exe", "An arbitrarily named MMS.exe"]
     if not args.ascii_only:
         names.append("自定义名字的MMS.exe")
     for index, name in enumerate(names):
@@ -72,7 +72,7 @@ def main():
         directory.mkdir()
         exe = directory / name
         shutil.copy2(args.host, exe)
-        shutil.copy2(args.adapter, directory / "MMSAdapter.dll")
+        shutil.copy2(args.adapter, directory / "MMDFacade.dll")
         if args.bridge:
             shutil.copy2(args.bridge, directory / "MMHack.dll")
         package = directory / "PLUGINS/effects/user/legacy_mme"
@@ -94,7 +94,7 @@ def main():
         (project / "effects").mkdir(parents=True)
         (project / "scene.emm").write_text("[Effect]\nPmd1=effects/relative.fx\n", encoding="ascii")
         (project / "effects/relative.fx").write_text("project-relative-effect", encoding="ascii")
-        case = dict(executable=name, hostHash=digest(exe), adapterHash=digest(directory / "MMSAdapter.dll"))
+        case = dict(executable=name, hostHash=digest(exe), adapterHash=digest(directory / "MMDFacade.dll"))
         environment = isolated_environment(directory)
         with (directory / "result.log").open("wb") as out:
             try:
@@ -116,7 +116,7 @@ def main():
         if case["passed"]:
             # Change only this isolated installation's original adapter copy.
             # A PE overlay changes the cache key while retaining exported code.
-            with (directory / "MMSAdapter.dll").open("ab") as adapter:
+            with (directory / "MMDFacade.dll").open("ab") as adapter:
                 adapter.write(b"MMS settings upgrade probe")
             with (directory / "upgrade.log").open("wb") as out:
                 upgrade = subprocess.run([str(exe), str(model), "1", "--legacy-package"], cwd=directory,

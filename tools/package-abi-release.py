@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 from pathlib import Path
 import re
 import shutil
@@ -17,10 +18,13 @@ import zipfile
 
 BUILD_FILES = (
     "MikuMikuDance.exe",
-    "MMSAdapter.dll",
+    "MMDFacade.dll",
     "MMHack.dll",
-    "legacy-mmdplugin/MMDPlugin.dll",
+    "PLUGINS/LEGACY/MMDPlugin.dll",
+    "optional-plugins/first-person-camera/MMSFirstPersonCamera.dll",
 )
+CAMERA_DIR = "optional-plugins/first-person-camera"
+EXTRA_FILES = {f"{CAMERA_DIR}/{name}": f"src/legacy_first_person/{name}" for name in ("LICENSE", "README.md")}
 # Do not copy entire directories from a development checkout.
 REPO_FILES = (
     "LICENSE",
@@ -35,8 +39,12 @@ REPO_FILES = (
 DEFAULT_BUILD = Path("build/cmake")
 DEFAULT_RELEASE = Path("build/release")
 DEFAULT_TEMPLATE = Path("build/packages/mms-adaptive-ui-template.zip")
-PACKAGE_FILES = frozenset((*BUILD_FILES, *REPO_FILES, DEFAULT_TEMPLATE.name))
-PACKAGE_DIRS = frozenset(("legacy-mmdplugin", "PLUGINS", "licenses"))
+PACKAGE_FILES = frozenset((*BUILD_FILES, *REPO_FILES, *EXTRA_FILES, f"{CAMERA_DIR}/plugin.json", DEFAULT_TEMPLATE.name))
+PACKAGE_DIRS = frozenset(("PLUGINS/LEGACY", "PLUGINS", "licenses", "optional-plugins", CAMERA_DIR))
+# Recognize only previous package-owned providers when rebuilding staging.
+# New output never contains these old locations, and adjacent user files still fail.
+PREVIOUS_PACKAGE_DIRS = frozenset(("PLUGINS/legacy-mmdplugin", "legacy-mmdplugin"))
+PREVIOUS_PACKAGE_FILES = frozenset(f"{directory}/MMDPlugin.dll" for directory in PREVIOUS_PACKAGE_DIRS)
 
 
 def cache_value(cache: str, name: str) -> str:
@@ -97,8 +105,8 @@ def check_release(release: Path, force: bool) -> None:
     for path in release.rglob("*"):
         name = path.relative_to(release).as_posix()
         if (is_link(path)
-                or not ((path.is_dir() and name in PACKAGE_DIRS)
-                        or (path.is_file() and name in PACKAGE_FILES))):
+                or not ((path.is_dir() and name in PACKAGE_DIRS | PREVIOUS_PACKAGE_DIRS)
+                        or (path.is_file() and name in PACKAGE_FILES | PREVIOUS_PACKAGE_FILES))):
             raise ValueError(f"发布目录含非打包文件，拒绝覆盖：{path}")
 
 
@@ -154,6 +162,10 @@ def stage_package(repo: Path, build: Path, release: Path, template: Path, force:
         path = repo / name
         require_file(path, repo)
         files[name] = path
+    for name, source in EXTRA_FILES.items():
+        path = repo / source
+        require_file(path, repo)
+        files[name] = path
     require_template(repo, template)
     files[DEFAULT_TEMPLATE.name] = template
 
@@ -168,6 +180,16 @@ def stage_package(repo: Path, build: Path, release: Path, template: Path, force:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source_path, target)
             report.append(f"{file_digest(target)}  {target.stat().st_size}  {name}")
+
+        name = f"{CAMERA_DIR}/plugin.json"
+        target = stage / name
+        target.write_text(json.dumps(dict(schemaVersion=1, id="mms.legacy.first-person-camera",
+            name="FirstPersonCamera (MMS)", version="1.0.0", kind="legacy_mmdplugin",
+            profile="first_person_camera_v4", entry="MMSFirstPersonCamera.dll",
+            sha256=file_digest(stage / CAMERA_DIR / "MMSFirstPersonCamera.dll"),
+            architecture="x64", minWindows="6.1.0", reloadPolicy="restart"), indent=2) + "\n", encoding="utf-8")
+        report.append(f"{file_digest(target)}  {target.stat().st_size}  {name}")
+        report.sort(key=lambda line: line.split("  ", 2)[2])
 
         check_release(release, force)
         try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import importlib.util
 import os
 from pathlib import Path
@@ -19,14 +20,17 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools/package-abi-release.py"
 PRODUCT = (
-    "MikuMikuDance.exe", "MMSAdapter.dll", "MMHack.dll", "legacy-mmdplugin/MMDPlugin.dll",
+    "MikuMikuDance.exe", "MMDFacade.dll", "MMHack.dll", "PLUGINS/LEGACY/MMDPlugin.dll",
+    "optional-plugins/first-person-camera/MMSFirstPersonCamera.dll",
 )
 FIXTURE_PAYLOAD = {
     "LICENSE", "PLUGINS/config.json", "licenses/Alembic-LICENSE.txt", "licenses/FXAA-LICENSE.txt",
     "licenses/Imath-LICENSE.md", "licenses/MinHook-LICENSE.txt", "licenses/README.md",
     "licenses/SMAA-LICENSE.txt",
 }
-PACKAGE = set(PRODUCT) | FIXTURE_PAYLOAD | {"mms-adaptive-ui-template.zip"}
+CAMERA_DIR = "optional-plugins/first-person-camera"
+EXTRA = {f"{CAMERA_DIR}/{name}": f"src/legacy_first_person/{name}" for name in ("LICENSE", "README.md")}
+PACKAGE = set(PRODUCT) | FIXTURE_PAYLOAD | set(EXTRA) | {f"{CAMERA_DIR}/plugin.json", "mms-adaptive-ui-template.zip"}
 
 
 def fake_pe(name: str, machine: int = 0x8664, is_dll: bool | None = None) -> bytes:
@@ -52,6 +56,10 @@ class PackageAbiTest(unittest.TestCase):
         self.tool.parent.mkdir(parents=True)
         shutil.copyfile(TOOL, self.tool)
         for name in FIXTURE_PAYLOAD:
+            target = self.root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, target)
+        for name in EXTRA.values():
             target = self.root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
@@ -87,7 +95,7 @@ class PackageAbiTest(unittest.TestCase):
     def test_exact_files_and_hashes_with_build_and_repo_noise(self) -> None:
         for relative in ("build tree/Release/MMEffect.dll", "build tree/Release/MMSNvidiaAAFix.dll",
                          "build tree/Release/d3dx9_43.dll", "build tree/Release/MikuMikuDance.pdb",
-                         "build tree/Release/legacy-mmdplugin/raw-observer.dll",
+                         "build tree/Release/PLUGINS/LEGACY/raw-observer.dll",
                          "PLUGINS/local-dev-plugin.dll", "licenses/local-notes.txt"):
             (self.root / relative).write_bytes(b"must not be copied")
         result = self.run_packager()
@@ -97,8 +105,16 @@ class PackageAbiTest(unittest.TestCase):
         self.assertEqual(actual, PACKAGE)
         lines = result.stdout.splitlines()
         for name, line in zip(sorted(PACKAGE), lines, strict=False):
-            expected = ((self.build / "Release" / name) if name in PRODUCT
-                        else self.root / name if name in FIXTURE_PAYLOAD else self.template).read_bytes()
+            if name == f"{CAMERA_DIR}/plugin.json":
+                expected = (self.release / name).read_bytes()
+                manifest = json.loads(expected)
+                self.assertEqual(manifest['profile'], 'first_person_camera_v4')
+                self.assertEqual(manifest['sha256'], hashlib.sha256((self.release / CAMERA_DIR / manifest['entry']).read_bytes()).hexdigest())
+            elif name in EXTRA:
+                expected = (self.root / EXTRA[name]).read_bytes()
+            else:
+                expected = ((self.build / "Release" / name) if name in PRODUCT
+                            else self.root / name if name in FIXTURE_PAYLOAD else self.template).read_bytes()
             self.assertEqual((self.release / name).read_bytes(), expected)
             self.assertEqual(line, f"{hashlib.sha256(expected).hexdigest()}  {len(expected)}  {name}")
         self.assertEqual(len(lines), len(PACKAGE) + 1)
@@ -192,6 +208,26 @@ class PackageAbiTest(unittest.TestCase):
                 self.assertNotEqual(self.run_packager("--force", release=release).returncode, 0)
                 self.assertTrue((self.build / "Release/MMHack.dll").is_file())
 
+    def test_force_migrates_old_provider_without_removing_user_files(self) -> None:
+        previous = [self.release / directory / "MMDPlugin.dll"
+                    for directory in ("legacy-mmdplugin", "PLUGINS/legacy-mmdplugin")]
+        for old in previous:
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b"previous provider")
+        for old in previous:
+            extra = old.parent / "user-plugin.dll"
+            extra.write_bytes(b"preserve user plugin")
+            self.assertNotEqual(self.run_packager("--force").returncode, 0)
+            self.assertEqual(extra.read_bytes(), b"preserve user plugin")
+            self.assertEqual(old.read_bytes(), b"previous provider")
+            extra.unlink()
+        result = self.run_packager("--force")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for old in previous:
+            self.assertFalse(old.parent.exists())
+        provider = self.release / "PLUGINS/LEGACY/MMDPlugin.dll"
+        self.assertEqual(provider.read_bytes(), (self.build / "Release" / provider.relative_to(self.release)).read_bytes())
+
     def load_core(self):
         spec = importlib.util.spec_from_file_location("abi_release_fixture", TOOL)
         tool = importlib.util.module_from_spec(spec)
@@ -257,7 +293,7 @@ class PackageAbiTest(unittest.TestCase):
 
     def test_linked_provider_is_not_copied(self) -> None:
         runtime = self.build / "Release"
-        provider = runtime / "legacy-mmdplugin"
+        provider = runtime / "PLUGINS/LEGACY"
         outside = self.root / "other provider"
         provider.rename(outside)
         try:

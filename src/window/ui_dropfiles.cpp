@@ -191,7 +191,8 @@ void HandleDropFiles(HDROP hDrop) {
         if ((wcsstr(szFile, L".pmd") || wcsstr(szFile, L".PMD") ||
              wcsstr(szFile, L".Pmd")) ||
             (wcsstr(szFile, L".pmx") || wcsstr(szFile, L".PMX") ||
-             wcsstr(szFile, L".Pmx"))) {
+             wcsstr(szFile, L".Pmx")) ||
+            (wcsrchr(szFile, L'.') && !_wcsicmp(wcsrchr(szFile, L'.'), L".efk"))) {
             if (DirMenuChecked(app)) {
                 wcscpy_s(app->DirModel(), 0x3E8, DirOf(app, szFile));  // 0xA0D70
             }

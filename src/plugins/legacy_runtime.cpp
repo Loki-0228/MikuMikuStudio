@@ -1,7 +1,9 @@
 #include "mikumikustudio/legacy_mme_bootstrap.hpp"
 #include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/local_data_path.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include "legacy_image.hpp"
+#include "legacy_mmd_image.hpp"
 #include "loader_win32.hpp"
 #include "../io/cache_files_crypto.hpp"
 #include <array>
@@ -22,6 +24,8 @@ struct Handles {
     }
 } retainedFiles;
 void LogMessage(const std::string& message) noexcept {
+    runtime_log::Write("LEGACY_MME %s", message.c_str());
+    runtime_log::Trace("LEGACY_MME %s", message.c_str());
     try {
         OutputDebugStringA(("MME bootstrap: " + message + "\n").c_str());
         // Diagnostic storage uses the same installation scope as the cache.
@@ -196,10 +200,11 @@ void PreloadSystemImports(const fs::path& directory) {
              Lower(actual.native()).rfind(sideBySide, 0) == 0);
     };
     std::set<std::wstring> imports;
-    for (const auto* file : {L"MMSAdapter.dll", L"MMHack.dll", L"MMEffect.dll"})
+    const auto adapterName = Lower(Wide(LegacyAdapterModuleName));
+    for (const auto* file : {L"MMDFacade.dll", L"MMHack.dll", L"MMEffect.dll"})
         for (const auto& imported : InspectPe(directory / file).imports) {
             const auto lower = Lower(Wide(imported));
-            if (lower != L"mmsadapter.dll" && lower != L"mmhack.dll" && lower != L"mmeffect.dll") imports.insert(lower);
+            if (lower != adapterName && lower != L"mmhack.dll" && lower != L"mmeffect.dll") imports.insert(lower);
         }
     const bool safeSearch = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "AddDllDirectory") != nullptr;
     for (const auto& imported : imports) {
@@ -214,6 +219,44 @@ void PreloadSystemImports(const fs::path& directory) {
 }
 
 const LegacyMmeStartupStatus& LegacyMmeStatus() noexcept { return status; }
+LegacyMmdImage PrepareLegacyMmdImage(const Manifest& manifest, const fs::path& install) {
+    LegacyMmdImage result{manifest, {}};
+    if (manifest.kind != Manifest::Kind::LegacyMmdPlugin)
+        throw std::invalid_argument("expected legacy MMDPlugin package");
+    const auto imports = InspectPe(manifest.entry).imports;
+    if (std::find(imports.begin(), imports.end(), "mikumikudance.exe") == imports.end()) return result;
+    Handles source;
+    const auto original = ReadImage(PackageFile(manifest.package, Utf8(manifest.entry.lexically_relative(manifest.package).native())), source);
+    if (Sha256(manifest.entry) != manifest.legacyEntrySha256)
+        throw std::invalid_argument("legacy MMDPlugin entry SHA-256 mismatch");
+    auto rewritten = RedirectLegacyHostImport(original);
+    if (!rewritten.ok()) throw std::invalid_argument("legacy MMDPlugin import rewrite: " + rewritten.message);
+    const auto facade = PackageFile(install, "MMDFacade.dll");
+    std::array<Bytes, 3> images{std::move(rewritten.image), ReadImage(facade, source), {}};
+    if (manifest.legacyProfile == "effekseer_v2")
+        images[2] = ReadImage(PackageFile(manifest.package, "efk.pmd"), source);
+    auto directory = install;
+    HoldDirectory(directory, retainedFiles, false);
+    for (const auto& part : {std::wstring(L"data"), std::wstring(L"plugins"), std::wstring(L"legacy_mmdplugin"),
+            Wide(manifest.id), Wide(CacheKey(images))}) {
+        directory /= part; HoldDirectory(directory, retainedFiles, true);
+    }
+    Publish(directory / manifest.entry.filename(), images[0]);
+    Publish(directory / L"MMDFacade.dll", images[1]);
+    if (!images[2].empty()) Publish(directory / L"efk.pmd", images[2]);
+    result.manifest.package = directory;
+    result.manifest.entry = directory / manifest.entry.filename();
+    result.manifest.legacyEntrySha256 = Sha256(result.manifest.entry);
+    result.facade = directory / L"MMDFacade.dll";
+    if (auto existing = GetModuleHandleW(L"MMDFacade.dll")) {
+        const auto bound = ModulePath(existing);
+        PackageFile(bound.parent_path(), "MMDFacade.dll");
+        if (Sha256(bound) != Sha256(result.facade))
+            throw std::invalid_argument("loaded MMDFacade differs from this installation");
+        result.facade = bound; // Share the identical bridge already bound by MME.
+    }
+    return result;
+}
 bool BootstrapLegacyMme() noexcept {
     if (attempted) return safeToContinue;
     attempted = true;
@@ -231,7 +274,7 @@ bool BootstrapLegacyMme() noexcept {
         if (!legacy) return true;
         status.id = legacy->id;
         if (WindowsVersion() < legacy->minWindows) throw std::runtime_error("legacy package minimum Windows version is not met");
-        if (LegacyMmeModule() || LegacyMmeHackModule() || GetModuleHandleW(L"MMSAdapter.dll"))
+        if (LegacyMmeModule() || LegacyMmeHackModule() || GetModuleHandleW(L"MMDFacade.dll") || GetModuleHandleW(L"MMSAdapter.dll"))
             throw std::runtime_error("legacy modules already loaded; remove the old startup proxy before using a package");
         Handles source;
         LegacyImagePatch hack;
@@ -248,22 +291,22 @@ bool BootstrapLegacyMme() noexcept {
         if (!hack.ok()) throw std::runtime_error("MMHack: " + std::string(LegacyImageErrorName(hack.error)) + " " + hack.message);
         if (!effect.ok()) throw std::runtime_error("MMEffect: " + std::string(LegacyImageErrorName(effect.error)) + " " + effect.message);
         std::array<Bytes, 3> images{std::move(hack.image), std::move(effect.image),
-            ReadImage(PackageFile(install, "MMSAdapter.dll"), source)};
+            ReadImage(PackageFile(install, "MMDFacade.dll"), source)};
         auto directory = install;
         HoldDirectory(directory, retainedFiles, false);
         for (const auto& part : {std::wstring(L"data"), std::wstring(L"plugins"), std::wstring(L"legacy_mme"), Wide(CacheKey(images))}) {
             directory /= part; HoldDirectory(directory, retainedFiles, true);
         }
         status.directory = directory;
-        const wchar_t* names[] = {L"MMHack.dll", L"MMEffect.dll", L"MMSAdapter.dll"};
+        const wchar_t* names[] = {L"MMHack.dll", L"MMEffect.dll", L"MMDFacade.dll"};
         for (size_t i = 0; i < images.size(); ++i) Publish(directory / names[i], images[i]);
         InitializeSettings(*legacy, directory);
         PreloadSystemImports(directory);
         const bool safeSearch = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "AddDllDirectory") != nullptr;
         const DWORD flags = safeSearch ? LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32 : LOAD_WITH_ALTERED_SEARCH_PATH;
-        HMODULE adapter = LoadLibraryExW((directory / L"MMSAdapter.dll").c_str(), nullptr, flags);
-        if (!adapter || !SamePath(ModulePath(adapter), directory / L"MMSAdapter.dll"))
-            throw std::runtime_error("MMSAdapter cannot bind this executable's host exports, error " + std::to_string(GetLastError()));
+        HMODULE adapter = LoadLibraryExW((directory / L"MMDFacade.dll").c_str(), nullptr, flags);
+        if (!adapter || !SamePath(ModulePath(adapter), directory / L"MMDFacade.dll"))
+            throw std::runtime_error("MMDFacade cannot bind this executable's host exports, error " + std::to_string(GetLastError()));
         Pin(adapter);
         // From here the foreign initializer may install irreversible hooks.
         // If it fails, abort graphics initialization rather than entering D3D

@@ -57,6 +57,11 @@ struct Environment {
     }
     ~Environment() { Check(SetCurrentDirectoryW(initialCwd.c_str()) != FALSE, "restore inherited cwd after hidden-host shutdown"); }
 };
+void WriteBytes(const fs::path& path, const char* bytes) {
+    std::ofstream stream(path, std::ios::binary);
+    stream << bytes; stream.close();
+    Check(bool(stream), "write external fixture bytes");
+}
 std::vector<unsigned char> Bytes(const fs::path& path) {
     std::ifstream stream(path, std::ios::binary);
     Check(bool(stream), "open an owned cache/output file for byte comparison");
@@ -205,6 +210,69 @@ void Run(MMDApp& app, const fs::path& out, Environment& env) {
     Check(Bytes(work) == blockerBytes, "explicit user output leaves the unrelated work obstruction intact");
     SameFiles(oldFiles, cache); SameSamples(raw, oldSamples); NoForeignStaging(env);
 
+    // Mutate the actual destination during geometry sampling, after Export
+    // has captured the direct call's starting state or checked the UI approval.
+    auto combined = options; combined.bakeIntoProject = true;
+    app.SceneModified() = 0;
+    const auto newOutput = out / L"late-arrival.abc";
+    Staging arrival(out, L"late-arrival.abc"); Scene beforeArrival(app, raw);
+    const std::string arrived = "external file created while sampling";
+    bool added = false;
+    result = alembic_export::Export(app, newOutput, combined, [&](int frame, int) {
+        arrival.Observe();
+        if (frame >= 1 && !added) {
+            Check(!fs::exists(newOutput), "exporter does not reserve the final destination name");
+            WriteBytes(newOutput, arrived.c_str()); added = true;
+        }
+        return true;
+    });
+    Check(added && !result.success && result.destinationChanged && !result.cancelled && !result.abcWritten &&
+        !result.baked && result.retainedPrevious.empty() && result.samples == 3, "late arrival refuses publication and project installation after real sampling");
+    Check(Bytes(newOutput) == std::vector<unsigned char>(arrived.begin(), arrived.end()), "late-arriving external ABC bytes survive");
+    arrival.Cleared(); beforeArrival.Same(false); SameFiles(oldFiles, cache); SameSamples(raw, oldSamples);
+
+    const auto replaceOutput = out / L"replaced-during-sampling.abc", movedAside = out / L"previous-fixture.abc";
+    WriteBytes(replaceOutput, "original approved fixture");
+    const auto original = Bytes(replaceOutput);
+    const auto replacement = out / L"replacement-fixture.abc";
+    WriteBytes(replacement, "external replacement with a different file identity");
+    const auto replacementBytes = Bytes(replacement);
+    recording_output_path::Selection approved;
+    Check(recording_output_path::ReadSelection(replaceOutput.c_str(), approved) == ERROR_SUCCESS && approved.existing,
+        "capture the destination identity before the user could approve its replacement");
+    Staging swapped(out, L"replaced-during-sampling.abc"); Scene beforeSwap(app, raw);
+    bool moved = false;
+    result = alembic_export::Export(app, replaceOutput, combined, [&](int frame, int) {
+        swapped.Observe();
+        if (frame >= 1 && !moved) {
+            Check(MoveFileExW(replaceOutput.c_str(), movedAside.c_str(), MOVEFILE_WRITE_THROUGH) &&
+                MoveFileExW(replacement.c_str(), replaceOutput.c_str(), MOVEFILE_WRITE_THROUGH),
+                "replace the approved destination with a separately created file during real progress");
+            moved = true;
+        }
+        return true;
+    }, &approved);
+    Check(moved && !result.success && result.destinationChanged && !result.cancelled && !result.abcWritten &&
+        !result.baked && result.retainedPrevious.empty() && result.samples == 3, "swapped approval refuses publication and project installation");
+    Check(Bytes(replaceOutput) == replacementBytes && Bytes(movedAside) == original, "the replacement and displaced original bytes both survive");
+    swapped.Cleared(); beforeSwap.Same(false); SameFiles(oldFiles, cache); SameSamples(raw, oldSamples);
+
+    unsigned staleProgress = 0;
+    result = alembic_export::Export(app, replaceOutput, combined, [&](int, int) { ++staleProgress; return true; }, &approved);
+    Check(result.destinationChanged && !result.success && !result.abcWritten && !result.baked && staleProgress == 0 &&
+        Bytes(replaceOutput) == replacementBytes, "a change while the confirmation dialog was open is refused before staging or sampling");
+    Check(Partials(out, L"replaced-during-sampling.abc.partial-").empty(), "stale approval left no partial");
+    beforeSwap.Same(false); SameFiles(oldFiles, cache); SameSamples(raw, oldSamples);
+
+    Check(recording_output_path::ReadSelection(replaceOutput.c_str(), approved) == ERROR_SUCCESS && approved.existing,
+        "new selection captures the replacement identity for a normal retry");
+    Staging retried(out, L"replaced-during-sampling.abc");
+    result = alembic_export::Export(app, replaceOutput, options, [&](int, int) { retried.Observe(); return true; }, &approved);
+    Check(result.success && result.abcWritten && !result.destinationChanged && !result.baked && result.retainedPrevious.empty(),
+        "an unchanged newly approved destination is replaced on retry");
+    retried.Cleared(); Read(replaceOutput, 3, 0, 1. / 30);
+    beforeSwap.Same(false); SameFiles(oldFiles, cache); SameSamples(raw, oldSamples); NoForeignStaging(env);
+
     // All files under these two roots were created by this run. Release the
     // actual installed archive before replacing its now-empty shared cache root.
     mesh_bake_cache::Clear(); Check(mesh_bake_cache::Empty(), "release this run's installed private archive");
@@ -217,7 +285,15 @@ void Run(MMDApp& app, const fs::path& out, Environment& env) {
     Check(result.success && result.abcWritten && !result.baked && mesh_bake_cache::Empty(), "pure user ABC still exports with both internal cache/work roots occupied by files");
     cacheBlocked.Cleared(); beforeCacheBlocked.Same(false); Read(secondOutput, 3, 0, 1. / 30);
     Check(Bytes(cache) == cacheBlocker && Bytes(work) == blockerBytes, "pure explicit export neither replaces nor falls back from either cache obstruction");
+    const auto combinedOutput = out / L"combined-cache-blocked.abc";
+    Scene beforeCombined(app, raw); Staging combinedBlocked(out, L"combined-cache-blocked.abc");
+    result = alembic_export::Export(app, combinedOutput, combined, [&](int, int) { combinedBlocked.Observe(); return true; });
+    Check(!result.success && result.abcWritten && !result.baked && !result.destinationChanged &&
+        result.error.find("Cannot create the mesh cache root directory") != std::string::npos &&
+        mesh_bake_cache::Empty(), "a later independent cache failure leaves the successfully published ABC");
+    combinedBlocked.Cleared(); beforeCombined.Same(false); Read(combinedOutput, 3, 0, 1. / 30);
+    Check(Bytes(cache) == cacheBlocker && Bytes(work) == blockerBytes, "combined export leaves unrelated obstructions intact");
     NoForeignStaging(env);
-    std::puts("PASS: isolated EXE/data bake staging, installed cache, cancel, obstructed roots and explicit ABC output");
+    std::puts("PASS: isolated bake staging, cancel, cache ownership, protected ABC destinations and retry");
 }
 } // namespace bake_storage

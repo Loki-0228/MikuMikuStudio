@@ -105,7 +105,7 @@ def create_installation(root, sources, profile):
     (root / "mme-save-pair.fixture").write_text(profile + "\n", encoding="ascii")
     exe = root / "MMS-SaveProbe.exe"
     shutil.copy2(sources["host"], exe)
-    shutil.copy2(sources["adapter"], root / "MMSAdapter.dll")
+    shutil.copy2(sources["adapter"], root / "MMDFacade.dll")
     package = root / "PLUGINS/effects/mme"
     package.mkdir(parents=True)
     shutil.copy2(sources["effect"], package / "MMEffect.dll")
@@ -201,7 +201,7 @@ def check_case(root, case, profile, before, after, save_log, reopen_log):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", type=Path, required=True, help="scene_lifecycle_mme_tests Release executable")
-    parser.add_argument("--adapter", type=Path, required=True, help="MMSAdapter.dll from the same build")
+    parser.add_argument("--adapter", type=Path, required=True, help="MMDFacade.dll from the same build")
     parser.add_argument("--originals", type=Path, required=True, help="local original x64 MME 0.37 DLL directory")
     parser.add_argument("--bridge", type=Path, help="MMHack.dll from the same build; otherwise use original MMHack")
     parser.add_argument("--profile", choices=("full", "mmd932"), required=True)

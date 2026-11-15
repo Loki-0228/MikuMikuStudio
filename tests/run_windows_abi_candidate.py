@@ -14,7 +14,7 @@ import zipfile
 
 
 HOST = Path("MikuMikuDance.exe")
-PROVIDER = Path("legacy-mmdplugin/MMDPlugin.dll")
+PROVIDER = Path("PLUGINS/LEGACY/MMDPlugin.dll")
 TEMPLATE = Path("mms-adaptive-ui-template.zip")
 CTEST_CASES = ("legacy_mmd_menu_commands", "legacy_observer_export_preflight", "abi_release_package_layout")
 MANUAL_CASES = ("observer-and-aa", "product-still-png", "product-sequence-29-31", "product-transparent-mov")
@@ -115,7 +115,8 @@ def verify_template(path, source):
 
 
 def verify_package(release, installed, build_binaries, archive, source_licenses, source_config):
-    expected = {HOST.name, PROVIDER.parent.name, TEMPLATE.name, "licenses"}
+    expected = {HOST.name, "MMDFacade.dll", "MMHack.dll", "PLUGINS", "optional-plugins",
+                "LICENSE", TEMPLATE.name, "licenses"}
     require({item.name for item in release.iterdir()} == expected, "Unexpected top-level release contents")
     require({item.name for item in (release / PROVIDER.parent).iterdir()} == {PROVIDER.name},
             "Private provider directory contains files other than MMDPlugin.dll")

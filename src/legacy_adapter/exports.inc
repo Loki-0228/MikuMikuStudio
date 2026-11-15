@@ -1,4 +1,4 @@
-// MMSAdapter export table, as an X-macro list.
+// MMDFacade export table, as an X-macro list.
 //
 // Included several times by adapter.cpp: once to declare the host function
 // pointer types, once for the table, once for the symbol lookup, once for the
