@@ -81,7 +81,7 @@ cmake --build build/hello-menu --config Release
 | `mms.scene.evaluate` 1.0–1.7 | [冻结动作与骨架场景求值](evaluation.md)：旧通道接口采样骨骼、表情、显示及父级；1.4 独立骨架帧、1.5 同源网格与 CPU 蒙皮、1.6 材质数值、[1.7 冻结材质路径及 Toon 引用](include/mms/evaluation.h)。沿用身份与租约；不包含独立物理、纹理像素或最终渲染。 |
 | `mms.render` 1.0–1.2 | [设备代次与资源租约](render.md)：设备代次、丢失状态、设备租约；C++17 `mms::sdk::RenderServices`／`RenderLease`。1.1 提供成功呈现后的每帧回调，1.2 提供帧开始/结束阶段回调；post 处理尚未开放。 |
 | `mms.render.image` 1.0 | [CPU 图像租约](render-image.md)提供不可变像素复制及映射/释放；不是 GPU 互操作或最终渲染器。 |
-| `mms.settings` 1.0 | [插件全局设置](settings.md)：可选能力 `settings.global`，按清单 ID 隔离，在安装目录的 MMS 设置中进行只读复制和带基线的增量合并。 |
+| `mms.settings` 1.0 | [插件全局设置](settings.md)：可选能力 `settings.global`，按清单 ID 隔离，在安装目录的 MMS 设置中进行只读复制和带基线的增量合并。C++17 `mms::sdk::SettingsServices` 调用同一服务。 |
 | `mms.storage` 1.0 | [插件工程数据](storage.md)、两阶段加载、只读保存数据租约；PMM 与插件 JSON 成对保存和中断恢复，提供者名为 `mms.serializer`。生产路径不包含新增的内部 PMM/EMM 同快照入口。 |
 | 其他服务 | 尚未接入，`queryService` 返回 NOT_FOUND。 |
 

@@ -35,3 +35,31 @@
   所有者、组、DACL 或完整性标签时，拒绝替换，以免放宽这些限制。写入不支持 EFS 文件
   或重解析点，不承诺保留审计 SACL 等额外元数据或命名数据流。
   此并发约定适用于使用宿主文件锁的写入者。不应同时手动编辑该文件。同目录替换不承诺断电恢复。
+
+## C++17 便利封装
+
+包含 [`<mms/cpp/settings.hpp>`](include/mms/cpp/settings.hpp)，在 `create` 或 `start`
+通过 `mms::sdk::SettingsServices::Query(host, settings)` 请求同一个服务。查询返回
+`MMS_E_NOT_FOUND` 时可以继续使用插件默认值。封装不改变 ABI、权限或调用阶段。
+
+`Read(std::string&)` 在成功时复制完整 JSON，包括已存在的 `"{}"`。未保存的对象仍返回
+`MMS_E_NOT_FOUND`。任何失败都保留原输出，不能把原值当成这次读到的基线。
+若测量后对象变大，只在 64 KiB 内再复制一次；再次变大时返回 `MMS_E_MEMORY`。
+封装不解析 JSON，也不在调用之间缓存设置。
+
+以下示例在本插件普通 `enqueueUi` 的 run 回调中运行。若界面之前已读入设置并以此准备修改，
+应直接传入当时保留的基线，而不是写入前重新读取。
+
+```cpp
+MmsResult EnablePreview(const mms::sdk::SettingsServices& settings) {
+    std::string snapshot;
+    std::optional<std::string_view> expected;
+    const auto result = settings.Read(snapshot);
+    if (result == MMS_OK) expected = std::string_view(snapshot);
+    else if (result != MMS_E_NOT_FOUND) return result;
+    return settings.CompareAndMerge(expected, R"({"preview":{"enabled":true}})");
+}
+```
+
+`std::nullopt` 要求原对象不存在，`"{}"` 则要求原对象存在且为空。若返回
+`MMS_E_CONFLICT`，先重新读入再决定是否提交，封装不会自动重试写入。
