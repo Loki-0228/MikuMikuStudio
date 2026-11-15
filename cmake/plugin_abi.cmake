@@ -838,7 +838,8 @@ target_link_options(ui_property_draft_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEB
 set_target_properties(ui_property_draft_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME ui_property_draft_contract COMMAND ui_property_draft_tests)
 set_tests_properties(ui_property_draft_contract PROPERTIES TIMEOUT 60)
-add_executable(ui_refresh_binding_tests EXCLUDE_FROM_ALL tests/plugins/ui_refresh_binding_tests.cpp)
+add_executable(ui_refresh_binding_tests EXCLUDE_FROM_ALL
+    tests/plugins/ui_refresh_binding_tests.cpp src/plugins/ui_refresh_dependencies.cpp)
 target_include_directories(ui_refresh_binding_tests PRIVATE src/plugins sdk/mms/include)
 target_compile_features(ui_refresh_binding_tests PRIVATE cxx_std_17)
 target_compile_definitions(ui_refresh_binding_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
@@ -846,7 +847,8 @@ target_link_options(ui_refresh_binding_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DE
 set_target_properties(ui_refresh_binding_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME ui_refresh_binding_contract COMMAND ui_refresh_binding_tests)
 set_tests_properties(ui_refresh_binding_contract PROPERTIES TIMEOUT 60)
-add_executable(ui_refresh_subscription_store_tests EXCLUDE_FROM_ALL tests/plugins/ui_refresh_subscription_store_tests.cpp)
+add_executable(ui_refresh_subscription_store_tests EXCLUDE_FROM_ALL
+    tests/plugins/ui_refresh_subscription_store_tests.cpp src/plugins/ui_refresh_dependencies.cpp)
 target_include_directories(ui_refresh_subscription_store_tests PRIVATE src/plugins sdk/mms/include)
 target_compile_features(ui_refresh_subscription_store_tests PRIVATE cxx_std_17)
 target_compile_definitions(ui_refresh_subscription_store_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
