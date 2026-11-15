@@ -1,6 +1,5 @@
 #include "mikumikustudio/background_save.hpp"
 #include "mikumikustudio/legacy_mmd_plugin.hpp"
-#include "window_settings.hpp"
 #include "mikumikustudio/recording_state.hpp"
 #include "mikumikustudio/autosave.hpp"
 #include "cache_manager_dialog.hpp"
@@ -416,16 +415,56 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 configMenu = s.state.savedMenu;
             }
             SetCurrentDirectoryW(app->ExeDir());                  // +657102
-            if (s.FloatingWindow() != nullptr) SaveFlagSubsystem(app);
-            const HWND dlg530 = GetDlgItem(hwnd, panel::kPhysicsFrameCheckbox);
-            system_settings::WriteSection("window", window_settings::Snapshot(s,
-                wndpl.rcNormalPosition.left, wndpl.rcNormalPosition.top,
-                wndpl.rcNormalPosition.right-wndpl.rcNormalPosition.left,
-                wndpl.rcNormalPosition.bottom-wndpl.rcNormalPosition.top,
-                wndpl.showCmd==SW_SHOWMAXIMIZED, s.FloatingWindow()!=nullptr,
-                SendMessageA(dlg530,BM_GETCHECK,0,0)==BST_CHECKED,
-                (GetMenuState(configMenu,0x119,0)&MF_CHECKED)!=0,
-                (GetMenuState(configMenu,0x12D,0)&MF_CHECKED)!=0));
+            FILE* f = nullptr;
+            if (fopen_s(&f, "Data\\mmconfig.ini", "wt") == 0) {
+                fprintf(f, "%d\n", wndpl.rcNormalPosition.left);
+                fprintf(f, "%d\n", wndpl.rcNormalPosition.top);
+                fprintf(f, "%d\n", wndpl.rcNormalPosition.right - wndpl.rcNormalPosition.left);
+                fprintf(f, "%d\n", wndpl.rcNormalPosition.bottom - wndpl.rcNormalPosition.top);
+                fprintf(f, wndpl.showCmd == 3 ? "1\n" : "0\n");
+                fprintf(f, "%d\n", s.RenderWidth());
+                fprintf(f, "%d\n", s.RenderHeight());
+                // slot-visibility variant: 658744 ? 658748 : sidebar
+                if (s.FloatingWindow() != nullptr)
+                    fprintf(f, "%d\n", s.SeparateWindowSidebarWidth());
+                else
+                    fprintf(f, "%d\n", s.SidebarWidth());
+                fprintf(f, "%u\n", static_cast<unsigned int>(s.EnglishUI()));
+                if (s.FloatingWindow() != nullptr) {
+                    fprintf(f, "1\n");
+                    SaveFlagSubsystem(app);                       // 0x461FA0
+                } else {
+                    fprintf(f, "0\n");
+                }
+                fprintf(f, "%d\n", s.SeparateWindowMaximized());
+                fprintf(f, "%d\n", s.SeparateWindowX());
+                fprintf(f, "%d\n", s.SeparateWindowY());
+                fprintf(f, "%d\n", s.SeparateWindowWidth());
+                fprintf(f, "%d\n", s.SeparateWindowHeight());
+                HWND dlg530 = GetDlgItem(hwnd, panel::kPhysicsFrameCheckbox);
+                fprintf(f, SendMessageA(dlg530, BM_GETCHECK, 0, 0) == 1 ? "1\n" : "0\n");
+                fprintf(f, "1\n");
+                fwprintf(f, L"%s\n", app->DirModel());
+                fwprintf(f, L"%s\n", app->DirAccs());
+                fwprintf(f, L"%s\n", app->DirWave());
+                fwprintf(f, L"%s\n", app->DirPose());
+                fwprintf(f, L"%s\n", app->DirMotion());
+                fwprintf(f, L"%s\n", app->DirUser());
+                fprintf(f, "1\n");
+                fprintf(f, s.FrameVolumeControlEnabled() ? "1\n" : "0\n");
+                fprintf(f, "%d\n", s.FrameNormalization());
+                fprintf(f, "1\n");
+                fprintf(f, "%f\n", s.SidebarRatio());
+                fprintf(f, "1\n");
+                fwprintf(f, L"%s\n", app->DirBg());
+                fprintf(f, "1\n");
+                HMENU menu = configMenu;
+                fprintf(f, (GetMenuState(menu, 0x119, 0) & 8) ? "1\n" : "0\n");
+                fprintf(f, "1\n");
+                menu = configMenu;
+                fprintf(f, (GetMenuState(menu, 0x12D, 0) & 8) ? "1\n" : "0\n");
+                fclose(f);
+            }
             PostQuitMessage(0);
             return 0;
         }
