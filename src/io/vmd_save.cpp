@@ -49,6 +49,7 @@
 
 #include <cstdint>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
@@ -67,6 +68,9 @@
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/original_file_encoding.hpp"
+#include "mikumikustudio/runtime_log.hpp"
+#include "vmd_save_output.hpp"
+#include "../media/staged_output_publication.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -121,10 +125,65 @@ bool PrepareOriginalNames(unsigned char* raw, OriginalNames& names) {
 }
 #endif
 
+const wchar_t* const kUnwritableDestination[] = {
+    L"選択した場所に VMD を保存できません。フォルダーと書き込み権限を確認してください。",
+    L"Cannot save the VMD to the chosen location. Check the folder and its write permissions.",
+    L"无法将 VMD 保存到所选位置。请检查文件夹是否存在以及是否有写入权限。"};
+const wchar_t* const kChangedDestination[] = {
+    L"VMD の出力先ファイルが変更されました。出力先を選び直して確認してください。",
+    L"The VMD destination changed. Choose the output path and confirm again.",
+    L"VMD 输出文件已发生变化。请重新选择输出路径并确认。"};
+const wchar_t* const kPreviousRetained[] = {
+    L"以前の VMD ファイルの保存先：",
+    L"The previous VMD file was kept at:",
+    L"先前的 VMD 文件保留在："};
+
+void ReportDestination(HWND owner, const wchar_t* message, const std::wstring& path,
+                       UINT icon = MB_ICONERROR) noexcept {
+    try {
+        const std::wstring detail = std::wstring(message) + L"\n\n" + path;
+        MessageBoxW(owner, detail.c_str(), L"VMD", MB_OK | icon);
+    } catch (const std::exception&) {
+        MessageBoxW(owner, message, L"VMD", MB_OK | icon);
+    }
+}
+
+bool ReadDestination(HWND owner, unsigned language, const wchar_t* path,
+                     recording_output_path::Selection& destination) {
+    if (recording_output_path::ReadSelection(path, destination) == ERROR_SUCCESS) return true;
+    ReportDestination(owner, kUnwritableDestination[language], path);
+    return false;
+}
+
+bool DestinationConflict(HRESULT failure, bool previous) noexcept {
+    return failure == HRESULT_FROM_WIN32(ERROR_FILE_EXISTS) ||
+           failure == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) ||
+           (previous && failure == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+}
+
 }  // namespace
 
+bool vmd_save::ConfirmDestination(HWND owner, const wchar_t* path, unsigned char language,
+                                  recording_output_path::Selection& destination) {
+    if (language > 2) language = 1;
+    try {
+        if (!path || !*path || !ReadDestination(owner, language, path, destination)) return false;
+        if (!destination.existing) return true;
+        const wchar_t* const prompts[] = {
+            L"次の VMD ファイルはすでに存在します。上書きしますか？",
+            L"This VMD file already exists. Replace it?",
+            L"以下 VMD 文件已存在，是否覆盖？"};
+        const auto message = std::wstring(prompts[language]) + L"\n\n" + destination.path;
+        return MessageBoxW(owner, message.c_str(), L"VMD",
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
+    } catch (const std::exception&) {
+        MessageBoxW(owner, kUnwritableDestination[language], L"VMD", MB_OK | MB_ICONERROR);
+        return false;
+    }
+}
+
 // ---- VA 0x00419370 --------------------------------------------------------
-static bool SaveVmdFileImpl(const wchar_t* path) {
+static bool SaveVmdFileImpl(const wchar_t* path, const recording_output_path::Selection* approved) {
     MMDApp* app = g_Block;
     if (!app || !path || !*path) return false;
     auto& s = *app;
@@ -133,6 +192,13 @@ static bool SaveVmdFileImpl(const wchar_t* path) {
     unsigned char* const model = cameraMode || s.SelectedModelSlot() >= kModelSlotCount ? nullptr : s.SelectedModel();
     if (!cameraMode && !model) return false;
     const unsigned language = s.EnglishUI() <= 2 ? s.EnglishUI() : 1;
+    const auto owner = static_cast<HWND>(s.Hwnd());
+    recording_output_path::Selection destination;
+    if (!ReadDestination(owner, language, path, destination)) return false;
+    if (approved && !recording_output_path::SameSelection(*approved, destination)) {
+        ReportDestination(owner, kChangedDestination[language], destination.path);
+        return false;
+    }
 #if MMD_ORIGINAL_PROFILE
     OriginalNames names;
     if (!cameraMode && !PrepareOriginalNames(model, names)) {
@@ -226,30 +292,45 @@ static bool SaveVmdFileImpl(const wchar_t* path) {
 
     // ---- open ------------------------------------------------------------
     int fd = -1;
-    std::wstring temporary;
+    std::wstring temporary, suffix;
+    const auto process = std::to_wstring(GetCurrentProcessId());
+    static std::atomic<unsigned> nextStage{0};
     // Stage the complete motion in the destination directory. A failed tail
     // or flush must not replace a previously saved animation.
     for (unsigned attempt = 0; attempt < 64; ++attempt) {
-        temporary = std::wstring(path) + L".tmp-" + std::to_wstring(GetCurrentProcessId()) +
-                    L"-" + std::to_wstring(attempt);
+        suffix = process + L"-" + std::to_wstring(nextStage.fetch_add(1, std::memory_order_relaxed));
+        temporary = destination.path + L".tmp-" + suffix;
         const auto error = _wsopen_s(&fd, temporary.c_str(),
             _O_BINARY | _O_WRONLY | _O_CREAT | _O_EXCL, _SH_DENYWR, _S_IREAD | _S_IWRITE);
         if (error == 0 || error != EEXIST) break;
     }
     if (fd < 0) {
-        const wchar_t* messages[] = {
-            L"選択した場所に VMD を保存できません。フォルダーと書き込み権限を確認してください。",
-            L"Cannot save the VMD to the chosen location. Check the folder and its write permissions.",
-            L"无法将 VMD 保存到所选位置。请检查文件夹是否存在以及是否有写入权限。"};
-        MessageBoxW(static_cast<HWND>(s.Hwnd()), messages[language], L"VMD", MB_OK | MB_ICONERROR);
+        ReportDestination(owner, kUnwritableDestination[language], destination.path);
         return false;
     }
 
     struct TemporaryFile {
         int& fd;
         std::wstring& path;
-        void Discard() {
-            if (!path.empty()) DeleteFileW(path.c_str());
+        recording_output_path::FileIdentity identity{};
+        bool identified = false;
+
+        bool Matches(HANDLE file) const noexcept {
+            recording_output_path::FileIdentity current{};
+            return identified && file != INVALID_HANDLE_VALUE &&
+                recording_output_path::ReadIdentity(file, current) == ERROR_SUCCESS &&
+                identity.volume == current.volume && identity.index == current.index;
+        }
+        void Discard() noexcept {
+            if (!path.empty() && identified) {
+                const staged_output::detail::OutputHandle file{CreateFileW(path.c_str(),
+                    DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+                if (Matches(file.value)) {
+                    FILE_DISPOSITION_INFO remove{TRUE};
+                    SetFileInformationByHandle(file.value, FileDispositionInfo, &remove, sizeof(remove));
+                }
+            }
             path.clear();
         }
         ~TemporaryFile() {
@@ -257,6 +338,16 @@ static bool SaveVmdFileImpl(const wchar_t* path) {
             Discard();
         }
     } cleanup{fd, temporary};
+    const auto staged = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+    cleanup.identified = staged != INVALID_HANDLE_VALUE &&
+        recording_output_path::ReadIdentity(staged, cleanup.identity) == ERROR_SUCCESS;
+    if (!cleanup.identified) {
+        // The CRT descriptor still owns the CREATE_NEW file and excludes other
+        // writers. Without an identity, do not publish or unlink by name.
+        runtime_log::WritePath("VMD unidentified temporary output retained at", temporary.c_str());
+        ReportDestination(owner, kUnwritableDestination[language], destination.path);
+        return false;
+    }
 
     // The 25-byte header text and the 12-byte camera name are both shorter than
     // the fixed 30- and 20-byte writes that follow; the original reads
@@ -555,18 +646,38 @@ static bool SaveVmdFileImpl(const wchar_t* path) {
     if (_commit(fd) != 0) writeFailed = true;
     if (_close(fd) != 0) writeFailed = true;
     fd = -1;
-    if (!writeFailed && !MoveFileExW(temporary.c_str(), path,
-                                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-        writeFailed = true;
-    if (writeFailed) {
+    if (!writeFailed) {
+        const staged_output::detail::OutputHandle stage{CreateFileW(temporary.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+        writeFailed = !cleanup.Matches(stage.value);
+    }
+    std::wstring retained;
+    HRESULT published = E_FAIL;
+    if (!writeFailed) {
+        // A fresh suffix lets a later retry proceed even if an older backup
+        // had to be left beside the destination for manual recovery.
+        published = staged_output::Publish(temporary, destination.path, destination.existing,
+            destination.existing ? destination.path + L".bak-" + suffix : std::wstring{}, retained);
+        if (!retained.empty()) runtime_log::WritePath("VMD previous output retained at", retained.c_str());
+    }
+    if (FAILED(published)) {
         cleanup.Discard();
-        const wchar_t* messages[] = {
+        const wchar_t* const incomplete[] = {
             L"VMD を完全に保存できませんでした。既存のファイルは変更されていません。",
             L"The VMD could not be saved completely. The existing file was preserved.",
             L"VMD 未能完整保存，已有文件已保留。"};
-        MessageBoxW(static_cast<HWND>(s.Hwnd()),
-                    messages[language],
-                    L"VMD", MB_OK | MB_ICONERROR);
+        const auto changed = DestinationConflict(published, destination.existing.has_value());
+        if (!retained.empty()) {
+            const wchar_t* const retainedAfterFailure[] = {
+                L"VMD は保存されませんでした。以前のファイルの保存先：",
+                L"The VMD was not saved. The previous file was kept at:",
+                L"VMD 未保存。先前的文件保留在："};
+            ReportDestination(owner, retainedAfterFailure[language], retained);
+        } else if (changed) {
+            ReportDestination(owner, kChangedDestination[language], destination.path);
+        } else {
+            MessageBoxW(owner, incomplete[language], L"VMD", MB_OK | MB_ICONERROR);
+        }
         return false;
     }
     temporary.clear();
@@ -579,24 +690,33 @@ static bool SaveVmdFileImpl(const wchar_t* path) {
                 compatibility.namesNeedExtension = true;
                 compatibility.canCopyLegacy = false;
             }
-            if (compatibility.canCopyLegacy) save_compatibility::CopyPrefix(path, standardBytes, copy);
+            if (compatibility.canCopyLegacy) save_compatibility::CopyPrefix(destination.path.c_str(), standardBytes, copy);
             save_compatibility::Notify(*app, compatibility, copy, compatibility.canCopyLegacy);
         } catch (const std::exception&) {
             runtime_log::Write("VMD saved; compatibility follow-up failed");
         }
     }
 #endif
+    if (!retained.empty()) ReportDestination(owner, kPreviousRetained[language], retained, MB_ICONWARNING);
     return true;
 }
 
-bool SaveVmdFile(const wchar_t* path) {
-    try { return SaveVmdFileImpl(path); }
+static bool SaveVmdFileChecked(const wchar_t* path, const recording_output_path::Selection* approved) {
+    try { return SaveVmdFileImpl(path, approved); }
     catch (const std::exception&) {
         if (!g_Block) return false;
         const wchar_t* messages[] = {L"VMD の保存に必要なメモリを確保できないか、データが無効です。", L"VMD saving failed: insufficient memory or invalid data.", L"VMD 保存失败：内存不足或数据无效。"};
         if (g_Block->MainWindow()) MessageBoxW(g_Block->MainWindow(), messages[g_Block->EnglishUI() <= 2 ? g_Block->EnglishUI() : 1], L"VMD", MB_OK | MB_ICONERROR);
         return false;
     }
+}
+
+bool SaveVmdFile(const wchar_t* path) {
+    return SaveVmdFileChecked(path, nullptr);
+}
+
+bool vmd_save::Save(const recording_output_path::Selection& approved) {
+    return SaveVmdFileChecked(approved.path.c_str(), &approved);
 }
 
 }  // namespace mikumikustudio

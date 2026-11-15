@@ -634,16 +634,56 @@ pmm_extension::ReadResult ObserveExtensionRead(int descriptor, pmm_extension::Do
     return result;
 }
 #endif
-enum class MotionDialogAction { None, Accept, Cancel, SwitchModel, SwitchFrame, ResetScene, SwitchAtConfirmation };
+enum class MotionDialogAction {
+    None, Accept, Cancel, SwitchModel, SwitchFrame, ResetScene, SwitchAtConfirmation,
+    DeclineSaveOverwrite, SwitchAtSaveConfirmation, ReplaceDuringSaveConfirmation, ArriveAtSavePublication
+};
 MotionDialogAction motionDialogAction = MotionDialogAction::None;
 fs::path motionDialogPath;
-unsigned motionPicks = 0, motionNotices = 0;
+unsigned motionPicks = 0, motionNotices = 0, motionSaveConfirms = 0, motionLateFiles = 0;
+constexpr char kNewMotionBytes[] = "External bytes must survive the VMD save.";
+decltype(&MoveFileExW) realMotionMove = nullptr;
+BOOL WINAPI ObserveMotionMove(LPCWSTR source, LPCWSTR destination, DWORD flags) {
+    if (motionDialogAction == MotionDialogAction::ArriveAtSavePublication && destination &&
+        !_wcsicmp(destination, motionDialogPath.c_str())) {
+        const auto stagePrefix = motionDialogPath.native() + L".tmp-";
+        Check(source && std::wstring_view(source).find(stagePrefix) == 0 &&
+              fs::file_size(source) > 30, "the actual serializer produced a complete temporary motion before the fault");
+        const HANDLE late = CreateFileW(destination, GENERIC_WRITE, 0, nullptr,
+            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Check(late != INVALID_HANDLE_VALUE, "create a real external file at the previously absent path");
+        DWORD written = 0;
+        Check(WriteFile(late, kNewMotionBytes, sizeof kNewMotionBytes, &written, nullptr) &&
+              written == sizeof kNewMotionBytes && CloseHandle(late),
+              "complete and close the actual late-arriving output before the production rename");
+        ++motionLateFiles;
+    }
+    return realMotionMove(source, destination, flags);
+}
 unsigned char motionOtherSlot = 0;
 const wchar_t* expectedMotionSaveNotice = nullptr;
 std::function<int(UiMessage, const wchar_t*)> scopedProjectOpenNotice;
 bool CacheSaveFailureMessage(HWND, LPCWSTR, LPCWSTR, UINT);
 int WINAPI ErrorW(HWND window, LPCWSTR text, LPCWSTR caption, UINT flags) {
     if (motionDialogAction != MotionDialogAction::None && caption && !std::wcscmp(caption, L"VMD")) {
+        if ((flags & MB_TYPEMASK) == MB_YESNO) {
+            Check(window == app->MainWindow() && (flags & MB_DEFMASK) == MB_DEFBUTTON2 &&
+                text && std::wcsstr(text, motionDialogPath.c_str()) && std::wcsstr(text, L"Replace it?"),
+                "ask about the exact existing destination with No as the default");
+            ++motionSaveConfirms;
+            if (motionDialogAction == MotionDialogAction::DeclineSaveOverwrite) return IDNO;
+            if (motionDialogAction == MotionDialogAction::SwitchAtSaveConfirmation)
+                app->SetSelectedModelSlot(motionOtherSlot);
+            if (motionDialogAction == MotionDialogAction::ReplaceDuringSaveConfirmation) {
+                auto incoming = motionDialogPath; incoming += L".incoming";
+                std::ofstream external(incoming, std::ios::binary);
+                external.write(kNewMotionBytes, sizeof kNewMotionBytes); external.close();
+                Check(bool(external) && realMotionMove(incoming.c_str(), motionDialogPath.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH),
+                    "replace the snapshot with an independently created file while the prompt is active");
+            }
+            return IDYES;
+        }
         Check(window == app->MainWindow() && expectedMotionSaveNotice && text &&
               std::wcsstr(text, expectedMotionSaveNotice) && (flags & MB_ICONERROR),
               "the production export reports the expected VMD failure to the owner");
@@ -1633,7 +1673,9 @@ std::vector<unsigned char> Bytes(const fs::path& path);
 BOOL ObserveMotionSavePicker(LPOPENFILENAMEW parameters) {
     Check(motionDialogAction != MotionDialogAction::None && parameters->hwndOwner == app->MainWindow() &&
           parameters->lpstrDefExt && !std::wcscmp(parameters->lpstrDefExt, L"vmd") &&
-          (parameters->Flags & OFN_OVERWRITEPROMPT), "the real save command requests VMD with overwrite confirmation");
+          (parameters->Flags & OFN_HIDEREADONLY) && (parameters->Flags & OFN_NOTESTFILECREATE) &&
+          !(parameters->Flags & OFN_OVERWRITEPROMPT),
+          "the picker neither creates the output nor asks for untracked overwrite approval");
     ++motionPicks;
     if (motionDialogAction == MotionDialogAction::Cancel) return FALSE;
     if (motionDialogAction == MotionDialogAction::SwitchModel) app->SetSelectedModelSlot(motionOtherSlot);
@@ -1682,7 +1724,7 @@ void MotionSaveCases() {
     const auto remembered = directory.native();
     const auto projectDir = (directory / L"project-resources").native();
     auto run = [&](MotionDialogAction action, const wchar_t* notice, bool saved = false,
-                   const fs::path& destination = {}) {
+                   const fs::path& destination = {}, unsigned confirms = 0) {
         app->SetSelectedModelSlot(0);
         wcscpy_s(app->DirMotion(), kPathFieldCapacity, remembered.c_str());
         wcscpy_s(app->PathWorkspace().projectDirectory, kPathFieldCapacity, projectDir.c_str());
@@ -1690,11 +1732,14 @@ void MotionSaveCases() {
         motionDialogAction = action;
         motionDialogPath = destination.empty() ? output : destination;
         expectedMotionSaveNotice = notice;
-        motionPicks = motionNotices = 0;
+        motionPicks = motionNotices = motionSaveConfirms = motionLateFiles = 0;
         SendMessageW(main, WM_COMMAND, 210, 0);
         motionDialogAction = MotionDialogAction::None;
         expectedMotionSaveNotice = nullptr;
-        Check(motionPicks == 1 && motionNotices == (notice ? 1u : 0u), "observe only the expected export dialogs");
+        Check(motionPicks == 1 && motionSaveConfirms == confirms && motionNotices == (notice ? 1u : 0u),
+            "observe only the expected save picker, confirmation and failure notice");
+        Check(motionLateFiles == (action == MotionDialogAction::ArriveAtSavePublication ? 1u : 0u),
+            "the late-arrival fault runs at the real publication boundary only in its own case");
         Check(!app->SceneModified(), "export does not mark the scene modified");
         Check((app->SceneGeneration() != generation) == (action == MotionDialogAction::ResetScene),
               "only the explicit modal replacement changes the scene generation");
@@ -1706,12 +1751,26 @@ void MotionSaveCases() {
         } else {
             Check(app->DirMotion() != exportDir.native(), "an obsolete picker cannot update the new scene's motion folder");
         }
-        Check((Bytes(output) != sentinel) == saved, "only a completed export replaces the old VMD");
+        const std::vector<unsigned char> external(kNewMotionBytes, kNewMotionBytes + sizeof kNewMotionBytes);
+        if (action == MotionDialogAction::ReplaceDuringSaveConfirmation)
+            Check(Bytes(output) == external, "the file replaced while the approval is visible retains its exact bytes");
+        else
+            Check((Bytes(output) != sentinel) == saved, "only a completed export replaces the old VMD");
+        if (action == MotionDialogAction::ArriveAtSavePublication)
+            Check(Bytes(destination) == external, "the late-arriving external VMD retains its exact bytes");
         for (const auto& entry : fs::directory_iterator(exportDir))
-            Check(entry.path() == output, "no staged file remains after the save command returns");
+            Check(entry.path() == output || entry.path() == destination,
+                  "no staged or backup file remains after the save command returns");
     };
     run(MotionDialogAction::Cancel, nullptr);
     run(MotionDialogAction::SwitchModel, nullptr);
+    run(MotionDialogAction::DeclineSaveOverwrite, nullptr, false, {}, 1);
+    run(MotionDialogAction::SwitchAtSaveConfirmation, nullptr, false, {}, 1);
+    run(MotionDialogAction::ReplaceDuringSaveConfirmation, L"destination changed", false, {}, 1);
+    fs::copy_file(original, output, fs::copy_options::overwrite_existing);
+    const auto late = exportDir / L"late.vmd";
+    run(MotionDialogAction::ArriveAtSavePublication, L"destination changed", false, late);
+    Check(fs::remove(late), "retire only the owned late-arrival fixture");
     const auto missingDirectory = directory / L"missing-motion-folder";
     run(MotionDialogAction::Accept, L"Check the folder and its write permissions", false,
         missingDirectory / L"existing.vmd");
@@ -1723,16 +1782,16 @@ void MotionSaveCases() {
         std::memcpy(name.data(), bone.name, name.size());
         bone.jpText = nullptr;
         strcpy_s(bone.name, "abcdefghijklmnop");
-        run(MotionDialogAction::Accept, L"CP932 field exactly");
+        run(MotionDialogAction::Accept, L"CP932 field exactly", false, {}, 1);
         std::memcpy(bone.name, name.data(), name.size());
         bone.jpText = wide;
     }
     const HANDLE locked = CreateFileW(output.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     Check(locked != INVALID_HANDLE_VALUE, "deny replacement of the existing output with real file sharing");
-    run(MotionDialogAction::Accept, L"existing file was preserved");
+    run(MotionDialogAction::Accept, L"existing file was preserved", false, {}, 1);
     Check(CloseHandle(locked), "release the output before retrying");
-    run(MotionDialogAction::Accept, nullptr, true);
+    run(MotionDialogAction::Accept, nullptr, true, {}, 1);
 
     app->SetSelectedModelSlot(1);
     app->CurrentFrame() = 14;
@@ -1747,7 +1806,7 @@ void MotionSaveCases() {
     fs::copy_file(original, output, fs::copy_options::overwrite_existing);
     app->SceneModified() = 0;
     run(MotionDialogAction::ResetScene, nullptr);
-    std::puts("PASS VMD save cancellation, stale selection, old-file preservation and retry with reimport");
+    std::puts("PASS VMD save cancellations, stale approvals, late arrivals, and approved retry with reimport");
 }
 
 void MotionModalCases() {
@@ -4755,7 +4814,10 @@ int wmain(int argc, wchar_t** argv) {
     Hook(&LocalizeUI, &ObserveLocalize, reinterpret_cast<void**>(&realLocalize));
     Hook(&accessory_import::LoadObject, &ObserveAccessoryLoad, reinterpret_cast<void**>(&realAccessoryLoad));
     Hook(&GetUiOpenFileNameW, &ObserveUiOpenFileName, reinterpret_cast<void**>(&realUiOpenFileName));
-    if (motionSaveMode) Hook(&GetUiSaveFileNameW, &ObserveMotionSavePicker);
+    if (motionSaveMode) {
+        Hook(&GetUiSaveFileNameW, &ObserveMotionSavePicker);
+        Hook(&MoveFileExW, &ObserveMotionMove, reinterpret_cast<void**>(&realMotionMove));
+    }
 #if !MMD_ORIGINAL_PROFILE
     // Armed only around the two FrameDriver calls in the quarantine and reopen
     // stages below; every other real frame boundary forwards the host callback.
