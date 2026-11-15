@@ -837,18 +837,6 @@ std::string FormatVec3(const Vec3& value) {
     return buffer;
 }
 
-#ifdef MIKUMIKUSTUDIO_PERF
-const char* const kPhaseNames[] = {
-    "frame", "scene", "vertex_update", "morph", "skin", "transparent_sort",
-    "materials", "physics", "present", "sort_lock", "sort_cpu", "pose",
-    "physics_sync", "physics_readback", "physics_step", "bone_morph",
-    "accessories", "edges", "shadow_map", "ground_shadow", "resource_guard",
-    "clear", "composition", "overlays", "end_scene", "validation_release",
-    "screen_capture", "begin_scene", "effect_api"};
-static_assert(sizeof(kPhaseNames) / sizeof(kPhaseNames[0]) == perf::Count,
-              "phase name table must match mikumikustudio::perf::Phase");
-#endif
-
 }  // namespace
 
 namespace {
@@ -1582,11 +1570,21 @@ int wmain(int argc, wchar_t** argv) {
         requested.MaxZ = 1.0f;
         device->SetViewport(&requested);
     };
-    // The shadow cycle samples a device viewport at (0,0), outside the
-    // docked editor layout. Use the same private-output admission as capture.
+    // Hidden runs can have a valid D3D viewport without an editor presentation
+    // rectangle. Admit the DX9 scene through the same output path as capture.
     bool reportedShadowViewport = false;
     const auto renderBenchmarkFrame = [&](void (*render)(MMDApp*)) {
-        if (!options.verifyShadowCycle) { render(app); return true; }
+        if (!options.verifyShadowCycle) {
+            if (native || build_profile::original) { render(app); return true; }
+            FrameSceneOutputScope output(app);
+            if (!output.Ready()) return false;
+            app->frameRate.ready = false;
+            const auto presented = app->frameRate.presentedFrames;
+            render(app);
+            if (app->frameRate.ready || app->frameRate.presentedFrames != presented) return true;
+            std::puts("benchmark scene did not complete");
+            return false;
+        }
         D3DVIEWPORT9 viewport{};
         if (FAILED(device->GetViewport(&viewport)) || viewport.X || viewport.Y ||
             viewport.Width != DWORD(requestedWidth) || viewport.Height != DWORD(requestedHeight)) {
@@ -1814,6 +1812,11 @@ int wmain(int argc, wchar_t** argv) {
         mmvSnapshotSumMs / times.size(), mmvEvaluationSumMs / times.size(), mmvUploadSumMs / times.size(),
         mmvAcceptedFrames, mmvFailedFrames);
 #ifdef MIKUMIKUSTUDIO_PERF
+    // Optional verification renders below must stay out of the sampled totals.
+    double measuredPhaseMs[perf::Count];
+    unsigned measuredPhaseCalls[perf::Count];
+    std::copy_n(perf::milliseconds, perf::Count, measuredPhaseMs);
+    std::copy_n(perf::calls, perf::Count, measuredPhaseCalls);
     perf::Report(static_cast<unsigned>(times.size()));
 #endif
     std::printf("automatic_calibrations=%llu cpu_updates=%llu\n",
@@ -2921,10 +2924,10 @@ int wmain(int argc, wchar_t** argv) {
         json.Object("phases_ms_per_frame");
         for (int phase = 0; phase < perf::Count; ++phase) {
             char key[64];
-            std::snprintf(key, sizeof key, "%s_inclusive_ms", kPhaseNames[phase]);
-            json.Number(key, perf::milliseconds[phase] / static_cast<double>(times.size()));
-            std::snprintf(key, sizeof key, "%s_calls", kPhaseNames[phase]);
-            json.Integer(key, perf::calls[phase]);
+            std::snprintf(key, sizeof key, "%s_inclusive_ms", perf::kPhaseNames[phase]);
+            json.Number(key, measuredPhaseMs[phase] / static_cast<double>(times.size()));
+            std::snprintf(key, sizeof key, "%s_calls", perf::kPhaseNames[phase]);
+            json.Integer(key, measuredPhaseCalls[phase]);
         }
         json.End();
         json.Bool("perf_timing_compiled", true);

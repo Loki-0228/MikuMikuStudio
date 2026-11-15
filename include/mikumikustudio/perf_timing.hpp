@@ -26,14 +26,19 @@ public:
 inline void Reset() {
     for (int i=0; i<Count; ++i) { milliseconds[i]=0; calls[i]=0; }
 }
+inline constexpr const char* kPhaseNames[] = {
+    "frame", "scene", "vertex_update", "morph", "skin", "transparent_sort",
+    "materials", "physics", "present", "sort_lock", "sort_cpu", "pose",
+    "physics_sync", "physics_readback", "physics_step", "bone_morph", "accessories",
+    "edges", "shadow_map", "ground_shadow", "resource_guard", "clear", "composition",
+    "overlays", "end_scene", "validation_release", "screen_capture", "begin_scene",
+    "effect_api", "shadow_bounds", "shadow_bounds_lock"
+};
+static_assert(sizeof(kPhaseNames) / sizeof(kPhaseNames[0]) == Count);
 inline void Report(unsigned frames) {
-    const char* names[] = {"frame", "scene", "vertex_update", "morph", "skin",
-                           "transparent_sort", "materials", "physics", "present", "sort_lock", "sort_cpu", "pose", "physics_sync", "physics_readback", "physics_step", "bone_morph",
-                           "accessories", "edges", "shadow_map", "ground_shadow", "resource_guard",
-                           "clear", "composition", "overlays", "end_scene", "validation_release", "screen_capture", "begin_scene", "effect_api", "shadow_bounds", "shadow_bounds_lock"};
     for (int i=0; i<Count; ++i)
         std::printf("phase=%s inclusive_ms_per_frame=%.4f calls=%u\n",
-                    names[i], milliseconds[i]/frames, calls[i]);
+                    kPhaseNames[i], milliseconds[i]/frames, calls[i]);
 }
 }
 #define MMD_PERF_SCOPE(phase) mikumikustudio::perf::Scope mmdPerfScope(mikumikustudio::perf::phase)

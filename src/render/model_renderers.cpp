@@ -1109,7 +1109,8 @@ struct MaterialSelection {
 };
 
 void DrawModelMaterials(MMDApp* app, unsigned char* model, bool effectPass,
-                        bool shadowOnly, ModelAlphaPass alphaPass = ModelAlphaPass::Original,
+                        bool shadowOnly, [[maybe_unused]] bool mmeProxy,
+                        ModelAlphaPass alphaPass = ModelAlphaPass::Original,
                         const MaterialSelection* selection = nullptr, bool* shadowSucceeded = nullptr) {
     MMD_PERF_SCOPE(Materials);
     if (model == nullptr || mdl::Mdl(model)->loadComplete == 0)
@@ -1157,7 +1158,6 @@ void DrawModelMaterials(MMDApp* app, unsigned char* model, bool effectPass,
     // Prepare native indices before opaque materials submit this model's
     // buffers. Keep the original timing when an MME proxy is present: its
     // callbacks may mutate material state between the two material passes.
-    const bool mmeProxy = mikumikustudio::LegacyMmeLoaded();
     const auto sortPass = mmeProxy ? ModelAlphaPass::Translucent
                                   : ModelAlphaPass::Opaque;
     const bool autoSorting = app->AutoTransparentMaterialSortingEnabled();
@@ -1744,7 +1744,7 @@ bool RenderNativeOrderedAlpha(MMDApp* app, bool effectFrame) {
         app->ActiveRenderObject() = draw.model;
         app->ActiveRenderPass() = draw.effect ? AccessoryRenderPass::Effect : AccessoryRenderPass::FixedFunction;
         if (draw.effect) sub->device->SetTexture(0, shadow_filter::VisibleTexture(app));
-        DrawModelMaterials(app, draw.model, draw.effect, false, ModelAlphaPass::Translucent, &draw.selection);
+        DrawModelMaterials(app, draw.model, draw.effect, false, false, ModelAlphaPass::Translucent, &draw.selection);
     }
     timing.drawMs += timing.Elapsed(drawStart);
     timing.Report();
@@ -2112,7 +2112,7 @@ void DumpAlphaGeometry(const std::vector<transparent_geometry::Triangle>& source
 
 
 bool RenderPeelingAlpha(MMDApp* app,const std::vector<NativeAlphaDraw>& draws,
-                       const std::vector<transparent_geometry::Triangle>& input) {
+                       const std::vector<transparent_geometry::Triangle>& input, bool mmeProxy) {
     const auto precision=app->TransparentMaterialSortPrecision();
     // Only Maximum peels. The three lower strengths only reorder whole faces.
     if(precision!=TransparentSortPrecision::Maximum)return false;
@@ -2129,7 +2129,7 @@ bool RenderPeelingAlpha(MMDApp* app,const std::vector<NativeAlphaDraw>& draws,
     for(auto command:draws){
         command.selection.peel=&peel;command.selection.probe=true;command.selection.valid=&valid;
         app->ActiveRenderObject()=command.model;app->ActiveRenderPass()=AccessoryRenderPass::Effect;
-        DrawModelMaterials(app,command.model,true,false,ModelAlphaPass::Translucent,&command.selection);
+        DrawModelMaterials(app,command.model,true,false,mmeProxy,ModelAlphaPass::Translucent,&command.selection);
         if(!valid){runtime_log::Trace("alpha-peel unsupported shader");return false;}
     }
     if(input.size()>std::numeric_limits<UINT>::max()/300 || !peel.PrepareTargets())return false;
@@ -2168,7 +2168,7 @@ bool RenderPeelingAlpha(MMDApp* app,const std::vector<NativeAlphaDraw>& draws,
             command.selection.buffer=buffers.ib;command.selection.vertices=buffers.vb;
             command.selection.vertexCount=count;command.selection.vertexStride=100;command.selection.peel=&peel;command.selection.valid=&valid;
             app->ActiveRenderObject()=command.model;app->ActiveRenderPass()=AccessoryRenderPass::Effect;
-            DrawModelMaterials(app,command.model,true,false,ModelAlphaPass::Translucent,&command.selection);
+            DrawModelMaterials(app,command.model,true,false,mmeProxy,ModelAlphaPass::Translucent,&command.selection);
             first=end;
         }
         if(!valid)break;
@@ -2188,6 +2188,7 @@ bool RenderPeelingAlpha(MMDApp* app,const std::vector<NativeAlphaDraw>& draws,
 
 bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame) {
     if (app->WireframeRenderingEnabled() || (effectFrame && app->ModelNonDisplayMode())) return false;
+    const bool mmeProxy = mikumikustudio::LegacyMmeLoaded();
     std::vector<NativeAlphaDraw> draws;
     auto* sub = app->Renderer();
     // Additive materials retain their authored placement. The regular alpha
@@ -2248,14 +2249,15 @@ bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame) {
     const bool crossObjects=app->TransparentSortCrossObjects();
     const bool originalVertices=UseOriginalAlphaVertices(app);
     const bool oneObject=cache.source.empty() || cache.source.front().object==cache.source.back().object;
-    if (effectFrame && !originalVertices && (crossObjects || oneObject) && RenderPeelingAlpha(app, draws, cache.source)) return true;
+    if (effectFrame && !originalVertices && (crossObjects || oneObject) &&
+        RenderPeelingAlpha(app, draws, cache.source, mmeProxy)) return true;
     D3DVIEWPORT9 batchViewport{};
     // Unknown MME shaders can move vertices or have effects outside a source
     // triangle. Native passes alone have the screen-coverage contract needed
     // to move disjoint triangles without changing their output.
     const auto precision = app->TransparentMaterialSortPrecision();
     const bool batchNative = precision==TransparentSortPrecision::Maximum && crossObjects &&
-        !mikumikustudio::LegacyMmeLoaded() &&
+        !mmeProxy &&
         SUCCEEDED(sub->device->GetViewport(&batchViewport));
     const bool same = cache.sortedValid && precision == cache.precision && crossObjects == cache.crossObjects && batchNative == cache.batchNative &&
         batchViewport.Width == cache.width && batchViewport.Height == cache.height;
@@ -2317,7 +2319,7 @@ bool RenderSplitOrderedAlphaImpl(MMDApp* app, bool effectFrame) {
         app->ActiveRenderObject() = command.model;
         app->ActiveRenderPass() = command.effect ? AccessoryRenderPass::Effect : AccessoryRenderPass::FixedFunction;
         if (command.effect) device->SetTexture(0, shadow_filter::VisibleTexture(app));
-        DrawModelMaterials(app, command.model, command.effect, false, ModelAlphaPass::Translucent, &command.selection);
+        DrawModelMaterials(app, command.model, command.effect, false, mmeProxy, ModelAlphaPass::Translucent, &command.selection);
     }
     device->SetStreamSource(0, oldVertices, oldOffset, oldStride);
     device->SetIndices(oldIndices);
@@ -2688,9 +2690,13 @@ void RenderModelsFixed(MMDApp* app) {                         // 0x425D20
     const bool materialCapture = BeginMaterialStateCapture();
     const auto orderedModels = BuildModelDrawOrder(
         app, [](unsigned char* object) { return native_mesh::RenderModel(object); });
+    const bool mmeProxy = !MMD_ORIGINAL_PROFILE && mikumikustudio::LegacyMmeLoaded();
+    const bool authoredOrder = MMD_ORIGINAL_PROFILE ||
+        (mmeProxy && !app->AutoTransparentMaterialSortingEnabled());
     // x64 twin sub_7FF7CB4BFB20+0x4C0710..0x4C077A: order and slot both run
     // to 0xFF (cmp edi,0FFh @0x4C0774 / cmp edx,0FFh @0x4C073C).
     for (auto alphaPass : {ModelAlphaPass::Opaque, ModelAlphaPass::Translucent}) {
+        if (authoredOrder && alphaPass == ModelAlphaPass::Translucent) break;
 #if !MMD_ORIGINAL_PROFILE
         if (alphaPass == ModelAlphaPass::Translucent &&
             app->AutoTransparentMaterialSortingEnabled()) {
@@ -2713,12 +2719,9 @@ void RenderModelsFixed(MMDApp* app) {                         // 0x425D20
                 // Splitting opaque/translucent materials would still reorder
                 // MME draws even though the user explicitly disabled sorting.
                 const bool originalMaterialOrder =
-                    mdl::Mdl(model)->displayState != 0 ||
-                    MMD_ORIGINAL_PROFILE ||
-                    (!app->AutoTransparentMaterialSortingEnabled() &&
-                     mikumikustudio::LegacyMmeLoaded());
+                    authoredOrder || mdl::Mdl(model)->displayState != 0;
                 if (!originalMaterialOrder || alphaPass == ModelAlphaPass::Opaque)
-                    DrawModelMaterials(app, model, false, false,
+                    DrawModelMaterials(app, model, false, false, mmeProxy,
                                        originalMaterialOrder
                                            ? ModelAlphaPass::Original
                                            : alphaPass);
@@ -2873,7 +2876,11 @@ void RenderModelsEffect(MMDApp* app, const float frameMatrix[16]) { // 0x4277E0
     runtime_log::SetPhase("fx: model draw walk");
     const auto orderedModels = BuildModelDrawOrder(
         app, [](unsigned char* object) { return native_mesh::RenderModel(object); });
+    const bool mmeProxy = !MMD_ORIGINAL_PROFILE && mikumikustudio::LegacyMmeLoaded();
+    const bool authoredOrder = MMD_ORIGINAL_PROFILE ||
+        (mmeProxy && !app->AutoTransparentMaterialSortingEnabled());
     for (auto alphaPass : {ModelAlphaPass::Opaque, ModelAlphaPass::Translucent}) {
+        if (authoredOrder && alphaPass == ModelAlphaPass::Translucent) break;
 #if !MMD_ORIGINAL_PROFILE
         if (alphaPass == ModelAlphaPass::Translucent &&
             app->AutoTransparentMaterialSortingEnabled()) {
@@ -2892,31 +2899,29 @@ void RenderModelsEffect(MMDApp* app, const float frameMatrix[16]) { // 0x4277E0
             if (model != nullptr) {
                 if (app->ModelNonDisplayMode() != 0)
                     continue;
-                app->ActiveRenderObject() = model;
-                ValidateModelResources(model, slot);
-                // Names the last object reached before a fault inside Direct3D.
-                runtime_log::Write("FX model slot=%d order=%d toon=%u", slot,
-                                   order,
-                                   static_cast<unsigned>(mdl::Mdl(model)->toonFlag));
+                const auto& state = *mdl::Mdl(model);
                 // Match the fixed-function entry: MME with sorting Off keeps
                 // authored material order and draws each material once.
                 const bool originalMaterialOrder =
-                    mdl::Mdl(model)->displayState != 0 ||
-                    MMD_ORIGINAL_PROFILE ||
-                    (!app->AutoTransparentMaterialSortingEnabled() &&
-                     mikumikustudio::LegacyMmeLoaded());
+                    authoredOrder || state.displayState != 0;
+                if (originalMaterialOrder && alphaPass == ModelAlphaPass::Translucent)
+                    continue;
+                app->ActiveRenderObject() = model;
+                ValidateModelResources(model, slot);
+#ifdef MIKUMIKUSTUDIO_DIAG
+                runtime_log::Write("FX model slot=%d order=%d toon=%u", slot,
+                                   order, static_cast<unsigned>(state.toonFlag));
+#endif
                 const auto drawPass = originalMaterialOrder
                     ? ModelAlphaPass::Original
                     : alphaPass;
-                const bool drawThisPass = !originalMaterialOrder ||
-                    alphaPass == ModelAlphaPass::Opaque;
-                if (drawThisPass && mdl::Mdl(model)->toonFlag != 0) {
+                if (state.toonFlag != 0) {
                     app->ActiveRenderPass() = AccessoryRenderPass::Effect;
                     device->SetTexture(0, shadow_filter::VisibleTexture(app));
-                    DrawModelMaterials(app, model, true, false, drawPass);
-                } else if (drawThisPass) {
+                    DrawModelMaterials(app, model, true, false, mmeProxy, drawPass);
+                } else {
                     app->ActiveRenderPass() = AccessoryRenderPass::FixedFunction;
-                    DrawModelMaterials(app, model, false, false, drawPass);
+                    DrawModelMaterials(app, model, false, false, mmeProxy, drawPass);
                 }
                 app->ActiveRenderObject() = nullptr;
             }
@@ -2947,20 +2952,16 @@ void RenderModelsEffect(MMDApp* app, const float frameMatrix[16]) { // 0x4277E0
     device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
     device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
     device->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
-    runtime_log::SetPhase("fx: accessories post-model");
-    // Per-call records for the effect tail: a fault inside d3d9 after the
-    // accessory range names the exact device call that tripped it.
-    runtime_log::Write("fx tail: before RenderAccessoriesEffectRange");
+    runtime_log::SetPhase("fx tail: accessories post-model");
     RenderAccessoriesEffectRange(app, accessorySplit, 255);
-    runtime_log::Write("fx tail: before SetVertexShader");
+    runtime_log::SetPhase("fx tail: SetVertexShader");
     device->SetVertexShader(nullptr);
-    runtime_log::Write("fx tail: before SetPixelShader");
+    runtime_log::SetPhase("fx tail: SetPixelShader");
     device->SetPixelShader(nullptr);
-    runtime_log::Write("fx tail: before SetTexture0");
+    runtime_log::SetPhase("fx tail: SetTexture0");
     device->SetTexture(0, nullptr);
-    runtime_log::Write("fx tail: before RestoreTextureStages");
+    runtime_log::SetPhase("fx tail: RestoreTextureStages");
     RestoreTextureStages(device);
-    runtime_log::Write("fx tail: after RestoreTextureStages");
     // Frame tail, x64 sub_7FF7CB4C1E60 @0x7FF7CB4C461F/0x7FF7CB4C463D (after
     // the accessory-light restore SetLight at 0x7FF7CB4C4601):
     // DESTBLEND(20)=INVSRCALPHA then FILLMODE(8)=SOLID - the same closing
@@ -3186,7 +3187,7 @@ static bool RenderShadowMapImpl(MMDApp* app, const float frameMatrix[16], bool c
             if (model == nullptr || mdl::Mdl(model)->toonFlag == 0)
                 continue;
             app->ActiveRenderObject() = model;
-            DrawModelMaterials(app, model, true, true,ModelAlphaPass::Original,nullptr,checked?&succeeded:nullptr);
+            DrawModelMaterials(app, model, true, true,false,ModelAlphaPass::Original,nullptr,checked?&succeeded:nullptr);
             app->ActiveRenderObject() = nullptr;
         }
         if(FAILED(FxEnd(effect)))succeeded=false;
@@ -3215,7 +3216,7 @@ static bool RenderShadowMapImpl(MMDApp* app, const float frameMatrix[16], bool c
                     auto* model = native_mesh::RenderModel(app->ModelSlot(slot));
                     if (!model || mdl::Mdl(model)->toonFlag == 0) continue;
                     app->ActiveRenderObject() = model;
-                    DrawModelMaterials(app, model, true, true, ModelAlphaPass::Original, nullptr, &auxiliary);
+                    DrawModelMaterials(app, model, true, true, false, ModelAlphaPass::Original, nullptr, &auxiliary);
                 }
                 if (FAILED(FxEnd(effect))) auxiliary = false;
             }
@@ -3250,7 +3251,7 @@ static bool RenderShadowMapImpl(MMDApp* app, const float frameMatrix[16], bool c
                     auto* model = native_mesh::RenderModel(app->ModelSlot(slot));
                     if (!model || mdl::Mdl(model)->toonFlag == 0) continue;
                     app->ActiveRenderObject() = model;
-                    DrawModelMaterials(app, model, true, true, ModelAlphaPass::Original, nullptr, &rendered);
+                    DrawModelMaterials(app, model, true, true, false, ModelAlphaPass::Original, nullptr, &rendered);
                 }
                 if (FAILED(FxEnd(effect))) rendered = false;
             }
