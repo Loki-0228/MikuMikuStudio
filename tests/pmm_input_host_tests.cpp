@@ -1641,6 +1641,10 @@ BOOL ObserveUiOpenFileName(LPOPENFILENAMEW parameters) {
               parameters->hwndOwner == (app->state.floatingWindow ? reinterpret_cast<HWND>(app->state.floatingWindow) : app->MainWindow()) &&
               (parameters->Flags & OFN_FILEMUSTEXIST) && parameters->lpstrDefExt &&
               !std::wcscmp(parameters->lpstrDefExt, L"pmd;pmx"), "V2 opens the requested model picker");
+        if (parameters->lpstrFile[0] != L'\0')
+            std::fprintf(stderr, "V2 model picker was seeded with %ls\n", parameters->lpstrFile);
+        Check(parameters->lpstrFile[0] == L'\0',
+              "every V2 model picker starts without the previous incompatible filename");
         if (const auto* expected = v2Relocation->expectedPickerDirectory)
             Check(parameters->lpstrInitialDir && !std::wcscmp(parameters->lpstrInitialDir, expected),
                   "the next open's model picker starts at the previous committed directory");

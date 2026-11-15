@@ -5,6 +5,7 @@ void V2RelocationCases(const fs::path& emptyV1, const fs::path& emptyV2,
     const auto root = directory / (L"v2rel-" + std::to_wstring(GetTickCount64()));
     Check(fs::create_directory(root), "own a fresh V2 relocation fixture");
     const auto old = root / L"old", good = root / L"new" / L"UserFile" / L"r", wrong = root / L"wrong";
+    const auto wrongAgain = root / L"wrong-again";
     const auto projectDir = root / L"UserFile";
     const auto first = projectDir / L"first.pmm", second = projectDir / L"second.pmm";
     const auto file = [](const fs::path& base, unsigned i) {
@@ -55,6 +56,7 @@ void V2RelocationCases(const fs::path& emptyV1, const fs::path& emptyV2,
     }
     write(file(good, 2), 21, "decoy-C", false); // C must continue to load from old.
     write(file(wrong, 0), 24, "wrong-A", true);
+    write(file(wrongAgain, 0), 45, "wrong-again", true);
     write(file(wrong, 1), 27, "wrong-B", true);
     write(file(wrong, 3), 30, "wrong-D", false); // would load if skipped B published its choice.
     const auto unavailable = root / L"unavailable";
@@ -112,8 +114,10 @@ void V2RelocationCases(const fs::path& emptyV1, const fs::path& emptyV2,
         const auto captured = RelocationTicket::Capture(*app);
         Check(captured.Infer(fx.native()).path == newFx.native(), "same-generation consumer sees real V2 model mapping");
 
-        std::puts("STAGE V2 relocation second project and structure reselection");
-        load(second, {{missing, L"rel-A", 1, file(wrong, 0)}, {mismatch, L"wrong-A", 3, file(good, 0)}});
+        std::puts("STAGE V2 relocation repeated structure reselection starts with an empty filename");
+        load(second, {{missing, L"rel-A", 1, file(wrong, 0)},
+                      {mismatch, L"wrong-A", 3, file(wrongAgain, 0)},
+                      {mismatch, L"wrong-again", 3, file(good, 0)}});
         CheckRetired(captured);
         Check(RelocationTicket::Capture(*app).Infer(fx.native()).path == newFx.native(),
               "stale write does not disturb second project's finally accepted model mapping");
