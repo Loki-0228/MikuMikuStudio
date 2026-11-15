@@ -2,7 +2,8 @@
 #define _FILE_OFFSET_BITS 64
 #endif
 
-#include "mms_pmm_directory_probe.hpp"
+#include "mms_pmm_payload_probe.hpp"
+#include "mms_pmx_metadata_probe.hpp"
 
 #include <iostream>
 
@@ -26,13 +27,21 @@ class Input {
 public:
 #ifdef _WIN32
     using Char = wchar_t;
-    explicit Input(const Char* path)
+    explicit Input(const Char* path, bool noFollow)
         : handle_(CreateFileW(path, GENERIC_READ,
                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)) {}
+                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL |
+                                 (noFollow ? FILE_FLAG_OPEN_REPARSE_POINT : 0), nullptr)),
+          noFollow_(noFollow) {}
     ~Input() { if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_); }
 
     bool Size(std::uint64_t& size) const {
+        if (noFollow_) {
+            BY_HANDLE_FILE_INFORMATION info{};
+            if (!GetFileInformationByHandle(handle_, &info) ||
+                (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                return false;
+        }
         LARGE_INTEGER n{};
         if (GetFileType(handle_) != FILE_TYPE_DISK ||
             !GetFileSizeEx(handle_, &n) || n.QuadPart < 0) return false;
@@ -51,9 +60,11 @@ public:
 
 private:
     HANDLE handle_;
+    bool noFollow_;
 #else
     using Char = char;
-    explicit Input(const Char* path) : fd_(open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK)) {}
+    explicit Input(const Char* path, bool noFollow)
+        : fd_(open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | (noFollow ? O_NOFOLLOW : 0))) {}
     ~Input() { if (fd_ >= 0) close(fd_); }
 
     bool Size(std::uint64_t& size) const {
@@ -134,6 +145,64 @@ std::string_view Name(DirectoryStatus value) {
     return "unknown";
 }
 
+std::string_view Name(PayloadStatus value) {
+    switch (value) {
+    case PayloadStatus::NotApplicable: return "not_applicable";
+    case PayloadStatus::ChecksumsOk: return "checksums_ok";
+    case PayloadStatus::ChecksumMismatch: return "checksum_mismatch";
+    case PayloadStatus::InvalidMetadata: return "invalid_metadata";
+    case PayloadStatus::OverlappingRanges: return "overlapping_ranges";
+    case PayloadStatus::BudgetExceeded: return "budget_exceeded";
+    case PayloadStatus::IoError: return "io_error";
+    }
+    return "unknown";
+}
+
+std::string_view Name(PmxMetadataStatus value) {
+    switch (value) {
+    case PmxMetadataStatus::Absent: return "absent";
+    case PmxMetadataStatus::Unsupported: return "unsupported";
+    case PmxMetadataStatus::Truncated: return "truncated";
+    case PmxMetadataStatus::Invalid: return "invalid";
+    case PmxMetadataStatus::MetadataOk: return "metadata_ok";
+    case PmxMetadataStatus::IoError: return "io_error";
+    case PmxMetadataStatus::BudgetExceeded: return "budget_exceeded";
+    }
+    return "unknown";
+}
+
+// A quoted UTF-8 JSON string also makes the text-mode field a safe single
+// line. Escape terminal controls, Unicode line separators and bidi controls;
+// the JSON value still round-trips exactly (including embedded NUL).
+void PrintPmxString(std::ostream& out, std::u32string_view text) {
+    constexpr char hex[] = "0123456789abcdef";
+    out.put('"');
+    for (char32_t cp : text) {
+        if (cp == '"' || cp == '\\') {
+            out.put('\\').put(static_cast<char>(cp));
+        } else if (cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || cp == 0x061C ||
+                   (cp >= 0x200E && cp <= 0x200F) || (cp >= 0x2028 && cp <= 0x202E) ||
+                   (cp >= 0x2066 && cp <= 0x206F) || cp == 0xFEFF) {
+            const char escaped[] = {'\\', 'u', hex[(cp >> 12) & 15], hex[(cp >> 8) & 15],
+                                    hex[(cp >> 4) & 15], hex[cp & 15]};
+            out.write(escaped, sizeof(escaped));
+        } else if (cp <= 0x7F) {
+            out.put(static_cast<char>(cp));
+        } else {
+            // Only validated Unicode scalars reach the formatter.
+            char utf8[4];
+            int n = cp <= 0x7FF ? 2 : cp <= 0xFFFF ? 3 : 4;
+            for (int i = n - 1; i > 0; --i) {
+                utf8[i] = static_cast<char>(0x80 | (cp & 0x3F));
+                cp >>= 6;
+            }
+            utf8[0] = static_cast<char>((n == 2 ? 0xC0 : n == 3 ? 0xE0 : 0xF0) | cp);
+            out.write(utf8, n);
+        }
+    }
+    out.put('"');
+}
+
 void PrintKey(std::string_view key, bool json) {
     constexpr char hex[] = "0123456789abcdef";
     // ASCII letters, digits and ._- stay readable. All other bytes use
@@ -149,8 +218,10 @@ void PrintKey(std::string_view key, bool json) {
     }
 }
 
-void PrintJson(const Result& result, const DirectoryResult* directory = nullptr) {
-    // Header values are fixed ASCII tokens. Do not echo paths or raw file bytes.
+void PrintJson(const Result& result, const DirectoryResult* directory = nullptr,
+               const PayloadResult* payloads = nullptr,
+               const PmxMetadataResult* pmx = nullptr) {
+    // Header values are fixed ASCII tokens. Do not echo the input path.
     const auto token = [](std::string_view value) {
         if (value.empty()) std::cout << "null";
         else std::cout << '"' << value << '"';
@@ -169,10 +240,12 @@ void PrintJson(const Result& result, const DirectoryResult* directory = nullptr)
     token(Name(result.original));
     std::cout << "},\"pmm3end\":";
     token(Name(result.pmm3end));
-    std::cout << ",\"bytes_examined\":"
-              << (directory ? directory->bytesExamined : result.bytesExamined)
-              << ",\"validation\":";
-    token(directory ? "pmm_directory_metadata_only" : "header_only");
+    const auto bytesExamined = payloads ? payloads->metadataBytesExamined + payloads->payloadBytesExamined
+        : directory ? directory->bytesExamined : pmx ? pmx->bytesExamined : result.bytesExamined;
+    std::cout << ",\"bytes_examined\":" << bytesExamined << ",\"validation\":";
+    token(payloads ? "pmm_block_payload_crc32" :
+          directory ? "pmm_directory_metadata_only" :
+          pmx ? "pmx_model_metadata_only" : "header_only");
     if (directory) {
         std::cout << ",\"pmm_directory\":{\"status\":";
         token(Name(directory->status));
@@ -189,14 +262,29 @@ void PrintJson(const Result& result, const DirectoryResult* directory = nullptr)
         }
         std::cout << "]}";
     }
+    if (payloads) {
+        std::cout << ",\"pmm_payloads\":{\"status\":";
+        token(Name(payloads->status));
+        std::cout << ",\"bytes_examined\":" << payloads->payloadBytesExamined << '}';
+    }
+    if (pmx) {
+        std::cout << ",\"pmx_metadata\":{\"status\":";
+        token(Name(pmx->status));
+        if (pmx->status == PmxMetadataStatus::MetadataOk) {
+            for (std::size_t i = 0; i < pmx->fields.size(); ++i) {
+                std::cout << ",\"" << kPmxMetadataFields[i] << "\":";
+                PrintPmxString(std::cout, pmx->fields[i]);
+            }
+        }
+        std::cout << '}';
+    }
     std::cout << "}\n";
 }
 
-void PrintText(const Result& result, const DirectoryResult* directory = nullptr) {
+bool PrintTextHeader(const Result& result) {
     if (result.status == Status::IoError) {
         std::cerr << "Could not inspect the input as a readable regular file.\n";
-        if (directory) std::cerr << "PMM3END directory: " << Name(directory->status) << '\n';
-        return;
+        return false;
     }
     const auto format = Name(result.format);
     std::cout << "Status: " << Name(result.status) << "\nFormat: "
@@ -205,6 +293,14 @@ void PrintText(const Result& result, const DirectoryResult* directory = nullptr)
     if (!result.encoding.empty()) std::cout << " (" << result.encoding << ')';
     std::cout << "\nNative header gates: full=" << Name(result.full)
               << ", original=" << Name(result.original) << '\n';
+    return true;
+}
+
+void PrintText(const Result& result, const DirectoryResult* directory = nullptr) {
+    if (!PrintTextHeader(result)) {
+        if (directory) std::cerr << "PMM3END directory: " << Name(directory->status) << '\n';
+        return;
+    }
     if (directory) {
         std::cout << "PMM3END directory: " << Name(directory->status) << '\n';
         for (const auto& block : directory->blocks) {
@@ -226,6 +322,38 @@ void PrintText(const Result& result, const DirectoryResult* directory = nullptr)
               << " bytes read); file contents not validated or imported.\n";
 }
 
+void PrintPayloadText(const PayloadResult& result) {
+    if (!PrintTextHeader(result.header)) {
+        std::cerr << "PMM3END payload CRC32: " << Name(result.status) << '\n';
+        return;
+    }
+    std::cout << "PMM3END payload CRC32: " << Name(result.status) << '\n'
+              << "Scope: PMM3END block payload CRC32 (" << result.payloadBytesExamined
+              << " payload bytes examined, " << result.metadataBytesExamined
+              << " metadata bytes examined); PMM body not decoded; file not imported.\n";
+}
+
+void PrintPmxText(const PmxMetadataResult& result) {
+    auto& out = PrintTextHeader(result.header) ? std::cout : std::cerr;
+    out << "PMX model metadata: " << Name(result.status) << '\n';
+    if (result.status == PmxMetadataStatus::MetadataOk) {
+        for (std::size_t i = 0; i < result.fields.size(); ++i) {
+            out << "  " << kPmxMetadataFields[i] << ": ";
+            PrintPmxString(out, result.fields[i]);
+            out << '\n';
+        }
+    }
+    out << "Scope: PMX header and four text fields only (" << result.bytesExamined
+        << " bytes read); model body not read or imported.\n";
+}
+
+void PmxUsage(std::ostream& out) {
+    out << "Usage: mms_format_inspect --pmx-metadata [--json] [--] FILE\n"
+           "Preview the local and English names and comments of PMX 2.0/2.1 without reading the model body.\n"
+           "Exit: 0 metadata OK, 1 absent, unsupported, truncated or invalid,\n"
+           "      2 usage or I/O error, 3 text budget exceeded.\n";
+}
+
 void Usage(std::ostream& out) {
     out << "Usage: mms_format_inspect [--json] [--] FILE\n"
            "       mms_format_inspect --help\n"
@@ -238,6 +366,14 @@ void DirectoryUsage(std::ostream& out) {
            "Check a PMM 0003 PMM3END footer, directory and block metadata without reading payloads.\n"
            "Exit: 0 recognized with metadata OK or no directory, 1 not recognized or directory not verified,\n"
            "      2 usage or I/O error, 3 directory read budget exceeded.\n";
+}
+
+void PayloadUsage(std::ostream& out) {
+    out << "Usage: mms_format_inspect --pmm-verify-payloads [--json] [--] FILE\n"
+           "Compare stored PMM3END block CRC32 values with raw payload bytes (64 MiB payload limit).\n"
+           "Use a stable file; this does not provide a snapshot, decode, or import a PMM.\n"
+           "Exit: 0 all checksums match, 1 mismatch, invalid metadata, overlap, or not applicable,\n"
+           "      2 usage or I/O error, 3 read budget exceeded.\n";
 }
 
 bool IsOption(std::basic_string_view<Input::Char> arg, std::string_view option) {
@@ -253,34 +389,77 @@ int Run(int argc, Input::Char** argv) {
         DirectoryUsage(std::cout);
         return 0;
     }
+    if (argc == 3 && IsOption(argv[1], "--pmm-verify-payloads") && IsOption(argv[2], "--help")) {
+        PayloadUsage(std::cout);
+        return 0;
+    }
+    if (argc == 3 && IsOption(argv[1], "--pmx-metadata") && IsOption(argv[2], "--help")) {
+        PmxUsage(std::cout);
+        return 0;
+    }
     const Input::Char* path = nullptr;
-    bool json = false, pmmDirectory = false, options = true;
+    bool json = false, options = true;
+    enum class Mode { Header, Directory, Payloads, PmxMetadata };
+    auto mode = Mode::Header;
+    const auto usageError = [&] {
+        if (mode == Mode::Directory) DirectoryUsage(std::cerr);
+        else if (mode == Mode::Payloads) PayloadUsage(std::cerr);
+        else if (mode == Mode::PmxMetadata) PmxUsage(std::cerr);
+        else Usage(std::cerr);
+        return 2;
+    };
     for (int i = 1; i < argc; ++i) {
         const std::basic_string_view<Input::Char> arg = argv[i];
         if (options && !path && !json && IsOption(arg, "--json")) json = true;
-        else if (options && !path && !pmmDirectory && IsOption(arg, "--pmm-directory"))
-            pmmDirectory = true;
+        else if (options && !path && mode == Mode::Header && IsOption(arg, "--pmm-directory"))
+            mode = Mode::Directory;
+        else if (options && !path && mode == Mode::Header && IsOption(arg, "--pmm-verify-payloads"))
+            mode = Mode::Payloads;
+        else if (options && !path && mode == Mode::Header && IsOption(arg, "--pmx-metadata"))
+            mode = Mode::PmxMetadata;
         else if (options && !path && IsOption(arg, "--")) options = false;
         else if (!path && !arg.empty() && (!options || arg.front() != '-')) path = argv[i];
-        else {
-            if (pmmDirectory) DirectoryUsage(std::cerr);
-            else Usage(std::cerr);
-            return 2;
-        }
+        else return usageError();
     }
-    if (!path) {
-        if (pmmDirectory) DirectoryUsage(std::cerr);
-        else Usage(std::cerr);
-        return 2;
-    }
+    if (!path) return usageError();
 
-    const Input input(path);
+    const Input input(path, mode == Mode::PmxMetadata);
     std::uint64_t size = 0;
     const auto readAt = [&](auto offset, auto* bytes, auto count) {
         return input.ReadAt(offset, bytes, count);
     };
     const bool readable = input.Size(size);
-    if (pmmDirectory) {
+    if (mode == Mode::PmxMetadata) {
+        const auto pmx = readable ? InspectPmxMetadata(size, readAt)
+            : PmxMetadataResult{Result{Status::IoError}, PmxMetadataStatus::IoError};
+        if (json) PrintJson(pmx.header, nullptr, nullptr, &pmx);
+        else PrintPmxText(pmx);
+        switch (pmx.status) {
+        case PmxMetadataStatus::MetadataOk: return 0;
+        case PmxMetadataStatus::IoError: return 2;
+        case PmxMetadataStatus::BudgetExceeded: return 3;
+        case PmxMetadataStatus::Absent:
+        case PmxMetadataStatus::Unsupported:
+        case PmxMetadataStatus::Truncated:
+        case PmxMetadataStatus::Invalid: return 1;
+        }
+    }
+    if (mode == Mode::Payloads) {
+        const auto payloads = readable ? VerifyPmmPayloads(size, readAt)
+            : PayloadResult{Result{Status::IoError}, PayloadStatus::IoError};
+        if (json) PrintJson(payloads.header, nullptr, &payloads);
+        else PrintPayloadText(payloads);
+        switch (payloads.status) {
+        case PayloadStatus::ChecksumsOk: return 0;
+        case PayloadStatus::IoError: return 2;
+        case PayloadStatus::BudgetExceeded: return 3;
+        case PayloadStatus::NotApplicable:
+        case PayloadStatus::ChecksumMismatch:
+        case PayloadStatus::InvalidMetadata:
+        case PayloadStatus::OverlappingRanges: return 1;
+        }
+    }
+    if (mode == Mode::Directory) {
         const auto directory = readable ? InspectPmmDirectory(size, readAt)
             : DirectoryResult{Result{Status::IoError}, DirectoryStatus::IoError};
         if (json) PrintJson(directory.header, &directory);

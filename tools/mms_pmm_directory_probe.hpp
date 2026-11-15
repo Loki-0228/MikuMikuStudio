@@ -43,14 +43,24 @@ inline std::uint64_t U64(const char* p) {
     return std::uint64_t{U32(p)} | (std::uint64_t{U32(p + 4)} << 32);
 }
 
-inline std::uint32_t Crc32(const std::vector<char>& bytes) {
-    std::uint32_t crc = 0xFFFFFFFFu;
-    for (unsigned char byte : bytes) {
-        crc ^= byte;
+// Reflected IEEE CRC32, identical to src/io/pmm_container.cpp. Retain
+// the uncomplemented state between chunks; an empty sequence yields zero.
+inline constexpr auto kCrc32Table = [] {
+    std::array<std::uint32_t, 256> table{};
+    for (std::uint32_t i = 0; i < table.size(); ++i) {
+        auto crc = i;
         for (int bit = 0; bit < 8; ++bit)
             crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        table[i] = crc;
     }
-    return crc ^ 0xFFFFFFFFu;
+    return table;
+}();
+inline constexpr std::uint32_t kCrc32Xor = 0xFFFFFFFFu;
+
+inline std::uint32_t UpdateCrc32(std::uint32_t crc, const char* bytes, std::size_t count) {
+    for (std::size_t i = 0; i < count; ++i)
+        crc = (crc >> 8) ^ kCrc32Table[(crc ^ static_cast<unsigned char>(bytes[i])) & 0xFFu];
+    return crc;
 }
 
 struct Entry {
@@ -59,16 +69,18 @@ struct Entry {
     std::uint64_t offset, end;
 };
 
-}  // namespace directory_detail
+struct PayloadRange {
+    std::uint64_t offset, size;
+    std::uint32_t crc;
+};
 
 // Read the wrapper once, then the TOC and only the declared block headers and
 // keys. Check every range before reading any block header so even overlapping
 // metadata cannot cause a read from another declared block's payload.
 template<class ReadAt>
-DirectoryResult InspectPmmDirectory(std::uint64_t fileSize, ReadAt readAt) {
+DirectoryResult InspectPmmMetadata(std::uint64_t fileSize, ReadAt& readAt,
+                                   std::vector<PayloadRange>* payloads = nullptr) {
     namespace wire = mikumikustudio::pmm_container;
-    using directory_detail::U32;
-    using directory_detail::U64;
     static_assert(kFooterSize == wire::kFooterSize);
 
     DirectoryResult out;
@@ -130,9 +142,10 @@ DirectoryResult InspectPmmDirectory(std::uint64_t fileSize, ReadAt readAt) {
     if (rowsSize && !read(tocOffset + tocHeader.size(), toc.data() + tocHeader.size(),
                          static_cast<std::size_t>(rowsSize)))
         return out;
-    if (directory_detail::Crc32(toc) != U32(end + 48)) return out;
+    const auto tocCrc = UpdateCrc32(kCrc32Xor, toc.data(), toc.size()) ^ kCrc32Xor;
+    if (tocCrc != U32(end + 48)) return out;
 
-    std::vector<directory_detail::Entry> entries;
+    std::vector<Entry> entries;
     entries.reserve(count);
     std::set<std::string_view> keys;
     std::size_t pos = wire::kTocHeaderSize;
@@ -160,7 +173,7 @@ DirectoryResult InspectPmmDirectory(std::uint64_t fileSize, ReadAt readAt) {
     // Native Read admits gaps and a different TOC order. Allow both, but
     // decline to inspect intersecting ranges: a supposed header could be
     // inside another block's declared payload. This is not a native verdict.
-    std::vector<const directory_detail::Entry*> byOffset;
+    std::vector<const Entry*> byOffset;
     byOffset.reserve(entries.size());
     for (const auto& entry : entries) byOffset.push_back(&entry);
     std::sort(byOffset.begin(), byOffset.end(),
@@ -192,14 +205,32 @@ DirectoryResult InspectPmmDirectory(std::uint64_t fileSize, ReadAt readAt) {
         if (std::string_view(blockKey.data(), entry->key.size()) != entry->key) return out;
     }
 
-    out.blocks.reserve(entries.size());
-    for (const auto& entry : entries) {
-        const auto* row = toc.data() + entry.tocPosition;
-        out.blocks.push_back({std::string(entry.key), U32(row + 4), U32(row + 8),
-                              U32(row + 12), U64(row + 24)});
+    // Only expose ranges once all directory rows, block headers and keys
+    // have agreed. Payload verification needs no printable block listing.
+    if (payloads) {
+        payloads->reserve(entries.size());
+        for (const auto& entry : entries) {
+            const auto* row = toc.data() + entry.tocPosition;
+            payloads->push_back({entry.offset + wire::kBlockHeaderSize + entry.key.size(),
+                                 U64(row + 24), U32(row + 32)});
+        }
+    } else {
+        out.blocks.reserve(entries.size());
+        for (const auto& entry : entries) {
+            const auto* row = toc.data() + entry.tocPosition;
+            out.blocks.push_back({std::string(entry.key), U32(row + 4), U32(row + 8),
+                                  U32(row + 12), U64(row + 24)});
+        }
     }
     out.status = DirectoryStatus::MetadataOk;
     return out;
+}
+
+}  // namespace directory_detail
+
+template<class ReadAt>
+DirectoryResult InspectPmmDirectory(std::uint64_t fileSize, ReadAt readAt) {
+    return directory_detail::InspectPmmMetadata(fileSize, readAt);
 }
 
 }  // namespace mikumikustudio::format_probe

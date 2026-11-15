@@ -12,7 +12,7 @@ make -C linux check
 构建产物在 `linux/build/`：`libmms_animation_curve.a` 、`mms_format_inspect` 和 `tests/` 中的原生可执行文件。可用 `BUILD_DIR=/tmp/mms-linux-build` 指定独立目录；构建和测试命令都传入同一个值。切换编译器或编译选项时建议使用新的构建目录。
 
 - `check` 运行九组冒烟测试：曲线、背景手势、保存完成状态、离屏资源所有权、状态通知和旧插件菜单命令隔离等。离屏测试使用模拟后端；保存完成状态测试不写真实的 PMM 或 EMM；菜单测试不安装 Win32 消息钩子或加载 DLL。
-- `make -C linux format-inspect` 单独构建[只读格式检查工具](../PLUGIN_DATA_EXTENSIONS.md#fmt-01-第一阶段只读格式检查工具)。`make -C linux check-format-inspect` 运行原有头部与可选 PMM3END 目录回归；测试夹具由独立编解码器写入。
+- `make -C linux format-inspect` 单独构建[只读格式检查工具](../PLUGIN_DATA_EXTENSIONS.md#fmt-01-第一阶段只读格式检查工具)。`make -C linux check-format-inspect` 运行头部、可选 PMM3END 目录和载荷 CRC32，以及 PMX 模型文本预览回归，包含真实编解码器生成的夹具、读取故障注入和预算边界。
 - `make -C linux check-retime` 单独运行变速完整回归。在 GCC 14/Linux 上，当前 ABI 源码和交接基线都出现两条失败：合并首组时的零容差浮点比较，以及 29.97 FPS 比例。此命令保留真实失败退出码。
 
 这里没有构建 MMS 图形程序，也不会运行真实的工程打开、保存、渲染、导出或 MME 流程。现有根目录 CMake 仍用于 Windows，Windows 的构建与打包步骤不变。在 Linux 上用 Wine 启动 Windows 版属于兼容性测试。
