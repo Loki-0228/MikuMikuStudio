@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -92,6 +93,7 @@ struct V2RelocationReply {
     const wchar_t* label;
     INT_PTR answer;
     fs::path selection;
+    bool disappearsOnOpen = false;
 };
 struct V2RelocationDialogs {
     std::vector<V2RelocationReply> replies;
@@ -100,6 +102,8 @@ struct V2RelocationDialogs {
     const wchar_t* projectRoot = nullptr;
     const wchar_t* originalModelDirectory = nullptr;
     const wchar_t* expectedPickerDirectory = nullptr;
+    fs::path disappearingCandidate, parkedCandidate;
+    unsigned disappearedOnOpen = 0;
 };
 V2RelocationDialogs* v2Relocation = nullptr;
 // ---- Real V2 missing-accessory recovery loop --------------------------------
@@ -585,6 +589,20 @@ LRESULT CALLBACK NoActivation(int code, WPARAM wp, LPARAM lp) {
     return CallNextHookEx(nullptr, code, wp, lp);
 }
 errno_t __cdecl ObserveOpen(int* descriptor, const wchar_t* path, int flags, int sharing, int mode) {
+    if (v2Relocation && !v2Relocation->disappearingCandidate.empty() && path &&
+        v2Relocation->disappearingCandidate.native() == path && flags == _O_BINARY &&
+        sharing == _SH_DENYNO && mode == _S_IREAD) {
+        auto& d = *v2Relocation;
+        Check(monitor && inputOpen && d.parkedCandidate.empty(),
+              "remove the picked PMD only at its first real native open");
+        d.parkedCandidate = d.disappearingCandidate;
+        d.parkedCandidate += L".parked";
+        Check(MoveFileW(path, d.parkedCandidate.c_str()), "park the real picked PMD after the picker confirmed it");
+        const auto status = realOpen(descriptor, path, flags, sharing, mode);
+        Check(status == ENOENT && descriptor && *descriptor == -1, "the real model open fails because the PMD disappeared");
+        ++d.disappearedOnOpen;
+        return status;
+    }
     const auto status = realOpen(descriptor, path, flags, sharing, mode);
     // Observe the shell's exact read-only binary open, not a hash/sidecar
     // std::ifstream used by plugin pair preparation before that open.
@@ -1055,9 +1073,18 @@ INT_PTR MissingModel(MMDApp* value, HINSTANCE, HWND window, ProjectModelIssue is
         if (d.projectRoot)
             Check(!std::wcscmp(app->PathWorkspace().projectDirectory, d.projectRoot),
                 "a model replacement must leave the PMM resource root intact at later model prompts");
-        if (issue == ProjectModelIssue::StructureMismatch && d.originalModelDirectory)
+        if (d.originalModelDirectory)
             Check(!std::wcscmp(app->DirModel(), d.originalModelDirectory),
-                "a mismatched candidate must leave the previous model picker folder intact");
+                "unaccepted replacements must leave the previous model picker folder intact");
+        if (!d.parkedCandidate.empty()) {
+            const auto* model = app->ModelSlot(0);
+            Check(issue == ProjectModelIssue::MissingFile && model && !mdl::Mdl(model)->path[0],
+                  "return to missing-model recovery with a clean model slot");
+            Check(MoveFileW(d.parkedCandidate.c_str(), d.disappearingCandidate.c_str()),
+                  "restore the owned PMD only after recovery is offered again");
+            d.parkedCandidate.clear();
+            d.disappearingCandidate.clear();
+        }
         Check(value == app && window == app->MainWindow() && monitor && inputOpen && fault == Fault::None &&
               !d.awaitingPicker && d.next < d.replies.size(), "V2 recovery dialog in the expected active PMM load");
         const auto& reply = d.replies[d.next++];
@@ -1622,6 +1649,10 @@ BOOL ObserveUiOpenFileName(LPOPENFILENAMEW parameters) {
         Check(fs::is_regular_file(reply->selection) &&
               wcscpy_s(parameters->lpstrFile, parameters->nMaxFile, reply->selection.c_str()) == 0,
               "return the exact owned V2 model selection");
+        if (reply->disappearsOnOpen) {
+            Check(v2Relocation->disappearingCandidate.empty(), "arm a single owned V2 open failure");
+            v2Relocation->disappearingCandidate = reply->selection;
+        }
         return TRUE;
     }
     if (relocationDialogs) {

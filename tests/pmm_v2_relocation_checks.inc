@@ -57,6 +57,10 @@ void V2RelocationCases(const fs::path& emptyV1, const fs::path& emptyV2,
     write(file(wrong, 0), 24, "wrong-A", true);
     write(file(wrong, 1), 27, "wrong-B", true);
     write(file(wrong, 3), 30, "wrong-D", false); // would load if skipped B published its choice.
+    const auto unavailable = root / L"unavailable";
+    write(file(unavailable, 0), 36, "unavailable-A", false);
+    write(file(unavailable, 1), 39, "unavailable-B", false); // never learn the unavailable candidate's root.
+    write(file(unavailable, 3), 42, "unavailable-D", false);
     for (unsigned i : {0u, 1u, 3u}) write(file(projectDir / L"r", i), 33, "decoy", false);
 
     const auto verify = [&](unsigned slot) {
@@ -76,14 +80,20 @@ void V2RelocationCases(const fs::path& emptyV1, const fs::path& emptyV2,
         Check(previousCheck != UINT(-1), "enable the real remember-folder option for V2 model recovery");
         CopyDirPathW(app->DirModel(), originalModelDirectory.c_str());
         const auto acceptedDirectory = replies.back().selection.parent_path();
+        const auto disappearances = std::count_if(replies.begin(), replies.end(),
+            [](const auto& reply) { return reply.disappearsOnOpen; });
         V2RelocationDialogs dialogs{std::move(replies)};
         if (!legacy) dialogs.projectRoot = expectedRoot.c_str();
         dialogs.originalModelDirectory = originalModelDirectory.c_str();
+        dialogs.expectedPickerDirectory = originalModelDirectory.c_str();
         v2Relocation = &dialogs;
         if (legacy) LegacyRelocationOpen(path, false); else Normal(path, camera, light);
         v2Relocation = nullptr;
         CheckMenuItem(GetMenu(app->MainWindow()), rememberFolder, MF_BYCOMMAND | previousCheck);
-        Check(!dialogs.awaitingPicker && dialogs.next == dialogs.replies.size(), "consumed exactly the expected V2 decisions");
+        Check(!dialogs.awaitingPicker && dialogs.next == dialogs.replies.size() &&
+              dialogs.disappearingCandidate.empty() && dialogs.parkedCandidate.empty() &&
+              dialogs.disappearedOnOpen == static_cast<unsigned>(disappearances),
+              "consumed exactly the expected V2 decisions and real model open failures");
         Check(legacy || !std::wcscmp(app->PathWorkspace().projectDirectory, expectedRoot.c_str()),
             "the V2 model recovery leaves the actual PMM resource root intact");
         Check(!std::wcscmp(app->DirModel(), acceptedDirectory.c_str()),
@@ -94,8 +104,9 @@ void V2RelocationCases(const fs::path& emptyV1, const fs::path& emptyV2,
     const auto savedMode = pmm_io::bufferedReads;
     for (bool buffered : {false, true}) {
         pmm_io::bufferedReads = buffered;
-        std::printf("STAGE V2 relocation mode=%s one selection\n", buffered ? "buffered" : "direct");
-        load(first, {{missing, L"rel-A", 1, file(good, 0)}});
+        std::printf("STAGE V2 relocation mode=%s retry a disappeared selection\n", buffered ? "buffered" : "direct");
+        load(first, {{missing, L"rel-A", 1, file(unavailable, 0), true},
+                     {missing, L"rel-A", 1, file(good, 0)}});
         for (unsigned i = 0; i < 4; ++i) verify(i);
         const auto fx = old / L"Effects" / L"row.fx", newFx = good / L"Effects" / L"row.fx";
         const auto captured = RelocationTicket::Capture(*app);
@@ -111,14 +122,17 @@ void V2RelocationCases(const fs::path& emptyV1, const fs::path& emptyV2,
         std::puts("STAGE V2 relocation skip before and after names/counts");
         // Direct: skip in both dialogs. Buffered: close each corresponding
         // picker. D must ask even though wrong/D is a readable matching PMD.
-        load(first, {{missing, L"rel-A", buffered ? 1 : 3, {}},
+        load(first, {{missing, L"rel-A", 1, file(unavailable, 0), true},
+                     {missing, L"rel-A", buffered ? 1 : 3, {}},
                      {missing, L"rel-B", 1, file(wrong, 1)},
                      {mismatch, L"wrong-B", buffered ? 3 : 4, {}},
                      {missing, L"rel-D", 1, file(good, 3)}});
         Check(!app->ModelSlot(0) && !app->ModelSlot(1), "later acceptance leaves both skipped V2 slots empty");
         verify(2); verify(3);
     }
-    load(first, {{missing, L"rel-A", 1, file(good, 0)}}, true);
+    load(first, {{missing, L"rel-A", 1, file(unavailable, 0), true},
+                 {missing, L"rel-A", 1, file(good, 0)}}, true);
+    std::puts("PASS PMM V2 missing-model recovery after real selected-file disappearance");
     Check(RelocationTicket::Capture(*app).Infer(file(old, 1).native()).path == file(good, 1).native(),
           "direct V2 legacy success retains the mapping after its wrapper returns");
     // Selecting a real PMX with a partial zero joint count must fail before

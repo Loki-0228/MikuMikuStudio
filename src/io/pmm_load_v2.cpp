@@ -1188,6 +1188,16 @@ static void LoadSceneV2_ModelStateLoad(PmmV2LoadContext& ctx, int fd,
 }
 
 
+// A confirmed picker result can disappear before the importer opens it.
+static bool MissingModelSelection(const wchar_t* path) {
+    if (!*path) return true;
+    const DWORD attributes = GetFileAttributesW(path);
+    if (attributes != INVALID_FILE_ATTRIBUTES)
+        return (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    const DWORD error = GetLastError();
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+}
+
 // ---- 0x4504BA..0x45410A: one per-model record - allocate/init, load
 // the PMD (missing-file dialog + locate-and-retry), the reconciliation
 // ring (structure-difference dialog + re-map against a re-loaded file),
@@ -1290,6 +1300,12 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
             bool skipFrom4 = false;  // r==4: counts/names already consumed
             std::wstring finalSelection;
             ofnFile[0] = L'\0';
+            const auto resetModel = [&] {
+                // The importer sets modelDirectory only after opening the file.
+                if (mdl::Mdl(model)->modelDirectory[0]) ModelDispose(model);
+                std::memset(model, 0, mdl::kSize);
+                ModelInitDefaults(model);
+            };
             const auto loadSelection = [&]() {
                 if (!project_model::LoadExact(model, main, ofnFile, wrap, s->EnglishUI(), s->Physics(), paths))
                     return false;
@@ -1306,11 +1322,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                     if (project_relocation::RecoverProjectEffect(*s, main)) {
                         const auto mapped = ctx.relocation.Locate(text, ctx.projectDirectory);
                         if (!mapped.exactPath.empty()) {
-                            if (mdl::Mdl(model)->modelDirectory[0]) {
-                                ModelDispose(model);
-                                std::memset(model, 0, mdl::kSize);
-                                ModelInitDefaults(model);
-                            }
+                            if (mdl::Mdl(model)->modelDirectory[0]) resetModel();
                             loaded = project_model::LoadExact(model, main, mapped.exactPath.c_str(), wrap,
                                                               s->EnglishUI(), s->Physics(), paths);
                         }
@@ -1349,12 +1361,16 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                         // instead of aborting the whole project load.
                         doSkip = true;                          // 0x4508FC
                     } else {
-                        if (mdl::Mdl(model)->modelDirectory[0]) {
-                            ModelDispose(model);
-                            std::memset(model, 0, mdl::kSize);
-                            ModelInitDefaults(model);
-                        }
-                        if (!loadSelection()) {
+                        if (mdl::Mdl(model)->modelDirectory[0]) resetModel();
+                        const bool missing = MissingModelSelection(ofnFile);
+                        if (missing || !loadSelection()) {
+                            if (missing || MissingModelSelection(ofnFile)) {
+                                // Leave this record at its recovery choices and
+                                // do not publish the failed pick or its directory.
+                                resetModel();
+                                ofnFile[0] = L'\0';
+                                continue;
+                            }
                             project_relocation::LoadScope::FailCurrent(*s);
                             ShowUiMessage(s, main, UiMessage::OpenModelError, MB_OK, ofnFile);
                             AbortV2Load(s, input, workspaceOwner);
