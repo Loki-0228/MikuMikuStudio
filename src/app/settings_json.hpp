@@ -8,17 +8,40 @@
 
 namespace mikumikustudio::settings_json {
 using plugins::Json;
-inline std::string Quote(std::string_view value) {
-    std::string out = "\"";
+inline void Quote(std::string& out, std::string_view value) {
+    out += '"';
     constexpr char hex[] = "0123456789abcdef";
     for (unsigned char c : value) {
         if (c == '"' || c == '\\') { out += '\\'; out += char(c); }
         else if (c < 32) { out += "\\u00"; out += hex[c >> 4]; out += hex[c & 15]; }
         else out += char(c);
     }
-    return out + '"';
+    out += '"';
 }
+inline std::string Quote(std::string_view value) { std::string out; Quote(out, value); return out; }
 inline std::string Quote(std::wstring_view value) { return Quote(plugins::Utf8(value)); }
+inline void Serialize(std::string& output, const Json& value) {
+    switch (value.kind) {
+    case Json::Null: output += "null"; break;
+    case Json::Boolean: case Json::Number: output += value.text; break;
+    case Json::StringValue: Quote(output, value.text); break;
+    case Json::Array: {
+        output += '['; bool first = true;
+        for (const auto& item : value.array) { if (!first) output += ','; first = false; Serialize(output, item); }
+        output += ']'; break;
+    }
+    case Json::Object: {
+        output += '{'; bool first = true;
+        for (const auto& item : value.object) {
+            if (!first) output += ',';
+            first = false;
+            Quote(output, item.first); output += ':'; Serialize(output, item.second);
+        }
+        output += '}'; break;
+    }
+    }
+}
+inline std::string Serialize(const Json& value) { std::string output; Serialize(output, value); return output; }
 inline unsigned UInt(const Json& object, const char* key, unsigned fallback) {
     const auto found = object.object.find(key);
     return found == object.object.end() ? fallback : found->second.UInt();

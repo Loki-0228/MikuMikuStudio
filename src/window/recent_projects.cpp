@@ -21,53 +21,108 @@ HMENU fileMenu=nullptr, recentMenu=nullptr;
 HHOOK hook=nullptr;
 bool openSelected=false, recentSelected=false, filePopupOpen=false;
 int openPosition=-1;
-std::vector<std::wstring> paths, menuPaths;
-std::filesystem::path StorePath() {
+using Paths = std::vector<std::wstring>;
+using settings_json::Json;
+using system_settings::Result;
+constexpr char recentSection[] = "recentProjects";
+constexpr wchar_t legacyFile[] = L"recent-pmm.txt";
+constexpr std::size_t maximumPaths = 10;
+Paths menuPaths;
+std::filesystem::path LegacyStorePath() {
     wchar_t path[32768]{};
     DWORD n=GetEnvironmentVariableW(L"MMS_RECENT_PROJECTS_FILE",path,32768);
     if(n && n<32768)return path;
-    return local_data::File(L"recent-pmm.txt");
+    return local_data::File(legacyFile);
 }
 bool ExplicitStore() { wchar_t value[2]{}; return GetEnvironmentVariableW(L"MMS_RECENT_PROJECTS_FILE",value,2)!=0; }
-std::string RecentJson() {
-    std::string out="{\"paths\":[";
-    for(const auto& path:paths){if(out.back()!='[')out+=',';out+=settings_json::Quote(std::wstring_view(path));}
-    return out+"]}";
-}
-void Read() {
-    paths.clear();
-    system_settings::Result result=system_settings::Result::Missing;
-    if(!ExplicitStore()){
-        settings_json::Json json;
-        if(settings_json::Read("recentProjects",json,result)){
-            auto found=json.object.find("paths");
-            if(found!=json.object.end()&&found->second.kind==settings_json::Json::Array)
-                for(const auto& entry:found->second.array){
-                    if(entry.kind!=settings_json::Json::StringValue||paths.size()>=10)continue;
-                    try{auto path=plugins::Wide(entry.text);if(!path.empty()&&path.size()<32768&&path.find(L'\0')==std::wstring::npos)paths.push_back(std::move(path));}catch(...){}
-                }
-            return;
-        }
-        if(result!=system_settings::Result::Missing)return;
+std::string RecentJson(Json section, const Paths& paths) {
+    Json entries;
+    entries.kind=Json::Array;
+    for(const auto& path:paths) {
+        Json entry;
+        entry.kind=Json::StringValue;
+        entry.text=plugins::Utf8(path);
+        entries.array.push_back(std::move(entry));
     }
-    std::ifstream input(StorePath(),std::ios::binary);
+    section.kind=Json::Object;
+    section.object["paths"]=std::move(entries);
+    return settings_json::Serialize(section);
+}
+Paths ReadCentralPaths(const Json& section) {
+    Paths paths;
+    const auto found=section.object.find("paths");
+    if(found==section.object.end() || found->second.kind!=Json::Array)return paths;
+    for(const auto& entry:found->second.array) {
+        if(paths.size()>=maximumPaths)break;
+        if(entry.kind!=Json::StringValue)continue;
+        std::wstring path;
+        try { path=plugins::Wide(entry.text); } catch(const std::invalid_argument&) { continue; }
+        if(!path.empty() && path.size()<32768 && path.find(L'\0')==std::wstring::npos)
+            paths.push_back(std::move(path));
+    }
+    return paths;
+}
+Paths ReadLegacy(const std::filesystem::path& path) {
+    Paths paths;
+    std::ifstream input(path,std::ios::binary);
     std::wstring line;wchar_t c=0;
     while(input.read(reinterpret_cast<char*>(&c),sizeof(c))) {
-        if(c==L'\n') { if(!line.empty() && paths.size()<10)paths.push_back(line);line.clear(); }
+        if(c==L'\n') { if(!line.empty() && paths.size()<maximumPaths)paths.push_back(line);line.clear(); }
         else if(c!=L'\r' && c!=0xfeff && line.size()<32767)line+=c;
     }
-    if(!ExplicitStore())system_settings::CompareExchangeSection("recentProjects",nullptr,RecentJson());
+    return paths;
 }
-void Write() {
-    if(!ExplicitStore()){system_settings::WriteSection("recentProjects",RecentJson());return;}
-    auto path=StorePath();if(path.empty())return;
+Paths Read() {
+    if(ExplicitStore())return ReadLegacy(LegacyStorePath());
+    std::string raw;
+    const auto result=system_settings::ReadSection(recentSection,raw);
+    if(result==Result::Ok) {
+        try { return ReadCentralPaths(settings_json::Object(raw)); } catch(...) { return {}; }
+    }
+    if(result!=Result::Missing)return {};
+    auto paths=ReadLegacy(local_data::File(legacyFile));
+    system_settings::CompareExchangeSection(recentSection,nullptr,RecentJson({},paths));
+    return paths;
+}
+void WriteLegacy(const std::filesystem::path& path, const Paths& paths) {
+    if(path.empty())return;
     std::error_code error;std::filesystem::create_directories(path.parent_path(),error);
     auto temp=path;temp+=L".tmp";
     { std::ofstream output(temp,std::ios::binary|std::ios::trunc);
       const wchar_t bom=0xfeff;output.write(reinterpret_cast<const char*>(&bom),sizeof(bom));
-      for(auto& p:paths){auto line=p+L"\r\n";output.write(reinterpret_cast<const char*>(line.data()),line.size()*sizeof(wchar_t));}
+      for(const auto& p:paths){auto line=p+L"\r\n";output.write(reinterpret_cast<const char*>(line.data()),line.size()*sizeof(wchar_t));}
       output.flush();if(!output)return; }
     MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
+}
+void Promote(Paths& paths, const wchar_t* path) {
+    paths.erase(std::remove_if(paths.begin(),paths.end(),
+        [path](const auto& entry){return !_wcsicmp(entry.c_str(),path);}),paths.end());
+    paths.insert(paths.begin(),path);
+    if(paths.size()>maximumPaths)paths.resize(maximumPaths);
+}
+void RecordCentral(const wchar_t* path) {
+    constexpr unsigned maximumAttempts = 4;
+    for(unsigned attempt=0;attempt<maximumAttempts;++attempt) {
+        std::string raw;
+        const auto result=system_settings::ReadSection(recentSection,raw);
+        Json section;
+        Paths paths;
+        if(result==Result::Ok) {
+            try {
+                section=settings_json::Object(raw);
+                paths=ReadCentralPaths(section);
+            } catch(...) { return; }
+        } else if(result==Result::Missing) {
+            paths=ReadLegacy(local_data::File(legacyFile));
+        } else {
+            return;
+        }
+        Promote(paths,path);
+        // Keep the unfiltered read as the compare token and replace only paths.
+        // A concurrent update requires a fresh read before promoting again.
+        if(system_settings::CompareExchangeSection(recentSection,result==Result::Ok?&raw:nullptr,
+            RecentJson(std::move(section),paths))!=Result::Conflict)return;
+    }
 }
 const wchar_t* Text(MMDApp* app,const wchar_t* jp,const wchar_t* en,const wchar_t* zh) {
     return app->EnglishUI()==2?zh:app->EnglishUI()==1?en:jp;
@@ -91,7 +146,7 @@ void RefreshAvailability() {
 }
 void Populate(MMDApp* app) {
     while(GetMenuItemCount(recentMenu)>0)DeleteMenu(recentMenu,0,MF_BYPOSITION);
-    Read();menuPaths=paths;
+    menuPaths=Read();
     AppendMenuW(recentMenu,MF_STRING|MF_GRAYED,0,Text(app,L"最近開いた PMM",L"Recently opened PMM",L"最近打开的 PMM"));
     AppendMenuW(recentMenu,MF_SEPARATOR,0,nullptr);
     for(size_t i=0;i<menuPaths.size();++i) {
@@ -122,8 +177,14 @@ void Record(MMDApp* app,const wchar_t* path) {
 #if !MMD_ORIGINAL_PROFILE
     if(!app || !path || !*path || !pmm_paths::IsProject(path))return;
     wchar_t full[32768]{};DWORD size=GetFullPathNameW(path,32768,full,nullptr);if(!size || size>=32768)return;
-    Read();paths.erase(std::remove_if(paths.begin(),paths.end(),[&](auto& p){return !_wcsicmp(p.c_str(),full);}),paths.end());
-    paths.insert(paths.begin(),full);if(paths.size()>10)paths.resize(10);Write();
+    if(ExplicitStore()) {
+        const auto legacy=LegacyStorePath();
+        auto paths=ReadLegacy(legacy);
+        Promote(paths,full);
+        WriteLegacy(legacy,paths);
+    } else {
+        RecordCentral(full);
+    }
 #endif
 }
 LRESULT CALLBACK MenuFilter(int code,WPARAM wp,LPARAM lp) {
