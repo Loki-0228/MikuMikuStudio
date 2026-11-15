@@ -65,7 +65,11 @@ struct Fixture {
     }
 };
 void AllocationAndMailbox() {
-    Fixture f; const auto binding = f.Bind(1); f.Publish(10);
+    Fixture f;
+    const auto cleanupBeforeBind = f.cleanup.load();
+    const auto binding = f.Bind(1);
+    Check(f.cleanup == cleanupBeforeBind + 1, "binding publication requests internal ticket cleanup once");
+    f.Publish(10);
     const MmsUiRefreshSubscriptionDescV1 desc{Header<MmsUiRefreshSubscriptionDescV1>(), binding, MMS_UI_REFRESH_DATA, 0, 0};
     MmsHandle untouched = 876;
     failSubscriptionAllocation = true;
@@ -107,9 +111,14 @@ void AllocationAndMailbox() {
     const auto wakeCount = f.wakes.load(); f.Publish(9000);
     Check(f.wakes == wakeCount && !f.bindings.PendingSubscriptions(), "equal bytes do not retry a parked subscription");
     f.Publish(9001); Check(f.wakes == wakeCount + 1 && f.bindings.PendingSubscriptions(), "a new version retries a failed host wake");
-    Check(f.api.unsubscribe(f.api.context, subscription) == MMS_OK && f.cleanup == 1 && !f.bindings.PendingSubscriptions(), "unsubscribe drops mailbox and requests internal ticket cleanup");
+    const auto cleanupBeforeUnsubscribe = f.cleanup.load();
+    Check(f.api.unsubscribe(f.api.context, subscription) == MMS_OK && f.cleanup == cleanupBeforeUnsubscribe + 1 &&
+        !f.bindings.PendingSubscriptions(), "unsubscribe drops mailbox and requests its own ticket cleanup once");
     state.h = Header<MmsUiRefreshSubscriptionStateV1>(); state.latestRevision = 554;
     Check(f.api.query(f.api.context, subscription, &state) == MMS_E_STALE && state.latestRevision == 554, "old subscription query remains stale and atomic");
+    const auto wakesAfterUnsubscribe = f.wakes.load();
+    f.Publish(9002);
+    Check(f.wakes == wakesAfterUnsubscribe && !f.bindings.PendingSubscriptions(), "later source publications do not wake deleted subscriptions");
 }
 void QuotasAndLifetime() {
     Fixture f; MmsUiRefreshSubscriptionCapabilitiesV1 caps{}; caps.h = Header<MmsUiRefreshSubscriptionCapabilitiesV1>();
