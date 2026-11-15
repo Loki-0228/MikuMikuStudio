@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <bcrypt.h>
 #include "model_geometry_cache.hpp"
+#include "pmd_geometry_wire.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/sequential_file_reader.hpp"
 #include <algorithm>
@@ -17,6 +18,8 @@
 
 namespace mikumikustudio::model_geometry_cache {
 namespace {
+static_assert(sizeof(mdl::PmdVertex) == kPmdVertexHostBytes &&
+    offsetof(mdl::PmdVertex, edgeDisabled) + 1 == kPmdVertexWireBytes);
 struct Handle {
     HANDLE value = INVALID_HANDLE_VALUE;
     ~Handle() { Reset(); }
@@ -136,6 +139,7 @@ struct Entry {
     Layout layout;
     mutable bool retired = false; // Cache mutex only; immutable payload remains leased.
     std::int64_t vertexStart = 0, vertexEnd = 0, indexEnd = 0;
+    std::int64_t fingerprintStart = 0;
     Digest geometry{};
     std::uint32_t indexCount = 0;
     std::size_t vertexBytes = 0, payloadBytes = 0;
@@ -199,7 +203,7 @@ struct Session::State {
     std::shared_ptr<const Entry> hit;
     std::shared_ptr<Entry> pending;
     std::size_t reserved = 0;
-    bool canceled = false, finished = false;
+    bool canceled = false, finished = false, consumedPmd = false;
     void ReleaseReservation() noexcept {
         if (!reserved) return;
         try {
@@ -232,7 +236,7 @@ struct Session::State {
     bool GeometryCurrent() const {
         if (!hit || guard.value == INVALID_HANDLE_VALUE || !Current(guard.value, identity)) return false;
         Digest digest;
-        return Fingerprint(guard.value, std::uint64_t(hit->vertexStart), std::uint64_t(hit->indexEnd), digest) &&
+        return Fingerprint(guard.value, std::uint64_t(hit->fingerprintStart), std::uint64_t(hit->indexEnd), digest) &&
             digest == hit->geometry && Current(guard.value, identity);
     }
     std::shared_ptr<Entry> Prepare(std::size_t vertexBytes, std::uint32_t count,
@@ -240,6 +244,7 @@ struct Session::State {
         auto entry = std::make_shared<Entry>();
         entry->identity = identity; entry->layout = layout; entry->vertexStart = vertexStart;
         entry->vertexEnd = vertexEnd; entry->indexEnd = indexEnd; entry->indexCount = count;
+        entry->fingerprintStart = consumedPmd ? vertexStart - static_cast<std::int64_t>(sizeof(std::uint32_t)) : vertexStart;
         entry->vertexBytes = vertexBytes; entry->payloadBytes = vertexBytes;
         if (std::uint64_t(count) * 4 > (std::numeric_limits<std::size_t>::max)() ||
             !AddSize(entry->payloadBytes, std::size_t(count) * 4) ||
@@ -262,6 +267,16 @@ struct Session::State {
                 Current(guard.value, identity) && consumedPmx.Finish(entry.geometry);
         }
         if (!Current(guard.value, identity)) return false;
+        if (consumedPmd) {
+            // Hash the actual bytes copied into this candidate. Commit will
+            // compare them to an independent scan, including the vertex count.
+            Hash hash;
+            const auto* payload = entry.payload.get();
+            const auto* indices = entry.indexCount ? payload + entry.vertexBytes : nullptr;
+            return hash.Open() && VisitPmdGeometryWire(layout.vertexCount, payload, entry.indexCount, indices,
+                [&](const unsigned char* bytes, unsigned count) noexcept { return hash.Add(bytes, count); }) &&
+                hash.Finish(entry.geometry);
+        }
         Digest after;
         return Fingerprint(guard.value, 0, identity.size, after, std::uint64_t(vertexStart),
             std::uint64_t(entry.indexEnd), &entry.geometry) && after == before && Current(guard.value, identity);
@@ -298,15 +313,20 @@ Statistics GetProcessStatistics() noexcept {
     try { return ProcessCache().GetStatistics(); } catch (...) { return {}; }
 }
 Session Session::Begin(int descriptor, Layout layout, std::int64_t vertexStart, Cache* cache, bool disabled) noexcept {
-    return BeginImpl(descriptor, layout, vertexStart, cache, disabled, nullptr);
+    return BeginImpl(descriptor, layout, vertexStart, cache, disabled, nullptr, false);
 }
 Session Session::BeginPmx(int descriptor, Layout layout, fileio::SequentialFileReader& reader,
                           Cache* cache, bool disabled) noexcept {
     if (layout.format != Format::pmx) return {};
-    return BeginImpl(descriptor, layout, reader.Tell(), cache, disabled, &reader);
+    return BeginImpl(descriptor, layout, reader.Tell(), cache, disabled, &reader, false);
+}
+Session Session::BeginPmd(int descriptor, std::uint32_t vertexCount, std::int64_t vertexStart,
+                          Cache* cache, bool disabled) noexcept {
+    if (vertexStart < static_cast<std::int64_t>(sizeof(vertexCount))) return {};
+    return BeginImpl(descriptor, {Format::pmd, vertexCount}, vertexStart, cache, disabled, nullptr, true);
 }
 Session Session::BeginImpl(int descriptor, Layout layout, std::int64_t vertexStart, Cache* cache,
-                           bool disabled, fileio::SequentialFileReader* pmxReader) noexcept {
+                           bool disabled, fileio::SequentialFileReader* pmxReader, bool consumedPmd) noexcept {
     Session result;
     try {
         if (!cache) { if (build_profile::original) return result; cache = &ProcessCache(); }
@@ -319,7 +339,7 @@ Session Session::BeginImpl(int descriptor, Layout layout, std::int64_t vertexSta
             std::lock_guard<std::mutex> lock(cache->impl_->mutex); ++cache->impl_->statistics.bypasses; return result;
         }
         auto state = std::make_unique<State>(); state->cache = cache->impl_.get();
-        state->layout = layout; state->vertexStart = vertexStart;
+        state->layout = layout; state->vertexStart = vertexStart; state->consumedPmd = consumedPmd;
         const auto handle = reinterpret_cast<HANDLE>(_get_osfhandle(descriptor));
         if (!Identify(handle, state->identity) || std::uint64_t(vertexStart) > state->identity.size ||
             // The original parser may ignore a large unknown tail. Do not
@@ -350,8 +370,9 @@ Session Session::BeginImpl(int descriptor, Layout layout, std::int64_t vertexSta
         if (!state->hit) {
             if (pmxReader) {
                 if (!state->ObservePmx(*pmxReader)) return result;
-            } else if (!Fingerprint(state->guard.value, 0, state->identity.size, state->before) ||
-                       !Current(state->guard.value, state->identity)) return result;
+            } else if (!consumedPmd &&
+                       (!Fingerprint(state->guard.value, 0, state->identity.size, state->before) ||
+                        !Current(state->guard.value, state->identity))) return result;
         }
         {
             std::lock_guard<std::mutex> lock(state->cache->mutex);
@@ -444,15 +465,17 @@ void Session::CapturePmd(const mdl::PmdVertex* vertices, const std::uint16_t* in
     try {
         if (!Hit() && state_->layout.format == Format::pmd && (vertices || !state_->layout.vertexCount) && (indices || !count) &&
             ValidRange(state_->layout, state_->identity.size, state_->vertexStart, vertexEnd, indexEnd, count,
-                std::uint64_t(state_->layout.vertexCount) * 38)) {
+                std::uint64_t(state_->layout.vertexCount) * kPmdVertexWireBytes)) {
             auto entry = state_->Prepare(std::size_t(state_->layout.vertexCount) * sizeof(mdl::PmdVertex), count, vertexEnd, indexEnd);
             if (entry) {
                 if (entry->vertexBytes) std::memcpy(entry->payload.get(), vertices, entry->vertexBytes);
                 if (count) {
                     auto* output = entry->payload.get() + entry->vertexBytes;
+                    const auto* input = reinterpret_cast<const unsigned char*>(indices);
+                    std::memset(output, 0, std::size_t(count) * kPmdIndexHostBytes);
                     for (std::uint32_t i = 0; i < count; ++i) {
-                        const std::uint32_t value = indices[std::size_t(i) * 2];
-                        std::memcpy(output + std::size_t(i) * 4, &value, 4);
+                        const auto offset = std::size_t(i) * kPmdIndexHostBytes;
+                        std::memcpy(output + offset, input + offset, kPmdIndexWireBytes);
                     }
                 }
                 if (state_->CaptureCurrent(*entry)) state_->pending = std::move(entry);
@@ -468,7 +491,7 @@ void Session::Commit() noexcept {
     try {
         Handle guard; Digest digest;
         if (Disabled() || state_->canceled || !LockStableFile(state_->identity, guard) ||
-            !Fingerprint(guard.value, std::uint64_t(state_->vertexStart), std::uint64_t(state_->pending->indexEnd), digest) ||
+            !Fingerprint(guard.value, std::uint64_t(state_->pending->fingerprintStart), std::uint64_t(state_->pending->indexEnd), digest) ||
             digest != state_->pending->geometry || !Current(guard.value, state_->identity)) {
             state_->CancelPending(); return;
         }

@@ -101,7 +101,8 @@ void Capture(gc::Session& s,const Geometry& g,const ref::Fixture& f) {
 }
 Geometry Load(const fs::path& path,const ref::Fixture& f,gc::Cache& cache,bool disabled=false,bool commit=true,unsigned char fill=0xcd) {
     File file(path);Reader r{file.fd};Check(r.Seek(f.vertexStart),"set parser position before cache lookup");
-    auto s=gc::Session::Begin(file.fd,Layout(f),f.vertexStart,&cache,disabled);
+    auto s=f.pmd?gc::Session::BeginPmd(file.fd,f.vertices,f.vertexStart,&cache,disabled):
+        gc::Session::Begin(file.fd,Layout(f),f.vertexStart,&cache,disabled);
     Check(r.Tell()==f.vertexStart,"cache lookup never consumes or seeks the parser descriptor");
     Geometry out;out.hit=s.Hit();out.enabled=s.Enabled();
     if(!out.hit) {out=Parse(r,f,fill);out.enabled=s.Enabled();if(out.complete)Capture(s,out,f);}
@@ -230,6 +231,77 @@ void ObservedPmxAdmission() {
     const auto reopened = Load(path, fixture, cache);
     Check(reopened.hit && reopened.complete && reopened.pmx[0].position[0] == changed,
         "only the newly parsed vertices can be reused");
+}
+void ParsedPmdAdmission() {
+    auto fixture = ref::Pmd(32000, true);
+    // Distinguish the raw float bits from a zero or NaN normalized by arithmetic.
+    const std::uint32_t unusual[]{0x80000000u, 0x7fa12345u};
+    std::memcpy(fixture.bytes.data() + fixture.vertexStart, unusual, sizeof(unusual));
+    fixture.bytes.insert(fixture.bytes.end(), 8 * 1024 * 1024, 0x25);
+    const auto path = NewFile(fixture, L"parsed-pmd");
+    const auto validatedBytes = static_cast<std::uint64_t>(fixture.indexEnd - fixture.vertexStart) + 4;
+    gc::Cache cache;
+    for (bool corruptParsedCopy : {true, false}) {
+        File file(path);
+        Reader reader{file.fd};
+        Check(reader.Seek(fixture.vertexStart - 4), "seek to the actual PMD vertex count");
+        std::uint32_t vertexCount = 0;
+        Check(reader.Read(&vertexCount, 4) == 4 && vertexCount == fixture.vertices, "read the real PMD vertex count");
+        ReadFileProbe probe;
+        auto session = gc::Session::BeginPmd(file.fd, vertexCount, reader.Tell(), &cache);
+        Check(session.Enabled() && !session.Hit() && !ReadFileProbe::calls && reader.Tell() == fixture.vertexStart,
+            "cold parsed PMD lookup does not scan or move the parser");
+        auto geometry = ParseAtCurrent(reader, fixture);
+        Check(geometry.complete && geometry.indexEnd == fixture.indexEnd &&
+            !std::memcmp(geometry.pmd.data(), unusual, sizeof(unusual)), "parse exact PMD bits across multiple guard blocks");
+        // The independent source is untouched. A mismatched candidate must be
+        // rejected by the digest, not by a difference in timestamps or size.
+        if (corruptParsedCopy) reinterpret_cast<unsigned char*>(geometry.pmd.data())[0] ^= 1;
+        const auto beforeCapture = ReadFileProbe::calls;
+        const auto bytesBeforeCommit = ReadFileProbe::requested;
+        Capture(session, geometry, fixture);
+        Check(ReadFileProbe::calls == beforeCapture && cache.GetStatistics().pendingBytes > 0,
+            "PMD capture stages parsed geometry without a guard read");
+        session.Commit();
+        const auto stats = cache.GetStatistics();
+        Check(ReadFileProbe::calls > beforeCapture && ReadFileProbe::requested - bytesBeforeCommit == validatedBytes,
+            "PMD commit independently reads exactly the vertex count and geometry, excluding the large tail");
+        Check(!stats.pendingBytes && stats.stores == (corruptParsedCopy ? 0u : 1u),
+            "independent final digest refuses mismatched bytes and publishes only the exact parse");
+    }
+    const auto warm = Load(path, fixture, cache);
+    const auto uncached = Load(path, fixture, cache, true);
+    Check(warm.hit && !uncached.hit, "only the verified PMD payload is restored on a subsequent load");
+    Equal(warm, uncached, 0);
+
+    // Model what happens if the parser has already read the old vertex count.
+    // The guard sees a different count but all the following bytes still match.
+    {
+        auto changedCount = fixture;
+        changedCount.bytes[static_cast<std::size_t>(fixture.vertexStart - 4)] ^= 1;
+        File file(NewFile(changedCount, L"parsed-pmd-stale-count"));
+        Reader reader{file.fd};
+        Check(reader.Seek(fixture.vertexStart), "use the parser position after a potentially stale count");
+        gc::Cache rejected;
+        auto session = gc::Session::BeginPmd(file.fd, fixture.vertices, reader.Tell(), &rejected);
+        const auto geometry = ParseAtCurrent(reader, fixture);
+        Check(geometry.complete, "the geometry interval after the changed count is otherwise identical");
+        Capture(session, geometry, fixture);
+        Check(rejected.GetStatistics().pendingBytes > 0, "the stale-count candidate reaches independent validation");
+        session.Commit();
+        Check(!rejected.GetStatistics().stores && !rejected.GetStatistics().pendingBytes,
+            "the independent guard refuses a stale layout count even when all geometry fields match");
+    }
+
+    for (const auto limit : {fixture.vertexStart + 37, fixture.vertexEnd + 3, fixture.indexEnd - 1}) {
+        auto truncated = fixture;
+        truncated.bytes.resize(static_cast<std::size_t>(limit));
+        gc::Cache rejected;
+        const auto incomplete = Load(NewFile(truncated), truncated, rejected);
+        Check(incomplete.enabled && !incomplete.complete && !incomplete.hit &&
+            !rejected.GetStatistics().pendingBytes && !rejected.GetStatistics().stores,
+            "partial PMD vertex, index count or index cannot publish geometry");
+    }
 }
 void RoundTrips() {
     gc::Cache cache;
@@ -380,8 +452,8 @@ bool SameFingerprintMetadata(const SourceMetadata& a,const SourceMetadata& b) {
         a.basic.CreationTime.QuadPart==b.basic.CreationTime.QuadPart&&
         a.basic.LastWriteTime.QuadPart==b.basic.LastWriteTime.QuadPart&&a.basic.ChangeTime.QuadPart==b.basic.ChangeTime.QuadPart;
 }
-void RestoredMetadataContentChange() {
-    const auto fixture=ref::Pmx(21);const auto path=NewFile(fixture,L"restored-metadata");gc::Cache cache;
+void RestoredMetadataContentChangeFor(const ref::Fixture& fixture) {
+    const auto path=NewFile(fixture,L"restored-metadata");gc::Cache cache;
     Check(Load(path,fixture,cache).complete&&Load(path,fixture,cache).hit,"seed and confirm a real cache entry before metadata restoration");
     const auto before=ReadMetadata(path);const auto initial=cache.GetStatistics();
     const auto writer=CreateFileW(path.c_str(),GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
@@ -407,7 +479,9 @@ void RestoredMetadataContentChange() {
             "real source bytes differ from the cached original after metadata restoration attempt");
         Check(_lseeki64(file.fd,fixture.vertexStart,SEEK_SET)==fixture.vertexStart,"restore parser position before actual cache Begin");
         if(identical) {
-            ReadFileProbe probe;auto session=gc::Session::Begin(file.fd,Layout(fixture),fixture.vertexStart,&cache);
+            ReadFileProbe probe;
+            auto session=fixture.pmd?gc::Session::BeginPmd(file.fd,fixture.vertices,fixture.vertexStart,&cache):
+                gc::Session::Begin(file.fd,Layout(fixture),fixture.vertexStart,&cache);
             Check(session.Enabled()&&!session.Hit()&&ReadFileProbe::calls>0&&ReadFileProbe::requested>0,
                 "different real bytes with identical fingerprint metadata require an actual scan and reject the old hit");
             const auto observed=cache.GetStatistics();Check(observed.invalidations==initial.invalidations+1&&observed.misses==initial.misses+1&&
@@ -422,9 +496,14 @@ void RestoredMetadataContentChange() {
                 int(before.file.nFileIndexHigh==after.file.nFileIndexHigh&&before.file.nFileIndexLow==after.file.nFileIndexLow));
         }
     }
-    const auto parsed=Load(path,fixture,cache);Check(parsed.complete&&!parsed.hit&&parsed.pmx[0].position[0]==changed,
+    const auto parsed=Load(path,fixture,cache);
+    Check(parsed.complete&&!parsed.hit&&(fixture.pmd?parsed.pmd[0].position[0]:parsed.pmx[0].position[0])==changed,
         "ordinary parsing retrieves changed geometry after either explicit metadata-restoration outcome");
     Equal(parsed,Load(path,fixture,cache),fixture.uv);
+}
+void RestoredMetadataContentChange() {
+    RestoredMetadataContentChangeFor(ref::Pmx(21));
+    RestoredMetadataContentChangeFor(ref::Pmd(21));
 }
 void AllocationAndFreshHitCopy() {
     const auto f=ref::Pmx(21);const auto path=NewFile(f);gc::Cache referenceCache;const auto data=Load(path,f,referenceCache,true);
@@ -473,6 +552,7 @@ int wmain(int argc,wchar_t** argv) {
     Run("source-identity-content-and-existing-mapping",SourceChangesAndMapping);Run("allocation-failure-and-fresh-hit-copy",AllocationAndFreshHitCopy);
     Run("bounded-whole-source-fingerprint",BoundedFingerprintSource);
     Run("observed-pmx-admission",ObservedPmxAdmission);
+    Run("parsed-pmd-admission",ParsedPmdAdmission);
     Run("restored-fingerprint-metadata-if-supported",RestoredMetadataContentChange);
     std::printf("PASS geometry cache CPU contracts: %u checks\n",checks);return 0;
 }

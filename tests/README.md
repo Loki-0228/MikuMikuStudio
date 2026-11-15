@@ -108,8 +108,9 @@ python tests/run_mme_save_pair.py --profile full --host build/cmake/tests/mme/Re
 | `alembic_export_tests.cpp` | 隐藏生产窗口内生成 PMX，核对骨骼动画、MME/MMV 叠加、生成与消失的材质/拓扑、Unicode ABC、取消、三语条件警告、烧录回工程、PMM 保存重开和清除后恢复。需要按模式准备 Data/插件，显式运行。 |
 | `sequential_file_reader_tests.cpp` | 顺序文件读取、绝对跳转、跳转失败后保留未消费窗口、EOF 及唯一关闭；完整与原始兼容配置共用。 |
 | `native_menu_snapshot_tests.cpp` | 自有隐藏窗口及真实菜单验证只读树观察、UTF-16、重复命令位置、状态、预算、线程、文字变化和长文本分配失败。仅修改本测试进程的菜单查询导入并核验恢复；不得触发菜单填充、命令或全局输入。私有观察器接入正式目录服务后，保留这些反例；不等于完整 UI 目录已实现。 |
-| `model_geometry_cache_tests.cpp`、`model_geometry_reference.hpp` | 独立原字段解码验证 PMD／PMX 缓存副本、索引步长、预算、待发布和退役租约、清空代次、分配失败、源内容指纹与巨大尾部绕过。参数为独占产物目录；仅保留自己的夹具，不清理其他文件。移除缓存或完整迁移这些反例后再移除。 |
-| `model_geometry_cache_host_tests.cpp` | 参数为独占产物目录；自有隐藏 Win32 窗口及真实 D3D9 设备调用实际 PMD／PMX 加载器，比较冷／热／禁用路径的 CPU、GPU 内容及晚段失败不发布。追加 131,073 顶点、四种有效权重的实际 PMX 串行／并行／缓存对照，用调用线程的可选 Trace 见证真实工作线程分支。两配置共用，原始配置须保持生产缓存及并行禁用。设备不可用不算通过，不代替实际工程、人工呈现或 Win7／AMD 验收；移除加载优化或等效宿主回归完整替代后再移除。 |
+| `pmd_geometry_wire_tests.cpp` | Linux CPU 冒烟与 Windows 独立测试。校验 PMD 摘要输入逐字节等于原格式，包括负零和 NaN 位、计数、跨批次及空数组；排除宿主顶点与索引填充字节。移除该缓存路径或由等效反例替代后再移除。 |
+| `model_geometry_cache_tests.cpp`、`model_geometry_reference.hpp` | 独立原字段解码验证 PMD／PMX 缓存副本、索引步长、预算、待发布和退役租约、清空代次、分配失败、源内容指纹与巨大尾部绕过；冷 PMD 不在查找及捕获时读取守护句柄，提交仅复核顶点计数与几何区间。参数为独占产物目录；仅保留自己的夹具，不清理其他文件。移除缓存或完整迁移这些反例后再移除。 |
+| `model_geometry_cache_host_tests.cpp` | 参数为独占产物目录；自有隐藏 Win32 窗口及真实 D3D9 设备调用实际 PMD／PMX 加载器，比较冷／热／禁用路径的 CPU、GPU 内容及晚段失败不发布，并校验 PMD 可选段的合法缺省与部分写入不发布。追加 131,073 顶点、四种有效权重的实际 PMX 串行／并行／缓存对照，用调用线程的可选 Trace 见证真实工作线程分支。两配置共用，原始配置须保持生产缓存及并行禁用。设备不可用不算通过，不代替实际工程、人工呈现或 Win7／AMD 验收；移除加载优化或等效宿主回归完整替代后再移除。 |
 | `pmx_vertex_parallel_tests.cpp` | 独立旧解码对照全部字段和未提供字节，覆盖追加 UV、骨索引宽度、未知权重、批次与阈值、短读、分配／启动失败、取消、Reader 异常及 MXCSR。仅观察本测试实际启动线程的终止句柄，不发送全局输入。移除并行准备或等效回归完整替代后再移除。 |
 | `d3dx_import_tests.cpp` | D3DX 导入与 ABI；需要本机 DirectX 运行库。 |
 | `effect_api_tests.cpp` | 效果接口、对象导出及材质名称双向回退；无 MME 时安全跳过。 |

@@ -57,6 +57,10 @@ public:
     // must outlive the session. CapturePmx ends observation before tail reads.
     static Session BeginPmx(int descriptor, Layout layout, fileio::SequentialFileReader& reader,
                             Cache* cache = nullptr, bool disabled = false) noexcept;
+    // Call immediately after reading the complete PMD vertex count. CapturePmd
+    // must receive unmodified bytes from successful, contiguous parser reads.
+    static Session BeginPmd(int descriptor, std::uint32_t vertexCount, std::int64_t vertexStart,
+                            Cache* cache = nullptr, bool disabled = false) noexcept;
     bool Enabled() const noexcept;
     bool Hit() const noexcept;
     std::int64_t VertexEnd() const noexcept;
@@ -76,7 +80,8 @@ public:
     void Invalidate() noexcept;
 private:
     static Session BeginImpl(int descriptor, Layout layout, std::int64_t vertexStart,
-                             Cache*, bool disabled, fileio::SequentialFileReader*) noexcept;
+                             Cache*, bool disabled, fileio::SequentialFileReader*,
+                             bool consumedPmd) noexcept;
     struct State;
     std::unique_ptr<State> state_;
 };

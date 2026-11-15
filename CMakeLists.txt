@@ -641,6 +641,11 @@ set_target_properties(native_menu_snapshot_tests PROPERTIES RUNTIME_OUTPUT_DIREC
 add_test(NAME native_menu_snapshot_regressions COMMAND native_menu_snapshot_tests)
 set_tests_properties(native_menu_snapshot_regressions PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
 
+add_executable(pmd_geometry_wire_tests EXCLUDE_FROM_ALL tests/pmd_geometry_wire_tests.cpp)
+target_include_directories(pmd_geometry_wire_tests PRIVATE src)
+set_target_properties(pmd_geometry_wire_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME pmd_geometry_wire_regressions COMMAND pmd_geometry_wire_tests)
+
 add_executable(model_geometry_cache_tests EXCLUDE_FROM_ALL
     tests/model_geometry_cache_tests.cpp src/model/model_geometry_cache.cpp)
 target_include_directories(model_geometry_cache_tests PRIVATE include)
