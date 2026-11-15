@@ -311,8 +311,9 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
                 ikTargets.reserve(input.maximumIkEntries);
             }
             const auto* nameTail=input.Data(tailStart);
-            const auto total = morph_curve::VmdBlockSize(nameTail, input.Size()-tailStart);
-            if (total && total <= remaining) {
+            const auto remainingAfterNames = input.Size() - tailStart;
+            const auto total = morph_curve::VmdBlockSize(nameTail, remainingAfterNames);
+            if (total && total <= remainingAfterNames) {
                 std::vector<std::uint8_t> payload;
                 if (morph_curve::DecodeVmdBlock(nameTail, total, payload) == total) {
                     morphBlock.assign(nameTail, nameTail + total);
@@ -321,9 +322,10 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             }
             const auto boneBytes=bone_curve::VmdBlockSize(input.Data(tailStart),input.Size()-tailStart);
             if(boneBytes){boneCurveBlock.assign(input.Data(tailStart),input.Data(tailStart)+boneBytes);tailStart+=boneBytes;}
-            wchar_t widePath[MAX_PATH]{};
-            if (!wideFileName) MultiByteToWideChar(CP_ACP, 0, fileName, -1, widePath, MAX_PATH);
-            hasScaleExtension = bone_scale_io::LoadVmdExtension(wideFileName ? wideFileName : widePath, scaleExtension,
+            // Use the already validated snapshot, not a second path lookup
+            // that could read a different file and repeat all prefix I/O.
+            hasScaleExtension = bone_scale_io::LoadVmdExtensionBytes(
+                input.Data(0), input.Size(), scaleExtension,
                 static_cast<std::int64_t>(tailStart)) == bone_scale_io::ExtensionLoad::Loaded;
         }
     } catch (const std::exception&) {
