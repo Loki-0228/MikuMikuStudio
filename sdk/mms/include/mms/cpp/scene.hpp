@@ -22,6 +22,14 @@ template<class F> MmsResult Call(F&& call) noexcept {
 class SceneSnapshot {
     MmsSceneApiV1 api_{};
     MmsHandle handle_ = 0;
+    friend class SceneServices;
+    bool IssuedBy(const MmsSceneApiV1& api) const noexcept {
+        // Handles are local to the issuing service. Compare the context and
+        // entry points, not table addresses or version metadata.
+        return api_.context == api.context && api_.acquire == api.acquire &&
+               api_.release == api.release && api_.objects == api.objects &&
+               api_.readChannel == api.readChannel;
+    }
 public:
     SceneSnapshot() = default;
     SceneSnapshot(MmsSceneApiV1 api, MmsHandle handle) noexcept : api_(api), handle_(handle) {}
@@ -93,13 +101,17 @@ public:
             return out.TransferFrom(acquired);
         });
     }
+    // Both reads reject a snapshot from another service with MMS_E_STALE
+    // before calling the host or changing out.
     MmsResult Objects(const SceneSnapshot& snapshot, MmsSpan& out) const noexcept {
         if (!ready_ || !snapshot.valid()) return MMS_E_NOT_READY;
+        if (!snapshot.IssuedBy(api_)) return MMS_E_STALE;
         return scene_detail::Call([&] { return api_.objects(api_.context, snapshot.get(), &out); });
     }
     MmsResult ReadChannel(const SceneSnapshot& snapshot, MmsObjectRef object, std::uint32_t channel,
                           MmsSpan& out) const noexcept {
         if (!ready_ || !snapshot.valid()) return MMS_E_NOT_READY;
+        if (!snapshot.IssuedBy(api_)) return MMS_E_STALE;
         return scene_detail::Call([&] { return api_.readChannel(api_.context, snapshot.get(), object, channel, &out); });
     }
 };
