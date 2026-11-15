@@ -21,9 +21,9 @@ BUILD_FILES = (
     "MMDFacade.dll",
     "MMHack.dll",
     "PLUGINS/LEGACY/MMDPlugin.dll",
-    "optional-plugins/first-person-camera/MMSFirstPersonCamera.dll",
+    "PLUGINS/first-person-camera/MMSFirstPersonCamera.dll",
 )
-CAMERA_DIR = "optional-plugins/first-person-camera"
+CAMERA_DIR = "PLUGINS/first-person-camera"
 EXTRA_FILES = {f"{CAMERA_DIR}/{name}": f"src/legacy_first_person/{name}" for name in ("LICENSE", "README.md")}
 # Do not copy entire directories from a development checkout.
 REPO_FILES = (
@@ -40,11 +40,15 @@ DEFAULT_BUILD = Path("build/cmake")
 DEFAULT_RELEASE = Path("build/release")
 DEFAULT_TEMPLATE = Path("build/packages/mms-adaptive-ui-template.zip")
 PACKAGE_FILES = frozenset((*BUILD_FILES, *REPO_FILES, *EXTRA_FILES, f"{CAMERA_DIR}/plugin.json", DEFAULT_TEMPLATE.name))
-PACKAGE_DIRS = frozenset(("PLUGINS/LEGACY", "PLUGINS", "licenses", "optional-plugins", CAMERA_DIR))
-# Recognize only previous package-owned providers when rebuilding staging.
+PACKAGE_DIRS = frozenset(("PLUGINS/LEGACY", "PLUGINS", "licenses", CAMERA_DIR))
+# Recognize only previous package-owned providers and camera package when rebuilding staging.
 # New output never contains these old locations, and adjacent user files still fail.
-PREVIOUS_PACKAGE_DIRS = frozenset(("PLUGINS/legacy-mmdplugin", "legacy-mmdplugin"))
-PREVIOUS_PACKAGE_FILES = frozenset(f"{directory}/MMDPlugin.dll" for directory in PREVIOUS_PACKAGE_DIRS)
+PREVIOUS_PROVIDER_DIRS = ("PLUGINS/legacy-mmdplugin", "legacy-mmdplugin")
+PREVIOUS_CAMERA_DIR = "optional-plugins/first-person-camera"
+PREVIOUS_PACKAGE_DIRS = frozenset((*PREVIOUS_PROVIDER_DIRS, "optional-plugins", PREVIOUS_CAMERA_DIR))
+PREVIOUS_PACKAGE_FILES = frozenset(
+    [f"{directory}/MMDPlugin.dll" for directory in PREVIOUS_PROVIDER_DIRS] +
+    [f"{PREVIOUS_CAMERA_DIR}/{name}" for name in ("MMSFirstPersonCamera.dll", "plugin.json", "LICENSE", "README.md")])
 
 
 def cache_value(cache: str, name: str) -> str:
@@ -183,7 +187,7 @@ def stage_package(repo: Path, build: Path, release: Path, template: Path, force:
 
         name = f"{CAMERA_DIR}/plugin.json"
         target = stage / name
-        target.write_text(json.dumps(dict(schemaVersion=1, id="mms.legacy.first-person-camera",
+        target.write_text(json.dumps(dict(schemaVersion=1, id="org.mikumikustudio.legacy.first-person-camera",
             name="FirstPersonCamera (MMS)", version="1.0.0", kind="legacy_mmdplugin",
             profile="first_person_camera_v4", entry="MMSFirstPersonCamera.dll",
             sha256=file_digest(stage / CAMERA_DIR / "MMSFirstPersonCamera.dll"),

@@ -98,17 +98,19 @@ MMS 显式接受 `.efk`：使用同名 `.pmd` 或包内 `efk.pmd` 作为控制�
 
 ### 可选插件安装
 
-正式打包命令生成 `build/release/optional-plugins/first-person-camera/`，含 DLL、许可、说明及正确摘要的清单。
-退出 MMS 后，将完整插件包放到 `<EXE>/PLUGINS/` 内自己选择的目录，包目录名称与分组不限；
-也可以把整个 `optional-plugins` 移入 `PLUGINS`。MMS 递归发现清单，默认扫描两层子目录，
-更深的分组由现有 `PLUGINS/config.json` 的 `maxDepth` 配置。发布包不会自动启用它。
+构建、安装及发布包直接提供 `PLUGINS/first-person-camera/`，含 DLL、许可、说明及正确摘要的清单，启动时即可发现。
+插件只从 `<EXE>/PLUGINS` 递归发现；根目录的 `optional-plugins` 不单独扫描，新发布包不再创建它。
+`PLUGINS/LEGACY` 用于归放旧 MMD 插件包，各包仍需自己的 `plugin.json`，同样由上述递归扫描发现。
+其中宿主配套的 `MMDPlugin.dll` 负责旧插件导入依赖，不是可直接加载的用户插件包。
+退出 MMS 后可在 `PLUGINS` 内重命名或移动完整插件包。默认扫描两层子目录，
+更深分组由 `PLUGINS/config.json` 的 `maxDepth` 控制；禁用相机可将 `org.mikumikustudio.legacy.first-person-camera` 加入 `disabledPlugins`。
 
 Effekseer 使用用户提供的 v0.25 x64 包：将原始 `EffekseerForMMD.dll` 和 `efk.pmd` 复制到
-`<EXE>/PLUGINS/` 内任意包目录（例如 `effekseer/`），在包目录生成清单（不要覆盖原下载文件）：
+`<EXE>/PLUGINS/` 内任意包目录（例如 `LEGACY/EffekseerForMMD/`），在包目录生成清单（不要覆盖原下载文件）：
 
 ```powershell
 $dll = Join-Path $PWD 'EffekseerForMMD.dll'
-@{ schemaVersion=1; id='mms.legacy.effekseer'; name='EffekseerForMMD'; version='0.25.0';
+@{ schemaVersion=1; id='org.mikumikustudio.legacy.effekseer'; name='EffekseerForMMD'; version='0.25.0';
    kind='legacy_mmdplugin'; profile='effekseer_v2'; entry='EffekseerForMMD.dll';
    sha256=(Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash.ToLowerInvariant();
    architecture='x64'; minWindows='6.1.0'; reloadPolicy='restart' } |

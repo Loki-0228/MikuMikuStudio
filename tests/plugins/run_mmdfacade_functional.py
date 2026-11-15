@@ -31,7 +31,7 @@ def main():
             shutil.copy2(args.build/'Release/PLUGINS/LEGACY/MMDPlugin.dll',provider)
             for source,profile,identity in [
                 (args.effekseer,'effekseer_v2','test.effekseer'),
-                (args.build/'Release/optional-plugins/first-person-camera/MMSFirstPersonCamera.dll','first_person_camera_v4','test.camera')]:
+                (args.build/'Release/PLUGINS/first-person-camera/MMSFirstPersonCamera.dll','first_person_camera_v4','test.camera')]:
                 package=directory/'PLUGINS'/identity
                 shutil.copytree(source.parent,package)
                 write_json(package/'plugin.json',observer_manifest(source,identity,profile))

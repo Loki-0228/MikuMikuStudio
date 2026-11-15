@@ -30,3 +30,19 @@ Windows x64 Release / MSVC 19.44 / full / DX12 编译开关开启，使用本地
 真实插件功能测试使用 D3D9 渲染路径；DX12 编译通过不等于旧插件在 DX12 下可用。
 本次未重跑 Win7 真机、完整 full/minimal ZIP 发布及复杂特效组合。
 既有 ABI 支持边界及其他未验证项继续遵循 [MMDFacade 说明](../MMDFACADE.md)。
+
+## 最终插件目录修正
+
+按用户澄清，删除发布包根目录的 `optional-plugins`；第一人称完整插件包直接放到
+`PLUGINS/first-person-camera`。`PLUGINS/LEGACY` 可归放旧 MMD 插件包，仍由同一
+`PLUGINS` 递归扫描发现；不新增独立扫描入口。构建、CMake 安装及两个打包入口均同步。
+
+实际发布包启动检查发现原相机清单使用了宿主保留的 `mms.*` ID，已修正为
+`org.mikumikustudio.legacy.first-person-camera`，Effekseer 安装示例同样避开保留前缀。
+相机输入矩阵改为直接使用构建生成的正式清单，防止测试清单与实际发布包脱节。
+
+14 项打包测试、9 组正式清单相机输入及 PowerShell 打包检查通过；实际发布包和安装树
+均不再包含 `optional-plugins`，DLL 摘要与清单匹配。中文 EXE 的实际发布包探针验证
+相机启用/禁用、`PLUGINS/LEGACY` 内旧窗口插件发现，以及故意放在根目录
+`optional-plugins` 内的完整插件包被忽略。证据为 `build/camera-layout-*.log`、
+`build/camera-release-5xakpm9i/summary.json`。探针目录与正式发布目录相互独立。

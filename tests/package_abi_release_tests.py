@@ -21,14 +21,14 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools/package-abi-release.py"
 PRODUCT = (
     "MikuMikuDance.exe", "MMDFacade.dll", "MMHack.dll", "PLUGINS/LEGACY/MMDPlugin.dll",
-    "optional-plugins/first-person-camera/MMSFirstPersonCamera.dll",
+    "PLUGINS/first-person-camera/MMSFirstPersonCamera.dll",
 )
 FIXTURE_PAYLOAD = {
     "LICENSE", "PLUGINS/config.json", "licenses/Alembic-LICENSE.txt", "licenses/FXAA-LICENSE.txt",
     "licenses/Imath-LICENSE.md", "licenses/MinHook-LICENSE.txt", "licenses/README.md",
     "licenses/SMAA-LICENSE.txt",
 }
-CAMERA_DIR = "optional-plugins/first-person-camera"
+CAMERA_DIR = "PLUGINS/first-person-camera"
 EXTRA = {f"{CAMERA_DIR}/{name}": f"src/legacy_first_person/{name}" for name in ("LICENSE", "README.md")}
 PACKAGE = set(PRODUCT) | FIXTURE_PAYLOAD | set(EXTRA) | {f"{CAMERA_DIR}/plugin.json", "mms-adaptive-ui-template.zip"}
 
@@ -208,12 +208,15 @@ class PackageAbiTest(unittest.TestCase):
                 self.assertNotEqual(self.run_packager("--force", release=release).returncode, 0)
                 self.assertTrue((self.build / "Release/MMHack.dll").is_file())
 
-    def test_force_migrates_old_provider_without_removing_user_files(self) -> None:
+    def test_force_migrates_old_layout_without_removing_user_files(self) -> None:
         previous = [self.release / directory / "MMDPlugin.dll"
                     for directory in ("legacy-mmdplugin", "PLUGINS/legacy-mmdplugin")]
+        previous.append(self.release / "optional-plugins/first-person-camera/MMSFirstPersonCamera.dll")
         for old in previous:
             old.parent.mkdir(parents=True)
             old.write_bytes(b"previous provider")
+        for name in ("plugin.json", "LICENSE", "README.md"):
+            (previous[-1].parent / name).write_bytes(b"previous camera metadata")
         for old in previous:
             extra = old.parent / "user-plugin.dll"
             extra.write_bytes(b"preserve user plugin")
@@ -225,6 +228,7 @@ class PackageAbiTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for old in previous:
             self.assertFalse(old.parent.exists())
+        self.assertFalse((self.release / "optional-plugins").exists())
         provider = self.release / "PLUGINS/LEGACY/MMDPlugin.dll"
         self.assertEqual(provider.read_bytes(), (self.build / "Release" / provider.relative_to(self.release)).read_bytes())
 

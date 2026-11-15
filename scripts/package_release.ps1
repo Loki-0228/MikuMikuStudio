@@ -69,6 +69,11 @@ foreach ($build in $builds) {
     $legacyMmdRoot = Join-Path $pluginRoot 'LEGACY'
     New-Item -ItemType Directory -Path $legacyMmdRoot | Out-Null
     Copy-Item -LiteralPath (Join-Path $build.Path 'Release/PLUGINS/LEGACY/MMDPlugin.dll') -Destination $legacyMmdRoot
+    $cameraRoot = Join-Path $pluginRoot 'first-person-camera'
+    New-Item -ItemType Directory -Path $cameraRoot | Out-Null
+    foreach ($cameraFile in @('MMSFirstPersonCamera.dll', 'plugin.json', 'LICENSE', 'README.md')) {
+        Copy-Item -LiteralPath (Join-Path $build.Path "Release/PLUGINS/first-person-camera/$cameraFile") -Destination $cameraRoot
+    }
     [IO.File]::WriteAllText((Join-Path $pluginRoot 'config.json'), '{"schemaVersion":1,"maxDepth":2,"disabledPlugins":[]}' + "`n")
     Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination $stage
     Copy-Item -LiteralPath (Join-Path $repo 'licenses') -Destination $stage -Recurse

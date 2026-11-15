@@ -20,8 +20,21 @@ target_link_libraries(mms_first_person_camera PRIVATE user32)
 target_compile_options(mms_first_person_camera PRIVATE /utf-8)
 target_link_options(mms_first_person_camera PRIVATE /SUBSYSTEM:WINDOWS,6.01)
 set_target_properties(mms_first_person_camera PROPERTIES OUTPUT_NAME MMSFirstPersonCamera
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>/optional-plugins/first-person-camera"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>/PLUGINS/first-person-camera"
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set_property(TARGET mms_first_person_camera APPEND PROPERTY LINK_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_legacy_camera.cmake"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/legacy_first_person/LICENSE"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/legacy_first_person/README.md")
+add_custom_command(TARGET mms_first_person_camera POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" "-DDLL=$<TARGET_FILE:mms_first_person_camera>"
+        "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/legacy_first_person"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_legacy_camera.cmake"
+    VERBATIM)
+install(TARGETS mms_first_person_camera RUNTIME DESTINATION PLUGINS/first-person-camera)
+install(FILES "$<TARGET_FILE_DIR:mms_first_person_camera>/plugin.json"
+    src/legacy_first_person/LICENSE src/legacy_first_person/README.md
+    DESTINATION PLUGINS/first-person-camera)
 add_dependencies(MikuMikuStudio mms_first_person_camera)
 add_executable(legacy_image_tests EXCLUDE_FROM_ALL
     tests/plugins/legacy_image_tests.cpp src/plugins/legacy_image.cpp)

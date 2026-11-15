@@ -115,7 +115,7 @@ def verify_template(path, source):
 
 
 def verify_package(release, installed, build_binaries, archive, source_licenses, source_config):
-    expected = {HOST.name, "MMDFacade.dll", "MMHack.dll", "PLUGINS", "optional-plugins",
+    expected = {HOST.name, "MMDFacade.dll", "MMHack.dll", "PLUGINS",
                 "LICENSE", TEMPLATE.name, "licenses"}
     require({item.name for item in release.iterdir()} == expected, "Unexpected top-level release contents")
     require({item.name for item in (release / PROVIDER.parent).iterdir()} == {PROVIDER.name},

@@ -1,6 +1,5 @@
 """Isolated Windows x64 input and lifecycle checks for the MMS camera adapter."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -29,11 +28,8 @@ def main():
             package = directory / package_path
             package.mkdir(parents=True)
             dll = package / 'MMSFirstPersonCamera.dll'
-            shutil.copy2(build / 'Release/optional-plugins/first-person-camera/MMSFirstPersonCamera.dll', dll)
-            manifest = dict(schemaVersion=1, id='test.camera', name='FirstPersonCamera MMS', version='1.0.0',
-                kind='legacy_mmdplugin', profile='first_person_camera_v4', entry=dll.name,
-                sha256=hashlib.sha256(dll.read_bytes()).hexdigest(), architecture='x64', minWindows='6.1.0', reloadPolicy='restart')
-            (package / 'plugin.json').write_text(json.dumps(manifest), encoding='utf-8')
+            shutil.copy2(build / 'Release/PLUGINS/first-person-camera/MMSFirstPersonCamera.dll', dll)
+            shutil.copy2(build / 'Release/PLUGINS/first-person-camera/plugin.json', package / 'plugin.json')
             env = os.environ.copy()
             env['MIKUMIKUSTUDIO_TRACE_FILE'] = str(directory / 'runtime.log')
             run = subprocess.run([str(exe)], cwd=directory, env=env, capture_output=True, timeout=30,

@@ -55,7 +55,7 @@ def main():
         check(sentinel.is_file(), "missing provider must fail before replacing the release directory")
 
         provider.write_bytes(provider_bytes)
-        camera = binaries / "optional-plugins/first-person-camera/MMSFirstPersonCamera.dll"
+        camera = binaries / "PLUGINS/first-person-camera/MMSFirstPersonCamera.dll"
         camera.parent.mkdir(parents=True)
         camera.write_bytes(fake_pe(camera.name))
         result = subprocess.run(command, capture_output=True, text=True, errors="replace", check=False)
@@ -63,7 +63,6 @@ def main():
         check({item.name for item in release.iterdir()} == {
             "MikuMikuDance.exe", "MMDFacade.dll", "MMHack.dll",
             "LICENSE", "PLUGINS", "licenses", "mms-adaptive-ui-template.zip",
-            "optional-plugins",
         }, "unexpected top-level release contents")
         copied = release / provider_path
         check(copied.read_bytes() == provider_bytes, "provider copy has different bytes")
