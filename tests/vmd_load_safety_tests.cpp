@@ -578,8 +578,8 @@ void UnicodePaths(bool camera) {
                 Fixture fixture(camera);
                 Motion motion(2, camera);
                 if (!camera) {
-                    // Scale data reopens the VMD; it must receive the same
-                    // Unicode path as the standard bone and morph reader.
+                    // A Unicode path must import both standard keys and the
+                    // scale data from the same snapshot.
                     bone_scale_io::PrefixFingerprint fingerprint;
                     fingerprint.Append(motion.bytes.data(), motion.bytes.size());
                     bone_scale_io::VmdExtension extension;
@@ -1661,21 +1661,50 @@ void Tails() {
         Fixture fixture; fixture.Imported(bytes);
     }
 #if !MMD_ORIGINAL_PROFILE
-    // A checksummed morph block followed by a valid scale extension proves
-    // that the validated standard boundary reaches both existing codecs.
-    auto bytes = motion.bytes;
-    Bytes payload{'x'}, block; std::string error;
-    Check(morph_curve::EncodeVmdBlock(payload, block, error), "encode bounded optional morph block");
-    bytes.insert(bytes.end(), block.begin(), block.end());
-    bone_scale_io::PrefixFingerprint fingerprint; fingerprint.Append(bytes.data(), bytes.size());
-    bone_scale_io::VmdExtension extension; extension.prefixBytes = fingerprint.bytes(); extension.prefixCrc32 = fingerprint.crc32();
-    bone_scale_io::VmdExtension::Entry entry; std::memcpy(entry.name.data(), "bone", 4);
+    // The scale prefix must include the name, morph-curve and bone-curve
+    // blocks in writer order, as well as the standard records.
+    auto prefix = motion.bytes;
+    extended_names::MotionNames names;
+    names.model = L"sample";
+    names.bones = {L"bone"};
+    names.morphs = {L"face"};
+    names.boneOwners = names.morphOwners = names.ikOwners = {0};
+    bone_scale_io::PrefixFingerprint fingerprint;
+    fingerprint.Append(prefix.data(), prefix.size());
+    const auto nameBlock = extended_names::EncodeMotion(names, fingerprint.bytes(), fingerprint.crc32());
+    prefix.insert(prefix.end(), nameBlock.begin(), nameBlock.end());
+
+    Bytes payload, block;
+    std::string error;
+    Check(morph_curve::EncodePayload({}, payload, error) && morph_curve::EncodeVmdBlock(payload, block, error),
+          "encode a valid optional morph-curve block");
+    prefix.insert(prefix.end(), block.begin(), block.end());
+    Check(animation_curve::Encode({}, payload, error), "encode a valid optional bone-curve payload");
+    Text(prefix, "MMSBCRV1", 8);
+    U32(prefix, static_cast<std::uint32_t>(payload.size()));
+    prefix.insert(prefix.end(), payload.begin(), payload.end());
+
+    fingerprint.Append(prefix.data() + motion.bytes.size(), prefix.size() - motion.bytes.size());
+    bone_scale_io::VmdExtension extension;
+    extension.prefixBytes = fingerprint.bytes();
+    auto& entry = extension.entries.emplace_back();
+    entry.name = extended_names::MotionIndexName(0);
     entry.scale.v[0] = entry.scale.v[4] = entry.scale.v[8] = 2;
-    extension.entries.push_back(entry);
-    const auto encoded = bone_scale_io::EncodeExtension(extension);
-    bytes.insert(bytes.end(), encoded.begin(), encoded.end()); Put(bytes, std::uint64_t(encoded.size())); Text(bytes, "MMSXVMDX", 8);
-    Fixture fixture; fixture.Imported(bytes);
-    Check(bone_scale::Key(fixture.Raw(), 0).v[0] == 2, "scale extension follows exact morph-block boundary");
+    entry.curve = {7, 29, 91, 122};
+    for (bool stale : {false, true}) {
+        auto bytes = prefix;
+        extension.prefixCrc32 = fingerprint.crc32() ^ (stale ? 1u : 0u);
+        const auto encoded = bone_scale_io::EncodeExtension(extension);
+        bytes.insert(bytes.end(), encoded.begin(), encoded.end());
+        Put(bytes, std::uint64_t(encoded.size()));
+        Text(bytes, "MMSXVMDX", 8);
+        Fixture fixture;
+        fixture.Imported(bytes);
+        Check(bone_scale::Key(fixture.Raw(), 0) == (stale ? bone_scale::Matrix{} : entry.scale) &&
+              bone_scale::KeyCurve(fixture.Raw(), 0) == (stale ? bone_scale::LinearCurve() : entry.curve),
+              stale ? "a stale scale prefix does not affect standard keys" :
+                      "scale matrix and interpolation follow all preceding optional blocks");
+    }
 #endif
 }
 void Camera() {
