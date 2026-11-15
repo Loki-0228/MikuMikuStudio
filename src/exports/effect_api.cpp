@@ -1,3 +1,4 @@
+#include "mikumikustudio/legacy_mmd_plugin.hpp"
 #include "mikumikustudio/native_mesh.hpp"
 #include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/legacy_mme_bootstrap.hpp"
@@ -92,7 +93,7 @@ void EffectFilename(MMDApp* app, char* out, const wchar_t* path) {
     // identify a different file on a Chinese Windows installation.
     // This plugin boundary is shared by both builds; file-format encoding
     // remains governed separately by the original-profile save policy.
-    if (mikumikustudio::LegacyMmeModule()) {
+    if (mikumikustudio::LegacyMmeModule() || mikumikustudio::legacy_mmd_plugin::EffekseerContext()) {
         std::string nativePath;
         if (mikumikustudio::text_encoding::EncodeExact(path, CP_ACP, nativePath) && nativePath.size() < 256) {
             strcpy_s(out, 256, nativePath.c_str());
@@ -583,7 +584,8 @@ __declspec(dllexport) char* ExpGetPmdFilename(int index) {
     if (model == nullptr)
         return nullptr;                      // original: xor eax, eax
     char* out = reinterpret_cast<char*>(app->state.sjisOut);
-    EffectFilename(app, out, mikumikustudio::mdl::Mdl(model)->path);
+    const auto filename = mikumikustudio::legacy_mmd_plugin::EffekseerFilename(mikumikustudio::mdl::Mdl(model)->path);
+    EffectFilename(app, out, filename);
     return out;
 }
 
@@ -957,7 +959,8 @@ __declspec(dllexport) int ExpGetCurrentObject() {
     if (cur == nullptr)
         return 0;
     auto& cache = g_currentObjectCache;
-    const bool canCache = GetCurrentThreadId() == g_effectRenderThread && !app->SceneMutationInProgress();
+    const bool effekseer = mikumikustudio::legacy_mmd_plugin::EffekseerContext();
+    const bool canCache = !effekseer && GetCurrentThreadId() == g_effectRenderThread && !app->SceneMutationInProgress();
     if (canCache && cache.app == app && cache.object == cur &&
         cache.generation == g_currentObjectGeneration &&
         cache.repeat == app->state.renderPassCount &&
@@ -1003,7 +1006,7 @@ __declspec(dllexport) int ExpGetCurrentObject() {
                 continue;
             if (slot == cur) {
                 foundSlot = i; foundOrder = mikumikustudio::mdl::Mdl(slot)->comboSelIndex;
-                if (g_modelOrderSeen[ordinal] == 0)
+                if (!effekseer && g_modelOrderSeen[ordinal] == 0)
                     return 0;  // not in MMHack's order map yet
                 return mikumikustudio::mdl::Mdl(slot)->comboSelIndex + base;
             }

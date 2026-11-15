@@ -8,6 +8,7 @@
 #include "mikumikustudio/effect_api.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/recording_output_path.hpp"
 #include "mikumikustudio/physics_bake.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include <Alembic/AbcGeom/All.h>

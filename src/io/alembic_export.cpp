@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include "mikumikustudio/alembic_export.hpp"
 #include "mesh_bake_bone_selection.hpp"
+#include "../media/staged_output_publication.hpp"
 #include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/deformed_mesh_capture.hpp"
@@ -12,9 +13,11 @@
 #include "mikumikustudio/channel_bake.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
+#include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/model.hpp"
 #include <memory>
 #include <algorithm>
+#include <atomic>
 #include <Alembic/AbcGeom/All.h>
 #include <Alembic/AbcCoreOgawa/All.h>
 #include <fstream>
@@ -29,6 +32,61 @@ namespace Abc=Alembic::Abc;
 namespace Geom=Alembic::AbcGeom;
 using Mesh=deformed_mesh_capture::Mesh;
 bool exporting=false;
+using recording_output_path::FileIdentity;
+using staged_output::detail::OutputHandle;
+
+bool SameFile(const FileIdentity& a, const FileIdentity& b) noexcept {
+    return a.volume == b.volume && a.index == b.index;
+}
+
+struct StagingFile {
+    std::filesystem::path path;
+    FileIdentity identity{};
+    bool owned = false;
+
+    void Create(const std::filesystem::path& target) {
+        static std::atomic<unsigned> next{0};
+        const auto prefix=target.filename().wstring()+L".partial-"+
+            std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64())+L"-";
+        for(int attempt=0;attempt<32;++attempt){
+            path=target.parent_path()/(prefix+std::to_wstring(next.fetch_add(1,std::memory_order_relaxed)));
+            const OutputHandle file{CreateFileW(path.c_str(),GENERIC_WRITE|DELETE|FILE_READ_ATTRIBUTES,
+                0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr)};
+            if(file.value==INVALID_HANDLE_VALUE){
+                const DWORD failure=GetLastError();
+                if(failure==ERROR_FILE_EXISTS||failure==ERROR_ALREADY_EXISTS)continue;
+                throw std::runtime_error("Cannot create the temporary ABC file (Win32 "+std::to_string(failure)+")");
+            }
+            const DWORD inspected=recording_output_path::ReadIdentity(file.value,identity);
+            if(inspected!=ERROR_SUCCESS){
+                FILE_DISPOSITION_INFO remove{TRUE};
+                SetFileInformationByHandle(file.value,FileDispositionInfo,&remove,sizeof(remove));
+                throw std::runtime_error("Cannot identify the temporary ABC file (Win32 "+std::to_string(inspected)+")");
+            }
+            owned=true;
+            return;
+        }
+        throw std::runtime_error("Cannot reserve a unique temporary ABC file");
+    }
+
+    ~StagingFile(){
+        if(!owned)return;
+        const OutputHandle file{CreateFileW(path.c_str(),DELETE|FILE_READ_ATTRIBUTES,FILE_SHARE_READ,
+            nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr)};
+        FileIdentity current{};
+        if(file.value!=INVALID_HANDLE_VALUE&&recording_output_path::ReadIdentity(file.value,current)==ERROR_SUCCESS&&
+           SameFile(identity,current)){
+            FILE_DISPOSITION_INFO remove{TRUE};
+            SetFileInformationByHandle(file.value,FileDispositionInfo,&remove,sizeof(remove));
+        }
+    }
+};
+
+void ReportDestinationChanged(Result& result) {
+    result.destinationChanged=true;
+    result.error="The destination ABC file changed after selection. Choose the output path and confirm again.";
+}
+
 void WriteSample(Geom::OPolyMesh& target,const Mesh* mesh,Abc::OUInt32ArrayProperty* sourceMap=nullptr) {
     std::vector<Abc::V3f> positions,normals;
     std::vector<Abc::V2f> uvs;
@@ -70,6 +128,10 @@ bool CanExport(const MMDApp* app) {
     return false;
 }
 Result Export(MMDApp& app,const std::filesystem::path& path,const Options& options,const Progress& progress) {
+    return Export(app,path,options,progress,nullptr);
+}
+Result Export(MMDApp& app,const std::filesystem::path& path,const Options& options,const Progress& progress,
+              const recording_output_path::Selection* approved) {
     Result result;
     if(!CanExport(&app)||!app.Renderer()||!app.Renderer()->device) {result.error="No scene is available, or playback/export is active";return result;}
     if((options.writeAbc&&path.empty())||(!options.writeAbc&&!options.bakeIntoProject)||options.firstFrame<0||options.lastFrame<options.firstFrame||options.lastFrame>frame_limits::maximum||
@@ -131,8 +193,17 @@ Result Export(MMDApp& app,const std::filesystem::path& path,const Options& optio
     } busy(app);
     try {
         std::filesystem::path target;
-        if(options.writeAbc)target=std::filesystem::absolute(path);
-        else {
+        recording_output_path::Selection destination;
+        if(options.writeAbc){
+            const DWORD inspected=recording_output_path::ReadSelection(path.c_str(),destination);
+            if(inspected!=ERROR_SUCCESS)
+                throw std::runtime_error("Cannot inspect the destination ABC file (Win32 "+std::to_string(inspected)+")");
+            if(approved&&!recording_output_path::SameSelection(*approved,destination)){
+                ReportDestinationChanged(result);
+                return result;
+            }
+            target=destination.path;
+        } else {
             const auto workRoot=local_data::File(L"mesh_bake_work");
             if(workRoot.empty())throw std::runtime_error("The internal mesh bake work directory is unavailable: the application executable directory cannot be located");
             std::error_code directoryError;
@@ -140,8 +211,9 @@ Result Export(MMDApp& app,const std::filesystem::path& path,const Options& optio
             if(directoryError)throw std::runtime_error("Cannot create the internal mesh bake work directory: "+directoryError.message());
             target=workRoot/L"MMS-mesh-bake.abc";
         }
-        const auto temporary=target.parent_path()/(target.filename().wstring()+L".partial-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
-        struct Cleanup{std::filesystem::path path;~Cleanup(){std::error_code e;std::filesystem::remove(path,e);}}cleanup{temporary};
+        StagingFile staging;
+        staging.Create(target);
+        const auto& temporary=staging.path;
         std::set<const void*> bakedObjects;
         std::ofstream stream(temporary,std::ios::binary|std::ios::trunc);
         stream.exceptions(std::ios::badbit|std::ios::failbit);
@@ -285,12 +357,40 @@ Result Export(MMDApp& app,const std::filesystem::path& path,const Options& optio
         }
         stream.flush();stream.close();
         if(result.cancelled)return result;
+        FileIdentity sampled{};
+        {
+            const OutputHandle file{CreateFileW(temporary.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ,
+                nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr)};
+            if(file.value==INVALID_HANDLE_VALUE||recording_output_path::ReadIdentity(file.value,sampled)!=ERROR_SUCCESS||
+               !SameFile(staging.identity,sampled))
+                throw std::runtime_error("The temporary ABC file changed while exporting; retry the export");
+        }
         if(options.writeAbc){
-            if(!MoveFileExW(temporary.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
-                throw std::runtime_error("Cannot replace the destination ABC file; check its permissions and whether it is open");
+            const HRESULT published=staged_output::Publish(temporary.native(),destination.path,destination.existing,
+                destination.existing?temporary.native()+L".bak":std::wstring{},result.retainedPrevious);
+            if(!result.retainedPrevious.empty())
+                runtime_log::WritePath("ABC previous output retained at",result.retainedPrevious.c_str());
+            if(FAILED(published)){
+                if(published==HRESULT_FROM_WIN32(ERROR_FILE_EXISTS)||published==HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)||
+                   (destination.existing&&published==HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))){
+                    ReportDestinationChanged(result);
+                    return result;
+                }
+                throw std::runtime_error("Cannot publish the destination ABC file; check its permissions and whether it is open, then retry");
+            }
+            staging.owned=false;
             result.abcWritten=true;
         }
         if(options.bakeIntoProject){
+            // Check that the cache copies only the archive we sampled, and hold
+            // it against writes/deletes while Install reads it by path.
+            const auto& archivePath=options.writeAbc?target:temporary;
+            const OutputHandle archive{CreateFileW(archivePath.c_str(),GENERIC_READ,FILE_SHARE_READ,
+                nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr)};
+            FileIdentity current{};
+            if(archive.value==INVALID_HANDLE_VALUE||recording_output_path::ReadIdentity(archive.value,current)!=ERROR_SUCCESS||
+               current!=sampled)
+                throw std::runtime_error("Cannot read the sampled ABC for mesh baking; the archive changed or is in use");
             // Validate and allocate the cache before changing effects. A failed
             // project bake leaves a successfully exported ABC available.
             // A selected controller can supply a dependency without drawing any
@@ -313,7 +413,7 @@ Result Export(MMDApp& app,const std::filesystem::path& path,const Options& optio
             }
             std::string message;
             std::vector<std::uint64_t> objectIds;for(const void* object:objects)objectIds.push_back(std::uint64_t(reinterpret_cast<std::uintptr_t>(object)));
-            if(!mesh_bake_cache::Install(app,options.writeAbc?target:temporary,message,
+            if(!mesh_bake_cache::Install(app,archivePath,message,
                 [&](std::string& error){
                     if(!layerBake)return native_mesh::KeyBakedEffects(&app,objects,options.firstFrame,options.lastFrame,error);
                     // One transaction, in this order: open, stage the removal

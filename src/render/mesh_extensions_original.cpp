@@ -141,7 +141,11 @@ bool IsExporting() { return false; }
 // remain inert if a stale command invokes them after a language/menu refresh.
 void ShowDialog(MMDApp*) {}
 void ShowBakeDialog(MMDApp*) {}
-Result Export(MMDApp&, const std::filesystem::path&, const Options&, const Progress&) {
+Result Export(MMDApp& app, const std::filesystem::path& path, const Options& options, const Progress& progress) {
+    return Export(app, path, options, progress, nullptr);
+}
+Result Export(MMDApp&, const std::filesystem::path&, const Options&, const Progress&,
+              const recording_output_path::Selection*) {
     Result result;
     result.error = kUnavailable;
     return result;

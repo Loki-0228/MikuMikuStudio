@@ -8,7 +8,7 @@
 //
 // The rewrite targets exactly one value: an import module name that equals
 // "MikuMikuDance.exe" ASCII case-insensitively. A matching name is replaced by
-// "MMSAdapter.dll" inside its existing NUL-terminated name slot; the rest of
+// "MMDFacade.dll" inside its existing NUL-terminated name slot; the rest of
 // that slot is zero-filled. No section, RVA, thunk, or other import is moved or
 // changed. Exports, ordinals, resources, and unrelated imports stay byte for
 // byte identical.
@@ -25,7 +25,7 @@
 namespace mikumikustudio::plugins {
 
 inline constexpr char LegacyHostImportName[] = "MikuMikuDance.exe";
-inline constexpr char LegacyAdapterModuleName[] = "MMSAdapter.dll";
+inline constexpr char LegacyAdapterModuleName[] = "MMDFacade.dll";
 
 enum class LegacyImageError {
     None = 0,

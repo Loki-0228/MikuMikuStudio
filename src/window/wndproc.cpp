@@ -230,6 +230,8 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     }
 #if !MMD_ORIGINAL_PROFILE
     if (!finishingRecording && !drainingRecording && !startingRecording &&
+        legacy_mmd_plugin::HandleInput(hwnd, msg, wParam, lParam)) return 0;
+    if (!finishingRecording && !drainingRecording && !startingRecording &&
         plugins::HandleBoundViewportMessage(s, hwnd, msg, wParam, lParam)) return 0;
 #endif
     // EnableWindow prevents new user input; queued commands and accelerators

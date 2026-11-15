@@ -11,6 +11,7 @@
 #include "mikumikustudio/native_mesh.hpp"
 #include "mikumikustudio/mesh_bake_cache.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/recording_output_path.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/channel_bake.hpp"
@@ -119,6 +120,26 @@ std::wstring Wide(const std::string& input) {
 std::wstring EditText(HWND d,int id){const auto w=GetDlgItem(d,id);const int n=GetWindowTextLengthW(w);std::wstring s(size_t(n)+1,L'\0');GetWindowTextW(w,s.data(),n+1);s.resize(n);return s;}
 void StoreRow(HWND d,Context& c){if(c.row<0||size_t(c.row)>=c.rows.size())return;auto& r=c.rows[c.row];r.materials=EditText(d,Materials);r.vertices=EditText(d,Vertices);r.selection.selectedBoneVertices=IsDlgButtonChecked(d,BoneVertices)==BST_CHECKED;}
 void SelectRow(HWND d,Context& c,int row){StoreRow(d,c);c.row=row;if(row<0||size_t(row)>=c.rows.size())return;const auto& r=c.rows[row];SetDlgItemTextW(d,Materials,r.materials.c_str());SetDlgItemTextW(d,Vertices,r.vertices.c_str());CheckDlgButton(d,BoneVertices,r.selection.selectedBoneVertices?BST_CHECKED:BST_UNCHECKED);EnableWindow(GetDlgItem(d,BoneVertices),!r.selection.accessory);}
+bool PickDestination(HWND d,const Context& c,recording_output_path::Selection& selected) {
+    wchar_t file[32768]=L"scene.abc";OPENFILENAMEW dialog{sizeof dialog};dialog.hwndOwner=d;
+    dialog.lpstrFilter=L"Alembic (*.abc)\0*.abc\0\0";dialog.lpstrFile=file;dialog.nMaxFile=32768;dialog.lpstrDefExt=L"abc";
+    // Snapshot the actual file before asking about replacement. The common
+    // dialog's overwrite prompt cannot tell us which file the user approved.
+    dialog.Flags=OFN_EXPLORER|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
+    if(!GetUiSaveFileNameW(&dialog))return false;
+    const DWORD inspected=recording_output_path::ReadSelection(file,selected);
+    if(inspected!=ERROR_SUCCESS){
+        const auto message=std::wstring(Text(c,L"无法检查 ABC 输出文件。请选择其他文件后重试。",L"Cannot inspect the ABC output file. Choose another file and try again.",L"ABC 出力ファイルを確認できません。別のファイルを選んで再試行してください。"))+
+            L"\n\n"+file+L"\nWin32 "+std::to_wstring(inspected);
+        MessageBoxW(d,message.c_str(),Text(c,L"导出 ABC",L"Export ABC",L"ABC 書き出し"),MB_OK|MB_ICONWARNING);
+        return false;
+    }
+    if(!selected.existing)return true;
+    const auto message=std::wstring(Text(c,L"以下 ABC 文件已存在，是否覆盖？",L"This ABC file already exists. Replace it?",L"次の ABC ファイルはすでに存在します。上書きしますか？"))+
+        L"\n\n"+selected.path;
+    return MessageBoxW(d,message.c_str(),Text(c,L"确认覆盖",L"Confirm replacement",L"上書きの確認"),
+        MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)==IDYES;
+}
 void Run(HWND d,Context& c) {
     Options options;
     if(!Integer(d,First,options.firstFrame)||!Integer(d,Last,options.lastFrame)||options.lastFrame<options.firstFrame||
@@ -142,10 +163,8 @@ void Run(HWND d,Context& c) {
     if(!options.writeAbc&&!options.bakeIntoProject){
         SetDlgItemTextW(d,Status,Text(c,L"请至少选择一种输出方式。",L"Choose at least one output.",L"出力先を選択してください。"));return;
     }
-    wchar_t file[32768]=L"scene.abc";OPENFILENAMEW dialog{sizeof dialog};dialog.hwndOwner=d;
-    dialog.lpstrFilter=L"Alembic (*.abc)\0*.abc\0\0";dialog.lpstrFile=file;dialog.nMaxFile=32768;dialog.lpstrDefExt=L"abc";
-    dialog.Flags=OFN_EXPLORER|OFN_OVERWRITEPROMPT|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
-    if(options.writeAbc&&!GetUiSaveFileNameW(&dialog))return;
+    recording_output_path::Selection destination;
+    if(options.writeAbc&&!PickDestination(d,c,destination))return;
     c.running=true;c.cancel=false;
     EnableWindow(GetDlgItem(d,Layers),FALSE);
     for(int id:std::initializer_list<int>{First,Last,Rate,Selected,WriteAbc,BakeProject,ClearBake,IDOK,Objects,Materials,Vertices,BoneVertices})EnableWindow(GetDlgItem(d,id),FALSE);
@@ -155,13 +174,13 @@ void Run(HWND d,Context& c) {
     try {
     bake::ScopedUiLock lock(d);
     options.preview=true;
-    result=Export(*c.app,file,options,[&](int frame,int last) {
+    result=Export(*c.app,destination.path,options,[&](int frame,int last) {
         const auto message=std::wstring(frame<options.firstFrame?Text(c,L"预计算：",L"Preroll: ",L"事前計算："):Text(c,L"正在导出：",L"Exporting: ",L"書き出し中："))+
             std::to_wstring(frame)+L" / "+std::to_wstring(last);
         SetDlgItemTextW(d,Status,message.c_str());SendDlgItemMessageW(d,Bar,PBM_SETPOS,frame+1,0);
         MSG msg{};while(PeekMessageW(&msg,d,0,0,PM_REMOVE)){if(!IsDialogMessageW(d,&msg)){TranslateMessage(&msg);DispatchMessageW(&msg);}}
         return !c.cancel;
-    });
+    },options.writeAbc?&destination:nullptr);
     } catch(const std::exception& e) {result.error=e.what();}
     catch(...) {result.error="Cannot lock the editing windows for baking";}
     c.running=false;
@@ -176,10 +195,20 @@ void Run(HWND d,Context& c) {
         SetDlgItemTextW(d,Status,message.c_str());
     } else if(result.cancelled)SetDlgItemTextW(d,Status,Text(c,L"已取消，目标文件未更改。",L"Cancelled. The destination file was not changed.",L"中止しました。出力先は変更されていません。"));
     else {
+        const auto* changed=Text(c,L"ABC 输出文件已发生变化。请重新选择输出路径并确认。",L"The ABC output file changed. Choose the output path and confirm again.",L"ABC 出力ファイルが変更されました。出力先を選び直して確認してください。");
         SetDlgItemTextW(d,Status,result.abcWritten?
             Text(c,L"ABC 已导出，但烧录回工程失败。",L"ABC exported, but project baking failed.",L"ABC 出力は完了しましたが、ベイクに失敗しました。"):
-            Text(c,L"执行失败，目标文件未更改。",L"Failed. The destination file was not changed.",L"失敗しました。出力先は変更されていません。"));
-        const auto message=std::wstring(Text(c,L"无法导出当前变形网格。\n\n",L"Cannot export the current deformed mesh.\n\n",L"現在の変形メッシュを書き出せません。\n\n"))+Wide(result.error);
+            result.destinationChanged?changed:
+            Text(c,L"执行失败。",L"Export failed.",L"書き出しに失敗しました。"));
+        auto message=result.destinationChanged?std::wstring(changed):
+            std::wstring(Text(c,L"无法完成网格导出或烘焙。\n\n",L"Could not finish mesh export or baking.\n\n",L"メッシュ出力またはベイクを完了できませんでした。\n\n"))+Wide(result.error);
+        if(result.destinationChanged)message+=L"\n\n"+destination.path;
+        if(!result.retainedPrevious.empty())message+=std::wstring(L"\n\n")+Text(c,L"先前的 ABC 文件保留在：",L"The previous ABC file was kept at:",L"以前の ABC ファイルの保存先：")+L"\n"+result.retainedPrevious;
+        MessageBoxW(d,message.c_str(),Text(c,L"导出 ABC",L"Export ABC",L"ABC 書き出し"),MB_OK|MB_ICONWARNING);
+    }
+    if(result.success&&!result.retainedPrevious.empty()){
+        const auto message=std::wstring(Text(c,L"导出成功。先前的 ABC 文件保留在：",L"Export succeeded. The previous ABC file was kept at:",L"出力は完了しました。以前の ABC ファイルの保存先："))+
+            L"\n\n"+result.retainedPrevious;
         MessageBoxW(d,message.c_str(),Text(c,L"导出 ABC",L"Export ABC",L"ABC 書き出し"),MB_OK|MB_ICONWARNING);
     }
 }

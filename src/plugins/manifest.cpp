@@ -1,5 +1,6 @@
 #include "manifest.hpp"
 #include <charconv>
+#include <iterator>
 
 namespace mikumikustudio::plugins {
 namespace {
@@ -40,6 +41,32 @@ fs::path PackageFile(const fs::path& root, std::string_view relative) {
     }
     if (!fs::is_regular_file(current)) throw std::invalid_argument("entry is not a file"); return current;
 }
+fs::path LegacyMmdProviderFile(const fs::path& install) {
+    if (!install.is_absolute()) throw std::invalid_argument("legacy MMDPlugin requires an absolute installation directory");
+    // Walk from the root so a junction, non-directory or access error cannot
+    // masquerade as a missing DLL and silently enable the other provider.
+    for (const auto relative : {L"PLUGINS/LEGACY/MMDPlugin.dll",
+            L"PLUGINS/legacy-mmdplugin/MMDPlugin.dll", L"legacy-mmdplugin/MMDPlugin.dll"}) {
+        const fs::path parts(relative);
+        auto candidate = install;
+        bool missing = false;
+        for (auto part = parts.begin(); part != parts.end(); ++part) {
+            candidate /= *part;
+            const auto attributes = GetFileAttributesW(candidate.c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES) {
+                const auto error = GetLastError();
+                if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) { missing = true; break; }
+                throw std::runtime_error("cannot inspect legacy MMDPlugin provider path: " + Utf8(candidate.native()) +
+                                         " (Win32 error " + std::to_string(error) + ")");
+            }
+            if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+                (std::next(part) != parts.end() && !(attributes & FILE_ATTRIBUTE_DIRECTORY)))
+                throw std::invalid_argument("invalid legacy MMDPlugin provider path: " + Utf8(candidate.native()));
+        }
+        if (!missing) return PackageFile(install, Utf8(parts.native()));
+    }
+    return PackageFile(install, "PLUGINS/LEGACY/MMDPlugin.dll");
+}
 Manifest ReadManifest(const fs::path& file, const Log& log) {
     Manifest m; m.file = fs::absolute(file).lexically_normal(); m.package = m.file.parent_path();
     PackageFile(m.package, Utf8(m.file.filename().native()));
@@ -68,7 +95,11 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
         m.kind = Manifest::Kind::LegacyMmdPlugin; m.major = 3; m.minor = 0;
         if (j.At("architecture").String() != "x64" || j.At("reloadPolicy").String() != "restart")
             throw std::invalid_argument("legacy MMDPlugin requires x64 and restart");
-        if (j.At("profile").String() != "window_observer_v3")
+        const auto profile = j.At("profile").String();
+        m.legacyProfile = profile;
+        if (profile == "device_reset_v2" || profile == "effekseer_v2") m.major = 2;
+        else if (profile == "first_person_camera_v4") m.major = 4;
+        else if (profile != "window_observer_v3")
             throw std::invalid_argument("unsupported legacy MMDPlugin profile");
         m.minWindows = ParseVersion(j.At("minWindows").String());
         m.entry = PackageFile(m.package, j.At("entry").String());

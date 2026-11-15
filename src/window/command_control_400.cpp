@@ -1211,7 +1211,7 @@ static const char kMsgDelModelEn[] =
 // Case-435 open-file strings (wide).
 // 0x52DCE0: "All Model files(*.pmd,*.pmx)" (used for both locales)
 static const wchar_t kFilterModel[] =
-    L"All Model files(*.pmd,*.pmx)\x00*.pmd;*.pmx\x00";
+    L"Model / Effekseer files(*.pmd,*.pmx,*.efk)\x00*.pmd;*.pmx;*.efk\x00";
 // 0x52DCBC: "UserFile\\Model"
 static const wchar_t kInitDirModel[] = L"UserFile\\Model";
 // 0x52DCAC: "pmd;pmx" def-ext

@@ -27,6 +27,7 @@ class NativeLoader {
     fs::path system_;
 public:
     explicit NativeLoader(bool forceFallback = false);
-    LoadedPackage Load(const Manifest&, const Log&, const fs::path& legacyMmdProvider = {});
+    LoadedPackage Load(const Manifest&, const Log&, const fs::path& legacyMmdProvider = {},
+        const fs::path& legacyFacade = {});
 };
 }
