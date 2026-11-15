@@ -1,11 +1,12 @@
 #include "mikumikustudio/system_settings.hpp"
 #include "mikumikustudio/local_data_path.hpp"
-#include "../plugins/json.hpp"
+#include "settings_json.hpp"
 #include <atomic>
 
 namespace mikumikustudio::system_settings {
 namespace {
 using plugins::Json;
+using settings_json::Serialize;
 constexpr DWORD MaximumBytes = 1024 * 1024;
 struct Handle {
     HANDLE value = INVALID_HANDLE_VALUE;
@@ -35,37 +36,6 @@ struct Lock {
         } while (true);
     }
 };
-void Quote(std::string& output, const std::string& text) {
-    constexpr char hex[] = "0123456789abcdef";
-    output += '"';
-    for (unsigned char c : text) {
-        if (c == '"' || c == '\\') { output += '\\'; output += char(c); }
-        else if (c < 32) { output += "\\u00"; output += hex[c >> 4]; output += hex[c & 15]; }
-        else output += char(c);
-    }
-    output += '"';
-}
-void Serialize(std::string& output, const Json& value) {
-    switch (value.kind) {
-    case Json::Null: output += "null"; break;
-    case Json::Boolean: case Json::Number: output += value.text; break;
-    case Json::StringValue: Quote(output, value.text); break;
-    case Json::Array: {
-        output += '['; bool first = true;
-        for (const auto& item : value.array) { if (!first) output += ','; first = false; Serialize(output, item); }
-        output += ']'; break;
-    }
-    case Json::Object: {
-        output += '{'; bool first = true;
-        for (const auto& item : value.object) {
-            if (!first) output += ','; first = false;
-            Quote(output, item.first); output += ':'; Serialize(output, item.second);
-        }
-        output += '}'; break;
-    }
-    }
-}
-std::string Serialize(const Json& value) { std::string output; Serialize(output, value); return output; }
 bool ValidName(std::string_view name) {
     return !name.empty() && name.size() <= 128 && std::all_of(name.begin(), name.end(), [](char c) {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||

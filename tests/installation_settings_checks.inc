@@ -115,6 +115,54 @@ void OutlineModeSettingsChecks(MMDApp& probe,const fs::path& folder,bool migrati
     antialias::Release(restarted.get());antialias::Release(&probe);
 }
 
+void RecentProjectsMigrationChecks(MMDApp& app,const fs::path& folder){
+    using system_settings::Result;
+    SetEnvironmentVariableW(L"MMS_RECENT_PROJECTS_FILE",nullptr);
+    const auto legacy=folder/L"data"/L"recent-pmm.txt";
+    const auto first=(folder/L"\u5de5\u7a0b Old.pmm").wstring();
+    const auto second=(folder/L"second.pmm").wstring();
+    const auto added=(folder/L"new.pmm").wstring();
+    const auto reopened=(folder/L"\u5de5\u7a0b OLD.PMM").wstring();
+    const auto text=L"\ufeff"+first+L"\r\n"+second+L"\r\n";
+    const std::string legacyBytes(reinterpret_cast<const char*>(text.data()),text.size()*sizeof(wchar_t));
+    { std::ofstream out(legacy,std::ios::binary);out.write(legacyBytes.data(),legacyBytes.size()); }
+    std::string body,autosaveBefore;
+    Check(system_settings::ReadSection("recentProjects",body)==Result::Missing &&
+        system_settings::ReadSection("autosave",autosaveBefore)==Result::Ok,
+        "recent-project migration starts with legacy history and no central section");
+    const auto read=[&] {
+        Check(system_settings::ReadSection("recentProjects",body)==Result::Ok,"read central recent projects");
+        return settings_json::Object(body);
+    };
+    recent_projects::Record(&app,added.c_str());
+    const auto migrated=read();
+    const auto& initial=migrated.At("paths").Items();
+    Check(initial.size()==3 && plugins::Wide(initial[0].String())==added &&
+        plugins::Wide(initial[1].String())==first && plugins::Wide(initial[2].String())==second,
+        "first record seeds legacy UTF-16 history and preserves its order");
+    Check(system_settings::WriteSection("recentProjects",R"({"future":{"entries":[null,1e2,"a\u000ab"]}})")==Result::Ok,
+        "seed unknown recent-project metadata");
+    recent_projects::Record(&app,reopened.c_str());
+    const auto promoted=read();
+    const auto& paths=promoted.At("paths").Items();
+    Check(paths.size()==3 && plugins::Wide(paths[0].String())==reopened &&
+        plugins::Wide(paths[1].String())==added && plugins::Wide(paths[2].String())==second,
+        "record moves case-insensitively matching native paths to the front without duplicating them");
+    Check(system_settings::WriteSection("recentProjects",R"({"paths":[]})")==Result::Ok,
+        "explicitly empty central history");
+    recent_projects::Record(&app,added.c_str());
+    const auto saved=read();
+    const auto& history=saved.At("paths").Items();
+    const auto& future=saved.At("future").At("entries").Items();
+    Check(history.size()==1 && plugins::Wide(history[0].String())==added && future.size()==3 &&
+        future[0].kind==settings_json::Json::Null && future[1].text=="1e2" && future[2].String()==std::string("a\nb"),
+        "explicitly emptied history does not reimport legacy paths or discard unknown metadata");
+    std::string autosaveAfter,legacyAfter(legacyBytes.size()+1,'\0');std::ifstream in(legacy,std::ios::binary);
+    in.read(legacyAfter.data(),legacyAfter.size());legacyAfter.resize(static_cast<std::size_t>(in.gcount()));
+    Check(legacyAfter==legacyBytes && system_settings::ReadSection("autosave",autosaveAfter)==Result::Ok &&
+        autosaveAfter==autosaveBefore,"central recent-project updates leave legacy bytes and other sections untouched");
+}
+
 // Run before app initialization and before the ordinary suite's test override.
 void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode) {
     const auto folder=executable.parent_path();const auto config=folder/L"data"/L"settings.json";
@@ -180,6 +228,7 @@ void SettingsLocationChecks(const fs::path& executable,const std::wstring& mode)
             Check(probe->antialiasing.algorithm==antialias::Algorithm::Fxaa && !probe->antialiasing.enabled&&
                 probe->antialiasing.outlineMode==antialias::OutlineMode::FxaaAdaptive,
                 "central antialias settings take precedence over later legacy changes");
+            RecentProjectsMigrationChecks(*probe,folder);
         } else {
             Check(probe->antialiasing.algorithm==antialias::Algorithm::MmdOriginal && probe->antialiasing.enabled,
                 "antialias initialization ignores another installation shared system profile");

@@ -282,7 +282,7 @@ bool SkipTextBuf(fileio::SequentialFileReader& reader,
     return true;
 }
 
-// Unwinds a load abandoned because a length prefix or payload was invalid.
+// Unwinds a load abandoned because a PMX field was invalid.
 // Release the four model text buffers; ModelDispose owns the other records.
 // Returns false so call sites read `return AbortPmxLoad(...)`.
 bool AbortPmxLoad(fileio::SequentialFileReader& reader, unsigned char* m) {
@@ -1914,7 +1914,14 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
         }
 
         // ---- joints ------------------------------------------------------------
-        reader.Read(&model.jointCount, sizeof(model.jointCount));
+        std::uint32_t jointCount = 0;
+        const int jointCountBytes = reader.Read(&jointCount, sizeof(jointCount));
+        // Preserve the legacy clean EOF before the count, but never treat a
+        // partially read count or an I/O failure as an empty joint table.
+        if (jointCountBytes != static_cast<int>(sizeof(jointCount)) &&
+            !(jointCountBytes == 0 && textCtx.Remaining(reader) == 0))
+            return AbortPmxLoad(reader, m);
+        model.jointCount = jointCount;
         TracePmxOffset(reader, "joints-begin", model.jointCount, rcount);
         if (model.jointCount > 0) {
             const std::int32_t jcount = static_cast<std::int32_t>(model.jointCount);

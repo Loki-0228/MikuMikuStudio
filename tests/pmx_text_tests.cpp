@@ -326,6 +326,37 @@ void OwnToonBoundaries() {
     }
     std::printf("PASS %u own-toon boundary cases, buffered and unbuffered, 1/2/4-byte indices\n", cases);
 }
+void JointCountBoundaries() {
+    const auto baseline = owned_text::Count();
+    auto complete = AfterBone();
+    for (int section = 0; section < 4; ++section)
+        Put(complete, std::uint32_t{0});  // morphs, display frames, rigid bodies, joints
+    constexpr auto countSize = sizeof(std::uint32_t);
+    for (std::size_t kept = 0; kept <= countSize; ++kept) {
+        auto bytes = complete;
+        bytes.resize(complete.size() - countSize + kept);
+        wchar_t directory[MAX_PATH]{}, path[MAX_PATH]{};
+        Check(GetTempPathW(MAX_PATH, directory) &&
+              GetTempFileNameW(directory, L"jnt", 0, path), "create joint count fixture");
+        int fd = _wopen(path, _O_BINARY | _O_WRONLY | _O_TRUNC);
+        Check(fd >= 0 && _write(fd, bytes.data(), unsigned(bytes.size())) == bytes.size(),
+              "write joint count fixture");
+        _close(fd);
+        fd = _wopen(path, _O_BINARY | _O_RDONLY);
+        Check(fd >= 0 && _lseek(fd, 3, SEEK_SET) == 3, "open joint count fixture");
+        auto model = std::make_unique<mdl::ModelRecord>();
+        auto* raw = reinterpret_cast<unsigned char*>(model.get());
+        PathResolutionWorkspace paths{};
+        const bool expected = kept == 0 || kept == countSize;
+        Check(LoadPMX(raw, &renderer, 0, 0, paths, fd) == expected,
+              "accept clean legacy EOF or complete zero count; reject partial zero count");
+        Check((model->loadComplete != 0) == expected && !model->jointCount && !model->jointTable,
+              "partial joint count never completes or initializes a joint table");
+        ModelDispose(raw);
+        Check(owned_text::Count() == baseline, "joint count cases leave no owned PMX text");
+        Check(DeleteFileW(path) != FALSE, "joint count fixture closes on every route");
+    }
+}
 int main() {
     ExpandedDisplay();
     TextCapacityAndRetry();
@@ -334,6 +365,7 @@ int main() {
     for (bool buffered : {false, true}) {
         fileio::bufferedReads = buffered;
         CustomMorphDisplay();
+        JointCountBoundaries();
         for (int name = 0; name < 4; ++name) {
             for (unsigned prefix : {1u, 3u, 2u, 0x80000000u, 0xFFFFFFFEu}) {
                 auto bytes = Header(name); Put(bytes, prefix); Reject(bytes); ++cases;
@@ -367,4 +399,5 @@ int main() {
         }
     }
     std::printf("PASS %u malformed PMX text cases, buffered and unbuffered\n", cases);
+    std::puts("PASS 10 PMX joint count boundary cases, buffered and unbuffered");
 }

@@ -123,7 +123,7 @@ python tests/run_mme_save_pair.py --profile full --host build/cmake/tests/mme/Re
 | `transparent_material_order_tests.cpp` | 纯 CPU 的透明材质依赖排序与三角形分批，不建 D3D 设备、不启窗口。覆盖深度依赖排序与冲突循环的判定、退化与非法输入、三角形预算、以及用独立采样合成器对随机几何逐像素验证分批结果。 |
 | `transparent_geometry_tests.cpp` | 纯 CPU 的透明几何排序，不建 D3D 设备、不启窗口。标准档按三角形中心深度稳定排序、以 ordinal 破同深度；低档用 64 个远到近计数桶，同桶保持输入顺序；两档都只重排，每个有效输入面恰好返回一次、顶点分量不变。分割回归在最高档运行，核对分片保留来源 draw/ordinal、分割顶点插值，以及同一屏幕点沿结果的深度不递增。 |
 | `capture_downsample_tests.cpp` | 用独立面积重叠算法核验真实 D3D9 缩放像素；检查逐行水平相位、非整数比例及无效目标尺寸。 |
-| `pmx_text_tests.cpp` | 缓冲与直接读取两种模式下的 98 个异常 PMX 文本样本；检查截断、奇数字节长度、过大前缀、贴图表清理、单字符及空名称回退。 |
+| `pmx_text_tests.cpp` | 缓冲与直接读取两种模式下的 98 个异常 PMX 文本样本；检查截断、奇数字节长度、过大前缀、贴图表清理、单字符及空名称回退，并覆盖完整／省略／截断的末尾 joint 计数。 |
 | `model_edge_tests.cpp` | 轮廓宽度与镜头坐标空间、PMD/PMX 膨胀及 GPU 输入。 |
 | `device_reset_tests.cpp` | 设备重置和资源恢复。 |
 | `filename_encoding_tests.cpp` | 中文/日文路径与编码转换。 |
