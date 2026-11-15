@@ -19,6 +19,7 @@
 #include "mikumikustudio/skinning_backend.hpp"
 #include "mikumikustudio/d3d12_skinning.hpp"
 #include "mikumikustudio/soft_body_compute.hpp"
+#include "mikumikustudio/scene_sampling.hpp"
 #include "../src/plugins/scene_resource_budget.hpp"
 #include "../src/physics/soft_body_topology.hpp"
 #include "btBulletDynamicsCommon.h"
@@ -317,6 +318,60 @@ void Integration(Host& host,int width,bool utf8) {
                 Check(baked.error==bake::Error::None&&!baked.models.empty(),"isolated bake handles soft body and all joint types");
                 Check(soft->m_nodes[1].m_x==position&&rigid->getLinearVelocity()==velocity,"bake preserves live physics state");
                 Check(host.world.getSoftBodyArray().size()==1&&host.world.getNumConstraints()==6,"bake releases only private physics");
+                if (width == 2 && utf8) {
+                    app->PlaybackPhysicsMode() = 3;
+                    app->state.messageSeen = 1;
+                    app->state.deltaTime = 0.5f;
+                    app->GravityMagnitude() = .98f;
+                    soft->m_nodes[1].m_v.setValue(0, -1, 0);
+                    const auto pausedPosition = soft->m_nodes[1].m_x;
+                    const auto pausedVelocity = soft->m_nodes[1].m_v;
+                    const auto serial = host.world.StepSerial();
+                    for (int idle = 0; idle < 3; ++idle) PhysicsFrame(app.get(), 1);
+                    Check(host.world.StepSerial() == serial &&
+                        soft->m_nodes[1].m_x == pausedPosition &&
+                        soft->m_nodes[1].m_v == pausedVelocity,
+                        "trace pause keeps soft state and ignores selection and idle time");
+                    app->state.physicsBodiesMoved = 1;
+                    PhysicsFrame(app.get(), 0);
+                    Check(host.world.StepSerial() > serial &&
+                        soft->m_nodes[1].m_x != pausedPosition,
+                        "explicit trace frame advance steps the soft-body world");
+                    const auto livePosition = soft->m_nodes[1].m_x;
+                    const auto liveVelocity = soft->m_nodes[1].m_v;
+                    const auto liveSerial = host.world.StepSerial();
+                    mdl::CameraKey camera{};
+                    mdl::LightKey light{};
+                    mdl::SelfShadowKey shadow{};
+                    camera.fov = 30; camera.parentModel = camera.parentBone = -1;
+                    app->CameraKeys() = &camera;
+                    app->LightKeys() = &light;
+                    app->ShadowKeys() = &shadow;
+                    app->Renderer() = host.renderer.get();
+                    std::vector<float> samples;
+                    std::string error;
+                    const bool sampled = scene_sampling::Visit(*app,0,2,30,
+                        [&](double, bool outputSample) {
+                            if (outputSample) {
+                                mdl::SkinnedVertexBase vertices[3]{};
+                                mdl::EdgeVertex edges[3]{};
+                                pmx21::WriteSoftVertices(model.raw(), vertices, sizeof vertices[0], edges, 0.f);
+                                samples.push_back(vertices[1].position[1]);
+                            }
+                            return true;
+                        }, error);
+                    if (!sampled) std::printf("soft mesh sample: %s\n", error.c_str());
+                    Check(sampled && samples.size() == 3 && Near(samples.front(),initial) &&
+                        samples.back() < samples.front(),
+                        "mesh sampler renders private soft deformation at each output frame");
+                    Check(host.world.StepSerial() == liveSerial && soft->m_nodes[1].m_x == livePosition &&
+                        soft->m_nodes[1].m_v == liveVelocity,
+                        "mesh sampling restores the editor soft-body identity and state");
+                    app->CameraKeys() = nullptr;
+                    app->LightKeys() = nullptr;
+                    app->ShadowKeys() = nullptr;
+                    app->Renderer() = nullptr;
+                }
                 app->ModelSlot(0)=nullptr;app->Physics()=nullptr;
             }
             {

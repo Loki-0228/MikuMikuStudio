@@ -31,6 +31,7 @@ void ClearMeshBakeObjects(MMDApp*, const std::vector<const void*>&);
 void EffectiveWeights(std::uint32_t weightType,const int bones[4],const float weights[4],
                       int outBones[4],float outWeights[4]) noexcept;
 void SetBakeCapture(bool enabled);
+bool BakeCaptureActive();
 bool ReadBakeCapture(std::vector<deformed_mesh_capture::Mesh>& meshes, std::string& error);
 bool KeyBakedEffects(MMDApp*, const std::vector<const void*>& objects, int first, int last, std::string& error);
 const std::int32_t* Indices32(unsigned char* renderModel);

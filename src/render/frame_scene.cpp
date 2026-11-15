@@ -586,7 +586,8 @@ void RenderFrameScene(MMDApp* app) {
     native_mesh::Initialize(app);
     mmv4mms::Initialize(app);
     const bool transparent = TransparentExportActive(app);
-    if (!mmv4mms::Active() && !transparent && !NativeBakePreviewActive() && !deformed_mesh_capture::Active() && mesh_bake_cache::Empty() &&
+    if (!mmv4mms::Active() && !transparent && !NativeBakePreviewActive() &&
+        !deformed_mesh_capture::Active() && !native_mesh::BakeCaptureActive() && mesh_bake_cache::Empty() &&
         RenderD3D12Native(app, reinterpret_cast<const float*>(&frameWorld))) {
         frame_rate::CompleteScene(app);
         frame_rate::Presented(app, true);

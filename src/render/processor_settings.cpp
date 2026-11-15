@@ -481,43 +481,20 @@ std::vector<AdapterEntry> EnumerateD3d9(IDirect3D9* d3d) {
     return table;
 }
 
-// DXGI adapters for the compute roles (Vertices, Mmv): LUID identity, full
-// hardware identity, high-performance order.  Software/remote adapters are
-// excluded like the skinning backend does.
+// Use the same verified adapters for the menu and the compute backend.
 std::vector<AdapterEntry> EnumerateDxgi() {
     std::vector<AdapterEntry> table;
-#if defined(MMD_ENABLE_DX12) && !MMD_ENABLE_DX12
-    return table;
-#else
-    ComPtr<IDXGIFactory1> factory;
-    if (FAILED(graphics_runtime::CreateFactory1(IID_PPV_ARGS(&factory)))) return table;
-    ComPtr<IDXGIFactory6> factory6;
-    if (FAILED(factory->QueryInterface(IID_PPV_ARGS(&factory6)))) factory6.Reset();
-    unsigned rank = 0;
-    for (UINT index = 0;; ++index) {
-        ComPtr<IDXGIAdapter1> adapter;
-        const HRESULT hr = factory6
-            ? factory6->EnumAdapterByGpuPreference(
-                  index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-                  IID_PPV_ARGS(&adapter))
-            : factory->EnumAdapters1(index, adapter.GetAddressOf());
-        if (hr == DXGI_ERROR_NOT_FOUND) break;
-        if (FAILED(hr)) break;
-        DXGI_ADAPTER_DESC1 description{};
-        if (FAILED(adapter->GetDesc1(&description))) continue;
-        if (description.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE | DXGI_ADAPTER_FLAG_REMOTE))
-            continue;
+    for (const auto& gpu : skinning::AvailableAdapters()) {
         AdapterEntry entry;
-        entry.ordinal = rank;
-        entry.adapterId = PackLuid(description.AdapterLuid);
-        entry.adapterName = description.Description;
-        entry.identity = {description.VendorId, description.DeviceId,
-                          description.SubSysId, description.Revision};
-        entry.performanceRank = rank++;
+        entry.ordinal = static_cast<unsigned>(table.size());
+        entry.adapterId = gpu.id;
+        entry.adapterName = gpu.name;
+        entry.identity = {gpu.vendorId, gpu.deviceId, gpu.subsystemId, gpu.revision};
+        entry.performanceRank = entry.ordinal;
+        entry.aliases = gpu.aliases;
         table.push_back(std::move(entry));
     }
     return table;
-#endif
 }
 
 const AdapterEntry* AutomaticPick(const std::vector<AdapterEntry>& adapters) {
@@ -803,7 +780,7 @@ ResolvedInfo ResolveFromTable(const Selection& choice,
         return fallback(L"the saved device identity is not present on this machine");
     if (choice.adapterId != 0) {
         for (const auto* entry : candidates)
-            if (entry->adapterId == choice.adapterId) return FromEntry(*entry);
+            if (entry->MatchesLuid(choice.adapterId)) return FromEntry(*entry);
     }
     if (candidates.size() == 1) return FromEntry(*candidates.front());
     return fallback(L"the saved device identity matches " +

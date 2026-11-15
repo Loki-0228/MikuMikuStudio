@@ -127,6 +127,15 @@ struct AdapterEntry {
     std::wstring adapterName;
     DeviceIdentity identity;
     unsigned performanceRank = kUnknownPerformanceRank;
+    std::vector<std::uint64_t> aliases;
+
+    bool MatchesLuid(std::uint64_t id) const {
+        if (!id) return false;
+        if (id == adapterId) return true;
+        for (const auto alias : aliases)
+            if (id == alias) return true;
+        return false;
+    }
 };
 
 // Role constraints: Renderer forbids Cpu and FollowRenderer; Vertices and Cloth forbid

@@ -667,6 +667,7 @@ void EffectiveWeights(std::uint32_t weightType,const int bones[4],const float we
     // BDEF4 keeps its four native values as they are.
 }
 void SetBakeCapture(bool enabled){bakeCapture=enabled;bakeMeshes.clear();bakeError.clear();}
+bool BakeCaptureActive(){return bakeCapture;}
 bool ReadBakeCapture(std::vector<deformed_mesh_capture::Mesh>& meshes,std::string& error){if(!bakeCapture||!bakeError.empty()){error=bakeError.empty()?"Mesh capture is inactive":bakeError;return false;}meshes=bakeMeshes;error.clear();return true;}
 
 LayerBakeSupport LayerBakeState(){return LayerBakeSupport::NoPlugin;}

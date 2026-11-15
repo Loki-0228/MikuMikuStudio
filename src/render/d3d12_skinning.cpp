@@ -4,11 +4,14 @@
 #define NOMINMAX
 #include "mikumikustudio/d3d12_skinning.hpp"
 #include <Windows.h>
+#include <winternl.h>
 #include "mikumikustudio/graphics_runtime.hpp"
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
+#include <d3dkmthk.h>
 #include <wrl/client.h>
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <iterator>
@@ -16,6 +19,7 @@
 #include <string>
 #include <utility>
 #include <limits>
+#include <optional>
 #include <unordered_set>
 #include "d3d12_skinning_shader.hpp"
 
@@ -50,12 +54,78 @@ struct Candidate {
     std::uint64_t id=0;
     bool integrated=false;
     std::wstring hardwareKey;
+    DXGI_ADAPTER_DESC1 description{};
+    std::optional<std::array<UINT, 3>> renderAddress;
+    bool directRenderAdapter = false;
+    std::vector<std::uint64_t> aliases;
 };
+
+void QueryRenderAddress(Candidate& candidate, const LUID& luid) {
+    const HMODULE gdi = GetModuleHandleW(L"gdi32.dll");
+    if (!gdi) return;
+    static const auto open = reinterpret_cast<decltype(&D3DKMTOpenAdapterFromLuid)>(
+        GetProcAddress(gdi, "D3DKMTOpenAdapterFromLuid"));
+    static const auto query = reinterpret_cast<decltype(&D3DKMTQueryAdapterInfo)>(
+        GetProcAddress(gdi, "D3DKMTQueryAdapterInfo"));
+    static const auto close = reinterpret_cast<decltype(&D3DKMTCloseAdapter)>(
+        GetProcAddress(gdi, "D3DKMTCloseAdapter"));
+    if (!open || !query || !close) return;
+
+    D3DKMT_OPENADAPTERFROMLUID opened{};
+    opened.AdapterLuid = luid;
+    if (open(&opened) != 0) return;
+    const auto address = [&](KMTQUERYADAPTERINFOTYPE type) -> std::optional<std::array<UINT, 3>> {
+        D3DKMT_ADAPTERADDRESS value{};
+        D3DKMT_QUERYADAPTERINFO request{opened.hAdapter, type, &value, sizeof(value)};
+        if (query(&request) != 0 || value.BusNumber > 255 ||
+            value.DeviceNumber > 31 || value.FunctionNumber > 7 ||
+            !(value.BusNumber || value.DeviceNumber || value.FunctionNumber)) return {};
+        return {{value.BusNumber, value.DeviceNumber, value.FunctionNumber}};
+    };
+    const auto localAddress = address(KMTQAITYPE_ADAPTERADDRESS);
+    candidate.renderAddress = address(KMTQAITYPE_ADAPTERADDRESS_RENDER);
+    if (!candidate.renderAddress) candidate.renderAddress = localAddress;
+    candidate.directRenderAdapter = localAddress && localAddress == candidate.renderAddress;
+    D3DKMT_CLOSEADAPTER closing{opened.hAdapter};
+    close(&closing);
+}
+
+bool SamePhysicalGpu(const Candidate& a, const Candidate& b) {
+    return a.renderAddress && a.renderAddress == b.renderAddress &&
+        a.description.VendorId == b.description.VendorId &&
+        a.description.DeviceId == b.description.DeviceId &&
+        a.description.SubSysId == b.description.SubSysId &&
+        a.description.Revision == b.description.Revision &&
+        a.integrated == b.integrated;
+}
+
+void MergeDisplayAliases(std::vector<Candidate>& candidates) {
+    // Resolve an indirect display adapter to a unique render device. Keep
+    // distinct direct devices, even when their model and PCI address agree.
+    for (auto& candidate : candidates) {
+        if (candidate.directRenderAdapter || !candidate.renderAddress) continue;
+        Candidate* direct = nullptr;
+        for (auto& item : candidates) {
+            if (!item.directRenderAdapter || !SamePhysicalGpu(item, candidate)) continue;
+            if (direct) {
+                direct = nullptr;
+                break;
+            }
+            direct = &item;
+        }
+        if (!direct) continue;
+        direct->aliases.push_back(candidate.id);
+        direct->aliases.insert(direct->aliases.end(), candidate.aliases.begin(), candidate.aliases.end());
+        candidate.id = 0;
+    }
+    candidates.erase(std::remove_if(candidates.begin(), candidates.end(),
+        [](const Candidate& candidate) { return candidate.id == 0; }), candidates.end());
+}
 // Hardware D3D12 feature level 11_0 adapters, with software and remote adapters
 // excluded. Collected in DXGI high-performance order, then stably partitioned so
 // discrete adapters precede integrated ones. The split comes from the D3D12 UMA
 // architecture flag, never from vendor names or memory sizes.
-std::vector<Candidate> EnumerateCandidates() {
+std::vector<Candidate> EnumerateCandidates(bool mergePhysicalAliases) {
     ComPtr<IDXGIFactory1> factory;
     if(FAILED(graphics_runtime::CreateFactory2(0,IID_PPV_ARGS(&factory))))
         Check(graphics_runtime::CreateFactory1(IID_PPV_ARGS(&factory)),"CreateDXGIFactory1");
@@ -85,19 +155,25 @@ std::vector<Candidate> EnumerateCandidates() {
         Candidate candidate;
         candidate.adapter=adapter;
         candidate.name=desc.Description;
+        candidate.description=desc;
         LARGE_INTEGER driver{};
         adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice),&driver);
         candidate.hardwareKey=std::to_wstring(desc.VendorId)+L"/"+std::to_wstring(desc.DeviceId)+L"/"+
             std::to_wstring(desc.SubSysId)+L"/"+std::to_wstring(desc.Revision)+L"/"+
             std::to_wstring(desc.DedicatedVideoMemory)+L"/"+std::to_wstring(driver.QuadPart);
-        // Indirect display drivers may alias the same physical compute GPU.
-        candidate.id=AdapterId(probe->GetAdapterLuid());
-        if(!seen.insert(candidate.id).second) continue;
+        const LUID renderLuid = probe->GetAdapterLuid();
+        candidate.id=AdapterId(renderLuid);
+        if(!candidate.id || !seen.insert(candidate.id).second) continue;
+        const auto enumeratedId = AdapterId(desc.AdapterLuid);
+        if (enumeratedId && enumeratedId != candidate.id) candidate.aliases.push_back(enumeratedId);
         candidate.integrated=architecture.UMA!=FALSE;
-        (candidate.integrated?integrated:discrete).push_back(std::move(candidate));
+        auto& group = candidate.integrated ? integrated : discrete;
+        if (mergePhysicalAliases) QueryRenderAddress(candidate, renderLuid);
+        group.push_back(std::move(candidate));
     }
     discrete.insert(discrete.end(),std::make_move_iterator(integrated.begin()),
                     std::make_move_iterator(integrated.end()));
+    if (mergePhysicalAliases) MergeDisplayAliases(discrete);
     return discrete;
 }
 }
@@ -286,12 +362,17 @@ ID3D12Device* Skinning::Device() const{return impl->device.Get();}
 ID3D12CommandQueue* Skinning::Queue() const{return impl->queue.Get();}
 std::vector<Adapter> EnumerateAdapters() {
     std::vector<Adapter> result;
-    for(auto& candidate:EnumerateCandidates()) {
+    for(auto& candidate:EnumerateCandidates(true)) {
         Adapter adapter;
         adapter.id=candidate.id;
         adapter.name=std::move(candidate.name);
         adapter.integrated=candidate.integrated;
         adapter.hardwareKey=std::move(candidate.hardwareKey);
+        adapter.vendorId=candidate.description.VendorId;
+        adapter.deviceId=candidate.description.DeviceId;
+        adapter.subsystemId=candidate.description.SubSysId;
+        adapter.revision=candidate.description.Revision;
+        adapter.aliases=std::move(candidate.aliases);
         result.push_back(std::move(adapter));
     }
     return result;
@@ -313,7 +394,7 @@ bool Skinning::Initialize(bool debug,std::uint64_t adapterId) {
             Check(graphics_runtime::GetDebugInterface(IID_PPV_ARGS(&layer)),"D3D12 debug layer");
             layer->EnableDebugLayer();
         }
-        auto candidates=EnumerateCandidates();
+        auto candidates=EnumerateCandidates(adapterId == 0);
         if(candidates.empty()) throw std::runtime_error("No hardware D3D12 adapter");
         bool attempted=false;
         std::string failure;

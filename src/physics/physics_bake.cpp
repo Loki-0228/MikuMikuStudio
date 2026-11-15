@@ -1135,8 +1135,12 @@ bool Visit(MMDApp& app, int firstFrame, int lastFrame, int fps,
                 std::unique_ptr<mdl::ModelRecord> original;
                 Swap(unsigned char* p,ModelCopy& c):live(p),copy(c),original(new mdl::ModelRecord(*mdl::Mdl(p))) {
                     *mdl::Mdl(p)=*c.model;bone_scale::ExchangeState(c.raw(),p);
+                    pmx21::ExchangeRenderState(live, copy.raw());
                 }
-                ~Swap(){*copy.model=*mdl::Mdl(live);*mdl::Mdl(live)=*original;bone_scale::ExchangeState(copy.raw(),live);}
+                ~Swap(){
+                    pmx21::ExchangeRenderState(live, copy.raw());
+                    *copy.model=*mdl::Mdl(live);*mdl::Mdl(live)=*original;bone_scale::ExchangeState(copy.raw(),live);
+                }
             };
             std::vector<std::unique_ptr<Swap>> swaps;
             for(size_t i=0;i<models.size();++i)swaps.emplace_back(new Swap(live[i],*models[i]));

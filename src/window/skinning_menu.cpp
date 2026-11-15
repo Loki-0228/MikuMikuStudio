@@ -323,7 +323,7 @@ std::vector<unsigned> RendererExtraDeviceRows(
         bool provided = false;
         if (entry.adapterId != 0) {
             for (const auto& renderer : rendererAdapters) {
-                if (renderer.adapterId == entry.adapterId) { provided = true; break; }
+                if (entry.MatchesLuid(renderer.adapterId)) { provided = true; break; }
             }
         }
         if (!provided && known(entry.identity)) {

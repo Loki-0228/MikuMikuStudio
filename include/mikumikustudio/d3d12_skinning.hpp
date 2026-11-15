@@ -67,6 +67,8 @@ struct Adapter {
     std::wstring name;
     bool integrated = false;
     std::wstring hardwareKey; // Stable GPU identity and driver; excludes reboot-dependent LUID.
+    std::uint32_t vendorId = 0, deviceId = 0, subsystemId = 0, revision = 0;
+    std::vector<std::uint64_t> aliases;
 };
 // Hardware adapters that run D3D12 at feature level 11_0; software and remote
 // adapters are excluded. Discrete adapters come first, then integrated ones, and

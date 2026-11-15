@@ -989,13 +989,17 @@ static void RunPhysicsFrame(MMDApp* app, unsigned char selActive, float timeline
     const bool timeline = timelineStep >= 0.f;
     const bool initializing = timeline && timelineStep == 0.f;
     const bool visualOnly = s.PlaybackActive() && !timeline;
+    const bool pausedTrace = !MMD_ORIGINAL_PROFILE && s.NativePhysicsMode() == 3 &&
+        !timeline && !s.PlaybackActive();
+    const bool moved = s.state.physicsBodiesMoved != 0;
     auto* trackedModel = s.PlaybackActive() && selActive && !s.state.optflag[0] && !s.FrameStepPlayback()
         ? s.SelectedModel() : nullptr;
     auto* skippedModel = timeline && !initializing ? trackedModel : nullptr;
     for (int slot=0; slot<kModelSlotCount; ++slot)
         if (auto* model=app->ModelSlot(slot)) {
             bone_scale::RestoreTransforms(model);
-            if (!visualOnly && model != skippedModel) physics_scale::Sync(model);
+            if (!visualOnly && (!pausedTrace || moved || s.PhysicsResetPending()) &&
+                model != skippedModel) physics_scale::Sync(model);
         }
     // Bisect switch for the crash investigation: with MIKUMIKUSTUDIO_SKIP_PHYSICS
     // set, this frame's whole physics update (kinematic sync, stepSimulation and
@@ -1043,7 +1047,7 @@ static void RunPhysicsFrame(MMDApp* app, unsigned char selActive, float timeline
     const int count = s.NativePhysicsMode();
     const auto& timing = s.PlaybackTiming();
     const float fixedStep = 1.f / playback_timing::PhysicsRate(timing);
-    if (!visualOnly && count > 0) {
+    if (!visualOnly && (!pausedTrace || moved) && count > 0) {
         auto& solver = world->getSolverInfo();
         solver.m_erp = timing.physics.erp;
         solver.m_globalCfm = timing.physics.cfm;
@@ -1076,7 +1080,8 @@ static void RunPhysicsFrame(MMDApp* app, unsigned char selActive, float timeline
     // arithmetic precision differs (see the #if paths).
     // Vector element order is (0x9EDB8, 0x9EDBC, 0x9EDC0, 0).
     bool windRan = false;
-    if (!visualOnly && !initializing && count > 0 && s.state.gravityNoiseEnabled != 0) {
+    if (!visualOnly && !initializing && (!pausedTrace || moved) &&
+        count > 0 && s.state.gravityNoiseEnabled != 0) {
         // x64 0x7FF7CB44BEA4..0x7FF7CB44BEC9: the timer accumulates with a
         // single float add (addss, result stored back unconditionally) and
         // the compare is `comiss xmm0,[0x7FF7CB55298C=0.5f]; jbe skip` -
@@ -1170,7 +1175,7 @@ static void RunPhysicsFrame(MMDApp* app, unsigned char selActive, float timeline
     // precision, one rounding per multiply.  The wind block above jumps
     // to 0x46F7DB - right past this setGravity - and physics-off
     // (A0CC4<=0) skips both.
-    if (!visualOnly && count > 0 && !windRan) {
+    if (!visualOnly && (!pausedTrace || moved) && count > 0 && !windRan) {
         float dir[3] = {s.state.gravityX,
                         s.state.gravityY,
                         s.state.gravityZ};
@@ -1227,7 +1232,7 @@ static void RunPhysicsFrame(MMDApp* app, unsigned char selActive, float timeline
     // the world four times per frame instead of once (proven by the
     // body-3 origin write-watch: original alternates proceed/sync, the
     // port emitted two proceedToTransform writes per sync).
-    if (!visualOnly && selActive != 0 &&
+    if (!visualOnly && !pausedTrace && selActive != 0 &&
         s.state.optflag[0] == 0 &&        // 0x2F8 model-mode flag
         s.state.frameStepPlayback == 0) {     // 0x9ED90 frame-step flag
         // 0x46F7FF / x64 0x7FF7CB44C12E: `cmp [app+0xA137C],0 / jnz` -
@@ -1327,7 +1332,6 @@ static void RunPhysicsFrame(MMDApp* app, unsigned char selActive, float timeline
     // Settle section gate (0x46FCEF; x64 0x7FF7CB44C6E5..0x7FF7CB44C73D,
     // `test eax,edx / jz 0x7FF7CB44C85F`): moved | settle | frame advanced,
     // model count 1..3, no seek pending (frameCopyDialog app+0xA1BC8 == 0).
-    const bool moved = s.state.physicsBodiesMoved != 0;
     const bool settle = s.PhysicsResetPending() != 0;
     const bool frameAdv = s.PlaybackActive() != 0;           // 0x330
     const bool runWorldPass = count == 1 || count == 2 ||
@@ -1391,13 +1395,20 @@ static void RunPhysicsFrame(MMDApp* app, unsigned char selActive, float timeline
                    value[0] != '\0' && value[0] != '0';
         }();
         if (initializing) ResetTimelineWorld(*world);
-        if (!skipStep && !initializing) {
+        if (pausedTrace && settle) {
+            // A deliberate seek reseats the world without advancing time.
+            for (int j = 0; j < kModelSlotCount; ++j)
+                if (models[j] != nullptr) ModelDynamicReseat(models[j]);
+            ResetTimelineWorld(*world);
+            s.PhysicsResetPending() = 0;
+        }
+        if (!skipStep && !initializing && (!pausedTrace || moved)) {
             MMD_PERF_SCOPE(PhysicsStep);
             const int idleLimit = std::clamp(playback_timing::PhysicsRate(timing) / 6, 10, 8192);
             const int maxSteps = timeline ? 1 : idleLimit;
-            world->stepSimulation(mainDt, maxSteps, fixedStep);
+            world->stepSimulation(pausedTrace ? 1.f / 30.f : mainDt, maxSteps, fixedStep);
         }
-        if (!timeline && moved && count == 3)
+        if (!pausedTrace && !timeline && moved && count == 3)
             stepWorld("extra");                              // 0x46FD97
 #ifdef MIKUMIKUSTUDIO_DIAG
         if (captureStages)
@@ -1406,7 +1417,7 @@ static void RunPhysicsFrame(MMDApp* app, unsigned char selActive, float timeline
             DumpFrameEntryState(app, "physics_step.json", false);
 #endif
 
-        if (settle) {
+        if (settle && !pausedTrace) {
 #if !MMD_ORIGINAL_PROFILE
             if (timeline)
                 s.PlaybackPhysicsClock().InvalidateVisualBridge(s.PlaybackCursorSeconds());

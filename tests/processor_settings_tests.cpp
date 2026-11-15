@@ -357,6 +357,12 @@ void ResolutionTables() {
     Check(!byId.fellBack && byId.adapterOrdinal == 0,
           "an exact device id binds to that adapter despite the duplicate name");
 
+    table[0].aliases.push_back(0x101);
+    const auto byAlias = processor::ResolveFromTable(
+        AdapterChoice(0x101, L"Twin", twinIdentity), table);
+    Check(!byAlias.fellBack && byAlias.adapterId == 0x100,
+          "a saved display alias resolves to its physical GPU among identical models");
+
     // A stale LUID rebinds by a unique full hardware identity.
     const auto staleLuid = processor::ResolveFromTable(
         AdapterChoice(0xFFFF0000FFFF0000ull, L"renamed by driver", soloIdentity),

@@ -83,7 +83,9 @@ void CheckLayout(HWND window){
     }
     for(int i=0;i<3;++i)for(int j=i+1;j<3;++j){RECT overlap{};if(IntersectRect(&overlap,&buttons[i],&buttons[j])){++layoutFailures;std::puts("FAIL: footer buttons overlap");}}
     SCROLLINFO scroll{sizeof scroll,SIF_ALL};GetScrollInfo(window,SB_VERT,&scroll);
-    Check(scroll.nMax>=int(scroll.nPage),"small work area exposes content scrolling");
+    const bool clipped = outer.bottom-outer.top >= workHeight-16;
+    if(!clipped)
+        Check(scroll.nMax<int(scroll.nPage),"compact dialog fits without vertical scrolling");
     SendMessageW(window,WM_VSCROLL,SB_BOTTOM,0);
     RECT status{};GetWindowRect(GetDlgItem(window,125),&status);MapWindowPoints(nullptr,window,reinterpret_cast<POINT*>(&status),2);
     Check(status.top>=0&&status.bottom<buttons[0].top,"scroll reaches status without covering footer");
@@ -550,7 +552,7 @@ int wmain(int argc,wchar_t** argv){
         Check(MH_CreateHook(reinterpret_cast<void*>(&GetMonitorInfoW),reinterpret_cast<void*>(&SmallWorkArea),reinterpret_cast<void**>(&realMonitorInfo))==MH_OK,"create process-local work-area hook");
         Check(MH_EnableHook(reinterpret_cast<void*>(&GetMonitorInfoW))==MH_OK,"enable process-local work-area hook");
         inspectExport=inspectLayout=true;
-        for(const auto size:std::vector<std::pair<int,int>>{{800,600},{640,480}}){workWidth=size.first;workHeight=size.second;for(int language=0;language<3;++language){app->EnglishUI()=language;alembic_export::ShowDialog(app);alembic_export::ShowBakeDialog(app);}}
+        for(const auto size:std::vector<std::pair<int,int>>{{800,600},{640,480},{640,320}}){workWidth=size.first;workHeight=size.second;for(int language=0;language<3;++language){app->EnglishUI()=language;alembic_export::ShowDialog(app);alembic_export::ShowBakeDialog(app);}}
         inspectExport=inspectLayout=false;workWidth=workHeight=0;
         MH_DisableHook(reinterpret_cast<void*>(&GetMonitorInfoW));MH_RemoveHook(reinterpret_cast<void*>(&GetMonitorInfoW));
         ShutdownCleanup(app);g_Block=nullptr;delete app;UnhookWindowsHookEx(hide);UnhookWindowsHookEx(dialogs);

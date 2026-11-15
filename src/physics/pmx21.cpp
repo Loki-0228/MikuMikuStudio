@@ -330,6 +330,13 @@ int CreateJoint(PhysicsScene& scene, mdl::ModelRecord& model, mdl::JointRecord& 
 }
 
 void Forget(unsigned char* model) noexcept { states.erase(model); }
+void ExchangeRenderState(unsigned char* live, unsigned char* sampled) noexcept {
+    const auto editor = states.find(live), bake = states.find(sampled);
+    // ModelCopy creates a private state for every live PMX 2.1 state.
+    if (editor != states.end() && bake != states.end())
+        std::swap(editor->second, bake->second);
+}
+
 void CopyState(const unsigned char* source, unsigned char* target) {
     const auto found = states.find(source);
     if (found == states.end()) return;

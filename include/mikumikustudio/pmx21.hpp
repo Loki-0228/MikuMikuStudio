@@ -20,6 +20,7 @@ void Forget(unsigned char* model) noexcept;
 void SuspendSoftBodies(unsigned char* model) noexcept;
 void SetPresent(unsigned char* model, bool present) noexcept;
 void CopyState(const unsigned char* source, unsigned char* target);
+void ExchangeRenderState(unsigned char* live, unsigned char* sampled) noexcept;
 void MeasureResources(const unsigned char* model, plugins::resource_budget::Collector& out);
 bool HasSoftBodies(const unsigned char* model);
 void SyncSoftBodies(unsigned char* model, bool reset);
@@ -33,6 +34,7 @@ inline void Forget(unsigned char*) noexcept {}
 inline void SuspendSoftBodies(unsigned char*) noexcept {}
 inline void SetPresent(unsigned char*, bool) noexcept {}
 inline void CopyState(const unsigned char*, unsigned char*) {}
+inline void ExchangeRenderState(unsigned char*, unsigned char*) noexcept {}
 inline bool HasSoftBodies(const unsigned char*) { return false; }
 inline void SyncSoftBodies(unsigned char*, bool) {}
 inline void ApplyImpulses(unsigned char*) {}

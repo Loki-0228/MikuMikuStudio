@@ -13,6 +13,7 @@
 #include <d3d9.h>
 
 #include <cstdint>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -380,7 +381,13 @@ void InitExportPlaybackTracks(MMDApp* app, double frame) {
 void UpdateBoneFrames(MMDApp* app) {
     app->SyncPlaybackTimeCompatibility();
     const double cursor = app->PlaybackCursorSeconds();
-    app->PlaybackPhysicsClock().Reset(cursor);
+    auto& clock = app->PlaybackPhysicsClock();
+    const bool resumeTrace = !MMD_ORIGINAL_PROFILE && app->NativePhysicsMode() == 3 &&
+        !app->FrameStepPlayback() && !app->state.playbackAlwaysOnOffMode &&
+        !app->PhysicsResetPending() && clock.step != 0 &&
+        std::abs(cursor - clock.lastPresentedSeconds) < 1.0 / 30.0;
+    clock.Reset(cursor);
+    if (resumeTrace) clock.initialPosePending = false;
     app->SavedPlaybackPhysicsMode() = app->PlaybackPhysicsMode();
     if (app->state.playbackAlwaysOnOffMode != 0)
         app->PlaybackPhysicsMode() = 2;
@@ -394,7 +401,7 @@ void UpdateBoneFrames(MMDApp* app) {
 
     if (app->PlaybackFrameChanged() != 0)
         app->PlaybackFrameChanged() = 0;
-    else
+    else if (!resumeTrace)
         app->PhysicsResetPending() = 1;
 
     const double frame = playback_timing::TimelineFrame(cursor);
@@ -539,7 +546,8 @@ void StopPlayback(MMDApp* app) {  // was Sub4341E0
     SyncAccessoryEditPanel(app);
     if (app->AviBackgroundEnabled() != 0)
         AviBgOverlayRefresh(app);
-    app->PhysicsResetPending() = 1;
+    if (MMD_ORIGINAL_PROFILE || app->PlaybackPhysicsMode() != 3)
+        app->PhysicsResetPending() = 1;
     PostViewRefresh(app);
     PostLanguageSweep2(app);
 }

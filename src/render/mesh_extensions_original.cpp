@@ -67,6 +67,7 @@ bool DisableMeshEffects(MMDApp*, const std::vector<const void*>&, std::string& e
 void ClearMeshBake(MMDApp*, bool) {}
 void ClearMeshBakeObjects(MMDApp*, const std::vector<const void*>&) {}
 void SetBakeCapture(bool) {}
+bool BakeCaptureActive() { return false; }
 bool ReadBakeCapture(std::vector<deformed_mesh_capture::Mesh>& meshes, std::string& error) {
     meshes.clear();
     return Unavailable(error);
