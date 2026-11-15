@@ -1,4 +1,5 @@
 #include "mikumikustudio/pmm_paths.hpp"
+#include "../../src/io/pmm_save_versions.hpp"
 #include <algorithm>
 struct SerializerFixture {
     int value=0, candidate=0, prepares=0, commits=0, cancels=0, saves=0, releases=0;
@@ -51,7 +52,82 @@ static RetainedPairSeed SeedRetainedPair(const fs::path& target,const fs::path& 
     seed.middle=VersionBytes(target);seed.middleSave=ReadPluginProject(target).saveId;
     return seed;
 }
+static void JournalEntryChecks(const fs::path& root) {
+    const auto directory=fs::absolute(root)/L"journal-entry-recovery";
+    CHECK(fs::create_directory(directory));
+    const auto target=directory/L"active.pmm";
+    const auto prior=fs::path(target.native()+L"1");
+    const auto journal=fs::path(target.native()+L".mms-save.json");
+    const auto stage=directory/L"source.pmm";
+    Write(target,"current PMM");
+    Write(prior,"prior PMM");
+    Write(stage,"candidate bytes");
+
+    RecoverProjectPair(directory/L"missing-directory"/L"unknown.pmm");
+    const auto lockPath=target.native()+L".mms-save.lock";
+    const HANDLE lock=CreateFileW(lockPath.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL|FILE_FLAG_DELETE_ON_CLOSE,nullptr);
+    CHECK(lock!=INVALID_HANDLE_VALUE);
+    RecoverProjectPair(target); // Healthy open does not need to acquire the lock.
+    CHECK(CloseHandle(lock)!=FALSE);
+
+    CHECK(fs::create_directory(journal));
+    CHECK(Throws([&]{RecoverProjectPair(target);}));
+    CHECK(Throws([&]{RecoverProjectPair(prior);}));
+    CHECK(fs::is_directory(journal) && fs::remove(journal));
+
+    // Test a real sharing denial without changing the machine's ACLs.
+    const std::string legacy="{\"schemaVersion\":1}";
+    Write(journal,legacy);
+    const HANDLE held=CreateFileW(journal.c_str(),GENERIC_READ,0,nullptr,OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,nullptr);
+    CHECK(held!=INVALID_HANDLE_VALUE);
+    const bool refusedActive=Throws([&]{RecoverProjectPair(target);});
+    const bool refusedPrior=Throws([&]{RecoverProjectPair(prior);});
+    CHECK(CloseHandle(held)!=FALSE);
+    CHECK(refusedActive && refusedPrior && ReadFile(journal)==legacy);
+    RecoverProjectPair(prior); // A regular schema-1 owner record does not reserve retained levels.
+    CHECK(fs::remove(journal));
+
+    const auto other=directory/L"other-record.json";
+    // Allow test hosts with Developer Mode or traditional symlink privilege.
+    const auto createLink=[](const fs::path& link,const fs::path& dest) {
+        return CreateSymbolicLinkW(link.c_str(),dest.c_str(),2) ||
+            CreateSymbolicLinkW(link.c_str(),dest.c_str(),0);
+    };
+    if(!createLink(journal,other)) {
+        const auto error=GetLastError();
+        CHECK(error==ERROR_PRIVILEGE_NOT_HELD || error==ERROR_NOT_SUPPORTED ||
+            error==ERROR_INVALID_FUNCTION || error==ERROR_ACCESS_DENIED);
+        std::cout << "SKIP file symlink fixture, Win32=" << error << "\n";
+        return;
+    }
+    CHECK(fs::is_symlink(fs::symlink_status(journal)) && !fs::exists(other));
+    CHECK(Throws([&]{RecoverProjectPair(target);}));
+    CHECK(Throws([&]{RecoverProjectPair(prior);}));
+
+    const auto newcomer=directory/L"new.pmm";
+    const auto newJournal=fs::path(newcomer.native()+L".mms-save.json");
+    CHECK(createLink(newJournal,other));
+    CHECK(!mikumikustudio::pmm_versions::Publish(stage,newcomer));
+    CHECK(!fs::exists(newcomer) && ReadFile(stage)=="candidate bytes");
+    CHECK(fs::is_symlink(fs::symlink_status(newJournal)) && DeleteFileW(newJournal.c_str()));
+
+    // The same link now resolves to parseable bytes. Owner admission must
+    // reject the entry itself, not follow those bytes and accept the prior PMM.
+    Write(other,legacy);
+    CHECK(Throws([&]{RecoverProjectPair(target);}));
+    CHECK(Throws([&]{RecoverProjectPair(prior);}));
+    CHECK(ReadFile(target)=="current PMM" && ReadFile(prior)=="prior PMM" && ReadFile(other)==legacy);
+    CHECK(fs::is_symlink(fs::symlink_status(journal)) && DeleteFileW(journal.c_str()));
+    RecoverProjectPair(target);
+    RecoverProjectPair(prior);
+    CHECK(mikumikustudio::pmm_versions::Publish(stage,newcomer));
+    CHECK(ReadFile(newcomer)=="candidate bytes" && !fs::exists(stage));
+}
+
 static void VersionStorageChecks(const fs::path& root){
+    JournalEntryChecks(root);
     const auto directory=root/L"retained-pair-recovery";fs::create_directories(directory);
     const auto group=VersionMembers;
     const auto bytes=VersionBytes;

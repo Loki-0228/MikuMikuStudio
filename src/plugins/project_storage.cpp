@@ -1,7 +1,7 @@
 #include "project_storage.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/plugin_storage.hpp"
-#include "../io/backup_removal_guard.hpp"
+#include "../io/project_recovery_journal.hpp"
 #include "json.hpp"
 #include "scene_digest.hpp"
 #include "../io/effect_pair_transaction.hpp"
@@ -121,7 +121,7 @@ void Move(const fs::path& from,const fs::path& to,bool replace=true){Check(MoveF
 struct Paths {
     fs::path main,side,journal,newMain,newSide,oldMain,oldSide,tempJournal,oldEffect;
     bool compactEffect, plugins;
-    Paths(const fs::path& target,const std::string& id,bool compact=false,bool withPlugins=true):main(target),side(PluginSidecar(target)),journal(target.native()+L".mms-save.json"),compactEffect(compact),plugins(withPlugins){
+    Paths(const fs::path& target,const std::string& id,bool compact=false,bool withPlugins=true):main(target),side(PluginSidecar(target)),journal(project_recovery::JournalPath(target)),compactEffect(compact),plugins(withPlugins){
         if(!Hex(id,32))throw std::invalid_argument("save ID");
         auto base=target.native()+L".mms-"+Wide(id);
         newMain=base+L".new-pmm";newSide=base+L".new-json";oldMain=base+L".old-pmm";oldSide=base+L".old-json";tempJournal=base+L".journal";
@@ -694,7 +694,8 @@ void RecoverFrozen(const fs::path& target,const ParsedJournal& parsed,JournalRec
 }
 
 void Recover(const fs::path& target){
-    const auto journal=fs::path(target.native()+L".mms-save.json");if(!fs::exists(journal))return;
+    const auto journal=project_recovery::JournalPath(target);
+    if(project_recovery::JournalAbsent(journal))return;
     auto record=ReadJournal(journal);
     const auto parsed=ParseJournal(record.bytes);
     const auto& j=parsed.json;
@@ -748,10 +749,10 @@ void CheckArchiveOwner(const fs::path& target) {
     fs::path owner=target;
     for(size_t depth=1;pmm_paths::IsProject(owner)&&owner.native().back()==L'1';++depth) {
         owner=owner.native().substr(0,owner.native().size()-1);
-        const fs::path journal=owner.native()+L".mms-save.json";
-        if(!fs::exists(journal))continue;
-        const auto bytes=ReadFile(journal);
-        const auto parsed=ParseJournal(bytes);
+        const auto journal=project_recovery::JournalPath(owner);
+        if(project_recovery::JournalAbsent(journal))continue;
+        const auto record=ReadJournal(journal);
+        const auto parsed=ParseJournal(record.bytes);
         const auto& j=parsed.json;
         const auto schema=j.At("schemaVersion").UInt();
         if(schema==4)continue; // Frozen transactions never move historical generations.
@@ -850,7 +851,13 @@ PluginProject DecodeProject(std::string_view bytes){
     const auto& entries=j.At("plugins");if(entries.kind!=Json::Object||entries.object.size()>4096)throw std::invalid_argument("plugin records");
     for(const auto& [id,v]:entries.object){if(!ValidId(id))throw std::invalid_argument("plugin ID");StoredData data;data.schema=v.At("schemaVersion").UInt();if(!data.schema)throw std::invalid_argument("plugin schema");data.bytes=Decode(v.At("data").String());if(data.bytes.size()>64ull*1024*1024)throw std::invalid_argument("plugin data size");p.records.emplace(id,std::move(data));}return p;
 }
-void RecoverProjectPair(const fs::path& target){CheckArchiveOwner(target);if(!fs::exists(target.native()+L".mms-save.json"))return;Lock lock(target);Recover(target);}
+void RecoverProjectPair(const fs::path& target){
+    CheckArchiveOwner(target);
+    // An intact project without a journal need not create a lock file.
+    if(project_recovery::JournalAbsent(project_recovery::JournalPath(target)))return;
+    Lock lock(target);
+    Recover(target);
+}
 PluginProject ReadPluginProject(const fs::path& target){
     // Opening an intact project must also work from a read-only directory.
     // Hash validation rejects a pair observed during a concurrent replacement.
@@ -868,7 +875,8 @@ BackupRemoval DeletePluginBackup(const fs::path& target, bool (*isOwned)(const f
     Lock lock(target);
     // Do not recover a pending transaction here. Recovery could replace the
     // ownership-marked file with a manual save, which rotation must not delete.
-    if (!project_recovery::BackupJournalAbsent(target) || !isOwned(target))
+    std::error_code journalError;
+    if (!project_recovery::JournalAbsent(project_recovery::JournalPath(target),journalError) || !isOwned(target))
         return BackupRemoval::NotRemoved;
 
     fs::path side;

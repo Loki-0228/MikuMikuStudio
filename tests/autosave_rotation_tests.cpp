@@ -1,7 +1,7 @@
 // MAINTENANCE: portable coverage of autosave's timestamp ranking and rotation plan.
 
 #include "app/autosave_rotation.hpp"
-#include "io/backup_removal_guard.hpp"
+#include "io/project_recovery_journal.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -91,25 +91,37 @@ public:
 };
 
 void CheckJournalBoundary() {
+    using mikumikustudio::project_recovery::JournalAbsent;
+    using mikumikustudio::project_recovery::JournalPath;
     const ScratchFolder scratch;
-    const auto backup = scratch.path / "saved.pmm";
-    auto journal = backup;
-    journal += ".mms-save.json";
-    using mikumikustudio::project_recovery::BackupJournalAbsent;
-    Check(BackupJournalAbsent(backup), "no journal reserves this backup");
+    const auto journal = JournalPath(scratch.path / "saved.pmm");
+    Check(journal == scratch.path / "saved.pmm.mms-save.json", "journal is a sibling with the expected suffix");
+    Check(JournalAbsent(journal), "there is no journal to handle");
+    Check(JournalAbsent(JournalPath(scratch.path / "missing" / "saved.pmm")),
+        "normal absence includes a missing parent directory");
 
     std::ofstream(journal) << "interrupted save";
-    Check(!BackupJournalAbsent(backup), "an interrupted save reserves this backup");
-    Check(!BackupJournalAbsent(journal / "nested.pmm"), "a failed path lookup is not proven absence");
+    Check(!JournalAbsent(journal), "a regular journal requires handling");
+    std::error_code error;
+    const auto invalid = JournalPath(journal / "nested.pmm");
+    Check(!JournalAbsent(invalid,error) && error == std::errc::not_a_directory,
+        "a failed path lookup is not proven absence");
+    bool reported = false;
+    try { (void)JournalAbsent(invalid); }
+    catch (const fs::filesystem_error& e) { reported = e.code() == error; }
+    Check(reported, "recovery reports the lookup error");
     fs::remove(journal);
     fs::create_directory(journal);
-    Check(!BackupJournalAbsent(backup), "a directory at the journal path blocks removal");
+    Check(!JournalAbsent(journal), "a directory at the journal path is not absence");
     fs::remove(journal);
-    fs::create_symlink(scratch.path / "missing", journal);
-    Check(!BackupJournalAbsent(backup), "a dangling journal symlink blocks removal");
+    const auto linked = scratch.path / "other-file";
+    fs::create_symlink(linked, journal);
+    Check(!JournalAbsent(journal), "a dangling journal symlink is not absence");
+    std::ofstream(linked) << "unrelated file";
+    Check(!JournalAbsent(journal), "a live journal symlink is not absence");
     fs::remove(journal);
 
-    Check(BackupJournalAbsent(backup), "ordinary rotation can resume once the journal is gone");
+    Check(JournalAbsent(journal), "normal operation can resume once the journal is gone");
 }
 
 void CheckUnavailableAge() {
