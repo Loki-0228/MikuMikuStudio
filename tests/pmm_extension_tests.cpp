@@ -17,11 +17,63 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <new>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace pmmx = mikumikustudio::pmm_extension;
+
+// This is a standalone test executable. Count or fail ordinary C++ allocations
+// only on the calling thread and only during the read under test.
+namespace allocation_probe {
+
+class Scope {
+public:
+    explicit Scope(std::size_t minimum, std::size_t maxFailSize = 0);
+    ~Scope();
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+
+    std::size_t minimum;
+    std::size_t maxFailSize;
+    std::size_t attempts = 0;
+
+private:
+    Scope* previous_;
+};
+
+thread_local Scope* active = nullptr;
+
+Scope::Scope(std::size_t minimum, std::size_t maxFailSize)
+    : minimum(minimum), maxFailSize(maxFailSize), previous_(active) {
+    active = this;
+}
+
+Scope::~Scope() { active = previous_; }
+
+void* Allocate(std::size_t size) {
+    if (active != nullptr && size >= active->minimum) {
+        ++active->attempts;
+        if (size <= active->maxFailSize) {
+            throw std::bad_alloc();
+        }
+    }
+    if (void* block = std::malloc(size == 0 ? 1 : size)) {
+        return block;
+    }
+    throw std::bad_alloc();
+}
+
+}  // namespace allocation_probe
+
+void* operator new(std::size_t size) { return allocation_probe::Allocate(size); }
+void* operator new[](std::size_t size) { return allocation_probe::Allocate(size); }
+void operator delete(void* block) noexcept { std::free(block); }
+void operator delete[](void* block) noexcept { std::free(block); }
+void operator delete(void* block, std::size_t) noexcept { std::free(block); }
+void operator delete[](void* block, std::size_t) noexcept { std::free(block); }
 
 namespace {
 
@@ -391,6 +443,109 @@ void TestUnknownOrderAndValuePreserved() {
                   out.records[3].value == BytesOf("ja"),
               "unknown keys keep their original value bytes");
     }
+}
+
+void TestStreamedReadAllocations() {
+    TempFile file("streamed_read");
+    Check(file.ok(), "streamed read: temp file created");
+    if (!file.ok()) {
+        return;
+    }
+
+    constexpr std::size_t valueSize = 8 * 1024 * 1024;
+    constexpr __int64 entryPosition = 41;
+    const auto prefix = StandardBytes(96);
+    const std::string setting = "mds.viewport.zoom";
+    std::vector<pmmx::Record> records;
+    // The large record's header straddles the first 64 KiB boundary.
+    records.push_back(MakeRecord(setting, std::vector<std::uint8_t>(
+        64 * 1024 - 4 - 8 - setting.size(), 0x5A)));
+    std::string rawKey(pmmx::kMaxKeyBytes - 2, 'z');
+    rawKey += "\xC3\xA9";
+    std::vector<std::uint8_t> value(valueSize);
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        value[i] = static_cast<std::uint8_t>((i ^ (i >> 8) ^ (i >> 16)) & 0xFF);
+    }
+    records.push_back(MakeRecord(rawKey, std::move(value)));
+    records.push_back(MakeRecord("vendor.Empty", {}));
+    records.push_back(MakeRecord("vendor.empty", {0xFF, 0x00, 0x80, 0x01}));
+
+    auto stream = EncodeStream(records);
+    const auto bytes = ValidFile(prefix, stream);
+    file.WriteWhole(bytes);
+    file.Seek(entryPosition);
+
+    pmmx::Document out;
+    std::uint64_t standardSize = 0;
+    pmmx::ReadResult result;
+    std::size_t largeAttempts = 0;
+    {
+        // Fixture allocations aren't counted. Only the returned opaque value
+        // should need a payload-scale allocation, not a second tail buffer.
+        allocation_probe::Scope probe(valueSize / 2);
+        result = pmmx::Read(file.fd(), out, standardSize);
+        largeAttempts = probe.attempts;
+    }
+    Check(result == pmmx::ReadResult::Loaded, "mixed stream reads Loaded");
+    Check(largeAttempts == 1, "mixed stream makes only one payload-scale allocation");
+    Check(file.Tell() == entryPosition && standardSize == prefix.size(),
+          "streamed read restores the cursor and reports the standard boundary");
+    bool matches = records.size() == out.records.size();
+    for (std::size_t i = 0; matches && i < records.size(); ++i) {
+        matches = out.records[i].key == records[i].key &&
+                  out.records[i].value == records[i].value;
+    }
+    Check(matches, "mixed stream preserves key bytes, value bytes, and order across chunks");
+    Check(file.ReadWhole() == bytes, "streamed read does not modify the file");
+
+    const auto readWithAllocationFault = [&](std::size_t maxFailSize) {
+        result = pmmx::ReadResult::Absent;
+        standardSize = 0xDEAD;
+        file.Seek(entryPosition);
+        out.records.push_back(MakeRecord("stale", {1}));
+        bool threw = false;
+        {
+            allocation_probe::Scope probe(valueSize / 2, maxFailSize);
+            try {
+                result = pmmx::Read(file.fd(), out, standardSize);
+            } catch (const std::bad_alloc&) {
+                threw = true;
+            }
+            largeAttempts = probe.attempts;
+        }
+        return threw;
+    };
+
+    // Target the owned value, not a hypothetical allocation of the complete
+    // stream, which is more than 64 KiB larger in this fixture.
+    const std::size_t maxValueAllocation = valueSize + 4096;
+    const bool validThrew = readWithAllocationFault(maxValueAllocation);
+    Check(validThrew && largeAttempts == 1, "a real value allocation can fail on a valid tail");
+    Check(file.Tell() == entryPosition, "allocation exception restores the descriptor cursor");
+    Check(out.records.empty() && standardSize == 0xDEAD,
+          "allocation exception leaves no partial records or new standard boundary");
+    Check(file.ReadWhole() == bytes, "allocation exception does not modify the file");
+
+    // Change bytes near the end, after the injected fault point. A bad CRC
+    // outranks a tentative record allocation failure, as it did before.
+    file.PatchByte(static_cast<__int64>(prefix.size() + stream.size() - 1), 0x02);
+    const bool corruptThrew = readWithAllocationFault(maxValueAllocation);
+    Check(!corruptThrew && result == pmmx::ReadResult::Invalid,
+          "bad CRC reports Invalid even with a value allocation fault");
+    Check(file.Tell() == entryPosition && out.records.empty() && standardSize == 0xDEAD,
+          "bad CRC restores the cursor and leaves no partial output");
+
+    // A complete, correctly checksummed tail still cannot justify a value
+    // length past its end. No large allocation should be attempted.
+    for (std::size_t i = 4; i < 8; ++i) {
+        stream[i] = 0xFF;
+    }
+    file.WriteWhole(ValidFile(prefix, stream));
+    const bool malformedThrew = readWithAllocationFault((std::numeric_limits<std::size_t>::max)());
+    Check(!malformedThrew && largeAttempts == 0 && result == pmmx::ReadResult::Invalid,
+          "out-of-range value length with valid CRC is rejected before allocating");
+    Check(file.Tell() == entryPosition && out.records.empty() && standardSize == 0xDEAD,
+          "malformed length restores the cursor and leaves no partial output");
 }
 
 // The wire layout is exactly: uint32 keySize, uint32 valueSize, key, value,
@@ -876,6 +1031,7 @@ int main() {
     TestNoTrailerIsAbsent();
     TestRoundTripSettingsAndUnknown();
     TestUnknownOrderAndValuePreserved();
+    TestStreamedReadAllocations();
     TestExactByteLayout();
     TestEmptyDocument();
     TestCrcErrors();

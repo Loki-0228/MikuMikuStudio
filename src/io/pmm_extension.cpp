@@ -10,6 +10,7 @@
 
 #include <io.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -35,14 +36,21 @@ struct Crc32Table {
     }
 };
 
-std::uint32_t Crc32(const std::uint8_t* data, std::size_t size) {
-    static const Crc32Table table;
-    std::uint32_t crc = 0xFFFFFFFFu;
-    for (std::size_t i = 0; i < size; ++i) {
-        crc = (crc >> 8) ^ table.entry[(crc ^ data[i]) & 0xFFu];
+class Crc32 {
+public:
+    void Update(const void* data, std::size_t size) {
+        static const Crc32Table table;
+        const auto* bytes = static_cast<const std::uint8_t*>(data);
+        for (std::size_t i = 0; i < size; ++i) {
+            crc_ = (crc_ >> 8) ^ table.entry[(crc_ ^ bytes[i]) & 0xFFu];
+        }
     }
-    return crc ^ 0xFFFFFFFFu;
-}
+
+    std::uint32_t Value() const { return crc_ ^ 0xFFFFFFFFu; }
+
+private:
+    std::uint32_t crc_ = 0xFFFFFFFFu;
+};
 
 void PutU32(std::uint8_t* out, std::uint32_t value) {
     out[0] = static_cast<std::uint8_t>(value & 0xFFu);
@@ -68,8 +76,7 @@ std::uint64_t GetU64(const std::uint8_t* in) {
            (static_cast<std::uint64_t>(GetU32(in + 4)) << 32);
 }
 
-// Reads exactly `size` bytes; false on EOF or error.  `size` is bounded by the
-// caller (kMaxExtensionBytes or kTrailerSize).
+// Reads exactly `size` bytes; false on EOF or error.
 bool ReadExact(int fd, void* buffer, std::size_t size) {
     std::uint8_t* out = static_cast<std::uint8_t*>(buffer);
     std::size_t done = 0;
@@ -110,46 +117,146 @@ bool IsRepresentableKey(const std::string& key) {
     return std::memchr(key.data(), 0, key.size()) == nullptr;
 }
 
-// Parses the record stream into `parsed`.  Fails on any malformed record:
-// short header, keySize outside 1..255, key or value past the end of the
-// stream, NUL in a key, duplicate key, more than kMaxRecordCount records.
-bool ParseRecords(const std::vector<std::uint8_t>& bytes, Document& parsed) {
-    parsed.records.clear();
+// One fixed-size buffer coalesces small reads and checksums discarded bytes.
+// Large pieces of a value go straight into its owning vector.
+class TailReader {
+public:
+    TailReader(int fd, std::size_t size) : fd_(fd), remaining_(size) {}
+
+    std::size_t Remaining() const { return remaining_; }
+    std::uint32_t Checksum() const { return crc_.Value(); }
+
+    bool Read(void* buffer, std::size_t size) {
+        if (size > remaining_) {
+            return false;
+        }
+        auto* out = static_cast<std::uint8_t*>(buffer);
+        while (size != 0) {
+            std::size_t count;
+            if (next_ != end_) {
+                count = (std::min)(size, end_ - next_);
+                std::memcpy(out, bytes_ + next_, count);
+                next_ += count;
+            } else if (size >= sizeof(bytes_)) {
+                count = sizeof(bytes_);
+                if (!ReadChunk(out, count)) {
+                    return false;
+                }
+            } else {
+                next_ = 0;
+                end_ = (std::min)(remaining_, sizeof(bytes_));
+                if (!ReadChunk(bytes_, end_)) {
+                    return false;
+                }
+                continue;
+            }
+            out += count;
+            size -= count;
+            remaining_ -= count;
+        }
+        return true;
+    }
+
+    bool Drain() {
+        // Buffered bytes were already included in the CRC when read.
+        remaining_ -= end_ - next_;
+        next_ = end_ = 0;
+        while (remaining_ != 0) {
+            const std::size_t count = (std::min)(remaining_, sizeof(bytes_));
+            if (!ReadChunk(bytes_, count)) {
+                return false;
+            }
+            remaining_ -= count;
+        }
+        return true;
+    }
+
+private:
+    bool ReadChunk(void* out, std::size_t count) {
+        if (!ReadExact(fd_, out, count)) {
+            return false;
+        }
+        crc_.Update(out, count);
+        return true;
+    }
+
+    int fd_;
+    std::size_t remaining_;
+    std::size_t next_ = 0;
+    std::size_t end_ = 0;
+    Crc32 crc_;
+    std::uint8_t bytes_[64 * 1024];
+};
+
+ReadResult ReadRecords(TailReader& reader, Document& parsed) {
     std::unordered_set<std::string> seen;
-    std::size_t pos = 0;
-    while (pos < bytes.size()) {
-        if (bytes.size() - pos < 8) {
-            return false;
+    while (reader.Remaining() != 0) {
+        std::uint8_t header[8];
+        if (reader.Remaining() < sizeof(header)) {
+            return ReadResult::Invalid;
         }
-        const std::uint32_t keySize = GetU32(bytes.data() + pos);
-        const std::uint32_t valueSize = GetU32(bytes.data() + pos + 4);
-        pos += 8;
+        if (!reader.Read(header, sizeof(header))) {
+            return ReadResult::IoError;
+        }
+        const std::uint32_t keySize = GetU32(header);
+        const std::uint32_t valueSize = GetU32(header + 4);
         if (keySize < 1 || keySize > kMaxKeyBytes) {
-            return false;
+            return ReadResult::Invalid;
         }
-        const std::uint64_t payload = static_cast<std::uint64_t>(keySize) +
-                                      static_cast<std::uint64_t>(valueSize);
-        if (payload > static_cast<std::uint64_t>(bytes.size() - pos)) {
-            return false;
+        if (keySize > reader.Remaining() ||
+            valueSize > reader.Remaining() - keySize ||
+            parsed.records.size() >= kMaxRecordCount) {
+            return ReadResult::Invalid;
         }
-        const char* keyBegin = reinterpret_cast<const char*>(bytes.data() + pos);
-        if (std::memchr(keyBegin, 0, keySize) != nullptr) {
-            return false;
+        char key[kMaxKeyBytes];
+        if (!reader.Read(key, keySize)) {
+            return ReadResult::IoError;
         }
-        if (parsed.records.size() >= kMaxRecordCount) {
-            return false;
+        if (std::memchr(key, 0, keySize) != nullptr) {
+            return ReadResult::Invalid;
         }
         Record record;
-        record.key.assign(keyBegin, keySize);
+        record.key.assign(key, keySize);
         if (!seen.insert(record.key).second) {
-            return false;
+            return ReadResult::Invalid;
         }
-        const std::uint8_t* valueBegin = bytes.data() + pos + keySize;
-        record.value.assign(valueBegin, valueBegin + valueSize);
+        record.value.resize(valueSize);
+        if (!reader.Read(record.value.data(), valueSize)) {
+            return ReadResult::IoError;
+        }
         parsed.records.push_back(std::move(record));
-        pos += static_cast<std::size_t>(payload);
     }
-    return true;
+    return ReadResult::Loaded;
+}
+
+ReadResult LoadRecords(int fd, __int64 offset, std::size_t size, std::uint32_t crc,
+                       Document& parsed) {
+    if (_lseeki64(fd, offset, SEEK_SET) < 0) {
+        return ReadResult::IoError;
+    }
+    TailReader reader(fd, size);
+
+    ReadResult result;
+    try {
+        result = ReadRecords(reader, parsed);
+    } catch (...) {
+        // Preserve I/O and checksum precedence over failures while parsing a
+        // record. With a fully readable, matching tail, propagate the original
+        // exception; none of the tentative records reach the caller.
+        if (!reader.Drain()) {
+            return ReadResult::IoError;
+        }
+        if (reader.Checksum() != crc) {
+            return ReadResult::Invalid;
+        }
+        throw;
+    }
+    // An early framing error still has to read the full claimed stream before
+    // reporting Invalid: a short or failed read takes precedence as IoError.
+    if (result == ReadResult::IoError || !reader.Drain()) {
+        return ReadResult::IoError;
+    }
+    return reader.Checksum() == crc ? result : ReadResult::Invalid;
 }
 
 // Validates the trailer against the file length and loads the records.  The
@@ -185,27 +292,45 @@ ReadResult LoadFromTrailer(int fd, const std::uint8_t* trailer, std::uint64_t fi
         return ReadResult::Invalid;
     }
 
-    std::vector<std::uint8_t> bytes;
     if (extension != 0) {
-        // standard <= fileLength - kTrailerSize - extension, so the offset fits
-        // __int64 and the buffer stays within kMaxExtensionBytes.
-        bytes.resize(static_cast<std::size_t>(extension));
-        if (_lseeki64(fd, static_cast<__int64>(standard), SEEK_SET) < 0) {
-            return ReadResult::IoError;
+        // The validated offset fits __int64 and the size fits size_t.
+        const ReadResult result = LoadRecords(fd, static_cast<__int64>(standard),
+                                              static_cast<std::size_t>(extension), crc, parsed);
+        if (result != ReadResult::Loaded) {
+            return result;
         }
-        if (!ReadExact(fd, bytes.data(), bytes.size())) {
-            return ReadResult::IoError;
-        }
-    }
-    if (Crc32(bytes.data(), bytes.size()) != crc) {
-        return ReadResult::Invalid;
-    }
-    if (!ParseRecords(bytes, parsed)) {
+    } else if (crc != 0) {
         return ReadResult::Invalid;
     }
     standardOut = standard;
     return ReadResult::Loaded;
 }
+
+// A normal restore failure is reported as IoError. If loading throws, restore
+// on unwind without replacing the original exception with a new error.
+class FilePositionGuard {
+public:
+    FilePositionGuard(int fd, __int64 saved) : fd_(fd), saved_(saved) {}
+
+    ~FilePositionGuard() {
+        if (needsRestore_) {
+            Restore();
+        }
+    }
+
+    bool Restore() {
+        needsRestore_ = false;
+        return _lseeki64(fd_, saved_, SEEK_SET) >= 0;
+    }
+
+    FilePositionGuard(const FilePositionGuard&) = delete;
+    FilePositionGuard& operator=(const FilePositionGuard&) = delete;
+
+private:
+    int fd_;
+    __int64 saved_;
+    bool needsRestore_ = true;
+};
 
 }  // namespace
 
@@ -216,6 +341,7 @@ ReadResult Read(int fd, Document& out, std::uint64_t& standardSize) {
     if (saved < 0) {
         return ReadResult::IoError;
     }
+    FilePositionGuard position(fd, saved);
     const __int64 length = _filelengthi64(fd);
     if (length < 0) {
         return ReadResult::IoError;
@@ -237,8 +363,7 @@ ReadResult Read(int fd, Document& out, std::uint64_t& standardSize) {
         }
     }
 
-    if (_lseeki64(fd, saved, SEEK_SET) < 0) {
-        out.records.clear();
+    if (!position.Restore()) {
         return ReadResult::IoError;
     }
     if (result == ReadResult::Loaded) {
@@ -291,11 +416,10 @@ bool Append(int fd, const Document& document) {
     }
 
     // Stream records without allocating a second copy of the entire document.
-    static const Crc32Table table;
-    std::uint32_t crc=0xffffffffu;std::uint64_t total=0;
+    Crc32 crc;
+    std::uint64_t total=0;
     auto write=[&](const void* bytes,std::size_t count){
-        const auto* p=static_cast<const std::uint8_t*>(bytes);
-        for(std::size_t i=0;i<count;++i)crc=(crc>>8)^table.entry[(crc^p[i])&255];
+        crc.Update(bytes, count);
         total+=count;return WriteAll(fd,bytes,count);
     };
     for(const auto& record:document.records){
@@ -306,7 +430,7 @@ bool Append(int fd, const Document& document) {
     std::memcpy(trailer, kMagic, sizeof(kMagic));
     PutU64(trailer + 8, static_cast<std::uint64_t>(position));
     PutU64(trailer + 16, total);
-    PutU32(trailer + 24, crc^0xffffffffu);
+    PutU32(trailer + 24, crc.Value());
     PutU32(trailer + 28, 0);
 
     return WriteAll(fd, trailer, kTrailerSize);
