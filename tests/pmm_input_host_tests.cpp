@@ -640,7 +640,7 @@ fs::path motionDialogPath;
 unsigned motionPicks = 0, motionNotices = 0;
 unsigned char motionOtherSlot = 0;
 const wchar_t* expectedMotionSaveNotice = nullptr;
-std::function<int(UiMessage, const wchar_t*)> preflightOpenNotice;
+std::function<int(UiMessage, const wchar_t*)> scopedProjectOpenNotice;
 bool CacheSaveFailureMessage(HWND, LPCWSTR, LPCWSTR, UINT);
 int WINAPI ErrorW(HWND window, LPCWSTR text, LPCWSTR caption, UINT flags) {
     if (motionDialogAction != MotionDialogAction::None && caption && !std::wcscmp(caption, L"VMD")) {
@@ -788,7 +788,7 @@ int WINAPI ErrorA(HWND window, LPCSTR text, LPCSTR caption, UINT flags) {
 }
 int ErrorMessage(MMDApp* value, HWND window, UiMessage message, UINT flags,
                  const wchar_t* detail) {
-    if (preflightOpenNotice) return preflightOpenNotice(message, detail);
+    if (scopedProjectOpenNotice) return scopedProjectOpenNotice(message, detail);
     if (v2Accessory && v2Accessory->duplicateSlot) {
         Check(monitor && value == app && window == app->MainWindow() && !inputOpen &&
               message == UiMessage::InvalidProjectFile && flags == (MB_OK | MB_ICONERROR) &&
@@ -2331,7 +2331,7 @@ void ProjectPreflightRefusalCases() {
         auto revision = app->SceneRevision();
         unsigned notices = 0;
         bool inputReleased = false;
-        preflightOpenNotice = [&](UiMessage message, const wchar_t* detail) {
+        scopedProjectOpenNotice = [&](UiMessage message, const wchar_t* detail) {
             const bool correctPath = detail && (missingFile ?
                 std::wstring_view(detail).find(path.native() + L"\n") == 0 : path == detail);
             Check(message == expected && correctPath && ++notices == 1,
@@ -2350,7 +2350,7 @@ void ProjectPreflightRefusalCases() {
             return IDOK;
         };
         const bool loaded = LoadSceneFile(path.c_str());
-        preflightOpenNotice = nullptr;
+        scopedProjectOpenNotice = nullptr;
         std::printf("PREFLIGHT edit=%d inputReleased=%d dirty=%d revisionRetained=%d\n",
                     editDuringNotice, inputReleased, bool(app->SceneModified()), app->SceneRevision() == revision);
         Check(!loaded && notices == 1 && app->SceneGeneration() == generation &&

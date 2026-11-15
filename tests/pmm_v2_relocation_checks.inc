@@ -121,6 +121,42 @@ void V2RelocationCases(const fs::path& emptyV1, const fs::path& emptyV2,
     load(first, {{missing, L"rel-A", 1, file(good, 0)}}, true);
     Check(RelocationTicket::Capture(*app).Infer(file(old, 1).native()).path == file(good, 1).native(),
           "direct V2 legacy success retains the mapping after its wrapper returns");
+    // Selecting a real PMX with a partial zero joint count must fail before
+    // the replacement reaches PMM structure reconciliation or teaches a root.
+    const auto truncatedPath = wrong / L"A" / L"v2rel.pmx";
+    auto truncated = geometry_test_reference::Pmx(3, 0, 1, 1, true);
+    truncated.bytes.resize(truncated.bytes.size() - 2); // two of four count bytes remain
+    Wire{truncated.bytes}.Write(truncatedPath);
+    const auto sourceBytes = Bytes(first);
+    const std::wstring pickerBefore = app->DirModel();
+    const auto tails = tailCalls;
+    const auto stores = model_geometry_cache::GetProcessStatistics().stores;
+    unsigned errors = 0;
+    V2RelocationDialogs rejected{{{missing, L"rel-A", 1, truncatedPath}}};
+    scopedProjectOpenNotice = [&](UiMessage message, const wchar_t* detail) {
+        Check(message == UiMessage::OpenModelError && detail && fs::path(detail) == truncatedPath &&
+              monitor && inputOpen, "real selected-model error identifies the truncated PMX");
+        const auto* partial = app->ModelSlot(0);
+        Check(partial && mdl::Mdl(partial)->boneCount == 1 && !mdl::Mdl(partial)->loadComplete &&
+              !RelocationTicket::Capture(*app).Current(*app),
+              "late PMX failure does not complete the candidate or publish a relocation owner");
+        ++errors;
+        faultThrown = true; // Classify the real abort refresh in the original-profile observer.
+        return IDOK;
+    };
+    v2Relocation = &rejected;
+    Arm(first, Fault::None, false);
+    const bool loaded = LoadSceneFile(first.c_str());
+    v2Relocation = nullptr;
+    scopedProjectOpenNotice = nullptr;
+    Finish(loaded, false);
+    const auto after = model_geometry_cache::GetProcessStatistics();
+    Check(errors == 1 && rejected.next == 1 && !rejected.awaitingPicker && tailCalls == tails &&
+          !app->sceneRecoveryPending && app->DirModel() == pickerBefore &&
+          !RelocationTicket::Capture(*app).Current(*app) && after.stores == stores && !after.pendingBytes &&
+          Bytes(first) == sourceBytes && Bytes(truncatedPath) == truncated.bytes,
+          "rejected selected PMX leaves no model, mapping, cache publication or source edit");
+    std::puts("PASS PMM v2 selected PMX rejects partial zero joint count");
     CopyDirPathW(app->DirModel(), savedModelDirectory.c_str());
     pmm_io::bufferedReads = savedMode;
     app->EnglishUI() = language;
