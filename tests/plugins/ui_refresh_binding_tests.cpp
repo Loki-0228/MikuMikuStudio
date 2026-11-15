@@ -1,5 +1,6 @@
 // Pure DATA-store contract. No HWND, GPU, project, or plugin DLL is needed.
 #include "../../src/plugins/ui_refresh_binding.cpp"
+#include <mms/cpp/data_refresh.hpp>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -251,9 +252,125 @@ void ValidationAndRunningStop() {
         "running stop cancels the candidate and leaves output untouched");
     pending.reset(); Check(!f.bindings.HasLeases(f.client), "running stop releases builder and contribution without hidden leases");
 }
+// Only the refresh queue boundary is modeled here. Its request captures a real
+// contribution from this endpoint's DATA store, with the original C handles.
+struct SdkRefreshEndpoint {
+    Fixture& fixture;
+    UiRefreshBindings::Contribution pending;
+    unsigned requests = 0;
+    MmsHandle ticket;
+    SdkRefreshEndpoint* serviceContext = this;
+    MmsUiRefreshApiV1 api{};
+    SdkRefreshEndpoint(Fixture& data, MmsHandle id) : fixture(data), ticket(id) {
+        api.h = Header<MmsUiRefreshApiV1>(); api.context = &serviceContext;
+        api.getCapabilities = [](void*, MmsUiRefreshCapabilitiesV1*) { return MMS_E_UNSUPPORTED; };
+        api.getTarget = [](void*, MmsHandle, MmsUiRefreshTargetV1*) { return MMS_E_UNSUPPORTED; };
+        api.request = [](void* context, const MmsUiRefreshRequestV1* request, MmsHandle* out) -> MmsResult {
+            auto& endpoint = **static_cast<SdkRefreshEndpoint**>(context);
+            ++endpoint.requests;
+            auto& f = endpoint.fixture;
+            const auto result = f.bindings.Capture(f.client, request->binding, request->target,
+                request->sourceRevision, endpoint.pending);
+            if (!result) *out = endpoint.ticket;
+            return result;
+        };
+        api.query = [](void*, MmsHandle, MmsUiRefreshStateV1*) { return MMS_E_UNSUPPORTED; };
+        api.cancel = [](void*, MmsHandle) { return MMS_E_UNSUPPORTED; };
+        api.release = [](void* context, MmsHandle id) -> MmsResult {
+            auto& endpoint = **static_cast<SdkRefreshEndpoint**>(context);
+            if (id != endpoint.ticket || !endpoint.pending) return MMS_E_NOT_FOUND;
+            endpoint.pending.reset(); return MMS_OK;
+        };
+    }
+    static MmsResult MMS_CALL Query(void* context, MmsString name, uint32_t major, uint32_t minor,
+        uint32_t size, void* out) {
+        auto& endpoint = *static_cast<SdkRefreshEndpoint*>(context);
+        if (std::string_view(name.data, name.bytes) == "mms.ui.refresh.bind")
+            return Table(major, minor, size, out, endpoint.fixture.api);
+        return QueryRefresh(context, name, major, minor, size, out);
+    }
+    static MmsResult MMS_CALL QueryRefresh(void* context, MmsString name, uint32_t major, uint32_t minor,
+        uint32_t size, void* out) {
+        auto& endpoint = *static_cast<SdkRefreshEndpoint*>(context);
+        if (std::string_view(name.data, name.bytes) != "mms.ui.refresh") return MMS_E_NOT_FOUND;
+        return Table(major, minor, size, out, endpoint.api);
+    }
+    MmsHostV1 Host() {
+        MmsHostV1 host{}; host.h = Header<MmsHostV1>(); host.context = this; host.queryService = &Query;
+        return host;
+    }
+};
+
+void SdkBindingRefreshOwnership() {
+    namespace sdk = mms::sdk;
+    Fixture a, b;
+    SdkRefreshEndpoint endpointA(a, 101), endpointB(b, 202);
+    auto hostA = endpointA.Host(), copiedHostA = hostA, hostB = endpointB.Host();
+    sdk::DataServices dataA, dataB;
+    sdk::RefreshServices refreshA, refreshB, unready, anotherQuery;
+    Check(sdk::DataServices::Query(hostA, dataA) == MMS_OK &&
+        sdk::RefreshServices::Query(copiedHostA, refreshA) == MMS_OK &&
+        dataA.api().context != refreshA.api().context && hostA.context != refreshA.api().context,
+        "host negotiation and both service contexts can use distinct pointers");
+    Check(sdk::DataServices::Query(hostB, dataB) == MMS_OK && sdk::RefreshServices::Query(hostB, refreshB) == MMS_OK,
+        "negotiate an independent client's services through the same dispatcher");
+    copiedHostA.queryService = &SdkRefreshEndpoint::QueryRefresh;
+    Check(sdk::RefreshServices::Query(copiedHostA, anotherQuery) == MMS_OK &&
+        anotherQuery.api().context == refreshA.api().context, "different host query callbacks can expose the same service context");
+    sdk::DataSource sourceA, sourceB;
+    sdk::DataBinding bindingA, bindingB;
+    MmsUiDataSourceStateV1 revisionA{}, revisionB{};
+    Check(dataA.RegisterSource(sdk::Text("status"), 64, sourceA) == MMS_OK &&
+        dataB.RegisterSource(sdk::Text("status"), 64, sourceB) == MMS_OK &&
+        sourceA.Publish({"A", 1}, 0, revisionA) == MMS_OK &&
+        sourceB.Publish({"B", 1}, 0, revisionB) == MMS_OK &&
+        dataA.Bind(a.target, sourceA, 64, bindingA) == MMS_OK &&
+        dataB.Bind(b.target, sourceB, 64, bindingB) == MMS_OK, "establish real DATA bindings on two independent hosts");
+    Check(bindingA.get() == bindingB.get() && revisionA.revision == revisionB.revision && SameTarget(a.target, b.target),
+        "binding, source revision and target values collide across independent hosts");
+    sdk::RefreshTicket ticket;
+    Check(bindingA.Refresh(refreshB, a.target, revisionA.revision, ticket) == MMS_E_ARGUMENT && !ticket &&
+        !endpointB.requests && !endpointB.pending, "foreign host context cannot submit the colliding binding");
+    Check(bindingA.Refresh(anotherQuery, a.target, revisionA.revision, ticket) == MMS_E_ARGUMENT && !ticket &&
+        !endpointA.requests && !endpointA.pending, "foreign query callback is rejected even with matching contexts");
+    Check(bindingA.Refresh(unready, a.target, revisionA.revision, ticket) == MMS_E_NOT_READY && !ticket,
+        "unnegotiated refresh service stays not ready");
+    sdk::DataBinding moved(std::move(bindingA));
+    Check(bindingA.Refresh(refreshB, a.target, revisionA.revision, ticket) == MMS_E_NOT_READY && !ticket,
+        "moved-from binding stays not ready before host checks");
+    auto refreshCopy = refreshA;
+    Check(sdk::RefreshServices::Query(hostA, refreshCopy) == MMS_OK, "same client can negotiate again");
+    MmsResult workerResult = MMS_E_FAILED;
+    MmsResult workerRelease = MMS_OK;
+    std::thread worker([&] {
+        workerRelease = moved.Release();
+        workerResult = moved.Refresh(refreshCopy, a.target, revisionA.revision, ticket);
+    });
+    worker.join();
+    Check(workerRelease == MMS_E_THREAD && workerResult == MMS_OK && ticket.get() == endpointA.ticket && endpointA.requests == 1 && endpointA.pending,
+        "failed release retains the moved binding and its re-queried service still works on a worker");
+    Check(bindingB.Refresh(refreshA, b.target, revisionB.revision, ticket) == MMS_E_ARGUMENT &&
+        ticket.get() == endpointA.ticket && endpointA.requests == 1 && endpointA.pending,
+        "rejected foreign refresh leaves an occupied ticket with its original owner");
+    Check(moved.Refresh(refreshA, a.target, revisionA.revision, ticket) == MMS_E_BUSY &&
+        ticket.get() == endpointA.ticket && endpointA.requests == 1, "same-host output busy still bypasses the request");
+    Check(ticket.Release() == MMS_OK && !endpointA.pending, "original service still releases the ticket");
+    const auto priorRevision = revisionA.revision;
+    Check(sourceA.Publish({"new", 3}, priorRevision, revisionA) == MMS_OK &&
+        moved.Refresh(refreshA, a.target, priorRevision, ticket) == MMS_E_STALE && !ticket && endpointA.requests == 2,
+        "same-host stale source revision still comes from the host");
+    const auto detached = moved.detach();
+    Check(detached && a.api.unbind(a.api.context, detached) == MMS_OK &&
+        moved.Refresh(refreshA, a.target, revisionA.revision, ticket) == MMS_E_NOT_READY && !ticket,
+        "detach leaves an empty wrapper and transfers the original handle");
+    Check(bindingB.Release() == MMS_OK && dataB.Bind(b.target, sourceB, 64, moved) == MMS_OK &&
+        moved.Refresh(refreshB, b.target, revisionB.revision, ticket) == MMS_OK && ticket.get() == endpointB.ticket,
+        "rebinding an empty wrapper replaces the previous owner");
+}
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     SourcesAndExactRevision(); FailuresAndReadOnly(); LifetimeAndQuotas(); ValidationAndRunningStop();
+    SdkBindingRefreshOwnership();
     std::printf("PASS UI DATA binding: %u checks\n", checks);
 }

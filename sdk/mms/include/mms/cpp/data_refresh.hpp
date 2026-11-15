@@ -75,13 +75,15 @@ public:
 
 class DataBinding {
     MmsUiRefreshBindingApiV1 api_{};
+    detail::RefreshClientIdentity client_{};
     MmsHandle handle_ = 0;
     friend class DataServices;
 public:
     DataBinding() noexcept = default;
     DataBinding(const DataBinding&) = delete;
     DataBinding& operator=(const DataBinding&) = delete;
-    DataBinding(DataBinding&& other) noexcept : api_(other.api_), handle_(std::exchange(other.handle_, 0)) { other.api_ = {}; }
+    DataBinding(DataBinding&& other) noexcept
+        : api_(other.api_), client_(std::exchange(other.client_, {})), handle_(std::exchange(other.handle_, 0)) { other.api_ = {}; }
     DataBinding& operator=(DataBinding&&) = delete;
     ~DataBinding() { Release(); }
     explicit operator bool() const noexcept { return handle_ != 0; }
@@ -95,13 +97,14 @@ public:
         if (!value.lease) return MMS_E_FAILED;
         out.api_ = api_; out.value_ = value; return MMS_OK;
     }
-    // The regular refresh service owns the returned ticket. DATA does not
-    // implicitly repaint; this convenience explicitly requests both by default.
+    // The regular refresh service owns the returned ticket and must be from
+    // the same host client. DATA and REPAINT are explicitly requested by default.
     MmsResult Refresh(const RefreshServices& refresh, const MmsUiTargetRefV1& target,
         std::uint64_t sourceRevision, RefreshTicket& out,
         std::uint32_t kinds = MMS_UI_REFRESH_DATA | MMS_UI_REFRESH_REPAINT,
         std::uint64_t coalesceKey = 0) const noexcept {
-        if (!handle_) return MMS_E_NOT_READY;
+        if (!handle_ || !refresh.ready()) return MMS_E_NOT_READY;
+        if (!client_.Matches(refresh.client_)) return MMS_E_ARGUMENT;
         MmsUiRefreshRequestV1 request{}; request.h = Header<MmsUiRefreshRequestV1>();
         request.target = target; request.binding = handle_; request.sourceRevision = sourceRevision;
         request.kinds = kinds; request.scope = MMS_UI_REFRESH_SELF; request.coalesceKey = coalesceKey;
@@ -111,28 +114,31 @@ public:
         if (!handle_) return MMS_OK;
         const auto result = detail::Call([&] { return api_.unbind(api_.context, handle_); });
         if (result && result != MMS_E_NOT_FOUND && result != MMS_E_STALE) return result;
-        handle_ = 0; api_ = {}; return MMS_OK;
+        handle_ = 0; api_ = {}; client_ = {}; return MMS_OK;
     }
-    MmsHandle detach() noexcept { api_ = {}; return std::exchange(handle_, 0); }
+    MmsHandle detach() noexcept { api_ = {}; client_ = {}; return std::exchange(handle_, 0); }
 };
 
 class DataServices {
     MmsUiRefreshBindingApiV1 api_{};
+    detail::RefreshClientIdentity client_{};
     std::thread::id thread_{};
     bool ready_ = false;
 public:
     static MmsResult Query(const MmsHostV1& host, DataServices& out) noexcept {
         if (host.h.size < sizeof(host) || host.h.major != 1) return MMS_E_VERSION;
-        if (!host.queryService) return MMS_E_ARGUMENT;
+        const detail::RefreshClientIdentity client{host.context, host.queryService};
+        if (!client.queryService) return MMS_E_ARGUMENT;
         return detail::Call([&]() -> MmsResult {
             MmsUiRefreshBindingApiV1 table{};
-            const auto result = host.queryService(host.context, Text("mms.ui.refresh.bind"), 1, 0, sizeof(table), &table);
+            const auto result = client.queryService(client.context, Text("mms.ui.refresh.bind"), 1, 0, sizeof(table), &table);
             if (result) return result;
             if (!detail::TableHeader(table)) return MMS_E_VERSION;
             if (!table.getCapabilities || !table.registerSource || !table.publishSource || !table.getSource ||
                 !table.unregisterSource || !table.bind || !table.unbind || !table.writePrepared ||
                 !table.acquireDisplay || !table.releaseDisplay) return MMS_E_UNSUPPORTED;
-            DataServices next; next.api_ = table; next.thread_ = std::this_thread::get_id(); next.ready_ = true;
+            DataServices next; next.api_ = table; next.client_ = client;
+            next.thread_ = std::this_thread::get_id(); next.ready_ = true;
             out = next; return MMS_OK;
         });
     }
@@ -174,7 +180,7 @@ public:
         const auto result = detail::Call([&] { return api_.bind(api_.context, &desc, &handle); });
         if (result) return result;
         if (!handle) return MMS_E_FAILED;
-        out.api_ = api_; out.handle_ = handle; return MMS_OK;
+        out.api_ = api_; out.client_ = client_; out.handle_ = handle; return MMS_OK;
     }
     MmsResult WritePrepared(MmsHandle builder, MmsBytes bytes) const noexcept {
         if (const auto result = CheckThread()) return result;

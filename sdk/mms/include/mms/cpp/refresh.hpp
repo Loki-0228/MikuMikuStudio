@@ -7,6 +7,19 @@
 namespace mms::sdk {
 
 class RefreshServices;
+class DataBinding;
+
+namespace detail {
+// Separate service tables may use different contexts for the same host client.
+// Copy the negotiation identity rather than retaining a pointer to MmsHostV1.
+struct RefreshClientIdentity {
+    void* context = nullptr;
+    decltype(MmsHostV1::queryService) queryService = nullptr;
+    bool Matches(const RefreshClientIdentity& other) const noexcept {
+        return context == other.context && queryService == other.queryService;
+    }
+};
+} // namespace detail
 
 class RefreshTicket {
     MmsUiRefreshApiV1 api_{};
@@ -55,22 +68,26 @@ public:
 
 class RefreshServices {
     MmsUiRefreshApiV1 api_{};
+    detail::RefreshClientIdentity client_{};
     std::thread::id thread_{};
     bool ready_ = false;
+    friend class DataBinding;
 public:
     // Call on the host UI thread. Failed negotiation leaves out unchanged.
     static MmsResult Query(const MmsHostV1& host, RefreshServices& out) noexcept {
         if (host.h.size < sizeof(host) || host.h.major != 1) return MMS_E_VERSION;
-        if (!host.queryService) return MMS_E_ARGUMENT;
+        const detail::RefreshClientIdentity client{host.context, host.queryService};
+        if (!client.queryService) return MMS_E_ARGUMENT;
         return detail::Call([&]() -> MmsResult {
             MmsUiRefreshApiV1 table{};
-            const auto result = host.queryService(host.context, Text("mms.ui.refresh"), 1, 0,
+            const auto result = client.queryService(client.context, Text("mms.ui.refresh"), 1, 0,
                 static_cast<std::uint32_t>(sizeof(table)), &table);
             if (result) return result;
             if (!detail::TableHeader(table)) return MMS_E_VERSION;
             if (!table.getCapabilities || !table.getTarget || !table.request ||
                 !table.query || !table.cancel || !table.release) return MMS_E_UNSUPPORTED;
             RefreshServices candidate; candidate.api_ = table;
+            candidate.client_ = client;
             candidate.thread_ = std::this_thread::get_id(); candidate.ready_ = true;
             out = candidate; return MMS_OK;
         });
