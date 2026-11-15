@@ -8,6 +8,8 @@
 
 `SceneSnapshot` 和 `LayoutSnapshotLease` 已持有句柄时，再次获取返回 `MMS_E_BUSY`，原快照及借用数据保持有效。转移句柄时调用 `target.TransferFrom(source)` 并检查返回值；失败时两侧句柄保持不变。接口只接受具名源对象。原先使用移动赋值的插件需要改为调用 `TransferFrom`；移动构造仍可用。
 
+`LayoutServices::AcquireSnapshot` 成功后，`LayoutSnapshotLease::value()` 提供同一宿主快照的 `uiRevision`、`geometryRevision` 和只读 `items`。按 `items.stride` 读取每条 `MmsUiLayoutItemV1`；其中元素 ID 也由该租约保活。移动和转移会把描述一起交给新持有者；释放或分离后，原包装对象不再提供几何；任何复制出的视图也只在原宿主句柄释放前有效。手动接管裸句柄时只有句柄可用。获取和显式释放仍须在宿主 UI 线程上执行，析构不会调用宿主。
+
 基础 UI 的类型化与声明式封装已提供，见 [C++17 界面注册 SDK](cpp-ui.md)。`UiServices`、`RegistrationBundle` 和 `CommandUi` 包装同一套 C ABI，复杂插件继续操作原始句柄。
 
 [自动刷新订阅](refresh-subscriptions.md)为已有 DATA binding 安排来源发布后的刷新，复用原对象、队列和阶段。C++17 `RefreshSubscriptionServices` 包装同一 C 服务。[原创计数示例](examples/auto_refresh/plugin.cpp)展示延迟绑定、数据发布与按钮状态更新。
