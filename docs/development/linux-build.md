@@ -1,6 +1,6 @@
 # Linux 原生 CPU 构建
 
-在 Linux 上可以原生编译曲线和变速算法的静态库，以及一组独立的 CPU 回归程序。不需要 Wine、Windows SDK、Conan、CMake、显示服务器或显卡。需要 GNU Make、支持 C++17 的编译器（如 GCC 或 Clang）和 `ar`。
+在 Linux 上可以原生编译曲线和变速算法的静态库，以及一组独立的 CPU 回归程序。不需要 Wine、Windows SDK、Conan、CMake、显示服务器或显卡。需要 GNU Make、支持 C++17 的编译器（如 GCC 或 Clang）和 `ar`。格式检查工具的测试另需 Python 3。
 
 在源码根目录运行：
 
@@ -9,9 +9,10 @@ make -C linux -j2
 make -C linux check
 ```
 
-构建产物在 `linux/build/`：`libmms_animation_curve.a` 和 `tests/` 中的原生可执行文件。可用 `BUILD_DIR=/tmp/mms-linux-build` 指定独立目录；构建和测试命令都传入同一个值。切换编译器或编译选项时建议使用新的构建目录。
+构建产物在 `linux/build/`：`libmms_animation_curve.a` 、`mms_format_inspect` 和 `tests/` 中的原生可执行文件。可用 `BUILD_DIR=/tmp/mms-linux-build` 指定独立目录；构建和测试命令都传入同一个值。切换编译器或编译选项时建议使用新的构建目录。
 
 - `check` 运行九组冒烟测试：曲线、背景手势、保存完成状态、离屏资源所有权、状态通知和旧插件菜单命令隔离等。离屏测试使用模拟后端；保存完成状态测试不写真实的 PMM 或 EMM；菜单测试不安装 Win32 消息钩子或加载 DLL。
+- `make -C linux format-inspect` 单独构建[只读格式检查工具](../PLUGIN_DATA_EXTENSIONS.md#fmt-01-第一阶段只读格式检查工具)。`make -C linux check-format-inspect` 运行其命令行回归。
 - `make -C linux check-retime` 单独运行变速完整回归。在 GCC 14/Linux 上，当前 ABI 源码和交接基线都出现两条失败：合并首组时的零容差浮点比较，以及 29.97 FPS 比例。此命令保留真实失败退出码。
 
 这里没有构建 MMS 图形程序，也不会运行真实的工程打开、保存、渲染、导出或 MME 流程。现有根目录 CMake 仍用于 Windows，Windows 的构建与打包步骤不变。在 Linux 上用 Wine 启动 Windows 版属于兼容性测试。
