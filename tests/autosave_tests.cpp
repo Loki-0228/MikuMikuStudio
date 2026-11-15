@@ -426,16 +426,24 @@ void CheckPartialBackupRotation(MMDApp* app) {
             app->SceneModified() = 1;
             Check(as::BackupNow(app) == as::Result::Saved, "create the existing backup generations");
         }
-        const auto old = as::Backups(value.directory);
+        auto old = as::Backups(value.directory);
         Check(old.size() == 3, "three generations before lowering the limit");
+        std::sort(old.begin(), old.end());
+        // File names order in the opposite direction for the oldest backup.
+        // The remaining two share the same timestamp; the lexical first is held open.
+        const auto& oldest = old[2];
+        const auto& second = old[0];
+        const auto& newest = old[1];
         const auto now = fs::file_time_type::clock::now();
-        fs::last_write_time(old[0], now - std::chrono::seconds(30));
-        fs::last_write_time(old[1], now - std::chrono::seconds(20));
-        fs::last_write_time(old[2], now - std::chrono::seconds(10));
-        const auto lockedBytes = Bytes(old[1]), newestBytes = Bytes(old[2]);
+        fs::last_write_time(oldest, now - std::chrono::seconds(30));
+        fs::last_write_time(second, now - std::chrono::seconds(20));
+        fs::last_write_time(newest, now - std::chrono::seconds(20));
+        Check(as::Backups(value.directory) == std::vector<fs::path>{oldest, second, newest},
+              "use mtime ahead of names and break equal mtimes lexically");
+        const auto lockedBytes = Bytes(second), newestBytes = Bytes(newest);
         value.maxBackups = 1;
         Configure(app, value);
-        HANDLE locked = CreateFileW(old[1].c_str(), GENERIC_READ, FILE_SHARE_READ,
+        HANDLE locked = CreateFileW(second.c_str(), GENERIC_READ, FILE_SHARE_READ,
             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         Check(locked != INVALID_HANDLE_VALUE, "hold the second oldest generation open");
         app->CurrentFrame() = 44;
@@ -450,14 +458,14 @@ void CheckPartialBackupRotation(MMDApp* app) {
         }
         CloseHandle(locked);
         const auto retained = as::Backups(value.directory);
-        Check(!fs::exists(old[0]) && retained.size() == 3 &&
-              Bytes(old[1]) == lockedBytes && Bytes(old[2]) == newestBytes,
+        Check(!fs::exists(oldest) && retained.size() == 3 &&
+              Bytes(second) == lockedBytes && Bytes(newest) == newestBytes,
               "partial rotation keeps both remaining generations and the new backup");
         Check(result == as::Result::Saved && (!queued ||
             std::wstring_view(background_save::StatusText(app)) == L"备份已保存，但未能清理全部旧备份。"),
             "report the saved backup and incomplete cleanup");
         const auto fresh = retained.back();
-        Check(fresh != old[2] && app->SceneModified() && fs::path(app->EnvFileName()) == manual,
+        Check(fresh != newest && app->SceneModified() && fs::path(app->EnvFileName()) == manual,
               "published backup keeps the working project and its unsaved edits");
         Check(LoadSceneFile(fresh.c_str()) && app->CurrentFrame() == 44 && app->CameraDistance() == -84,
               "open the backup kept after partial rotation");
