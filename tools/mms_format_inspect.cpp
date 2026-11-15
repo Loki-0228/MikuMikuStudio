@@ -2,7 +2,7 @@
 #define _FILE_OFFSET_BITS 64
 #endif
 
-#include "mms_format_probe.hpp"
+#include "mms_pmm_directory_probe.hpp"
 
 #include <iostream>
 
@@ -122,8 +122,35 @@ std::string_view Name(Footer value) {
     return "not_checked";
 }
 
-void PrintJson(const Result& result) {
-    // All values are fixed ASCII tokens. Do not echo paths or raw file bytes.
+std::string_view Name(DirectoryStatus value) {
+    switch (value) {
+    case DirectoryStatus::Absent: return "absent";
+    case DirectoryStatus::MetadataOk: return "metadata_ok";
+    case DirectoryStatus::Invalid: return "invalid";
+    case DirectoryStatus::OverlappingRanges: return "overlapping_ranges";
+    case DirectoryStatus::BudgetExceeded: return "budget_exceeded";
+    case DirectoryStatus::IoError: return "io_error";
+    }
+    return "unknown";
+}
+
+void PrintKey(std::string_view key, bool json) {
+    constexpr char hex[] = "0123456789abcdef";
+    // ASCII letters, digits and ._- stay readable. All other bytes use
+    // fixed-width \xhh, with the backslash itself JSON-escaped as needed.
+    for (unsigned char byte : key) {
+        if (('a' <= byte && byte <= 'z') || ('A' <= byte && byte <= 'Z') ||
+            ('0' <= byte && byte <= '9') || byte == '.' || byte == '_' || byte == '-') {
+            std::cout << static_cast<char>(byte);
+        } else {
+            if (json) std::cout << '\\';
+            std::cout << '\\' << 'x' << hex[byte >> 4] << hex[byte & 15];
+        }
+    }
+}
+
+void PrintJson(const Result& result, const DirectoryResult* directory = nullptr) {
+    // Header values are fixed ASCII tokens. Do not echo paths or raw file bytes.
     const auto token = [](std::string_view value) {
         if (value.empty()) std::cout << "null";
         else std::cout << '"' << value << '"';
@@ -142,13 +169,33 @@ void PrintJson(const Result& result) {
     token(Name(result.original));
     std::cout << "},\"pmm3end\":";
     token(Name(result.pmm3end));
-    std::cout << ",\"bytes_examined\":" << result.bytesExamined
-              << ",\"validation\":\"header_only\"}\n";
+    std::cout << ",\"bytes_examined\":"
+              << (directory ? directory->bytesExamined : result.bytesExamined)
+              << ",\"validation\":";
+    token(directory ? "pmm_directory_metadata_only" : "header_only");
+    if (directory) {
+        std::cout << ",\"pmm_directory\":{\"status\":";
+        token(Name(directory->status));
+        std::cout << ",\"blocks\":[";
+        bool first = true;
+        for (const auto& block : directory->blocks) {
+            if (!first) std::cout << ',';
+            first = false;
+            std::cout << "{\"key_escaped\":\"";
+            PrintKey(block.key, true);
+            std::cout << "\",\"version\":" << block.version << ",\"flags\":" << block.flags
+                      << ",\"encoding\":" << block.encoding
+                      << ",\"payload_bytes\":" << block.payloadSize << '}';
+        }
+        std::cout << "]}";
+    }
+    std::cout << "}\n";
 }
 
-void PrintText(const Result& result) {
+void PrintText(const Result& result, const DirectoryResult* directory = nullptr) {
     if (result.status == Status::IoError) {
         std::cerr << "Could not inspect the input as a readable regular file.\n";
+        if (directory) std::cerr << "PMM3END directory: " << Name(directory->status) << '\n';
         return;
     }
     const auto format = Name(result.format);
@@ -158,6 +205,19 @@ void PrintText(const Result& result) {
     if (!result.encoding.empty()) std::cout << " (" << result.encoding << ')';
     std::cout << "\nNative header gates: full=" << Name(result.full)
               << ", original=" << Name(result.original) << '\n';
+    if (directory) {
+        std::cout << "PMM3END directory: " << Name(directory->status) << '\n';
+        for (const auto& block : directory->blocks) {
+            std::cout << "  Block ";
+            PrintKey(block.key, false);
+            std::cout << ": version=" << block.version << ", flags=" << block.flags
+                      << ", encoding=" << block.encoding << ", payload bytes=" << block.payloadSize
+                      << '\n';
+        }
+        std::cout << "Scope: header and directory metadata only (" << directory->bytesExamined
+                  << " bytes read); payloads and their CRCs not checked; file not imported.\n";
+        return;
+    }
     if (result.pmm3end == Footer::MarkerOnly)
         std::cout << "PMM3END: standalone codec marker only (not verified)\n";
     else if (result.pmm3end == Footer::NotDetected)
@@ -173,6 +233,13 @@ void Usage(std::ostream& out) {
            "Exit: 0 recognized, 1 incomplete or unrecognized, 2 usage or I/O error.\n";
 }
 
+void DirectoryUsage(std::ostream& out) {
+    out << "Usage: mms_format_inspect --pmm-directory [--json] [--] FILE\n"
+           "Check a PMM 0003 PMM3END footer, directory and block metadata without reading payloads.\n"
+           "Exit: 0 recognized with metadata OK or no directory, 1 not recognized or directory not verified,\n"
+           "      2 usage or I/O error, 3 directory read budget exceeded.\n";
+}
+
 bool IsOption(std::basic_string_view<Input::Char> arg, std::string_view option) {
     return std::equal(arg.begin(), arg.end(), option.begin(), option.end());
 }
@@ -182,30 +249,53 @@ int Run(int argc, Input::Char** argv) {
         Usage(std::cout);
         return 0;
     }
+    if (argc == 3 && IsOption(argv[1], "--pmm-directory") && IsOption(argv[2], "--help")) {
+        DirectoryUsage(std::cout);
+        return 0;
+    }
     const Input::Char* path = nullptr;
-    bool json = false, options = true;
+    bool json = false, pmmDirectory = false, options = true;
     for (int i = 1; i < argc; ++i) {
         const std::basic_string_view<Input::Char> arg = argv[i];
         if (options && !path && !json && IsOption(arg, "--json")) json = true;
+        else if (options && !path && !pmmDirectory && IsOption(arg, "--pmm-directory"))
+            pmmDirectory = true;
         else if (options && !path && IsOption(arg, "--")) options = false;
         else if (!path && !arg.empty() && (!options || arg.front() != '-')) path = argv[i];
         else {
-            Usage(std::cerr);
+            if (pmmDirectory) DirectoryUsage(std::cerr);
+            else Usage(std::cerr);
             return 2;
         }
     }
     if (!path) {
-        Usage(std::cerr);
+        if (pmmDirectory) DirectoryUsage(std::cerr);
+        else Usage(std::cerr);
         return 2;
     }
 
     const Input input(path);
     std::uint64_t size = 0;
-    const auto result = input.Size(size)
-        ? Inspect(size, [&](auto offset, auto* bytes, auto count) {
-              return input.ReadAt(offset, bytes, count);
-          })
-        : Result{Status::IoError};
+    const auto readAt = [&](auto offset, auto* bytes, auto count) {
+        return input.ReadAt(offset, bytes, count);
+    };
+    const bool readable = input.Size(size);
+    if (pmmDirectory) {
+        const auto directory = readable ? InspectPmmDirectory(size, readAt)
+            : DirectoryResult{Result{Status::IoError}, DirectoryStatus::IoError};
+        if (json) PrintJson(directory.header, &directory);
+        else PrintText(directory.header, &directory);
+        switch (directory.status) {
+        case DirectoryStatus::IoError: return 2;
+        case DirectoryStatus::BudgetExceeded: return 3;
+        case DirectoryStatus::Invalid:
+        case DirectoryStatus::OverlappingRanges: return 1;
+        case DirectoryStatus::Absent:
+        case DirectoryStatus::MetadataOk:
+            return directory.header.status == Status::Recognized ? 0 : 1;
+        }
+    }
+    const auto result = readable ? Inspect(size, readAt) : Result{Status::IoError};
     if (json) PrintJson(result);
     else PrintText(result);
     if (result.status == Status::Recognized) return 0;
