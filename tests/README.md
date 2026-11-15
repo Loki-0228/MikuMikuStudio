@@ -73,6 +73,10 @@ python tests/run_mme_save_pair.py --profile full --host build/cmake/tests/mme/Re
 
 `overlap` 是 SAVE-02 放行条件，不能将当前异步旧通知导致的失败标成通过。此用例不证明已实现冻结提供者、请求级回执或断电恢复。保存和另存的重叠、外部 EMM 在保留轮换期间出现的保护，以及真实中断恢复仍有各自独立的验收边界。
 
+## PMM 附件路径容量
+
+在 `full` 和 `mmd932` 构建档分别构建 `pmm_input_host_tests`。把测试程序放在各自全新的短 ASCII 路径测试目录，在有 D3D9／D3DX9 的 Windows 主机上运行 `pmm_input_host_tests.exe --accessory-path-capacity`。此专项在自身隐藏窗口里生成 V1/V2 PMM 和 X；实际加载器读取附件与轨道，恢复窗口及文件选择器使用受控回复。覆盖现有的 256 UTF-16 单元附件路径进入恢复而不调用导入器、选择 255 单元的附件后另存重开、跳过、取消、原始兼容档 CP932 提示以及源文件不改动。不代表实际桌面或文件选择器验收。
+
 ## 附件顺序与选中项回归
 
 `scene_lifecycle_tests <输出目录> 1 --accessory-feedback all` 在隐藏的生产窗口生成并导入 X 文件，通过实际「附件编辑」和删除确认对话框检查中英日三种界面。也可将 `all` 换为 `split`、`selection` 或 `delete` 单独运行。

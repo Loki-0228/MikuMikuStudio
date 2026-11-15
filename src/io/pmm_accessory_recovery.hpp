@@ -1,11 +1,13 @@
 #pragma once
 
 #include <cstring>
+#include <cwchar>
 #include <iterator>
 #include "mikumikustudio/accessory_import.hpp"
 
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/original_import.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/ui_language.hpp"
@@ -25,6 +27,15 @@ inline bool LoadProjectAccessory(MMDApp* app, mdl::AccessoryRecord* record,
         if (!path || !*path) return false;
         const DWORD attributes = GetFileAttributesW(path);
         if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY)) return false;
+        // An exact project-relative reference can expand beyond the accessory's
+        // fixed path field even when the file exists. Leave room for the NUL
+        // before the importer copies it into its 256-unit fields.
+        if (std::wcslen(path) >= std::size(record->sourcePath)) {
+#if MMD_ORIGINAL_PROFILE
+            original_import::Refuse(app->Hwnd(), app->EnglishUI());
+#endif
+            return false;
+        }
         if (accessory_import::LoadObject(app, record, path, accessory_import::MissingFileNotice::Suppress))
             return true;
 

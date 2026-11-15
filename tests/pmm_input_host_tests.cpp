@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <new>
 #include <stdexcept>
@@ -129,6 +130,8 @@ struct V2AccessoryDialogs {
     std::vector<bool> loadResults;
     std::vector<void*> loadObjects;
     fs::path disappearingCandidate;
+    bool checkPathCapacity = false;
+    unsigned pathLengthRefusals = 0;
     void* failedObject = nullptr;
     const fs::path* partialFailureSource = nullptr;
     unsigned partialRefusals = 0, partialDisposals = 0;
@@ -779,6 +782,16 @@ int WINAPI ErrorW(HWND window, LPCWSTR text, LPCWSTR caption, UINT flags) {
             recoveryGateNestedBlocked = !nestedLoaded && !nestedEscaped &&
                 recoveryGateResets == resets && inputReads == reads && tailCalls == tails;
         }
+        return IDOK;
+    }
+    if (v2Accessory && v2Accessory->checkPathCapacity) {
+        auto& d = *v2Accessory;
+        Check(build_profile::original && monitor && inputOpen && !d.prompts &&
+              window == app->MainWindow() && text && caption && !std::wcscmp(caption, L"MMD") &&
+              flags == (MB_OK | MB_ICONERROR) &&
+              std::wcsstr(text, L"exceeds the CP932 character or field-length limits") &&
+              ++d.pathLengthRefusals == 1,
+              "an existing oversized X retains the original-profile compatibility notice");
         return IDOK;
     }
     if (v2Accessory && v2Accessory->partialFailureSource) {
@@ -1509,6 +1522,9 @@ bool ObserveAccessoryLoad(MMDApp* value, void* accessory, const wchar_t* path,
         auto& d = *v2Accessory;
         Check(value == app && accessory != nullptr && path != nullptr,
             "the real V2 accessory load targets the production's own slot record with a concrete path");
+        if (d.checkPathCapacity)
+            Check(std::wcslen(path) < std::size(mdl::Accessory(accessory)->sourcePath),
+                  "no unrepresentable X path reaches the real importer");
         d.loadObjects.push_back(accessory);
         d.loadPaths.emplace_back(path);
         const bool disappears = !d.disappearingCandidate.empty() && d.disappearingCandidate == fs::path(path);
@@ -3710,6 +3726,105 @@ void V1AccessoryRecoveryCases() {
     std::puts("PASS V1 disappeared replacement: retry, save/reopen, skip and cancel");
 }
 
+void AccessoryPathCapacityCases() {
+    const auto root = directory / L"path-limits";
+    Check(root.native().size() + 1 < 244, "keep the isolated path fixture root short");
+    // Keep the directory itself below Win32's legacy directory limit while
+    // placing two ordinary, readable files on opposite sides of the slot limit.
+    const auto assets = root / std::wstring(244 - root.native().size() - 1, L'd');
+    Check(fs::create_directories(assets), "own a fresh accessory path fixture directory");
+    const auto fitting = assets / L"short-ok.x";
+    const auto tooLong = assets / L"too-long1.x";
+    const auto seed = root / L"seed.x";
+    const auto following = root / L"following.x";
+    const auto v1 = root / L"v1.pmm";
+    const auto v2 = root / L"v2.pmm";
+    const auto cwd = fs::current_path();
+    for (const auto& path : {fitting, tooLong, seed, following}) {
+        std::ofstream output(path, std::ios::binary);
+        output << kAccessoryTriangleGood;
+        output.close();
+        Check(bool(output), "write a real X for the path capacity fixture");
+    }
+    const auto relative = tooLong.lexically_relative(root);
+    const auto wire = WirePathText(relative);
+    const auto located = project_model::Locate(wire.c_str(), root, {});
+    Check(fitting.native().size() == 255 && tooLong.native().size() == 256 &&
+          !located.tryLegacy && fs::path(located.exactPath) == tooLong,
+          "the real locator finds the 256-unit X through a representable PMM wire field");
+    const auto fittingBytes = Bytes(fitting);
+    const auto tooLongBytes = Bytes(tooLong);
+    WriteV1AccessoryMaterialRetry(v1, relative, following);
+
+    Check(ResetAppState(app), "seed the real V2 writer on an empty scene");
+    app->EnglishUI() = kUiEnglish;
+    LoadAccessoryFile(seed.c_str());
+    LoadAccessoryFile(following.c_str());
+    auto* first = app->AccessorySlot(0);
+    Check(first && first->mesh && app->AccessorySlot(1) && app->AccessorySlot(1)->mesh &&
+          app->AccessoryKeys(0) && app->AccessoryKeys(1),
+          "the real V2 writer will serialize two loaded X accessories");
+    wcscpy_s(first->sourcePath, relative.c_str());
+    app->AccessoryKeys(0)[0].position[0] = 2.5f;
+    app->AccessoryKeys(1)[0].position[0] = 7.5f;
+    app->CurrentFrame() = 12;
+    Check(SaveSceneCopy(app, v2.c_str()), "save a V2 PMM with the same wire reference");
+
+    for (const auto& project : {v1, v2}) {
+        const auto source = Bytes(project);
+        for (const INT_PTR answer : {INT_PTR{1}, INT_PTR{3}, INT_PTR{4}}) {
+            Check(ResetAppState(app), "start each path recovery from a clean host");
+            app->EnglishUI() = kUiEnglish;
+            V2AccessoryDialogs dialogs;
+            dialogs.expectedLabel = project == v1 ? L"material-retry" : L"seed.x";
+            dialogs.checkPathCapacity = true;
+            dialogs.replies = {{answer, answer == 1 ? fitting : fs::path{}}};
+            const auto errors = messages;
+            Arm(project, Fault::None, false);
+            v2Accessory = &dialogs;
+            const bool loaded = LoadSceneFile(project.c_str());
+            if (answer == 4) FinishV2AccessoryAbort(loaded, project, source);
+            else Finish(loaded, true);
+            v2Accessory = nullptr;
+            Check(dialogs.prompts == 1 && dialogs.picks == (answer == 1 ? 1u : 0u) &&
+                  dialogs.pathLengthRefusals == (build_profile::original ? 1u : 0u) &&
+                  messages == errors, "one recovery prompt, with the original compatibility notice only in that profile");
+            const std::vector<std::wstring> expectedPaths = answer == 1
+                ? std::vector<std::wstring>{fitting.native(), following.native()}
+                : answer == 3 ? std::vector<std::wstring>{following.native()}
+                              : std::vector<std::wstring>{};
+            Check(dialogs.loadPaths == expectedPaths &&
+                  dialogs.loadResults == std::vector<bool>(expectedPaths.size(), true),
+                  "only an accepted replacement and the following X may reach the real importer");
+            if (answer == 4) {
+                Check(dialogs.normalAbortResets == 1, "cancelling resets the replaced scene once");
+            } else {
+                const auto* a = app->AccessorySlot(0);
+                const auto* b = app->AccessorySlot(1);
+                Check(a && (answer == 1 ? a->mesh && fs::path(a->sourcePath) == fitting
+                                        : !a->mesh && !a->sourcePath[0]) &&
+                      b && b->mesh && fs::path(b->sourcePath) == following &&
+                      app->AccessoryKeys(0) && app->AccessoryKeys(0)[0].position[0] == 2.5f &&
+                      app->AccessoryKeys(1) && app->AccessoryKeys(1)[0].position[0] == 7.5f,
+                      "both accessory tracks survive reselecting a 255-unit X or skipping the 256-unit X");
+                if (answer == 1) {
+                    const auto copy = root / (project.stem().native() + L"-recovered.pmm");
+                    Check(SaveSceneCopy(app, copy.c_str()), "save the recovered project to a fresh file");
+                    Arm(copy, Fault::None, false);
+                    Finish(LoadSceneFile(copy.c_str()), true);
+                    const auto* reopened = app->AccessorySlot(0);
+                    Check(reopened && reopened->mesh && fs::path(reopened->sourcePath) == fitting,
+                          "the 255-unit replacement also reopens without recovery");
+                }
+            }
+            Check(Bytes(project) == source && Bytes(tooLong) == tooLongBytes && Bytes(fitting) == fittingBytes,
+                  "reselect, skip and cancel do not rewrite the source PMM or either candidate");
+        }
+    }
+    Check(SetCurrentDirectoryW(cwd.c_str()) != FALSE, "restore the host working directory");
+    std::puts("PASS V1/V2 accessory path capacity: reselect, save/reopen, skip and cancel");
+}
+
 void VacRelocationCases(bool v1) {
     std::puts("STAGE VAC initial import and PMM save");
     const auto root = directory / L"vac-root";
@@ -4716,6 +4831,7 @@ int wmain(int argc, wchar_t** argv) {
             "the cross-process test accepts only its fixed isolated stages");
     }
     const bool v1AccessoryRecoveryMode = argc == 2 && !std::wcscmp(argv[1], L"--v1-accessory-recovery");
+    const bool accessoryPathCapacity = argc == 2 && !std::wcscmp(argv[1], L"--accessory-path-capacity");
     const bool recoveryPickerDirectories = argc == 2 && !std::wcscmp(argv[1], L"--recovery-picker-directories");
     const bool vacRelocationV1 = argc == 2 && !std::wcscmp(argv[1], L"--vac-relocation-v1");
     const bool vacRelocationMode = vacRelocationV1 || (argc == 2 && !std::wcscmp(argv[1], L"--vac-relocation"));
@@ -4749,7 +4865,7 @@ int wmain(int argc, wchar_t** argv) {
     if (cacheSaveMode || cacheResetMode) PrepareCacheSaveHost(fs::path(executable).parent_path());
 #if !MMD_ORIGINAL_PROFILE
     const bool pictureBudgetMode = argc == 3 && !std::wcscmp(argv[1], L"--picture-assets-isolated");
-    Check(argc == 1 || pictureBudgetMode || textureReopenMode || splitRootRelocation || textureOwnerMode || v1AccessoryRecoveryMode || recoveryPickerDirectories || vacRelocationMode || v2ModelCancelThrowMode || midResetFailureMode || motionModalMode || motionSaveMode || preflightRefusalMode,
+    Check(argc == 1 || pictureBudgetMode || textureReopenMode || splitRootRelocation || textureOwnerMode || v1AccessoryRecoveryMode || accessoryPathCapacity || recoveryPickerDirectories || vacRelocationMode || v2ModelCancelThrowMode || midResetFailureMode || motionModalMode || motionSaveMode || preflightRefusalMode,
         "known isolated PMM host mode");
     if (pictureBudgetMode) {
         const auto parent = fs::canonical(fs::path(executable).parent_path());
@@ -4758,7 +4874,7 @@ int wmain(int argc, wchar_t** argv) {
               "budget settings require the explicit actual EXE directory and a previously absent data directory");
     }
 #else
-    Check(argc == 1 || textureReopenMode || splitRootRelocation || textureOwnerMode || v1AccessoryRecoveryMode || recoveryPickerDirectories || vacRelocationMode || v2ModelCancelThrowMode || midResetFailureMode || motionModalMode || motionSaveMode || preflightRefusalMode,
+    Check(argc == 1 || textureReopenMode || splitRootRelocation || textureOwnerMode || v1AccessoryRecoveryMode || accessoryPathCapacity || recoveryPickerDirectories || vacRelocationMode || v2ModelCancelThrowMode || midResetFailureMode || motionModalMode || motionSaveMode || preflightRefusalMode,
         "known isolated original-profile PMM host mode");
 #endif
     directory = fs::path(executable).parent_path() / L"data" / L"pmm-input-host";
@@ -4894,7 +5010,7 @@ int wmain(int argc, wchar_t** argv) {
         std::printf("PASS real PMM cache save host: %u checks; scope=empty-scene+model-save-segments; full Load/Reset/UI acceptance remains pending\n", checks);
         return 0;
     }
-    if (v1AccessoryRecoveryMode || recoveryPickerDirectories || vacRelocationMode || v1MaterialRetryMode || v2ModelCancelThrowMode || midResetFailureMode || v2AccessoryRecoveryMode != 0) {
+    if (v1AccessoryRecoveryMode || accessoryPathCapacity || recoveryPickerDirectories || vacRelocationMode || v1MaterialRetryMode || v2ModelCancelThrowMode || midResetFailureMode || v2AccessoryRecoveryMode != 0) {
         const char* mode = "V2 missing-accessory recovery";
         if (v1AccessoryRecoveryMode) mode = "V1 missing-accessory recovery";
         if (vacRelocationMode) mode = "VAC relocation";
@@ -4910,6 +5026,9 @@ int wmain(int argc, wchar_t** argv) {
             RecoveryPickerDirectoryCases();
         } else if (vacRelocationMode) {
             VacRelocationCases(vacRelocationV1);
+        } else if (accessoryPathCapacity) {
+            mode = "accessory path capacity";
+            AccessoryPathCapacityCases();
         } else if (midResetFailureMode) {
             MidResetFailureCases();
         } else if (v1AccessoryRecoveryMode) {
