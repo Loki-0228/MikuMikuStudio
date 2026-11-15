@@ -16,10 +16,18 @@ import tempfile
 
 HEADER = 128
 PAYLOAD_MAX = 376 + 192 * 160
+READ_MAX = HEADER + PAYLOAD_MAX + 1
+DECODER_JSON_MAX = 4096
 OWNER = b"MMSCatalogHead01"
 KEY = bytes([3]) + bytes(31)
 NAME = re.compile(r"[0-9a-f]{32}\.blob\Z")
 TIMEOUT = 10
+SCOPE = "checkpoint-envelope-and-codec-only"
+UNAVAILABLE = ("evidence_unavailable", "checkpoint_codec_unavailable")
+
+
+class EvidenceReadError(RuntimeError):
+    """The reason argument is a fixed code, safe to put in the JSON report."""
 
 
 def checked(ok, message):
@@ -38,29 +46,77 @@ def file_identity(info):
 def read_evidence(path):
     path = Path(os.path.abspath(path))
     for parent in reversed(path.parents):
-        checked(stat.S_ISDIR(parent.lstat().st_mode), "evidence parent is not an ordinary directory")
+        if not stat.S_ISDIR(parent.lstat().st_mode):
+            raise EvidenceReadError("unsafe_parent")
     before = path.lstat()
-    checked(stat.S_ISREG(before.st_mode) and before.st_nlink == 1, "evidence must be an ordinary, non-hardlinked file")
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise EvidenceReadError("unsafe_file")
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as stream:
         opened = os.fstat(stream.fileno())
-        checked(file_identity(opened) == file_identity(before), "evidence changed during open")
-        data = stream.read(HEADER + PAYLOAD_MAX + 1)
-        checked(file_identity(os.fstat(stream.fileno())) == file_identity(opened) ==
-                file_identity(path.lstat()), "evidence changed during read")
+        if file_identity(opened) != file_identity(before):
+            raise EvidenceReadError("file_changed")
+        data = stream.read(READ_MAX)
+        stable = (file_identity(os.fstat(stream.fileno())) == file_identity(opened) ==
+                  file_identity(path.lstat()))
+        if not stable:
+            raise EvidenceReadError("file_changed")
+        if len(data) != min(before.st_size, READ_MAX):
+            raise EvidenceReadError("inconsistent_read_length")
     return data, before.st_size
+
+
+def decode_response(output):
+    # Accept only the trusted helper's fixed wire shape. In particular, its
+    # string values cannot carry arbitrary paths or error text into reports.
+    if len(output) > DECODER_JSON_MAX:
+        return None
+    try:
+        decoded = json.loads(output)
+    except (ValueError, RecursionError):
+        return None
+
+    def uint(value):
+        return type(value) is int and 0 <= value < 2 ** 64
+
+    def hex_field(value, digits):
+        return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{%d}" % digits, value) is not None
+
+    def reference(value):
+        numbers = {"kind", "payload_bytes", "declared_volume", "declared_file_index", "declared_file_bytes"}
+        return (isinstance(value, dict) and value.keys() == (numbers | {"name", "payload_sha256"}) and
+                all(uint(value[key]) for key in numbers) and
+                isinstance(value["name"], str) and NAME.fullmatch(value["name"]) is not None and
+                hex_field(value["payload_sha256"], 64))
+
+    fields = {"revision", "owner", "retired_count", "snapshot", "previous"}
+    if (isinstance(decoded, dict) and decoded.keys() == fields and uint(decoded["revision"]) and
+            uint(decoded["retired_count"]) and hex_field(decoded["owner"], 32) and
+            reference(decoded["snapshot"]) and reference(decoded["previous"])):
+        return decoded
+    return None
 
 
 def inspect(path, decoder):
     path = Path(path)
-    checked(NAME.fullmatch(path.name), "evidence expects an explicit 32-hex .blob filename")
-    data, size = read_evidence(path)
-    evidence = {"file": path.name, "bytes": size, "scope": "checkpoint-envelope-and-codec-only"}
+    evidence = {"file": path.name if NAME.fullmatch(path.name) else None, "scope": SCOPE}
+
+    def result(status, **details):
+        return {**evidence, "status": status, **details}
+
+    if evidence["file"] is None:
+        return result("evidence_unavailable", error="invalid_filename")
+    try:
+        data, size = read_evidence(path)
+    except EvidenceReadError as exc:
+        return result("evidence_unavailable", error=str(exc))
+    except FileNotFoundError:
+        return result("evidence_unavailable", error="file_missing")
+    except OSError as exc:
+        return result("evidence_unavailable", error="file_unreadable", errno=exc.errno)
+    evidence["bytes"] = size
     if len(data) == size:
         evidence["sha256"] = sha(data).hex()
-
-    def result(status):
-        return {**evidence, "status": status}
 
     if size < HEADER:
         return result("short_header")
@@ -78,11 +134,21 @@ def inspect(path, decoder):
     if sha(data[HEADER:]) != payload_sha:
         return result("payload_sha256_mismatch")
 
-    run = subprocess.run([str(decoder)], input=data[HEADER:], capture_output=True, timeout=TIMEOUT)
+    try:
+        run = subprocess.run([str(decoder)], input=data[HEADER:], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return result("checkpoint_codec_unavailable", error="decoder_timeout")
+    except (OSError, subprocess.SubprocessError):
+        return result("checkpoint_codec_unavailable", error="decoder_launch_failed")
     if run.returncode == 1:
         return result("checkpoint_codec_rejected")
-    checked(run.returncode == 0, "production codec helper failed")
-    evidence["decoded"] = json.loads(run.stdout)
+    if run.returncode != 0:
+        return result("checkpoint_codec_unavailable", error="decoder_failed", returncode=run.returncode)
+    decoded = decode_response(run.stdout)
+    if decoded is None:
+        return result("checkpoint_codec_unavailable", error="invalid_decoder_output")
+    evidence["decoded"] = decoded
     return result("checkpoint_codec_ok")
 
 
@@ -246,22 +312,16 @@ def self_test(decoder):
 
         untrusted = path(15)
         untrusted.symlink_to(baseline)
-        try:
-            inspect(untrusted, decoder)
-        except RuntimeError as exc:
-            checked("non-hardlinked file" in str(exc), "unsafe link rejection did not reach filesystem guard")
-        else:
-            raise RuntimeError("inspector unexpectedly accepted a symlink")
+        rejected = inspect(untrusted, decoder)
+        checked(rejected["status"] == "evidence_unavailable" and rejected["error"] == "unsafe_file",
+                "unsafe link rejection did not reach filesystem guard")
         outcomes.append({"case": "explicit symlink is not followed", "status": "rejected_by_filesystem_guard"})
 
         hardlinked = path(16)
         os.link(baseline, hardlinked)
-        try:
-            inspect(hardlinked, decoder)
-        except RuntimeError as exc:
-            checked("non-hardlinked file" in str(exc), "unsafe hardlink rejection did not reach filesystem guard")
-        else:
-            raise RuntimeError("inspector unexpectedly accepted a hardlink")
+        rejected = inspect(hardlinked, decoder)
+        checked(rejected["status"] == "evidence_unavailable" and rejected["error"] == "unsafe_file",
+                "unsafe hardlink rejection did not reach filesystem guard")
         outcomes.append({"case": "explicit hardlink is not opened", "status": "rejected_by_filesystem_guard"})
 
     return {"mode": "linux-synthetic-files-and-real-processes", "cases_passed": len(outcomes),
@@ -279,16 +339,22 @@ def main():
     args = parser.parse_args()
     try:
         checked(sys.platform.startswith("linux"), "this diagnostic is scoped to Linux")
-        decoder = args.decoder.resolve(strict=True)
-        checked(decoder.is_file() and os.access(decoder, os.X_OK), "decoder is not an executable file")
+        decoder = args.decoder.absolute()
         if args.command == "self-test":
+            checked(decoder.is_file() and os.access(decoder, os.X_OK), "decoder is not an executable file")
             print(json.dumps(self_test(decoder), indent=2, sort_keys=True))
             return 0
+        # Do not depend on the helper to report filesystem or envelope findings.
         findings = [inspect(path, decoder) for path in args.files]
         print(json.dumps(findings, indent=2, sort_keys=True))
+        if any(row["status"] in UNAVAILABLE for row in findings):
+            return 2
         return 0 if all(row["status"] == "checkpoint_codec_ok" for row in findings) else 1
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+    except RuntimeError as exc:
         print(f"checkpoint evidence unavailable/inconclusive: {exc}", file=sys.stderr)
+        return 2
+    except (OSError, ValueError, subprocess.SubprocessError):
+        print("checkpoint evidence unavailable/inconclusive: setup or self-test I/O failed", file=sys.stderr)
         return 2
 
 

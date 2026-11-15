@@ -15,6 +15,7 @@ g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc/io \
     -o "$work/decode_checkpoint"
 python -B tools/cache_checkpoint_evidence.py self-test --decoder "$work/decode_checkpoint" \
     > "$work/linux-results.json"
+python -B tools/test_cache_checkpoint_evidence.py --decoder "$work/decode_checkpoint"
 ```
 
 如有独立副本或只读挂载的故障证据，明确指定文件（不要在活动缓存根上运行）：
@@ -32,13 +33,17 @@ python -B tools/cache_checkpoint_evidence.py inspect --decoder "$work/decode_che
 - `payload_sha256_mismatch`：长度匹配，但负载与通用头 SHA-256 不符。
 - `checkpoint_codec_rejected`：通用头和 SHA-256 通过后，链接的实际生产 `DecodeCheckpoint` 拒绝内部数据。
 - `checkpoint_codec_ok`：外层和编解码器均通过；**不等于 Store 接受、不等于检查点能恢复、更不授权删除**。文件状态是一次检查时的观察，不是整个目录的原子快照。
+- `evidence_unavailable`：无法安全读取文件。`error` 为 `invalid_filename`、`unsafe_parent`、`unsafe_file`、`file_changed`、`inconsistent_read_length`、`file_missing` 或 `file_unreadable`；最后一种附系统错误号 `errno`。文件名不合法时 `file` 为 `null`，可按数组位置对应输入。
+- `checkpoint_codec_unavailable`：头、长度和 SHA-256 已通过，但解码器无法启动（`decoder_launch_failed`）、超时（`decoder_timeout`）、异常退出（`decoder_failed`，附 `returncode`）或返回无效输出（`invalid_decoder_output`）。保留已观察到的大小和哈希，不将辅助程序异常判为检查点被生产 codec 拒绝。
 
-退出码：`0` 所有文件的候选字节可解码；`1` 至少一个明确不符合；`2` 无法读取／证据不确定。输出没有绝对缓存路径。超出读取上限的文件会记录大小而不计算整文件哈希。
+输出为 JSON 数组，每个输入按原顺序各有一条记录。单个文件读不到或解码器出错时，仍会继续检查并保留其他文件的结果；未通过外层校验的文件不需要启动解码器。退出码：`0` 所有文件的候选字节可解码；`1` 至少一个明确不符合，且没有不确定项；`2` 至少一个文件无法读取或证据不确定，即使同时有已解码或明确不符合的文件。诊断不输出绝对缓存路径、原始系统错误文本或辅助程序的原始输出。超出读取上限的文件会记录大小而不计算整文件哈希。
 
 ## 实验证据的边界
 
 自测用独立编写的合成字节，两次启动真实写入子进程，在 80 字节通用头、384 字节部分负载和完整文件处使用管道握手，保证实际发生逐段 `fsync`，不靠睡眠模拟慢盘。其中一次在部分负载刷完后被 SIGKILL；新的检查进程确认部分文件仍在且无法通过，而先前独立、完整的候选字节未变。另一进程继续写完新文件，实测可解码，也没有删除旧失败现场。另用同长篡改和 SHA-256 重算后的错误退休引用区分封装校验和生产 codec 拒绝。临时实验不会访问任何产品目录。
 
 本实验无 Win32 Store、CNG、NTFS 共享锁、租约/删除权限、ADS、综合缓存源预算、只读盘、磁盘满、物理慢盘、磁盘掉电或系统崩溃覆盖。真实硬退出和 Linux 文件 `fsync` 也不是断电持久性证明。不根据这一结果关闭 CACHE-02。
+
+批量回归使用独立临时文件，覆盖完好、短写、缺失、无读取权限（需普通用户）、超长、非法路径及解码器故障，并验证结果顺序和退出码，以及输入文件的内容、目录条目和记录的身份不变。普通文件读取可能更新访问时间。
 
 真实复验需精确 Windows 构建及隔离外部目录：先保存已有失败证据并校验源码/EXE 指纹；对未创建的独立绝对路径明确运行 `cache_catalog_maintenance_tests --trace-store NEW_ROOT`，保留首次失败的 `DIAG thousand`、逻辑修订和 Win32 API trace；另在隔离副本上用测试自身的 `--inspect-existing` 做真正的生产固定读取，再用显式恢复专项核对重启后的完整头、原失败报告、重试行为，以及活跃数据和非测试所有文件是否保留。不得在原失败目录上为了出报告而恢复或清理。
