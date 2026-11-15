@@ -20,7 +20,7 @@ BUILD_FILES = (
     "MikuMikuDance.exe",
     "MMDFacade.dll",
     "MMHack.dll",
-    "PLUGINS/legacy-mmdplugin/MMDPlugin.dll",
+    "PLUGINS/LEGACY/MMDPlugin.dll",
     "optional-plugins/first-person-camera/MMSFirstPersonCamera.dll",
 )
 CAMERA_DIR = "optional-plugins/first-person-camera"
@@ -40,11 +40,11 @@ DEFAULT_BUILD = Path("build/cmake")
 DEFAULT_RELEASE = Path("build/release")
 DEFAULT_TEMPLATE = Path("build/packages/mms-adaptive-ui-template.zip")
 PACKAGE_FILES = frozenset((*BUILD_FILES, *REPO_FILES, *EXTRA_FILES, f"{CAMERA_DIR}/plugin.json", DEFAULT_TEMPLATE.name))
-PACKAGE_DIRS = frozenset(("PLUGINS/legacy-mmdplugin", "PLUGINS", "licenses", "optional-plugins", CAMERA_DIR))
-# Recognize only the previous package-owned provider when rebuilding staging.
-# New output never contains this old location, and adjacent user files still fail.
-PREVIOUS_PACKAGE_FILES = frozenset(("legacy-mmdplugin/MMDPlugin.dll",))
-PREVIOUS_PACKAGE_DIRS = frozenset(("legacy-mmdplugin",))
+PACKAGE_DIRS = frozenset(("PLUGINS/LEGACY", "PLUGINS", "licenses", "optional-plugins", CAMERA_DIR))
+# Recognize only previous package-owned providers when rebuilding staging.
+# New output never contains these old locations, and adjacent user files still fail.
+PREVIOUS_PACKAGE_DIRS = frozenset(("PLUGINS/legacy-mmdplugin", "legacy-mmdplugin"))
+PREVIOUS_PACKAGE_FILES = frozenset(f"{directory}/MMDPlugin.dll" for directory in PREVIOUS_PACKAGE_DIRS)
 
 
 def cache_value(cache: str, name: str) -> str:

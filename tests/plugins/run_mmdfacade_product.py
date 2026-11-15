@@ -24,7 +24,7 @@ def main():
     root = Path(tempfile.mkdtemp(prefix='mmdfacade-product-', dir=build.parent))
     cases = []
     u.GetMenuStringW.argtypes = [w.HMENU, w.UINT, w.LPWSTR, c.c_int, w.UINT]
-    for layout in ['legacy-mmdplugin', 'PLUGINS/legacy-mmdplugin']:
+    for layout in ['PLUGINS/LEGACY', 'PLUGINS/legacy-mmdplugin', 'legacy-mmdplugin']:
         for name in ['MikuMikuDance.exe', 'Renamed Studio.exe', '中文工作室.exe']:
             directory = root / str(len(cases))
             directory.mkdir()
@@ -37,7 +37,7 @@ def main():
                 shutil.copy2(build / 'Release' / dll, directory / destination)
             provider = directory / layout / 'MMDPlugin.dll'
             provider.parent.mkdir(parents=True)
-            shutil.copy2(build / 'Release/PLUGINS/legacy-mmdplugin/MMDPlugin.dll', provider)
+            shutil.copy2(build / 'Release/PLUGINS/LEGACY/MMDPlugin.dll', provider)
             package = directory / 'PLUGINS/utility'
             package.mkdir(parents=True)
             shutil.copy2(args.utility, package / 'MMDUtility.dll')
@@ -113,7 +113,7 @@ def main():
                 break
         if not cases[-1]['passed']:
             break
-    report = dict(passed=len(cases)==6 and all(c['passed'] for c in cases), cases=cases,
+    report = dict(passed=len(cases)==9 and all(c['passed'] for c in cases), cases=cases,
                   utilitySha256=hashlib.sha256(args.utility.read_bytes()).hexdigest())
     (root / 'summary.json').write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding='utf-8')
     print(root / 'summary.json')

@@ -14,7 +14,7 @@ import zipfile
 
 
 HOST = Path("MikuMikuDance.exe")
-PROVIDER = Path("PLUGINS/legacy-mmdplugin/MMDPlugin.dll")
+PROVIDER = Path("PLUGINS/LEGACY/MMDPlugin.dll")
 TEMPLATE = Path("mms-adaptive-ui-template.zip")
 CTEST_CASES = ("legacy_mmd_menu_commands", "legacy_observer_export_preflight", "abi_release_package_layout")
 MANUAL_CASES = ("observer-and-aa", "product-still-png", "product-sequence-29-31", "product-transparent-mov")

@@ -8,7 +8,7 @@ ABI 分支通过原创 `MMDFacade.dll` 转接旧宿主的 37 个 `Exp*` 导出�
 
 ## 安装
 
-MMDFacade、随宿主构建的 MMHack 与主程序放在同一个目录。MMHack 仅在启用 legacy_mme 包时加载。专用 ABI [发布预备目录](development/win7-build.md)还放入 `PLUGINS/config.json`、许可文件，以及另一条兼容路径使用的 `PLUGINS/legacy-mmdplugin/MMDPlugin.dll`（本项目构建的观察者宿主 DLL）。这不是用户的旧观察者插件，也不是 MMEffect 的替代品。根目录下的旧 `legacy-mmdplugin/MMDPlugin.dll` 仅作兼容回退；新发布包不再输出该旧位置。详见[窗口观察插件包](abi/legacy.md#mms-窗口观察插件包)。
+MMDFacade、随宿主构建的 MMHack 与主程序放在同一个目录。MMHack 仅在启用 legacy_mme 包时加载。专用 ABI [发布预备目录](development/win7-build.md)还放入 `PLUGINS/config.json`、许可文件，以及另一条兼容路径使用的 `PLUGINS/LEGACY/MMDPlugin.dll`（本项目构建的观察者宿主 DLL）。这不是用户的旧观察者插件，也不是 MMEffect 的替代品。旧 `PLUGINS/legacy-mmdplugin/MMDPlugin.dll`、根目录下的 `legacy-mmdplugin/MMDPlugin.dll` 依次作为兼容回退；新发布包不再输出这两处旧位置。详见[窗口观察插件包](abi/legacy.md#mms-窗口观察插件包)。
 
 以下是用户本地安装一个旧 MME 包的例子：
 
@@ -16,10 +16,10 @@ MMDFacade、随宿主构建的 MMHack 与主程序放在同一个目录。MMHack
 MMS.exe
 MMDFacade.dll
 MMHack.dll           # 随宿主构建；未指定 hack 时使用
-legacy-mmdplugin/
-  MMDPlugin.dll       # 随宿主构建；供旧观察者插件使用
 PLUGINS/
   config.json
+  LEGACY/
+    MMDPlugin.dll     # 随宿主构建；供旧观察者插件使用
   effects/
     legacy-mme/
       plugin.json

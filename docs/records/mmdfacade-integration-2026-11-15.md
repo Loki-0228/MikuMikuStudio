@@ -103,3 +103,26 @@ optional 插件的包目录名称和分组不固定：用户可以把完整包�
 证据：`build/facade-layout-red.log`（修复前失败）、`build/facade-layout-tests.log`、
 `build/facade-layout-runtime.log`、`build/facade-layout-install.log`、`build/facade-layout-hashes.json`、
 `build/first-person-input-csnoqffn/summary.json`。实际发布目录仍为 `build/release`。
+
+## 提供者目录改名为 LEGACY
+
+按后续命名要求，新构建、两个发布入口及安装树统一输出 `PLUGINS/LEGACY/MMDPlugin.dll`。
+加载器依次检查该位置、`PLUGINS/legacy-mmdplugin/MMDPlugin.dll` 和根目录旧位置；
+只有缺失才回退，已有但损坏的路径仍明确失败。两处旧路径不再进入新发布包。
+打包迁移仅接受已知旧产物，若旧目录混有用户文件则拒绝覆盖。optional 包的自由命名和递归发现规则保持不变。
+
+先新增路径优先级失败用例，旧实现报 `unexpected legacy MMDPlugin provider selection`，
+再接入三处路径查找。Windows x64 Release 重建完成，继续复用已核验且输入未改的资源。
+14 项 Python 打包测试、4 项 CTest 全部通过；后者包含提供者路径预检、9 组相机输入、
+72 组回调矩阵及 PowerShell 打包检查。真实主程序的三种 EXE 名 × 三处提供者位置共 9 组检查中，
+MME 0.37 与 ABI 3 MMDUtility 菜单均加载成功，插件销毁及进程退出正常。
+
+实际 CMake 安装及 `build/release` 重建完成，两棵树均只有 `PLUGINS/LEGACY/MMDPlugin.dll`
+一份提供者；EXE、桥接 DLL 及发布相机 DLL 摘要与本次构建一致。
+本次未重跑 Effekseer 粒子/旧 MME 像素矩阵，也未执行完整 full/minimal ZIP 发布命令；
+前述功能验证和未支持范围仍适用，不能将本次目录验证等同于新增渲染兼容性。
+
+证据：`build/facade-legacy-name-red.log`、`build/facade-legacy-name-tests.log`、
+`build/facade-legacy-name-runtime.log`、`build/facade-legacy-name-install.log`、
+`build/facade-legacy-name-package.log`、`build/facade-legacy-name-hashes.json`、
+`build/mmdfacade-product-d1rmyd17/summary.json`。

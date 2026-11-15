@@ -84,7 +84,8 @@ void CheckProviderLayouts(NativeLoader& loader, const fs::path& provider, const 
     const TemporaryInstall install;
     const auto plugins = install.root / L"PLUGINS";
     const auto fallback = install.root / L"legacy-mmdplugin" / L"MMDPlugin.dll";
-    const auto preferred = plugins / L"legacy-mmdplugin" / L"MMDPlugin.dll";
+    const auto previousPreferred = plugins / L"legacy-mmdplugin" / L"MMDPlugin.dll";
+    const auto preferred = plugins / L"LEGACY" / L"MMDPlugin.dll";
     const auto entry = Entry(direct);
 
     auto rejectedPath = [&](const fs::path& root) {
@@ -102,6 +103,8 @@ void CheckProviderLayouts(NativeLoader& loader, const fs::path& provider, const 
 
     CopyProvider(provider, fallback);
     CheckProvider(loader, install.root, entry, fallback);
+    CopyProvider(provider, previousPreferred);
+    CheckProvider(loader, install.root, entry, previousPreferred);
     CopyProvider(provider, preferred);
     CheckProvider(loader, install.root, entry, preferred);
     fs::remove(fallback);
@@ -109,6 +112,8 @@ void CheckProviderLayouts(NativeLoader& loader, const fs::path& provider, const 
 
     CopyProvider(provider, fallback);
     fs::remove(preferred);
+    CheckProvider(loader, install.root, entry, previousPreferred);
+    fs::remove(previousPreferred);
     CheckProvider(loader, install.root, entry, fallback); // Preferred directory exists, DLL absent.
     fs::create_directory(preferred);
     Check(rejectedPath(install.root), "provider directory was treated as absent");

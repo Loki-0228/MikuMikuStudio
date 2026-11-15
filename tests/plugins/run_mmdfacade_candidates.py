@@ -59,7 +59,7 @@ def run_case(args, directory, layout, name, mode):
         shutil.copy2(args.release / dll, directory / dll)
     provider = directory / layout / 'MMDPlugin.dll'
     provider.parent.mkdir(parents=True)
-    shutil.copy2(args.release / 'PLUGINS/legacy-mmdplugin/MMDPlugin.dll', provider)
+    shutil.copy2(args.release / 'PLUGINS/LEGACY/MMDPlugin.dll', provider)
     candidate = directory / 'PLUGINS/candidate'
     shutil.copytree(args.candidate.parent, candidate)
     profile = args.unsupported_profile if mode == 'unsupported-profile' else args.profile
@@ -178,7 +178,7 @@ def main():
     report = dict(label=args.label, candidate=inspect(args.candidate), checksPassed=False,
         pluginUsable=False, renderingTested=False, inputTested=False,
         hostSha256=digest(args.release / 'MikuMikuDance.exe'), cases=[])
-    for layout in ['legacy-mmdplugin', 'PLUGINS/legacy-mmdplugin']:
+    for layout in ['PLUGINS/LEGACY', 'PLUGINS/legacy-mmdplugin', 'legacy-mmdplugin']:
         for name in ['MikuMikuDance.exe', 'Renamed Studio.exe', '中文工作室.exe']:
             for mode in modes:
                 case = run_case(args, root / str(len(report['cases'])), layout, name, mode)

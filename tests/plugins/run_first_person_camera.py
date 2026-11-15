@@ -15,7 +15,7 @@ def main():
     build = args.build.resolve()
     root = Path(tempfile.mkdtemp(prefix='first-person-input-', dir=build.parent))
     cases = []
-    for layout in ['legacy-mmdplugin', 'PLUGINS/legacy-mmdplugin']:
+    for layout in ['PLUGINS/LEGACY', 'PLUGINS/legacy-mmdplugin', 'legacy-mmdplugin']:
         for name in ['MikuMikuDance.exe', 'Renamed Studio.exe', '中文工作室.exe']:
             directory = root / str(len(cases))
             directory.mkdir()
@@ -23,7 +23,7 @@ def main():
             shutil.copy2(build / 'tests/Release/first_person_camera_tests.exe', exe)
             provider = directory / layout / 'MMDPlugin.dll'
             provider.parent.mkdir(parents=True)
-            shutil.copy2(build / 'Release/PLUGINS/legacy-mmdplugin/MMDPlugin.dll', provider)
+            shutil.copy2(build / 'Release/PLUGINS/LEGACY/MMDPlugin.dll', provider)
             package_path = ['PLUGINS/camera', 'PLUGINS/optional-plugins/first-person-camera',
                             'PLUGINS/我的插件/自选相机'][len(cases) % 3]
             package = directory / package_path
@@ -42,7 +42,7 @@ def main():
             case = dict(exe=name, layout=layout, package=package_path, exitCode=run.returncode,
                         passed=run.returncode == 0, directory=str(directory))
             cases.append(case)
-            (root / 'summary.json').write_text(json.dumps(dict(passed=all(c['passed'] for c in cases) and len(cases)==6, cases=cases), indent=2), encoding='utf-8')
+            (root / 'summary.json').write_text(json.dumps(dict(passed=all(c['passed'] for c in cases) and len(cases)==9, cases=cases), indent=2), encoding='utf-8')
             print(json.dumps(case, ensure_ascii=True), flush=True)
             if run.returncode:
                 print((run.stdout + run.stderr).decode('utf-8', errors='replace'))

@@ -18,7 +18,7 @@ def main():
     powershell, script_name = sys.argv[1:]
     script = pathlib.Path(script_name).resolve()
     source = script.parents[1]
-    provider_path = pathlib.Path("PLUGINS/legacy-mmdplugin/MMDPlugin.dll")
+    provider_path = pathlib.Path("PLUGINS/LEGACY/MMDPlugin.dll")
     provider_bytes = fake_pe(provider_path.as_posix())
     with tempfile.TemporaryDirectory(prefix="mms-abi-package-") as temporary:
         root = pathlib.Path(temporary)

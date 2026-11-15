@@ -21,14 +21,14 @@ def main():
     for key in ['build','effekseer','effect','mme']: setattr(args,key,getattr(args,key).resolve())
     root=Path(tempfile.mkdtemp(prefix='mmdfacade-functional-',dir=args.build.parent))
     cases=[]
-    for layout in ['legacy-mmdplugin','PLUGINS/legacy-mmdplugin']:
+    for layout in ['PLUGINS/LEGACY','PLUGINS/legacy-mmdplugin','legacy-mmdplugin']:
         for name in ['MikuMikuDance.exe','Renamed Studio.exe','中文工作室.exe']:
             directory=root/str(len(cases)); directory.mkdir()
             exe=directory/name
             shutil.copy2(args.build/'tests/mme/Release/MikuMikuDance.exe',exe)
             for dll in ['MMDFacade.dll','MMHack.dll']: shutil.copy2(args.build/'Release'/dll,directory/dll)
             provider=directory/layout/'MMDPlugin.dll'; provider.parent.mkdir(parents=True)
-            shutil.copy2(args.build/'Release/PLUGINS/legacy-mmdplugin/MMDPlugin.dll',provider)
+            shutil.copy2(args.build/'Release/PLUGINS/LEGACY/MMDPlugin.dll',provider)
             for source,profile,identity in [
                 (args.effekseer,'effekseer_v2','test.effekseer'),
                 (args.build/'Release/optional-plugins/first-person-camera/MMSFirstPersonCamera.dll','first_person_camera_v4','test.camera')]:
@@ -57,7 +57,7 @@ def main():
             case['sourcesUnchanged']=digest(directory/'PLUGINS/test.effekseer'/args.effekseer.name)==digest(args.effekseer)
             case['passed'] &= case['sourcesUnchanged']
             cases.append(case)
-            write_json(root/'summary.json',dict(passed=all(c['passed'] for c in cases) and (args.single or len(cases)==6),cases=cases))
+            write_json(root/'summary.json',dict(passed=all(c['passed'] for c in cases) and (args.single or len(cases)==9),cases=cases))
             print(json.dumps(case,ensure_ascii=True),flush=True)
             if not case['passed'] or args.single:
                 print(root/'summary.json'); return 0 if case['passed'] else 1

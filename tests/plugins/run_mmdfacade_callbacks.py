@@ -17,7 +17,7 @@ def main():
     cases = []
     modes = ['enabled', 'disabled', 'missing', 'unsupported', 'wrong-version', 'throw', 'post-throw', 'stop']
     for mode in modes:
-        for layout in ['legacy-mmdplugin', 'PLUGINS/legacy-mmdplugin']:
+        for layout in ['PLUGINS/LEGACY', 'PLUGINS/legacy-mmdplugin', 'legacy-mmdplugin']:
             for name in ['MikuMikuDance.exe', 'Renamed Studio.exe', '中文工作室.exe']:
                 directory = root / str(len(cases))
                 directory.mkdir()
@@ -26,7 +26,7 @@ def main():
                 if mode != 'missing':
                     provider = directory / layout / 'MMDPlugin.dll'
                     provider.parent.mkdir(parents=True)
-                    shutil.copy2(build / 'Release/PLUGINS/legacy-mmdplugin/MMDPlugin.dll', provider)
+                    shutil.copy2(build / 'Release/PLUGINS/LEGACY/MMDPlugin.dll', provider)
                 ids = []
                 for abi, dll, profile in [(2, 'reset.dll', 'device_reset_v2'), (3, 'observer.dll', 'window_observer_v3')]:
                     package = directory / 'PLUGINS' / f'fixture{abi}'
@@ -66,7 +66,7 @@ def main():
                 break
         if not cases[-1]['passed']:
             break
-    report = dict(passed=len(cases) == len(modes) * 6 and all(c['passed'] for c in cases), cases=cases)
+    report = dict(passed=len(cases) == len(modes) * 9 and all(c['passed'] for c in cases), cases=cases)
     (root / 'summary.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(root / 'summary.json')
     return 0 if report['passed'] else 1

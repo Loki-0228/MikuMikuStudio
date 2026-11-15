@@ -8,12 +8,12 @@ add_dependencies(MikuMikuStudio MMDFacade)
 install(TARGETS MMDFacade MMSLegacyMMHack RUNTIME DESTINATION .)
 add_library(mms_legacy_mmd_provider SHARED src/plugins/legacy_mmd_provider.cpp)
 set_target_properties(mms_legacy_mmd_provider PROPERTIES OUTPUT_NAME MMDPlugin
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>/PLUGINS/legacy-mmdplugin"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>/PLUGINS/LEGACY"
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_link_options(mms_legacy_mmd_provider PRIVATE /SUBSYSTEM:WINDOWS,6.01)
 add_dependencies(MikuMikuStudio mms_legacy_mmd_provider)
 # Legacy observers resolve this app-owned provider relative to the host EXE.
-install(TARGETS mms_legacy_mmd_provider RUNTIME DESTINATION PLUGINS/legacy-mmdplugin)
+install(TARGETS mms_legacy_mmd_provider RUNTIME DESTINATION PLUGINS/LEGACY)
 add_library(mms_first_person_camera SHARED src/legacy_first_person/first_person.cpp)
 target_include_directories(mms_first_person_camera PRIVATE sdk/mms/include third_party/dxsdk-d3dx/include)
 target_link_libraries(mms_first_person_camera PRIVATE user32)

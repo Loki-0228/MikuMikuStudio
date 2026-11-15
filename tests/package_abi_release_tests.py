@@ -20,7 +20,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools/package-abi-release.py"
 PRODUCT = (
-    "MikuMikuDance.exe", "MMDFacade.dll", "MMHack.dll", "PLUGINS/legacy-mmdplugin/MMDPlugin.dll",
+    "MikuMikuDance.exe", "MMDFacade.dll", "MMHack.dll", "PLUGINS/LEGACY/MMDPlugin.dll",
     "optional-plugins/first-person-camera/MMSFirstPersonCamera.dll",
 )
 FIXTURE_PAYLOAD = {
@@ -95,7 +95,7 @@ class PackageAbiTest(unittest.TestCase):
     def test_exact_files_and_hashes_with_build_and_repo_noise(self) -> None:
         for relative in ("build tree/Release/MMEffect.dll", "build tree/Release/MMSNvidiaAAFix.dll",
                          "build tree/Release/d3dx9_43.dll", "build tree/Release/MikuMikuDance.pdb",
-                         "build tree/Release/PLUGINS/legacy-mmdplugin/raw-observer.dll",
+                         "build tree/Release/PLUGINS/LEGACY/raw-observer.dll",
                          "PLUGINS/local-dev-plugin.dll", "licenses/local-notes.txt"):
             (self.root / relative).write_bytes(b"must not be copied")
         result = self.run_packager()
@@ -209,19 +209,23 @@ class PackageAbiTest(unittest.TestCase):
                 self.assertTrue((self.build / "Release/MMHack.dll").is_file())
 
     def test_force_migrates_old_provider_without_removing_user_files(self) -> None:
-        old = self.release / "legacy-mmdplugin/MMDPlugin.dll"
-        old.parent.mkdir(parents=True)
-        old.write_bytes(b"previous provider")
-        extra = old.parent / "user-plugin.dll"
-        extra.write_bytes(b"preserve user plugin")
-        self.assertNotEqual(self.run_packager("--force").returncode, 0)
-        self.assertEqual(extra.read_bytes(), b"preserve user plugin")
-        self.assertEqual(old.read_bytes(), b"previous provider")
-        extra.unlink()
+        previous = [self.release / directory / "MMDPlugin.dll"
+                    for directory in ("legacy-mmdplugin", "PLUGINS/legacy-mmdplugin")]
+        for old in previous:
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b"previous provider")
+        for old in previous:
+            extra = old.parent / "user-plugin.dll"
+            extra.write_bytes(b"preserve user plugin")
+            self.assertNotEqual(self.run_packager("--force").returncode, 0)
+            self.assertEqual(extra.read_bytes(), b"preserve user plugin")
+            self.assertEqual(old.read_bytes(), b"previous provider")
+            extra.unlink()
         result = self.run_packager("--force")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(old.parent.exists())
-        provider = self.release / "PLUGINS/legacy-mmdplugin/MMDPlugin.dll"
+        for old in previous:
+            self.assertFalse(old.parent.exists())
+        provider = self.release / "PLUGINS/LEGACY/MMDPlugin.dll"
         self.assertEqual(provider.read_bytes(), (self.build / "Release" / provider.relative_to(self.release)).read_bytes())
 
     def load_core(self):
@@ -289,7 +293,7 @@ class PackageAbiTest(unittest.TestCase):
 
     def test_linked_provider_is_not_copied(self) -> None:
         runtime = self.build / "Release"
-        provider = runtime / "PLUGINS/legacy-mmdplugin"
+        provider = runtime / "PLUGINS/LEGACY"
         outside = self.root / "other provider"
         provider.rename(outside)
         try:
