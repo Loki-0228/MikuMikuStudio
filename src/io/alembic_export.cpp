@@ -1,6 +1,7 @@
 #include "mikumikustudio/frame_limits.hpp"
 #define NOMINMAX
 #include "mikumikustudio/alembic_export.hpp"
+#include "mesh_bake_bone_selection.hpp"
 #include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/deformed_mesh_capture.hpp"
@@ -229,21 +230,23 @@ Result Export(MMDApp& app,const std::filesystem::path& path,const Options& optio
                         }
                         if(choice){
                             const auto material=uint32_t(std::stoul(mesh.name.substr(mesh.name.find("_material_")+10)));
-                            if(!choice->materials.empty()&&std::find(choice->materials.begin(),choice->materials.end(),material)==choice->materials.end())continue;
+                            if(!choice->materials.Allows(material))continue;
                             if(options.bakeIntoProject&&(!choice->materials.empty()||!choice->vertices.empty()||choice->selectedBoneVertices)){
                                 mesh.vertexPatch=true;
                                 if(mesh.sourceVertices.size()!=mesh.positions.size())throw std::runtime_error("This mesh has no source-vertex mapping for a partial bake");
                                 bool any=false;
                                 for(auto& vertex:mesh.sourceVertices){
                                     if(vertex==UINT32_MAX)throw std::runtime_error("Generated vertices cannot be partially baked without a source index; select the complete object");
-                                    bool selected=choice->vertices.empty()||std::find(choice->vertices.begin(),choice->vertices.end(),vertex)!=choice->vertices.end();
+                                    bool selected=choice->vertices.Allows(vertex);
                                     if(choice->selectedBoneVertices){
                                         if(!model)throw std::runtime_error("Accessories do not have bone-weight selections");
                                         const auto& m=*mdl::Mdl(app.ModelSlot(slot));if(vertex>=m.vertexCount)throw std::runtime_error("Source vertex index exceeds model geometry");
                                         bool weighted=false;
                                         if(m.boneSelection){
-                                            if(m.physicsMode==2){const auto& v=m.pmxVertices[vertex];for(int b=0;b<4;++b)if(v.bone[b]>=0&&unsigned(v.bone[b])<m.boneCount&&v.weight[b]>0&&m.boneSelection[v.bone[b]])weighted=true;}
-                                            else {const auto& v=m.rawVertices[vertex];for(int b=0;b<2;++b)if(v.bone[b]>=0&&static_cast<std::uint32_t>(v.bone[b])<m.boneCount&&(b?v.weightPercent<100:v.weightPercent>0)&&m.boneSelection[v.bone[b]])weighted=true;}
+                                            const BoneSelectionView bones{m.boneSelection,m.boneCount};
+                                            weighted=m.physicsMode==2
+                                                ?HasSelectedBoneInfluence(m.pmxVertices[vertex],bones)
+                                                :HasSelectedBoneInfluence(m.rawVertices[vertex],bones);
                                         }
                                         selected&=weighted;
                                     }

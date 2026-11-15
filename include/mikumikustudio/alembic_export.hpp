@@ -1,9 +1,9 @@
 #pragma once
+#include "mikumikustudio/mesh_bake_index_filter.hpp"
 #include <filesystem>
 #include <functional>
 #include <string>
 #include <vector>
-#include <cstdint>
 
 namespace mikumikustudio {
 class MMDApp;
@@ -11,8 +11,7 @@ namespace alembic_export {
 struct Selection {
     bool accessory = false;
     int slot = 0;
-    // Empty lists select the complete object. A nonempty list restricts output.
-    std::vector<std::uint32_t> materials, vertices;
+    IndexFilter materials, vertices;
     bool selectedBoneVertices = false;
 };
 struct Options {

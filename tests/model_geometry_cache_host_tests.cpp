@@ -175,6 +175,46 @@ void FullRoundTrip(Host& host,Environment& environment,ref::Fixture fixture,Rout
     const auto changedWarm=Actual(host,path,fixture,route);Equal(changedSnapshot,changedWarm);
     Check(!IsWindowVisible(host.window),"real loader validation never displays the test-owned host");std::printf("PASS %s\n",label);
 }
+void PmdTailAdmission(Host& host, Environment& environment) {
+    stage = "real-PMD-tail-admission";
+    std::printf("STAGE %s\n", stage);
+    const auto fixture = ref::Pmd(3, true);
+    constexpr std::size_t extensionBytes = 1 + 10 * 100 + 2 * sizeof(std::uint32_t);
+    const auto path = root / L"pmd-tail.pmd";
+    environment.Set(false);
+    const auto mandatoryEnd = fixture.bytes.size() - extensionBytes;
+    for (const auto cut : {mandatoryEnd - 1, fixture.bytes.size() - 7, fixture.bytes.size() - 1}) {
+        auto shortFile = fixture.bytes;
+        shortFile.resize(cut);
+        Write(path, shortFile);
+        const auto before = gc::GetProcessStatistics();
+        {
+            Model model;
+            Load(host, model, path, Route::PmdEntry);
+            Check(model.value->vertexBuffer && model.value->indexBuffer,
+                "truncation test reached the real native geometry setup");
+        }
+        const auto after = gc::GetProcessStatistics();
+        Check(after.stores == before.stores && !after.pendingBytes,
+            "partial mandatory display count, rigid count or joint count cannot publish geometry");
+    }
+
+    // Both EOF boundaries predate the optional physics extension.
+    for (const auto cut : {mandatoryEnd, fixture.bytes.size() - 8}) {
+        auto legacy = fixture.bytes;
+        legacy.resize(cut);
+        Write(path, legacy);
+        const auto before = gc::GetProcessStatistics();
+        const auto cold = Actual(host, path, fixture, Route::PmdEntry);
+        const auto warm = Actual(host, path, fixture, Route::PmdEntry);
+        const auto after = gc::GetProcessStatistics();
+        Equal(cold, warm);
+        if (!build_profile::original)
+            Check(after.stores == before.stores + 1 && after.hits == before.hits + 1,
+                "legacy PMD with no optional extension still stores and hits");
+    }
+    std::printf("PASS %s\n", stage);
+}
 void LaterFailureDoesNotPublish(Host& host,Environment& environment,const ref::Fixture* large=nullptr) {
     stage=large?"actual-parallel-PMX-late-section-failure":"actual-PMX-late-section-failure";std::printf("STAGE %s\n",stage);
     const auto localFixture=large?ref::Fixture{}:ref::Pmx(3,2,2,2,true);
@@ -246,6 +286,7 @@ int wmain(int argc,wchar_t** argv) {
     Check(root.native().size()+48<256&&fs::create_directories(root),"create fresh bounded native-loader fixture directory");
     Environment environment;Host host;
     FullRoundTrip(host,environment,ref::Pmd(3,true),Route::PmdEntry,"real-PMD-entry");
+    PmdTailAdmission(host,environment);
     FullRoundTrip(host,environment,ref::Pmx(3,0,1,1,true),Route::PmdEntry,"real-PMX-via-PMD-entry");
     FullRoundTrip(host,environment,ref::Pmx(3,2,2,2,true),Route::DirectPmx,"real-direct-PMX-two-UV");
     FullRoundTrip(host,environment,ref::Pmx(3,4,4,4,true),Route::DirectPmx,"real-direct-PMX-four-UV-wide-index");

@@ -4,6 +4,7 @@
 #include "mikumikustudio/model_vertex_cache.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "model_geometry_cache_load.hpp"
+#include "pmd_geometry_wire.hpp"
 // ===========================================================================
 // VA 0x004BF3E0 - ModelLoadPMD  (original: sub_4BF3E0, 0x2C95 bytes)
 // ===========================================================================
@@ -181,10 +182,20 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
         void Close() noexcept { if (value >= 0) { _close(value); value = -1; } }
         int Release() noexcept { const int result = value; value = -1; return result; }
     } file{fh};
+    // Keep the original parser's short-read behavior. Only cache admission
+    // requires complete mandatory fields and optional sections once present.
+    bool sourceComplete = true;
+    const auto readRequired = [&](void* destination, unsigned size) {
+        const int count = _read(fh, destination, size);
+#if !MMD_ORIGINAL_PROFILE
+        if (count != static_cast<int>(size)) sourceComplete = false;
+#endif
+        return count;
+    };
     bool textFits = true;
     bool textComplete = true;
     const auto readName = [&](char* destination, unsigned capacity, unsigned maximum) {
-        const int count = _read(fh, destination, capacity);
+        const int count = readRequired(destination, capacity);
         textComplete = textComplete && count == static_cast<int>(capacity);
 #if MMD_ORIGINAL_PROFILE
         textFits = textFits && count == static_cast<int>(capacity) &&
@@ -208,7 +219,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
     }
 
     // ---- header -----------------------------------------------------------
-    _read(fh, text, 3);
+    readRequired(text, 3);
     if (text[0] != 'P' || text[1] != 'm' || text[2] != 'd') {
         if (text[0] == 'P' && text[1] == 'M' && text[2] == 'X')
             return LoadPMX(m, sub, boxGate, englishUi, paths,
@@ -223,7 +234,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
         }
         return false;
     }
-    _read(fh, text, 4);                                   // version
+    readRequired(text, 4);                                   // version
     readName(model.name, sizeof(model.name), 19);
     readName(model.comment, sizeof(model.comment), 255);
     if (!enData && boxGate &&
@@ -238,12 +249,11 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
     const bool haveD3dx = d3dx->Load();
 
     // ---- vertices ---------------------------------------------------------
-    _read(fh, &model.vertexCount, sizeof(model.vertexCount));
+    readRequired(&model.vertexCount, sizeof(model.vertexCount));
     const std::uint32_t vertCount = model.vertexCount;
     const auto vertexStart = _telli64(fh);
-    auto geometryCache = model_geometry_cache::Session::Begin(fh,
-        {model_geometry_cache::Format::pmd, vertCount}, vertexStart,
-        nullptr, MMD_ORIGINAL_PROFILE != 0);
+    auto geometryCache = model_geometry_cache::Session::BeginPmd(fh, vertCount, vertexStart,
+        nullptr, MMD_ORIGINAL_PROFILE != 0 || !sourceComplete);
     model_geometry_cache::HitCopy<mdl::PmdVertex> cachedGeometry(geometryCache, vertCount);
     bool geometryHit = cachedGeometry.Ready();
     if (geometryHit && _lseeki64(fh, geometryCache.IndexEnd(), SEEK_SET) != geometryCache.IndexEnd()) {
@@ -285,7 +295,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
         model.rawVertices = recs;
         if (!geometryHit) {
             std::memset(recs, 0, sizeof(mdl::PmdVertex) * vertCount);
-            for (std::uint32_t i = 0; i < vertCount; ++i) _read(fh, &recs[i], 0x26);
+            for (std::uint32_t i = 0; i < vertCount; ++i) readRequired(&recs[i], model_geometry_cache::kPmdVertexWireBytes);
         }
 
         float* p1 = nullptr;
@@ -322,7 +332,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
 
     // ---- indices ----------------------------------------------------------
     if (geometryHit) model.indexCount = geometryCache.IndexCount();
-    else _read(fh, &model.indexCount, sizeof(model.indexCount));
+    else readRequired(&model.indexCount, sizeof(model.indexCount));
     const std::uint32_t idxCount = model.indexCount;
     // Deliberate hardening: the original multiplies the file's index count by four
     // with a 32-bit mul (0x1400B2CBE/0x1400B2CC3), then by two with shl r8,2
@@ -363,19 +373,19 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
             return false;
         }
         for (std::uint32_t j = 0; j < idxCount; ++j) {
-            if (!geometryHit) _read(fh, idx + 2 * j, 2);
+            if (!geometryHit) readRequired(idx + 2 * j, model_geometry_cache::kPmdIndexWireBytes);
             static_cast<std::uint16_t*>(ib)[j] = idx[2 * j];
         }
         const HRESULT unlocked = mdl::ResourceAs<IDirect3DIndexBuffer9>(
             mdl::Mdl(m)->indexBuffer)->Unlock();
         if (model_import::Preparing() && FAILED(unlocked)) return false;
     }
-    if (!geometryHit) geometryCache.CapturePmd(model.rawVertices, mdl::Indices(m),
+    if (!geometryHit && sourceComplete) geometryCache.CapturePmd(model.rawVertices, mdl::Indices(m),
         idxCount, vertexEnd, _telli64(fh));
     geometryCache.FinishGeometry();
 
     // ---- materials --------------------------------------------------------
-    _read(fh, &mdl::Mdl(m)->materialCount,
+    readRequired(&mdl::Mdl(m)->materialCount,
           sizeof mdl::Mdl(m)->materialCount);
     const std::uint32_t matCount = mdl::Mdl(m)->materialCount;
     if (matCount != 0) {
@@ -385,17 +395,17 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
         std::memset(materials, 0, sizeof(*materials) * matCount);
         for (std::uint32_t i = 0; i < matCount; ++i) {
             mdl::ModelMaterialRecord& mat = materials[i];
-            _read(fh, mat.diffuse, sizeof(mat.diffuse));
+            readRequired(mat.diffuse, sizeof(mat.diffuse));
             std::memcpy(mat.diffuseMirror, mat.diffuse,
                         sizeof(mat.diffuseMirror));
-            _read(fh, &mat.specularPower, sizeof(mat.specularPower));
-            _read(fh, mat.specular, sizeof(mat.specular));
-            _read(fh, mat.ambient, sizeof(mat.ambient));
-            _read(fh, &mat.toonReference, sizeof(mat.toonReference));
+            readRequired(&mat.specularPower, sizeof(mat.specularPower));
+            readRequired(mat.specular, sizeof(mat.specular));
+            readRequired(mat.ambient, sizeof(mat.ambient));
+            readRequired(&mat.toonReference, sizeof(mat.toonReference));
             std::uint8_t sphereFlag = 0;
-            _read(fh, &sphereFlag, 1);
+            readRequired(&sphereFlag, 1);
             mat.doubleSided = sphereFlag ? 1 : 0;
-            _read(fh, &mat.faceVertexCount, sizeof(mat.faceVertexCount));
+            readRequired(&mat.faceVertexCount, sizeof(mat.faceVertexCount));
             char texName[24] = {};
             readName(texName, 0x14, 20);
             if (texName[0] != '\0') {
@@ -429,7 +439,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
     }
 
     // ---- bones ------------------------------------------------------------
-    _read(fh, &model.boneCount, 2);
+    readRequired(&model.boneCount, 2);
     const std::uint32_t boneCount = model.boneCount;
     mikumikustudio::mdl::BoneRecord* bones = static_cast<mikumikustudio::mdl::BoneRecord*>(
         operator new(sizeof(mikumikustudio::mdl::BoneRecord) * (boneCount ? boneCount : 1)));
@@ -461,16 +471,16 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
         if (!std::memcmp(bone->name, kNameCenterJp, 9) && !centerSeen)
             model.centerBone = static_cast<std::int32_t>(i);
         std::int16_t parent = 0;
-        _read(fh, &parent, 2);
+        readRequired(&parent, 2);
         bone->parent = parent;
         std::int16_t tail = 0;
-        _read(fh, &tail, 2);
+        readRequired(&tail, 2);
         bone->tailBone = tail;
-        _read(fh, &bone->type, 1);       // type
+        readRequired(&bone->type, 1);       // type
         std::int16_t tailIdx = 0;
-        _read(fh, &tailIdx, 2);
+        readRequired(&tailIdx, 2);
         bone->tailIdx = tailIdx;
-        _read(fh, bone->position, sizeof(bone->position));
+        readRequired(bone->position, sizeof(bone->position));
         bone->rotQuat[3] = 1.0f;    // scale x/y
         bone->rotQuat2[3] = 1.0f;
         std::memset(bone->matWorld, 0, sizeof(bone->matWorld));
@@ -481,7 +491,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
     }
 
     // ---- IK chains --------------------------------------------------------
-    _read(fh, &model.ikChainCount, 2);
+    readRequired(&model.ikChainCount, 2);
     const std::uint32_t ikCount = model.ikChainCount;
     if (ikCount > 0) {
         mdl::Mdl(m)->ikChains = static_cast<mdl::IkChain*>(
@@ -490,17 +500,17 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
                     sizeof(mdl::IkChain) * ikCount);
         for (std::uint32_t i = 0; i < ikCount; ++i) {
             mdl::IkChain& ik = mdl::IkChains(m)[i];
-            _read(fh, &ik.boneIndex, 2);
-            _read(fh, &ik.targetBone, 2);
-            _read(fh, &ik.linkCount, 1);
-            _read(fh, &ik.iterations, 2);
-            _read(fh, &ik.maxAngle, 4);
+            readRequired(&ik.boneIndex, 2);
+            readRequired(&ik.targetBone, 2);
+            readRequired(&ik.linkCount, 1);
+            readRequired(&ik.iterations, 2);
+            readRequired(&ik.maxAngle, 4);
             ik.enabled = 1;
             const std::uint8_t len = ik.linkCount;
             ik.links = static_cast<std::uint16_t*>(
                 operator new(sizeof(std::uint16_t) * len));
             for (std::uint8_t k = 0; k < len; ++k)
-                _read(fh, &ik.links[k], sizeof(ik.links[k]));
+                readRequired(&ik.links[k], sizeof(ik.links[k]));
         }
     }
 
@@ -545,7 +555,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
     //  port invented both, writing past the 136-byte records and
     //  desynchronising the stream - heap corruption with real models,
     //  docs/ARCHITECTURE.md §8.)
-    _read(fh, &model.morphCount, 2);
+    readRequired(&model.morphCount, 2);
     const std::uint32_t morphCount = model.morphCount;
     if (morphCount > 0) {
         mdl::MorphRecord* morphs = static_cast<mdl::MorphRecord*>(
@@ -561,16 +571,16 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
         for (std::uint32_t i = 0; i < morphCount; ++i) {
             mdl::MorphRecord& morph = morphs[i];
             readName(morph.name, sizeof(morph.name), 15);
-            _read(fh, &morph.offsetCount, sizeof(morph.offsetCount));
-            _read(fh, &morph.panel, sizeof(morph.panel));
+            readRequired(&morph.offsetCount, sizeof(morph.offsetCount));
+            readRequired(&morph.panel, sizeof(morph.panel));
             const std::uint32_t n = morph.offsetCount;
             morph.vertexEntries = static_cast<mdl::PmdVertexMorphEntry*>(
                 operator new(sizeof(mdl::PmdVertexMorphEntry) * n));
             std::memset(morph.vertexEntries, 0,
                         sizeof(mdl::PmdVertexMorphEntry) * n);
             for (std::uint32_t k = 0; k < n; ++k) {
-                _read(fh, &morph.vertexEntries[k].vertexIndex, 4);
-                _read(fh, morph.vertexEntries[k].offset, 12);
+                readRequired(&morph.vertexEntries[k].vertexIndex, 4);
+                readRequired(morph.vertexEntries[k].offset, 12);
             }
         }
     }
@@ -615,7 +625,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
     }
 
     // ---- display frames / face groups -------------------------------------
-    _read(fh, &model.facialFrameCount, sizeof(model.facialFrameCount));
+    readRequired(&model.facialFrameCount, sizeof(model.facialFrameCount));
     if (model.facialFrameCount != 0) {
         model.displayFrames = static_cast<mdl::FrameGroup*>(
             operator new(sizeof(*model.displayFrames) * model.facialFrameCount));
@@ -623,7 +633,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
                     sizeof(*model.displayFrames) * model.facialFrameCount);
         for (std::uint32_t i = 0; i < model.facialFrameCount; ++i) {
             mdl::FrameGroup& frame = model.displayFrames[i];
-            _read(fh, &frame.targetIndex, sizeof(frame.targetIndex));
+            readRequired(&frame.targetIndex, sizeof(frame.targetIndex));
             frame.groupIndex = 1;
             // Deliberate hardening: the original code widens the file's targetIndex
             // with movzx and reads morphs[192 * idx] at 0x1400B3BF6/0x1400B3BFA/
@@ -636,7 +646,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
                          mdl::Morphs(m)[frame.targetIndex].name);
         }
     }
-    _read(fh, &model.groupCount, sizeof(model.groupCount));
+    readRequired(&model.groupCount, sizeof(model.groupCount));
     const std::uint32_t fixedRows = model.facialFrameCount != 0 ? 3 : 2;
     const std::uint32_t grpCount = std::uint32_t(model.groupCount) + fixedRows;
     const std::uint32_t groupSlots = grpCount;
@@ -660,7 +670,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
     }
 
     // ---- rigid-body group list --------------------------------------------
-    _read(fh, &model.rigidBodyCount, sizeof(model.rigidBodyCount));
+    readRequired(&model.rigidBodyCount, sizeof(model.rigidBodyCount));
     const std::uint32_t rbGroupCount = model.rigidBodyCount;
     mdl::FrameGroup*& rbGroups = mdl::RigidGroups(m);
     rbGroups = static_cast<mdl::FrameGroup*>(
@@ -669,8 +679,8 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
                 sizeof(*rbGroups) * (rbGroupCount ? rbGroupCount : 1));
     for (std::uint32_t i = 0; i < rbGroupCount; ++i) {
         mdl::FrameGroup& rb = rbGroups[i];
-        _read(fh, &rb.targetIndex, sizeof(rb.targetIndex));
-        _read(fh, &rb.groupIndex, 1);
+        readRequired(&rb.targetIndex, sizeof(rb.targetIndex));
+        readRequired(&rb.groupIndex, 1);
         ++rb.groupIndex;
         if (model.facialFrameCount != 0)
             ++rb.groupIndex;
@@ -682,6 +692,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
     // ---- English names section --------------------------------------------
     std::int8_t hasEn = 0;
     const int enRead = _read(fh, &hasEn, 1);
+    if (enRead < 0) sourceComplete = false;
     if (hasEn == 0 || enRead == 0) {
         if ((boxGate & model.physicsFlags) != 0)
             model_import::MessageA(hwnd,
@@ -802,6 +813,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
     // ---- rigid bodies + joints (physics) ----------------------------------
     // gated on the rigid-count read itself (original: _read(...) != -1)
     const int rbRead = _read(fh, &model.rigidCount, sizeof(model.rigidCount));
+    if (rbRead != 0 && rbRead != static_cast<int>(sizeof(model.rigidCount))) sourceComplete = false;
     const std::uint32_t rigidCount = model.rigidCount;
     if (rbRead != -1) {
         PhysicsScene* physScene = mdl::Mdl(m)->scenePtr;
@@ -817,20 +829,20 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
             mdl::RigidRecord& rigid = rigids[i];
             readName(rigid.name, sizeof(rigid.name), 19);
             std::int16_t boneIndex = -1;
-            _read(fh, &boneIndex, sizeof(boneIndex));
+            readRequired(&boneIndex, sizeof(boneIndex));
             rigid.boneIndex = boneIndex;
-            _read(fh, &rigid.group, sizeof(rigid.group));
-            _read(fh, &rigid.noCollapse, sizeof(rigid.noCollapse));
-            _read(fh, &rigid.shape, sizeof(rigid.shape));
-            _read(fh, rigid.size, sizeof(rigid.size));
-            _read(fh, rigid.position, sizeof(rigid.position));
-            _read(fh, rigid.rotation, sizeof(rigid.rotation));
-            _read(fh, &rigid.mass, sizeof(rigid.mass));
-            _read(fh, &rigid.linearDamping, sizeof(rigid.linearDamping));
-            _read(fh, &rigid.angularDamping, sizeof(rigid.angularDamping));
-            _read(fh, &rigid.restitution, sizeof(rigid.restitution));
-            _read(fh, &rigid.friction, sizeof(rigid.friction));
-            _read(fh, &rigid.mode, sizeof(rigid.mode));
+            readRequired(&rigid.group, sizeof(rigid.group));
+            readRequired(&rigid.noCollapse, sizeof(rigid.noCollapse));
+            readRequired(&rigid.shape, sizeof(rigid.shape));
+            readRequired(rigid.size, sizeof(rigid.size));
+            readRequired(rigid.position, sizeof(rigid.position));
+            readRequired(rigid.rotation, sizeof(rigid.rotation));
+            readRequired(&rigid.mass, sizeof(rigid.mass));
+            readRequired(&rigid.linearDamping, sizeof(rigid.linearDamping));
+            readRequired(&rigid.angularDamping, sizeof(rigid.angularDamping));
+            readRequired(&rigid.restitution, sizeof(rigid.restitution));
+            readRequired(&rigid.friction, sizeof(rigid.friction));
+            readRequired(&rigid.mode, sizeof(rigid.mode));
             rigid.kinematicFlag = rigid.mode == 2 ? 1 : 0;
             rigid.staticFlag = rigid.mode == 0 ? 1 : 0;
 
@@ -913,7 +925,8 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
                 std::memcpy(rigid.invTransform, &inv, sizeof(inv));
             }
         }
-        _read(fh, &model.jointCount, sizeof(model.jointCount));
+        const int jointRead = _read(fh, &model.jointCount, sizeof(model.jointCount));
+        if (jointRead != (rbRead == 0 ? 0 : static_cast<int>(sizeof(model.jointCount)))) sourceComplete = false;
         const std::uint32_t jointCount = model.jointCount;
         mdl::JointRecord* joints = static_cast<mdl::JointRecord*>(
             operator new(sizeof(mdl::JointRecord) *
@@ -933,15 +946,15 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
             // by 16 bytes and desynchronising the stream - wild rigid
             // indices, AV in memcpy; found by desktop testing with
             // Luka_Megurine.pmd, docs/ARCHITECTURE.md §8.
-            _read(fh, &joint.rigidA, sizeof(joint.rigidA));
-            _read(fh, &joint.rigidB, sizeof(joint.rigidB));
-            _read(fh, joint.position, sizeof(joint.position));
-            _read(fh, joint.rotation, sizeof(joint.rotation));
-            _read(fh, &joint.limits[3], 3 * sizeof(float));
-            _read(fh, &joint.limits[0], 3 * sizeof(float));
-            _read(fh, &joint.limits[9], 3 * sizeof(float));
-            _read(fh, &joint.limits[6], 3 * sizeof(float));
-            _read(fh, joint.springs, sizeof(joint.springs));
+            readRequired(&joint.rigidA, sizeof(joint.rigidA));
+            readRequired(&joint.rigidB, sizeof(joint.rigidB));
+            readRequired(joint.position, sizeof(joint.position));
+            readRequired(joint.rotation, sizeof(joint.rotation));
+            readRequired(&joint.limits[3], 3 * sizeof(float));
+            readRequired(&joint.limits[0], 3 * sizeof(float));
+            readRequired(&joint.limits[9], 3 * sizeof(float));
+            readRequired(&joint.limits[6], 3 * sizeof(float));
+            readRequired(joint.springs, sizeof(joint.springs));
             if (haveD3dx) {
                 using d3dx::D3DXMATRIXF;
                 mdl::RigidRecord* rigids2 = mdl::Rigids(m);
@@ -1070,7 +1083,7 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
     if (!model_import::Preparing()) model_load_ui::PostLoadInitOrDefer(m);                    // 0x49C850
     model_vertex_cache::RegisterLoaded(m);
     original_import::WarnModelImport(model, hwnd, englishUi, textFits);
-    geometryCache.Commit();
+    if (sourceComplete) geometryCache.Commit();
     return true;
 }
 

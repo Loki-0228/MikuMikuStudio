@@ -184,7 +184,7 @@ void Fixture(const std::filesystem::path& path){
     Put(f,0u);Put(f,1u);Text(f,L"Root");Text(f,L"Root");Put(f,uint8_t(1));Put(f,1u);Put(f,uint8_t(0));Put(f,int8_t(0));
     Put(f,0u);Put(f,0u);Check(bool(f),"write fixture PMX");
 }
-void AttributeFixture(const std::filesystem::path& path){
+void AttributeFixture(const std::filesystem::path& path,bool boneVertices=false){
     std::ofstream f(path,std::ios::binary);f.write("PMX ",4);Put(f,2.f);
     for(uint8_t v:{8,0,4,1,1,1,1,1,1})Put(f,v); // Four additional UV sets.
     Text(f,L"Mapped attributes");Text(f,L"Mapped attributes");Text(f,L"");Text(f,L"");
@@ -193,7 +193,18 @@ void AttributeFixture(const std::filesystem::path& path){
         Put(f,float(i%2));Put(f,10.f+float(i/2));Put(f,0.f);
         Put(f,0.f);Put(f,0.f);Put(f,-1.f);Put(f,float(i%2));Put(f,float(i/2));
         for(int c=0;c<16;++c)Put(f,float(i*16+c+1)*.125f);
-        Put(f,uint8_t(0));Put(f,int8_t(0));Put(f,.25f*float(i+1));
+        if(!boneVertices||i==0){
+            Put(f,uint8_t(0));Put(f,int8_t(0)); // BDEF1 on the selected root.
+        }else if(i<3){
+            Put(f,uint8_t(i==1?1:3)); // BDEF2 or SDEF; root is the implicit second lane.
+            Put(f,int8_t(1));Put(f,int8_t(0));Put(f,i==1?.25f:.75f);
+            if(i==2)for(int component=0;component<9;++component)Put(f,0.f);
+        }else{
+            Put(f,uint8_t(2)); // BDEF4; selected root has no weight.
+            for(int8_t bone:{1,0,1,1})Put(f,bone);
+            for(float weight:{1.f,0.f,0.f,0.f})Put(f,weight);
+        }
+        Put(f,.25f*float(i+1));
     }
     Put(f,6u);for(uint8_t i:{2,0,1,2,3,0})Put(f,i);Put(f,0u);
     Put(f,2u);
@@ -203,8 +214,12 @@ void AttributeFixture(const std::filesystem::path& path){
         Put(f,uint8_t(0x11));for(float v:{0.f,0.f,0.f,1.f})Put(f,v);Put(f,1.f);
         Put(f,int8_t(-1));Put(f,int8_t(-1));Put(f,uint8_t(0));Put(f,uint8_t(1));Put(f,uint8_t(0));Text(f,L"");Put(f,3u);
     }
-    Put(f,1u);Text(f,L"root");Text(f,L"root");for(int i=0;i<3;++i)Put(f,0.f);
-    Put(f,int8_t(-1));Put(f,0u);Put(f,uint16_t(0x1a));for(int i=0;i<3;++i)Put(f,0.f);
+    Put(f,boneVertices?2u:1u);
+    for(int bone=0;bone<(boneVertices?2:1);++bone){
+        const auto* name=bone==0?L"root":L"other";Text(f,name);Text(f,name);
+        for(int i=0;i<3;++i)Put(f,0.f);
+        Put(f,int8_t(bone==0?-1:0));Put(f,0u);Put(f,uint16_t(0x1a));for(int i=0;i<3;++i)Put(f,0.f);
+    }
     Put(f,0u);Put(f,1u);Text(f,L"Root");Text(f,L"Root");Put(f,uint8_t(1));Put(f,1u);Put(f,uint8_t(0));Put(f,int8_t(0));
     Put(f,0u);Put(f,0u);Check(bool(f),"write mapped attribute PMX");
 }
@@ -342,6 +357,76 @@ void AttributeRoundtrip(MMDApp& app,const std::filesystem::path& out,bool benchm
         static_cast<unsigned long long>(std::filesystem::file_size(archive)),explicitMaps,attributeChecksum,expectedChecksum);
     native_mesh::ClearMeshBake(&app,false);
 }
+void BoneSelectionRoundtrip(MMDApp& app,const std::filesystem::path& out){
+    const auto modelPath=out/L"bone-vertices.pmx";AttributeFixture(modelPath,true);
+    LoadModelFile(&app,modelPath.c_str(),false);
+    auto* raw=app.ModelSlot(0);Check(raw!=nullptr,"load selected-bone vertex fixture");
+    auto& model=*mdl::Mdl(raw);
+    Check(model.boneCount==2&&model.boneSelection&&model.vertexCount==4,
+          "selected-bone fixture has two bones and four source vertices");
+    model.boneSelection[0]=1;model.boneSelection[1]=0;
+    Frame(app);
+    alembic_export::Options options;options.bakeIntoProject=true;options.explicitSelection=true;
+    alembic_export::Selection selection;selection.slot=0;selection.selectedBoneVertices=true;
+    options.selection={selection};
+
+    const auto checkBake=[&](const std::filesystem::path& path,
+                            const std::vector<std::vector<std::uint32_t>>& expected){
+        const auto result=alembic_export::Export(app,path,options);
+        if(!result.success)std::printf("selected-bone bake error=%s\n",result.error.c_str());
+        Check(result.success&&result.baked&&result.abcWritten&&result.samples==1,
+              "export and install one selected-bone project sample");
+        {
+            std::ifstream stream(path,std::ios::binary);std::vector<std::istream*> streams{&stream};
+            Abc::IArchive archive(Alembic::AbcCoreOgawa::ReadArchive(streams),"stream");
+            auto top=archive.getTop();
+            Check(top.getNumChildren()==expected.size(),"expected material partitions in filtered ABC");
+            for(size_t i=0;i<expected.size();++i){
+                Geom::IPolyMesh mesh(top,top.getChildHeader(i).getName());
+                const auto properties=mesh.getSchema().getUserProperties();
+                Check(Abc::IBoolProperty(properties,"mdsVertexPatch").getValue(),
+                      "selected-bone export marks a vertex patch");
+                const auto ids=Abc::IUInt32ArrayProperty(properties,"mdsSourceVertices").getValue();
+                Check(ids&&ids->size()==expected[i].size()
+                      &&std::equal(expected[i].begin(),expected[i].end(),ids->get()),
+                      "filtered ABC preserves selected source rows and masks the others");
+            }
+        }
+        std::string error;
+        std::vector<deformed_mesh_capture::Mesh> cached;
+        Check(mesh_bake_cache::Sample(raw,0,cached,error)&&cached.size()==expected.size(),
+              "read installed selected-bone cache");
+        for(size_t i=0;i<expected.size();++i)
+            Check(cached[i].vertexPatch&&cached[i].sourceVertices==expected[i],
+                  "installed cache preserves the filtered source mapping");
+        native_mesh::ClearMeshBake(&app,false);
+    };
+
+    checkBake(out/L"bone-vertices.abc",{{2,1,0},{2,0,UINT32_MAX}});
+    options.selection[0].materials={0};
+    options.selection[0].vertices={0,1,3};
+    checkBake(out/L"bone-vertices-intersection.abc",{{UINT32_MAX,1,0}});
+    Check(alembic_export::IndexFilter::Parse(L" 0-0 , 0 ",options.selection[0].materials) &&
+          alembic_export::IndexFilter::Parse(L"3,0 - 1,1",options.selection[0].vertices),
+          "parse the equivalent material and vertex ranges used by the dialog");
+    checkBake(out/L"bone-vertices-range-intersection.abc",{{UINT32_MAX,1,0}});
+
+    options.bakeIntoProject=false;
+    options.selection[0].selectedBoneVertices=false;
+    const auto refusedPath=out/L"abc-vertex-filter.abc";
+    std::ofstream(refusedPath)<<"keep";
+    const auto refused=alembic_export::Export(app,refusedPath,options);
+    Check(!refused.success&&!refused.abcWritten&&!refused.baked&&
+          refused.error.find("Vertex-range filters require native project baking")!=std::string::npos,
+          "ABC-only preflight refuses a compact explicit vertex range");
+    std::ifstream old(refusedPath);std::string contents;old>>contents;
+    Check(contents=="keep"&&mesh_bake_cache::Empty(),"preflight leaves the target and project cache unchanged");
+
+    options.selection[0].vertices={};
+    const auto materialOnly=alembic_export::Export(app,out/L"abc-material-filter.abc",options);
+    Check(materialOnly.success&&materialOnly.abcWritten&&!materialOnly.baked&&materialOnly.meshes==1,
+          "ABC-only output still supports compact material filters");
+}
 void KeyframeMenuState(MMDApp& app,bool enabled,const char* context){
     bake::RefreshMenu(&app);
     MENUITEMINFOW popup{sizeof popup};popup.fMask=MIIM_SUBMENU;
@@ -365,7 +450,9 @@ int wmain(int argc,wchar_t** argv){
     const bool isolatedStorage=mode==L"storage"||mode==L"mme-storage";
     const auto out=mode==L"mme-storage"?mme_storage::FreshOutput(argv[1]):
         mode==L"storage"?bake_storage::FreshOutput(argv[1]):std::filesystem::absolute(argv[1]);
-    if(!isolatedStorage)std::filesystem::create_directories(out);
+    if(mode==L"bone-vertices")
+        Check(std::filesystem::create_directory(out),"selected-bone output directory must be fresh");
+    else if(!isolatedStorage)std::filesystem::create_directories(out);
     std::unique_ptr<bake_storage::Environment> storage;
     if(isolatedStorage)storage=std::make_unique<bake_storage::Environment>(out);
     uiOutput=out;
@@ -375,6 +462,12 @@ int wmain(int argc,wchar_t** argv){
     Check(InitMainWindowAndD3D(app,GetModuleHandleW(nullptr),SW_HIDE),"hidden renderer initialization");
     Check(!IsWindowVisible(app->MainWindow()),"test remains hidden");app->EnglishUI()=1;
     Check(bool(GetModuleHandleW(L"MMEffect.dll"))==mme,"expected MME runtime");Check((GetModuleHandleW(L"MMV.dll")!=nullptr)==(mmv||extra),"expected MMV runtime");Frame(*app);
+    if(mode==L"bone-vertices"){
+        BoneSelectionRoundtrip(*app,out);
+        Check(unexpectedDialogs==0,"selected-bone export requires no modal interaction");
+        ShutdownCleanup(app);g_Block=nullptr;delete app;UnhookWindowsHookEx(hide);UnhookWindowsHookEx(dialogs);
+        std::puts("PASS: selected-bone native bake, ABC and cache");return 0;
+    }
     if(mode==L"attributes"||mode==L"attributes-benchmark"){
         AttributeRoundtrip(*app,out,mode==L"attributes-benchmark");
         Check(unexpectedDialogs==0,"attribute export requires no modal interaction");

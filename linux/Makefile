@@ -18,7 +18,8 @@ curve_library := $(BUILD_DIR)/libmms_animation_curve.a
 
 smoke_tests := animation_curve_tests background_gesture_core_tests checked_glyph_tests \
 	effect_save_state_tests offscreen_gdi_owner_tests offscreen_gdi_runtime_tests \
-	offscreen_gdi_surface_tests status_extension_invalidation_tests legacy_mmd_menu_tests
+	offscreen_gdi_surface_tests status_extension_invalidation_tests legacy_mmd_menu_tests \
+	pmd_geometry_wire_tests mesh_bake_bone_selection_tests mesh_bake_index_filter_tests
 tests := $(smoke_tests) animation_retime_tests
 test_bins := $(addprefix $(BUILD_DIR)/tests/,$(tests))
 test_objects := $(addprefix $(BUILD_DIR)/obj/tests/,$(addsuffix .o,$(tests)))
@@ -71,6 +72,9 @@ $(test_bins): $(BUILD_DIR)/tests/%: $(BUILD_DIR)/obj/tests/%.o
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -pthread $^ $(LDLIBS) -o "$@"
 
 $(BUILD_DIR)/tests/animation_curve_tests $(retime_test): $(curve_library)
+
+# Only this CPU fixture includes the Windows record-layout assertions.
+$(BUILD_DIR)/obj/tests/mesh_bake_bone_selection_tests.o: private override CXXFLAGS += -fshort-wchar
 
 $(BUILD_DIR)/obj/%.o: $(source_dir)/%.cpp
 	@mkdir -p "$(@D)"

@@ -6,7 +6,7 @@
 // Exercise the real LoadVmdMotion entry, key registrars, and extension loaders.
 // The dialog-enter case uses an inactive private desktop for real modal dialogs;
 // the other cases create no windows. No case creates a D3D device.
-// vmd_load_safety_tests.exe --case overflow|short|counts|valid|dialog-enter|sampler-focus|tails|camera|ik|twist|force-morph|duplicate-bones|duplicate-morphs
+// vmd_load_safety_tests.exe --case overflow|short|counts|valid|dialog-enter|sampler-focus|tails|camera|ik|twist|force-morph|duplicate-bones|duplicate-morphs|morph-undo
 // vmd_load_safety_tests.exe --benchmark [warmup iterations]
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -40,6 +40,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/undo_storage.hpp"
+#include "mikumikustudio/native_edit_history.hpp"
 #include "mikumikustudio/morph_curve.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/force_paste.hpp"
@@ -405,13 +406,114 @@ struct Fixture {
     }
     void Imported(const Bytes& bytes, bool populated = true) {
         Check(Load(bytes) == static_cast<int>(model->boneCount), "model production load returns completed bone seek");
-        Check(model->undoState[0] == 5 && model->undoRings[0].slots[5].operation == 2, "valid input commits undo slot");
+        Check(model->undoState[0] == 5 &&
+              model->undoRings[0].slots[5].operation == (populated ? 7 : 2), "valid input commits undo slot");
         if (populated) {
             Check(boneKeys[0].position[0] == 7 && morphKeys[1].value == .75f, "real registrars import bone and morph values");
             Check(model->undoRings[0].slots[5].dirty == 1, "one distinct overwritten bone snapshot recorded");
         }
     }
 };
+
+// Use the production file importer and the unbound model undo/redo path.
+// File order intentionally repeats one inserted key after an overwrite.
+Bytes FaceMotion(int version, bool mixed, const std::vector<std::pair<std::uint32_t,float>>& keys) {
+    Motion motion(version, false, true);
+    Bytes bytes(motion.bytes.begin(), motion.bytes.begin() + motion.counts[0]);
+    U32(bytes, mixed ? 1 : 0);
+    if (mixed) {
+        Text(bytes, "bone", 15); U32(bytes, 0);
+        for (float value : {7.f, 8.f, 9.f, 0.f, 0.f, 0.f, 1.f}) Put(bytes, value);
+        bytes.resize(bytes.size() + 64);
+    }
+    U32(bytes, static_cast<std::uint32_t>(keys.size()));
+    for (const auto& key : keys) {
+        Text(bytes, "face", 15); U32(bytes, key.first); Put(bytes, key.second);
+    }
+    U32(bytes, 0); U32(bytes, 0); // camera and light
+    if (version == 2) U32(bytes, 0); // shadow
+    U32(bytes, mixed ? 1 : 0);
+    if (mixed) { U32(bytes, 31); bytes.push_back(0); U32(bytes, 0); }
+    return bytes;
+}
+void MorphImportUndo() {
+    for (int version : {1, 2}) for (bool mixed : {false, true}) {
+        Fixture f;
+        f.morphKeys[5] = {8, 1, 8, .375f, 1, {}};
+        f.morphKeys[8] = {16, 5, 0, .25f, 0, {}};
+        f.morphKeys[1].next = 5;
+        f.morphKeys[0].value = .625f;
+        f.morphKeys[0].allocated = 1; // unrelated selected morph
+        f.model->maxFrame = 16;
+        const auto before = f.morphKeys;
+        const auto bytes = FaceMotion(version, mixed, {{0, .75f}, {12, .5f}, {8, .875f}, {12, .625f}, {24, 1.f}});
+        Check(f.Load(bytes) == 1, "normal VMD loader commits mixed or morph-only motion");
+        const auto& slot = f.model->undoRings[0].slots[5];
+        Check(slot.operation == 7 && slot.dirty == (mixed ? 1 : 0), "one undo entry contains both key families");
+        const auto inserted = f.morphKeys[5].next;
+        Check(f.morphKeys[1].value == .75f && f.morphs[1].value == .75f &&
+              f.morphKeys[5].value == .875f && f.morphKeys[inserted].frame == 12 &&
+              f.morphKeys[inserted].value == .625f && f.morphKeys[inserted].next == 8,
+              "import overwrites existing weights and inserts the last duplicate with valid links");
+        const auto after = f.morphKeys;
+        const auto size = before.size() * sizeof(before[0]);
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            Check(TryUndoModelEdit(f.Raw(), &f.app->CurrentFrame(), 0), "undo imported expression");
+            Check(f.model->undoState[0] == 4 && f.model->maxFrame == 16 &&
+                  std::memcmp(f.morphKeys.data(), before.data(), size) == 0 &&
+                  f.morphs[1].value == .125f,
+                  "undo removes new morph slots, restores old links, weights, marks, extent and live value");
+            Check(f.boneKeys[0].position[0] == -3 && f.displayKeys[0].next == 0,
+                  "undo removes companion bone and display changes");
+            Check(TryRedoModelEdit(f.Raw(), &f.app->CurrentFrame(), 0), "redo imported expression");
+            Check(f.model->undoState[0] == 5 && f.model->maxFrame == (mixed ? 31 : 24) &&
+                  std::memcmp(f.morphKeys.data(), after.data(), size) == 0 &&
+                  f.morphs[1].value == .75f,
+                  "redo restores imported morph keys and evaluates their live value");
+            Check(f.boneKeys[0].position[0] == (mixed ? 7.f : -3.f) &&
+                  (f.displayKeys[0].next != 0) == mixed, "redo restores companion bone and display changes");
+        }
+    }
+#if !MMD_ORIGINAL_PROFILE
+    for (const bool hadAuthoring : {false, true}) {
+        Fixture f;
+        namespace curve = animation_curve;
+        curve::NamedTrack original{morph_curve::StableId(1, f.morphs[1].name),
+                                  {{{0, .125}, {12, .75}}, false}};
+        auto imported = original;
+        std::string error;
+        Check(curve::SetMmdControls(original.track, 1, {17, 90, 95, 120}, error) &&
+              curve::SetMmdControls(imported.track, 1, {20, 2, 115, 40}, error), "make distinct exact morph curves");
+        if (hadAuthoring) {
+            Check(morph_curve::Write(f.Raw(), {original}, error), "seed an authored expression");
+        } else {
+            f.morphKeys[1].next = 2;
+            f.morphKeys[2] = {12, 1, 0, .75f, 1, {}};
+            f.model->maxFrame = 12;
+        }
+        auto bytes = FaceMotion(2, false, {{0, .125f}, {12, .75f}});
+        Bytes payload, block;
+        Check(morph_curve::EncodePayload({imported}, payload, error) && morph_curve::EncodeVmdBlock(payload, block, error),
+              "encode curve-only changes alongside identical native VMD weights");
+        bytes.insert(bytes.end(), block.begin(), block.end());
+        const auto sample = [&] {
+            curve::Track track;
+            Check(morph_curve::Read(f.Raw(), 1, track, error), "read the effective morph curve");
+            return curve::Evaluate(track, 6).value;
+        };
+        const double before = sample();
+        Check(f.Load(bytes) == 1, "load MMS authored morph VMD");
+        const double after = sample();
+        Check(std::fabs(before - after) > .01, "VMD authored tangents change the midpoint at unchanged key weights");
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            Check(TryUndoModelEdit(f.Raw(), &f.app->CurrentFrame(), 0) && sample() == before,
+                  "undo restores exact prior authoring or the absence of authoring");
+            Check(TryRedoModelEdit(f.Raw(), &f.app->CurrentFrame(), 0) && sample() == after,
+                  "redo restores exact imported authoring");
+        }
+    }
+#endif
+}
 
 void StandardModelExchange(const std::filesystem::path& input, const std::filesystem::path& output) {
     Check(input.is_absolute() && output.is_absolute() && !std::filesystem::exists(output),
@@ -2284,6 +2386,7 @@ int main(int argc, char** argv) {
         {"duplicate-morphs", DuplicateMorphIdentity},
 #endif
         {"parallel", ParallelMotion},
+        {"morph-undo", MorphImportUndo},
 #if !MMD_ORIGINAL_PROFILE
         {"path-motion", UnicodeMotionPaths}, {"path-camera", UnicodeCameraPaths}, {"unicode", UnicodeIdentity}, {"overflow", Overflow}, {"short", ShortReads}, {"counts", Counts}, {"valid", Valid}, {"dialog-enter", SelectionAfterModelConfirmation}, {"sampler-focus", SamplerFocusRegression}, {"tails", Tails}, {"camera", Camera}, {"curve-compat", NativeCameraCurveCompatibility}, {"ik", Ik}, {"twist", FixedAxisRotations}, {"force-morph", ForceMorphPaste},
 #endif

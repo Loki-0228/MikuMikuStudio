@@ -17,6 +17,8 @@
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/native_edit_history.hpp"
 #include "mikumikustudio/negative_frames.hpp"
+#include "mikumikustudio/morph_curve.hpp"
+#include "keyframe_common.hpp"
 #include "mikumikustudio/bone_curve.hpp"
 #include "mikumikustudio/sequence_scatter.hpp"
 #include <Windows.h>
@@ -135,9 +137,8 @@ void ReplaceBuffer(void*& slot, std::size_t bytes) {
     std::memset(slot, 0, bytes);
 }
 
-// Type 7 extends a deletion's bone snapshots with the morph and display/IK
-// before-image. These channels used to delete without consuming any undo slot,
-// so Ctrl+Z restored an older bone operation instead of the latest deletion.
+// Type 7 extends the bone snapshots with morph and display/IK before-images.
+// Used by native deletion, frame paste, and model VMD import.
 // The tail is pointer-free except for DisplayKey's ignored pointer fields;
 // owned IK/selector values are copied after each record and restored in place.
 struct DeleteAuxHeader {
@@ -539,8 +540,21 @@ void RegisterSelectedBoneKeys(unsigned char* model, int frame, int mode) {
     }
 }
 
-bool BeginModelFramePasteUndo(unsigned char* model,int frame,std::uint32_t bonePasteCount,bool morph,bool display) noexcept {
-    if(!model||(!bonePasteCount&&!morph&&!display))return false;
+#if !MMD_ORIGINAL_PROFILE
+static bool AttachMorphUndoLayers(unsigned char* model, const void* aux) {
+    auto layers=std::make_shared<morph_curve::AuthoredLayers>();
+    std::string error;
+    if(!morph_curve::CaptureLayers(model,*layers,error))return false;
+    const auto bytes=layers->RetainedBytes();
+    constexpr auto sharedOverhead=4*sizeof(void*);
+    return bytes<=SIZE_MAX-sharedOverhead &&
+        undo_storage::Attach(aux,std::move(layers),std::size_t(bytes)+sharedOverhead);
+}
+#endif
+
+static bool BeginModelKeyBatchUndo(unsigned char* model,int frame,std::uint32_t bonePasteCount,
+    bool morph,bool display,bool vmdImport,[[maybe_unused]] bool authoredMorph) noexcept {
+    if(!model||(!vmdImport&&!bonePasteCount&&!morph&&!display))return false;
     using Buffer=std::unique_ptr<void,decltype(&undo_storage::Free)>;
     try{
         auto& m=*mdl::Mdl(model);
@@ -562,8 +576,12 @@ bool BeginModelFramePasteUndo(unsigned char* model,int frame,std::uint32_t boneP
                 !multiply(layout.displayCapacity,rowBytes,displayBytes)||!add(auxBytes,sizeof(layout),auxBytes)||
                 !add(auxBytes,morphBytes,auxBytes)||!add(auxBytes,displayBytes,auxBytes))return false;
         }
-        Buffer pose(poseBytes?undo_storage::Allocate(poseBytes):nullptr,&undo_storage::Free);
-        Buffer aux(auxBytes?undo_storage::Allocate(auxBytes):nullptr,&undo_storage::Free);
+        const auto allocate=[&](std::size_t bytes)->void* {
+            return !bytes?nullptr:vmdImport?undo_storage::Malloc(bytes):undo_storage::Allocate(bytes);
+        };
+        Buffer pose(allocate(poseBytes),&undo_storage::Free);
+        Buffer aux(allocate(auxBytes),&undo_storage::Free);
+        if((poseBytes&&!pose)||(auxBytes&&!aux))return false;
         if(poseBytes)std::memset(pose.get(),0,poseBytes);
         if(auxBytes)std::memset(aux.get(),0,auxBytes);
         auto* saved=static_cast<mdl::BonePoseSnapshot*>(pose.get());
@@ -575,6 +593,7 @@ bool BeginModelFramePasteUndo(unsigned char* model,int frame,std::uint32_t boneP
 #if !MMD_ORIGINAL_PROFILE
         auto sides=bone_scale::PrepareUndoCapture(model,next);
         if(!sides->IsCurrent())return false;
+        if(authoredMorph&&!AttachMorphUndoLayers(model,aux.get()))return false;
 #endif
         // No allocating operation remains after this point. The captured
         // display pointers stay owned by the model; replay restores payloads.
@@ -590,6 +609,15 @@ bool BeginModelFramePasteUndo(unsigned char* model,int frame,std::uint32_t boneP
         EnableWindow(GetDlgItem(static_cast<HWND>(m.hwnd),panel::kRedoButton),FALSE);
         return true;
     }catch(...){return false;}
+}
+
+bool BeginModelFramePasteUndo(unsigned char* model,int frame,std::uint32_t bonePasteCount,bool morph,bool display) noexcept {
+    return BeginModelKeyBatchUndo(model,frame,bonePasteCount,morph,display,false,false);
+}
+
+bool kfa::BeginVmdImportUndo(unsigned char* model,int frame,std::uint32_t boneCount,
+    bool morph,bool display,bool authoredMorph) {
+    return BeginModelKeyBatchUndo(model,frame,boneCount,morph,display,true,authoredMorph);
 }
 
 void SnapshotPoseBeforeFrameChange(unsigned char* model, int frame) {  // was Sub4A0080

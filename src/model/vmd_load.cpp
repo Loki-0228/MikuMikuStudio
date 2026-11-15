@@ -1,4 +1,3 @@
-#include "mikumikustudio/undo_storage.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/extended_names.hpp"
 #include "mikumikustudio/key_pool.hpp"
@@ -31,11 +30,8 @@
 //             (bone +56 of kBoneKeyCapacity x60B records, morph +16 of
 //             20000x20B, IK master +20 of 1000x28B),
 //           * the 30-slot undo/motion ring at model+9964 (28B slots
-//             {+0 type=2, +4 zeroed, +12 current frame, +16 ptr to a
-//             36B-per-bone initial-pose snapshot, +20 ptr to 192B-per-key
-//             raw storage}) advances model+12724 (wraps at 30) and refills
-//             the slot; the snapshot copies each bone's +320 position,
-//             +332 quaternion and a byte from the model+11672 array,
+//             advances model+12724 (wraps at 30) and captures the bone pose
+//             and key before-images plus morph/display data for mixed motion.
 //           * keyVisitMap (model+14596 x86 / +0x3CAC x64, one byte per
 //             bone-key record) is zeroed, sub_4A4940 resets the
 //             key allocator,
@@ -79,6 +75,7 @@
 #include <Windows.h>
 
 #include <cerrno>
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -87,7 +84,6 @@
 #include <fcntl.h>
 #include <float.h>
 #include <io.h>
-#include <memory>
 #include <share.h>
 #include <sys/stat.h>
 #include <vector>
@@ -102,7 +98,6 @@
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
-#include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/original_file_encoding.hpp"
 
@@ -537,13 +532,6 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     // Prepare loader-owned allocations before clearing selections or replacing
     // an undo slot. The per-record scratch also cannot fail midway through IK.
     mdl::ModelRecord& record = *mdl::Mdl(model);
-    std::size_t poseBytes = 0, undoBytes = 0;
-    const bool sizesFit = vmd_read::Input::AllocationSize(record.boneCount,
-        sizeof(mdl::BonePoseSnapshot), poseBytes) &&
-        vmd_read::Input::AllocationSize(boneKeyCount, 192, undoBytes);
-    using Allocation = std::unique_ptr<unsigned char, decltype(&undo_storage::Free)>;
-    Allocation preparedPose(sizesFit && poseBytes ? static_cast<unsigned char*>(undo_storage::Malloc(poseBytes)) : nullptr, &undo_storage::Free);
-    Allocation preparedKeys(sizesFit && undoBytes ? static_cast<unsigned char*>(undo_storage::Malloc(undoBytes)) : nullptr, &undo_storage::Free);
     struct PreparedBone {
         unsigned char data[49]{};
         int target = -1;
@@ -563,8 +551,8 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     // the registrar itself deliberately keeps its original raw-name contract.
     std::vector<std::array<char, 40>> ikNameAliases;
 #endif
-    bool allocationsReady = sizesFit && (!poseBytes || preparedPose) && (!undoBytes || preparedKeys);
-    if (allocationsReady) {
+    bool allocationsReady = true;
+    {
         // Keep an extra terminator beyond the fixed-width entry array.
         try {
             ikEntries.resize(std::size_t(input.maximumIkEntries) * 21 + 1);
@@ -653,6 +641,17 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
             mdl::MorphKeyPoolEnsure(record,needed(record.morphKeys,mdl::MorphKeyCapacity(record),record.morphCount,input.morphCount))&&
             mdl::DisplayKeyPoolEnsure(record,needed(record.displayKeys,mdl::KeyPoolCapacity(record.displayKeys),1,input.displayCount));
     }
+    if (allocationsReady) {
+        const bool saveMorphs = std::any_of(morphs.begin(), morphs.end(), [](const auto& key) { return key.target >= 0; });
+        bool saveAuthoredMorphs = false;
+#if !MMD_ORIGINAL_PROFILE
+        saveAuthoredMorphs = saveMorphs && !morphBlock.empty();
+#endif
+        // Type 7 also restores maxFrame. Include display changes from the same
+        // import so undo cannot leave imported IK keys beyond that restored end.
+        allocationsReady = kfa::BeginVmdImportUndo(model, frameOffset, boneKeyCount,
+            saveMorphs, saveMorphs && input.displayCount != 0, saveAuthoredMorphs);
+    }
     if (!allocationsReady) {
         MotionMessageBox(app, language,
             L"モーションを読み込むためのメモリが不足しています。",
@@ -661,8 +660,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
         _close(fileHandle);
         return 0;
     }
-    if (poseBytes) std::memset(preparedPose.get(), 0, poseBytes);
-    if (undoBytes) std::memset(preparedKeys.get(), 0, undoBytes);
+    committed = true;
 
     // clear the allocation marks of all three key arrays
     mikumikustudio::mdl::BoneKey* const bkeys = mikumikustudio::mdl::BoneKeys(model);
@@ -676,51 +674,7 @@ static int LoadVmdMotionPath(MMDApp* app, const char* fileName, const wchar_t* w
     for (int i = 0; i < morphCapacity1; ++i) mkeys[i].allocated = 0;
     for (std::size_t i = 0, capacity = mdl::KeyPoolCapacity(ikeys); i < capacity; ++i) ikeys[i].allocated = 0;
 
-    EnableWindow(GetDlgItem(hwnd, panel::kUndoButton), TRUE);
-    EnableWindow(GetDlgItem(hwnd, panel::kRedoButton), FALSE);
-    record.undoDirty = 1;
-    record.redoDirty = 0;
-    committed = true;
-    std::uint32_t& ringIdx = record.undoState[0];
-    if (++ringIdx >= 30) ringIdx = 0;
-    record.undoState[1] = ringIdx;
-#if !MMD_ORIGINAL_PROFILE
-    bone_scale::CaptureUndo(model);
-#endif
-
-    auto& undo = mikumikustudio::mdl::Mdl(model)->undoRings[0].slots[ringIdx];
-    undo.operation = 2;
-    undo.dirty = 0;
-    undo.frame = frameOffset;
-    if (undo.bonePose != nullptr)
-        undo_storage::Free(undo.bonePose);
-    const int boneCnt = static_cast<int>(record.boneCount);
-    // x64 @0x7FF7CB48DE70..0x7FF7CB48E013: 每骨骼一个 36 字节槽位
-    // (boneIndex / trans / rotQuat / 物理标志)，源端等价于按
-    // BoneRecord 类型化字段读取（x64 骨骼表 624 字节 stride 下
-    // trans@+328、rotQuat@+340），物理标志取 model+12584[b]
-    auto* const snap = reinterpret_cast<mdl::BonePoseSnapshot*>(preparedPose.release());
-    undo.bonePose = snap;
-    if (boneCnt > 0) {
-        mikumikustudio::mdl::BoneRecord* const bones =
-            mikumikustudio::mdl::Bones(model);
-        const unsigned char* const flags =
-            mikumikustudio::mdl::Mdl(model)->bonePhysicsState;
-        for (int b = 0; b < boneCnt; ++b) {
-            mikumikustudio::mdl::BonePoseSnapshot& slot = snap[b];
-            slot.boneIndex = b;
-            std::memcpy(slot.position, bones[b].trans, sizeof slot.position);
-            std::memcpy(slot.rotation, bones[b].rotQuat, sizeof slot.rotation);
-            slot.physicsDisabled = flags[b];
-        }
-    }
-    if (undo.auxiliaryPose != nullptr)
-        undo_storage::Free(undo.auxiliaryPose);
-    unsigned char* const rawKeys = preparedKeys.release();
-    undo.auxiliaryPose = rawKeys;
-    mdl::BoneKeyVisitClear(*mdl::Mdl(model));
     ResetBoneKeyCursor(model);
-    (void)rawKeys;  // consumed by the registrar family (0x49D880 et al.)
 
     // bone keys
     //

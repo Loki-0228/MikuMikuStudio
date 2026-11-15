@@ -105,11 +105,13 @@ python tests/run_mme_save_pair.py --profile full --host build/cmake/tests/mme/Re
 | `keyboard_input_tests.cpp` | 快捷键与输入分发。 |
 | `mesh_bake_cache_tests.cpp` | Ogawa 采样、区间钳制、替换、清除、PMM 配套文件往返、畸形记录、提交前回调取消、不可变快照。独立 CPU/文件测试，CTest 每次复制到独立安装并保留证据。另有真实双进程安装隔离专项，见下文。 |
 | `vertex_capture_tests.cpp` | 隐藏 D3D9 HAL 设备上重放 VS 1.1/2.0/3.0，检查 GPU 位置回读、分块、状态恢复与不支持路径拒绝。注册 CTest。 |
+| `mesh_bake_bone_selection_tests.cpp` | 独立 CPU 回归：用生产 PMX 顶点解码器验证 BDEF1／BDEF2／SDEF 的隐式权重、陈旧未使用槽位、BDEF4／PMD 正权重及索引边界，排除本体未蒙皮的 QDEF／未知权重类型。由 Linux `make -C linux check` 和 CTest `mesh_bake_bone_selection_regressions` 运行；不渲染、不写 ABC。移除该筛选路径或有等效回归时再移除。 |
 | `alembic_export_tests.cpp` | 隐藏生产窗口内生成 PMX，核对骨骼动画、MME/MMV 叠加、生成与消失的材质/拓扑、Unicode ABC、取消、三语条件警告、烧录回工程、PMM 保存重开和清除后恢复。需要按模式准备 Data/插件，显式运行。 |
 | `sequential_file_reader_tests.cpp` | 顺序文件读取、绝对跳转、跳转失败后保留未消费窗口、EOF 及唯一关闭；完整与原始兼容配置共用。 |
 | `native_menu_snapshot_tests.cpp` | 自有隐藏窗口及真实菜单验证只读树观察、UTF-16、重复命令位置、状态、预算、线程、文字变化和长文本分配失败。仅修改本测试进程的菜单查询导入并核验恢复；不得触发菜单填充、命令或全局输入。私有观察器接入正式目录服务后，保留这些反例；不等于完整 UI 目录已实现。 |
-| `model_geometry_cache_tests.cpp`、`model_geometry_reference.hpp` | 独立原字段解码验证 PMD／PMX 缓存副本、索引步长、预算、待发布和退役租约、清空代次、分配失败、源内容指纹与巨大尾部绕过。参数为独占产物目录；仅保留自己的夹具，不清理其他文件。移除缓存或完整迁移这些反例后再移除。 |
-| `model_geometry_cache_host_tests.cpp` | 参数为独占产物目录；自有隐藏 Win32 窗口及真实 D3D9 设备调用实际 PMD／PMX 加载器，比较冷／热／禁用路径的 CPU、GPU 内容及晚段失败不发布。追加 131,073 顶点、四种有效权重的实际 PMX 串行／并行／缓存对照，用调用线程的可选 Trace 见证真实工作线程分支。两配置共用，原始配置须保持生产缓存及并行禁用。设备不可用不算通过，不代替实际工程、人工呈现或 Win7／AMD 验收；移除加载优化或等效宿主回归完整替代后再移除。 |
+| `pmd_geometry_wire_tests.cpp` | Linux CPU 冒烟与 Windows 独立测试。校验 PMD 摘要输入逐字节等于原格式，包括负零和 NaN 位、计数、跨批次及空数组；排除宿主顶点与索引填充字节。移除该缓存路径或由等效反例替代后再移除。 |
+| `model_geometry_cache_tests.cpp`、`model_geometry_reference.hpp` | 独立原字段解码验证 PMD／PMX 缓存副本、索引步长、预算、待发布和退役租约、清空代次、分配失败、源内容指纹与巨大尾部绕过；冷 PMD 不在查找及捕获时读取守护句柄，提交仅复核顶点计数与几何区间。参数为独占产物目录；仅保留自己的夹具，不清理其他文件。移除缓存或完整迁移这些反例后再移除。 |
+| `model_geometry_cache_host_tests.cpp` | 参数为独占产物目录；自有隐藏 Win32 窗口及真实 D3D9 设备调用实际 PMD／PMX 加载器，比较冷／热／禁用路径的 CPU、GPU 内容及晚段失败不发布，并校验 PMD 可选段的合法缺省与部分写入不发布。追加 131,073 顶点、四种有效权重的实际 PMX 串行／并行／缓存对照，用调用线程的可选 Trace 见证真实工作线程分支。两配置共用，原始配置须保持生产缓存及并行禁用。设备不可用不算通过，不代替实际工程、人工呈现或 Win7／AMD 验收；移除加载优化或等效宿主回归完整替代后再移除。 |
 | `pmx_vertex_parallel_tests.cpp` | 独立旧解码对照全部字段和未提供字节，覆盖追加 UV、骨索引宽度、未知权重、批次与阈值、短读、分配／启动失败、取消、Reader 异常及 MXCSR。仅观察本测试实际启动线程的终止句柄，不发送全局输入。移除并行准备或等效回归完整替代后再移除。 |
 | `d3dx_import_tests.cpp` | D3DX 导入与 ABI；需要本机 DirectX 运行库。 |
 | `effect_api_tests.cpp` | 效果接口、对象导出及材质名称双向回退；无 MME 时安全跳过。 |
@@ -176,13 +178,14 @@ python tests/run_mme_save_pair.py --profile full --host build/cmake/tests/mme/Re
 
 ```text
 MikuMikuDance.exe <测试输出绝对路径> native
+MikuMikuDance.exe <父目录已存在的全新测试输出绝对路径> bone-vertices
 MikuMikuDance.exe <测试输出绝对路径> mme
 MikuMikuDance.exe <测试输出绝对路径> combined
 MikuMikuDance.exe <测试输出绝对路径> extra
 MikuMikuDance.exe <测试输出绝对路径> varying
 ```
 
-每个运行目录需要 `Data`。`native` 不放插件；`mme` 放 MME 的 `d3d9.dll`、`MMEffect.dll`、`MMHack.dll`；`combined` 再放正式 `MMV.dll` 与 `MMV` 资源目录。`extra`、`varying` 使用 `build/tests/mmv-fixture/Release/MMV.dll`，分别验证追加几何与逐帧拓扑出现/消失。夹具 DLL 只用于测试，不放入正式运行目录。测试自行隐藏窗口，不读取桌面画面。
+每个运行目录需要 `Data`。`native` 和 `bone-vertices` 不放插件。后者核对选中骨骼顶点、材质及显式编号交集实际写入 ABC 的源顶点映射，并读取安装后的工程缓存。数字列表与界面区间写出相同的映射，纯 ABC 输出仍拒绝顶点区间；`mme` 放 MME 的 `d3d9.dll`、`MMEffect.dll`、`MMHack.dll`；`combined` 再放正式 `MMV.dll` 与 `MMV` 资源目录。`extra`、`varying` 使用 `build/tests/mmv-fixture/Release/MMV.dll`，分别验证追加几何与逐帧拓扑出现/消失。夹具 DLL 只用于测试，不放入正式运行目录。测试自行隐藏窗口，不读取桌面画面。
 
 2026-09-20 已在 Win32/x64 布局编译通过后删除临时 `build/layout-probe/`，同时清理 5 份旧 followup 日志，具体文件见清理清单 C08。正式布局约束保留在头文件断言中，测试源文件及现有测试构建目标全部保留（数量以实际文件与 CTest 清单为准，见上节）。之后产生的本地探针和迭代日志仍不应补加入 Git；清理前确认无需符号、失败日志和探针证据。
 

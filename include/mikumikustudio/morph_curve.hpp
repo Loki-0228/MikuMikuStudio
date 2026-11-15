@@ -88,6 +88,7 @@
 namespace mikumikustudio {
 class MMDApp;
 namespace mdl { struct MorphKey; }
+namespace native_history { class SideState; }
 
 namespace morph_curve {
 
@@ -343,6 +344,9 @@ private:
                               AuthoredLayers&, std::string&);
     friend void SwapLayers(unsigned char*, AuthoredLayers&) noexcept;
     friend bool LayersUnchanged(const unsigned char*, const AuthoredLayers&);
+#if !MMD_ORIGINAL_PROFILE
+    friend std::unique_ptr<native_history::SideState> PrepareLayerRestore(unsigned char*, const AuthoredLayers&);
+#endif
     friend bool SampleLayersTarget(const AuthoredLayers&, const NativeKeyView&,
                                    int, int, float&, std::string&);
 };
@@ -400,6 +404,11 @@ bool HasLayerStorage(const unsigned char* model) noexcept;
 // True while the live layers still carry exactly what `layers` was captured
 // from and the model still has the same morph tables.
 bool LayersUnchanged(const unsigned char* model, const AuthoredLayers& layers);
+#if !MMD_ORIGINAL_PROFILE
+// Replay an exact saved layer set after the caller has restored its native
+// keys. This also supports restoring to or from a model with no authoring.
+std::unique_ptr<native_history::SideState> PrepareLayerRestore(unsigned char*, const AuthoredLayers&);
+#endif
 // Prepare-time sampling against a private target pool. Reuses the pristine
 // authoring/mirror derivation without Sync, cache writes, or live key payload reads.
 // The target must be a complete, strictly ordered track with a frame-zero root.
