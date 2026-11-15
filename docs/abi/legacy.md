@@ -38,7 +38,9 @@ DispPlayingFrame 的上游版本检查 MMD 9.31 并读取 `MMDMainData`。源码
 
 ### MMS 窗口观察插件包
 
-适配插件可将自编译的 x64 DLL 和 `plugin.json` 放在 MMS 安装目录的 `PLUGINS/<包目录>/`。MMS 发行构建的 `legacy-mmdplugin/MMDPlugin.dll` 提供 `getHWND` 和 `createWM_APP_ID`，插件可链接该 DLL 的导入库。安装时保留提供者在原目录。其他发布版插件所需的原版 MMDPlugin 运行时依各自文档配置。MMDPlugin 与 MME 所需的 MMHack 分别配置。
+适配插件可将自编译的 x64 DLL 和 `plugin.json` 放在 MMS 安装目录的 `PLUGINS/<包目录>/`。MMS 自己构建的 `MMDPlugin.dll` 提供 `getHWND` 和 `createWM_APP_ID`，插件可链接该 DLL 的导入库。宿主以当前 EXE 所在目录为基准，优先使用 `PLUGINS/legacy-mmdplugin/MMDPlugin.dll`；仅在首选路径不存在时，才使用发行包原有的 `legacy-mmdplugin/MMDPlugin.dll`。首选路径存在但读取、校验或加载失败时不会回退。发行包仍只带原有位置的一份 DLL；如需采用首选位置，退出 MMS 后移动这份同一构建的 DLL 即可。
+
+提供者不从工作目录或各插件包里搜索。请勿把第三方 DLL 放入上述两个提供者位置。其他插件所需的原版 MMDPlugin 运行时依各自文档配置。MMDPlugin 与 MME 所需的 MMHack 分别配置；两条兼容路径都不要求 MMS 主程序使用固定文件名。
 
 ```json
 {
@@ -62,7 +64,7 @@ DispPlayingFrame 的上游版本检查 MMD 9.31 并读取 `MMDMainData`。源码
 
 窗口观察包的入口 DLL 必须直接导出 `version`、`create3` 和 `destroy3`。宿主先读取 PE 导出表，再加载 DLL 并调用 `version()` 核对返回值。缺失或转发工厂导出的两个合成包均在 `DllMain` 执行前被拒绝，同目录中的三个有效插件仍正常工作。参见 [Microsoft PE 导出表说明](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#export-address-table)。
 
-仓库中的 `legacy_observer_export_preflight` CTest 用例覆盖直接导出、缺失导出和转发导出。构建目标 `legacy_observer_export_tests` 后即可运行，测试程序和合成 DLL 随目标编译并输出到构建目录的 `tests/` 下，无需第三方插件或 GPU。
+仓库中的 `legacy_observer_export_preflight` CTest 用例覆盖直接导出、缺失导出、转发导出、两个提供者位置的优先顺序以及改名宿主调用。构建目标 `legacy_observer_export_tests` 后即可运行，测试程序和合成 DLL 随目标编译并输出到构建目录的 `tests/` 下，无需第三方插件或 GPU。
 
 复现样本时，使用表中固定提交的 DispPlayingFrame 源码。将原来的 MMD 版本检查替换为映射导出的能力检查，将定时器的数据读取改为下方的只读快照。在 `start` 创建显示控件，保留窗口位置观察回调，并在 `stop` 停止定时器后销毁控件。用 x64 MSVC 构建，包含 MMS 的 `sdk/mms/include`，并使用本构建生成的 `MMDPlugin.lib` 解析 `getHWND`。测试所用的样本 DLL、宿主和提供者的摘要均保存在隔离验收记录中。
 

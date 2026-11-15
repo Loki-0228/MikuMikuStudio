@@ -993,7 +993,7 @@ endforeach()
 target_compile_definitions(mms_legacy_observer_exports_direct PRIVATE MMS_TEST_LEGACY_DIRECT_DESTROY)
 target_sources(mms_legacy_observer_exports_forwarded PRIVATE tests/plugins/legacy_observer_export_forward.def)
 add_executable(legacy_observer_export_tests EXCLUDE_FROM_ALL tests/plugins/legacy_observer_export_tests.cpp)
-set_target_properties(legacy_observer_export_tests PROPERTIES
+set_target_properties(legacy_observer_export_tests PROPERTIES ENABLE_EXPORTS ON
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 target_include_directories(legacy_observer_export_tests PRIVATE src/plugins)
 target_link_libraries(legacy_observer_export_tests PRIVATE mms_plugin_runtime)

@@ -1,5 +1,6 @@
 #include "manifest.hpp"
 #include <charconv>
+#include <iterator>
 
 namespace mikumikustudio::plugins {
 namespace {
@@ -39,6 +40,28 @@ fs::path PackageFile(const fs::path& root, std::string_view relative) {
         current /= part; if (!Plain(current)) throw std::invalid_argument("missing file or reparse point: " + Utf8(current.native()));
     }
     if (!fs::is_regular_file(current)) throw std::invalid_argument("entry is not a file"); return current;
+}
+fs::path LegacyMmdProviderFile(const fs::path& install) {
+    if (!install.is_absolute()) throw std::invalid_argument("legacy MMDPlugin requires an absolute installation directory");
+    constexpr const wchar_t* nested[] = {L"PLUGINS", L"legacy-mmdplugin", L"MMDPlugin.dll"};
+    auto candidate = install;
+    // Walk from the root so a junction, non-directory or access error cannot
+    // masquerade as a missing DLL and silently enable the other provider.
+    for (size_t i = 0; i < std::size(nested); ++i) {
+        candidate /= nested[i];
+        const auto attributes = GetFileAttributesW(candidate.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            const auto error = GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+                return PackageFile(install, "legacy-mmdplugin/MMDPlugin.dll");
+            throw std::runtime_error("cannot inspect legacy MMDPlugin provider path: " + Utf8(candidate.native()) +
+                                     " (Win32 error " + std::to_string(error) + ")");
+        }
+        if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+            (i + 1 < std::size(nested) && !(attributes & FILE_ATTRIBUTE_DIRECTORY)))
+            throw std::invalid_argument("invalid legacy MMDPlugin provider path: " + Utf8(candidate.native()));
+    }
+    return PackageFile(install, "PLUGINS/legacy-mmdplugin/MMDPlugin.dll");
 }
 Manifest ReadManifest(const fs::path& file, const Log& log) {
     Manifest m; m.file = fs::absolute(file).lexically_normal(); m.package = m.file.parent_path();

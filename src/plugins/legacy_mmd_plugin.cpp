@@ -151,7 +151,7 @@ void Start(MMDApp* app) noexcept {
         }
         if (packages.empty()) return;
 
-        const auto provider = plugins::PackageFile(install, "legacy-mmdplugin/MMDPlugin.dll");
+        const auto provider = plugins::LegacyMmdProviderFile(install);
         auto current = std::make_unique<Host>();
         current->app = app;
         current->window = app->MainWindow();
