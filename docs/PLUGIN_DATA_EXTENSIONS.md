@@ -38,6 +38,7 @@ make -C linux format-inspect
 linux/build/mms_format_inspect -- ./example.pmm
 linux/build/mms_format_inspect --json -- ./example.pmx
 linux/build/mms_format_inspect --pmm-directory --json -- ./example.pmm
+linux/build/mms_format_inspect --pmm-verify-payloads --json -- ./example.pmm
 make -C linux check-format-inspect
 ```
 
@@ -54,7 +55,7 @@ make -C linux check-format-inspect
 
 #### 可选的 PMM3END 目录检查
 
-仅当显式指定 `--pmm-directory` 且在 PMM 0003 文件中发现尾标记时，才进一步检查尾标字段、目录 CRC32、条目边界、键唯一性以及目录与块头、块键是否一致。允许块之间有空隙，也允许目录顺序与块的落盘顺序不同，和原生独立编解码器一致。检查不读取块声明的载荷，不重算载荷 CRC32，不解析 PMM 正文或其他扩展。`mms_format_inspect --pmm-directory --help` 显示本模式的用法。
+目录模式（`--pmm-directory`）仅在 PMM 0003 文件中发现尾标记时进一步检查尾标字段、目录 CRC32、条目边界、键唯一性以及目录与块头、块键是否一致。允许块之间有空隙，也允许目录顺序与块的落盘顺序不同，和原生独立编解码器一致。检查不读取块声明的载荷，不重算载荷 CRC32，不解析 PMM 正文或其他扩展。`mms_format_inspect --pmm-directory --help` 显示本模式的用法。
 
 | 目录状态 | 含义 |
 | --- | --- |
@@ -67,7 +68,22 @@ make -C linux check-format-inspect
 
 启用该模式时，`--json` 保留头部字段及原有 `pmm3end` 标记状态；`validation` 改为 `pmm_directory_metadata_only`，新增 `pmm_directory.status` 和 `pmm_directory.blocks`。`bytes_examined` 记录成功读取的总字节数。仅 `metadata_ok` 时按目录顺序列出键、版本、标志、编码编号和载荷字节数。人读和 JSON 输出均不回显输入路径或载荷；键（JSON 中的 `key_escaped`）只保留 ASCII 字母、数字、点、下划线和连字符，其余字节一律以小写十六进制 `\xhh` 表示。
 
-目录状态为 `absent` 或 `metadata_ok` 时沿用头部返回码。目录无效或块范围交叠返回 `1`，I/O 或参数错误返回 `2`，超出预算返回 `3`。未指定 `--pmm-directory` 时，原有输出、读取量和返回码不变。
+目录状态为 `absent` 或 `metadata_ok` 时沿用头部返回码。目录无效或块范围交叠返回 `1`，I/O 或参数错误返回 `2`，超出预算返回 `3`。原有默认模式和目录模式的输出、读取量与返回码不变。
+
+#### 可选的 PMM3END 载荷校验
+
+`--pmm-verify-payloads` 先进行同样的目录检查，再对所有声明的块重算 IEEE CRC32，包括未知编码的块。完整验证所有块元数据后，先检查载荷字节总数是否超过 64 MiB；若超限，连第一个载荷也不会读取。元数据仍受上述预算约束。载荷按至多 64 KiB 的区段读取，不解析、解压或输出载荷。空块的 CRC32 为 0，空目录没有载荷需要校验。本选项不能与 `--pmm-directory` 同时使用；运行 `mms_format_inspect --pmm-verify-payloads --help` 可查看用法。
+
+| 载荷校验状态 | 返回码 | 含义 |
+| --- | --- | --- |
+| `checksums_ok` | 0 | 所有声明块的 CRC32 都匹配（包括空目录）。 |
+| `checksum_mismatch` | 1 | 至少一个块的载荷与记录的 CRC32 不符；在第一个不符处停止。 |
+| `not_applicable` | 1 | 未检测到适用的 PMM 0003 PMM3END。 |
+| `invalid_metadata` / `overlapping_ranges` | 1 | 元数据无效或块范围交叠，未检查载荷。 |
+| `io_error` | 2 | 打开或读取文件失败。参数错误也返回 2，仅输出用法。 |
+| `budget_exceeded` | 3 | 元数据或载荷超过上限，未读取载荷。 |
+
+本模式的 JSON 保留头部字段，`validation` 为 `pmm_block_payload_crc32`，`pmm_payloads` 包含 `status` 和 `bytes_examined`（成功读取的载荷字节数）。顶层 `bytes_examined` 统计成功读取的元数据与载荷字节总数；部分短读不计入。结果只报告上述范围内的校验，不提供文件快照或真实性证明。请使用检查期间不会被修改的文件。
 
 这一步不验证整份文件是否可加载，不加载场景或模型，也不写入文件或修改工程、工作区、设置、历史。它不是 `mms.format` 服务或提供者注册，未新增公开 ABI。只读预览、编辑、转换和导出仍需分别实现和验收。
 
