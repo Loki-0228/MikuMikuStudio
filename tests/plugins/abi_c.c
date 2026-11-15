@@ -1,3 +1,8 @@
+#include <mms/settings.h>
+_Static_assert(sizeof(MmsSettingsApiV1) == 32, "settings C table size");
+_Static_assert(offsetof(MmsSettingsApiV1, context) == 8, "settings C context offset");
+_Static_assert(offsetof(MmsSettingsApiV1, read) == 16, "settings C read offset");
+_Static_assert(offsetof(MmsSettingsApiV1, compareAndMerge) == 24, "settings C merge offset");
 #include <mms/surface.h>
 #include <mms/layout_session.h>
 _Static_assert(sizeof(MmsUiLayoutSessionApiV1) == 88, "layout session C table");

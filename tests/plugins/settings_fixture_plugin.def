@@ -1,0 +1,5 @@
+EXPORTS
+    MMSPluginGetApi
+    MmsSettingsFixtureObserve
+    MmsSettingsFixtureQueue
+    MmsSettingsFixtureDirect

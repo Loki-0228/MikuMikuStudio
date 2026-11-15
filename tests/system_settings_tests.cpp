@@ -2,6 +2,7 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <aclapi.h>
 #include "mikumikustudio/system_settings.hpp"
 #include "../src/plugins/json.hpp"
 #include <cstdio>
@@ -11,6 +12,7 @@
 
 namespace fs = std::filesystem;
 namespace settings = mikumikustudio::system_settings;
+using settings::PluginResult;
 using settings::Result;
 using mikumikustudio::plugins::Json;
 namespace {
@@ -27,6 +29,107 @@ void Put(const fs::path& path, const std::string& value) {
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     file.write(value.data(), value.size());
     Check(bool(file), "write fixture");
+}
+void PluginSettings(const fs::path& root) {
+    const auto path = root / L"data" / L"settings.json";
+    settings::Store store(path);
+    std::string output = "unchanged";
+    Check(store.ReadPlugin("demo.a", output) == PluginResult::Missing && output == "unchanged" &&
+        !fs::exists(path.parent_path()), "missing plugin read changes no output or directory");
+    Check(store.CompareMergePlugin("demo.a", {}, "{}") == PluginResult::Ok && !fs::exists(path),
+        "empty patch cannot create a settings document");
+    const auto seed = R"({ "schemaVersion":1,"futureRoot":{"keep":true},"sections":{
+        "ui":{"future":2},"pluginSettings":{"demo.a.b":{"foreign":3},"opaquePeer":99}}})";
+    Put(path, seed);
+    Check(store.CompareMergePlugin("demo.a", {}, R"({"d":{"x":1,"unknown":8},"n":2})") == PluginResult::Ok,
+        "initialize only the manifest ID slot");
+    Check(store.ReadPlugin("demo.a", output) == PluginResult::Ok &&
+        output == R"({"d":{"unknown":8,"x":1},"n":2})", "canonical read owns only the selected plugin object");
+    const auto baseline = output;
+    Check(store.WriteSection("ui", R"({"current":4})") == Result::Ok &&
+        store.CompareMergePlugin("demo.a.b", R"({"foreign":3})", R"({"newPeer":7})") == PluginResult::Ok,
+        "ordinary and peer updates share the settings store");
+    Check(store.CompareMergePlugin("demo.a", baseline, R"({"d":{"x":4}})") == PluginResult::Ok,
+        "merge succeeds after peer and ordinary settings updates");
+    const auto afterMerge = Bytes(path);
+    const auto afterTime = fs::last_write_time(path);
+    const std::string equivalent = R"({ "n" : 2, "d" : { "x" : 4, "unknown" : 8 } })";
+    Check(store.CompareMergePlugin("demo.a", equivalent, R"({"d":{"x":4}})") == PluginResult::Ok &&
+        Bytes(path) == afterMerge && fs::last_write_time(path) == afterTime, "no-op leaves bytes and write time intact");
+    Check(store.CompareMergePlugin("demo.a", baseline, R"({"n":5})") == PluginResult::Conflict &&
+        Bytes(path) == afterMerge, "stale baseline never publishes");
+    Check(store.CompareMergePlugin("demo.a", equivalent, R"({"n":5,"d":null})") == PluginResult::Invalid &&
+        Bytes(path) == afterMerge, "invalid object replacement never publishes a valid sibling");
+    const auto document = Json::Parse(afterMerge);
+    const auto& sections = document.At("sections");
+    Check(document.At("futureRoot").At("keep").text == "true" && sections.At("ui").At("current").UInt() == 4 &&
+        sections.At("pluginSettings").At("demo.a").At("d").At("unknown").UInt() == 8 &&
+        sections.At("pluginSettings").At("demo.a.b").At("newPeer").UInt() == 7 &&
+        sections.At("pluginSettings").At("opaquePeer").UInt() == 99,
+        "unknown sibling, peer, section and root values survive");
+    Check(store.WriteSection("pluginSettings", "{}") == Result::Invalid &&
+        store.CompareExchangeSection("pluginSettings", nullptr, "{}") == Result::Invalid &&
+        store.WriteSections(R"({"ui":{"current":0},"pluginSettings":{}})") == Result::Invalid &&
+        Bytes(path) == afterMerge, "generic Store writes cannot bypass reserved registry");
+
+    // Load can still read this handle's file, but replacement is prohibited.
+    auto file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        OPEN_EXISTING, 0, nullptr);
+    Check(file != INVALID_HANDLE_VALUE, "test replacement failure handle");
+    Check(store.CompareMergePlugin("demo.a", equivalent, R"({"n":5})") == PluginResult::Io &&
+        Bytes(path) == afterMerge, "replacement failure keeps original settings bytes");
+    CloseHandle(file);
+    for (const auto& entry : fs::directory_iterator(path.parent_path()))
+        Check(entry.path().filename().wstring().find(L".tmp-") == std::wstring::npos,
+            "replacement failure leaves no temporary file");
+
+    const auto lockPath = path.wstring() + L".lock";
+    file = CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_EXISTING, 0, nullptr);
+    OVERLAPPED overlap{};
+    Check(file != INVALID_HANDLE_VALUE && LockFileEx(file, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlap),
+        "hold existing settings file lock");
+    const auto start = GetTickCount64();
+    output = "unchanged";
+    const auto read = store.ReadPlugin("demo.a", output);
+    const auto write = store.CompareMergePlugin("demo.a", equivalent, R"({"n":5})");
+    const auto elapsed = GetTickCount64() - start;
+    UnlockFileEx(file, 0, 1, 0, &overlap);
+    CloseHandle(file);
+    Check(read == PluginResult::Busy && write == PluginResult::Busy && elapsed < 1500 &&
+        output == "unchanged" && Bytes(path) == afterMerge, "nonblocking plugin paths use the same settings lock");
+
+    // Protect the existing DACL without changing its entries. A staging file
+    // inherits normally and cannot stand in for this manually protected file.
+    auto nativePath = path.wstring();
+    PACL dacl = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    Check(GetNamedSecurityInfoW(nativePath.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        nullptr, nullptr, &dacl, nullptr, &descriptor) == ERROR_SUCCESS && dacl && descriptor,
+        "read fixture security metadata");
+    Check(SetNamedSecurityInfoW(nativePath.data(), SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        nullptr, nullptr, dacl, nullptr) == ERROR_SUCCESS, "use protected DACL on fixture");
+    Check(store.CompareMergePlugin("demo.a", equivalent, R"({"n":5})") == PluginResult::Io &&
+        Bytes(path) == afterMerge, "new publisher cannot widen an existing explicit access policy");
+    SECURITY_DESCRIPTOR_CONTROL control{};
+    DWORD revision = 0;
+    PSECURITY_DESCRIPTOR protectedDescriptor = nullptr;
+    Check(GetNamedSecurityInfoW(nativePath.data(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        nullptr, nullptr, &dacl, nullptr, &protectedDescriptor) == ERROR_SUCCESS &&
+        GetSecurityDescriptorControl(protectedDescriptor, &control, &revision) &&
+        (control & SE_DACL_PROTECTED), "original protected DACL still in place");
+    LocalFree(protectedDescriptor);
+    LocalFree(descriptor);
+
+    for (const auto* bad : {R"({"schemaVersion":3,"sections":{}})",
+        R"({"schemaVersion":1,"sections":{"pluginSettings":[]}})",
+        R"({"schemaVersion":1,"sections":{"pluginSettings":{"demo.a":null}}})"}) {
+        Put(path, bad);
+        Check(store.ReadPlugin("demo.a", output) == PluginResult::Corrupt && output == "unchanged" &&
+            store.CompareMergePlugin("demo.a", {}, R"({"n":5})") == PluginResult::Corrupt &&
+            Bytes(path) == bad, "corrupt plugin store is untouched");
+    }
 }
 int Worker(const fs::path& path, const std::string& section) {
     settings::Store store(path);
@@ -229,6 +332,7 @@ int wmain(int argc, wchar_t** argv) {
         "threads preserve merged same-section fields");
     Check(store.ReadSection("paired", output) == Result::Ok && Json::Parse(output).object.size() == 48,
         "mixed single and batch writers preserve all paired fields");
+    PluginSettings(root / L"plugin-fixture");
     std::printf("PASS system settings checks=%u artifacts=%ls\n", checks, root.c_str());
     return 0;
 }
