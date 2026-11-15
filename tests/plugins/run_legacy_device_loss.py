@@ -14,6 +14,7 @@ import tempfile
 parser = argparse.ArgumentParser()
 parser.add_argument('--build', type=Path, required=True)
 parser.add_argument('--fixture', type=Path, required=True)
+parser.add_argument('--require-on12', action='store_true')
 args = parser.parse_args()
 build, fixture = args.build.resolve(), args.fixture.resolve()
 assert hashlib.sha256((fixture / 'PLUGINS/LEGACY/test.camera/MMDFirstPersonCamera.dll').read_bytes()).hexdigest() == 'd3515d48da411d15a55e09eefd9372fc4e9624405a4f1cf863d8dad5ce64a1ef'
@@ -36,9 +37,10 @@ for entry in ['frame', 'readback', 'record-frame']:
         trace = (directory/'loss-runtime.log').read_text(encoding='utf-8', errors='replace')
         line = next((line[7:] for line in log.splitlines() if line.startswith('RESULT ')), None)
         all_originals = 'started (first_person_camera_v4)' in trace and 'started (effekseer_v2)' in trace and 'LEGACY_MME org.mikumikustudio.legacy.mme loaded from' in trace
-        case = dict(entry=entry, scenario=scenario, exe=name, directory=str(directory),
+        on12 = 'MME_BACKEND D3D12 active via D3D9On12' in trace
+        case = dict(actualOn12=on12, entry=entry, scenario=scenario, exe=name, directory=str(directory),
             originalPluginsStarted=all_originals, exitCode=run.returncode, measurements=json.loads(line) if line else None,
-            passed=run.returncode == 0 and all_originals and line is not None)
+            passed=run.returncode == 0 and all_originals and line is not None and (not args.require_on12 or on12))
         results.append(case)
         (root/'summary.json').write_text(json.dumps(results, indent=2), encoding='utf-8')
         print(json.dumps(case, ensure_ascii=True), flush=True)

@@ -90,12 +90,24 @@ void Run(MMDApp* app,const wchar_t* effect) {
     Check(dialogs==0,"unexpected plugin error dialog");
     // IID from the installed Windows SDK d3d9on12.h. Query the actual MME device.
     constexpr GUID on12Id{0xe7fda234,0xb589,0x4049,{0x94,0x0d,0x88,0x78,0x97,0x75,0x31,0xc8}};
-    IUnknown* on12 = nullptr;
+    D3DDEVICE_CREATION_PARAMETERS creation{};
+    D3DADAPTER_IDENTIFIER9 adapter{};
+    Check(SUCCEEDED(app->Renderer()->device->GetCreationParameters(&creation)) &&
+        SUCCEEDED(app->Renderer()->d3d9->GetAdapterIdentifier(creation.AdapterOrdinal, 0, &adapter)), "query active render adapter");
+    std::printf("ADAPTER ordinal=%u vendor=%04x device=%04x name=%s\n", creation.AdapterOrdinal, adapter.VendorId, adapter.DeviceId, adapter.Description);
+    IDirect3DDevice9On12* on12 = nullptr;
     const HRESULT backend = app->Renderer()->device->QueryInterface(on12Id, reinterpret_cast<void**>(&on12));
-    if (on12) on12->Release();
+    if (on12) {
+        ID3D12Device* gpu = nullptr;
+        Check(SUCCEEDED(on12->GetD3D12Device(IID_PPV_ARGS(&gpu))) && gpu, "query actual D3D12 device in integration test");
+        const auto luid = gpu->GetAdapterLuid();
+        std::printf("D3D12_ADAPTER luid=%08x:%08x\n", unsigned(luid.HighPart), unsigned(luid.LowPart));
+        gpu->Release(); on12->Release();
+    }
     std::printf("BACKEND native=%s mmeDeviceOn12=%08lx\n", D3D12NativeStatus(), static_cast<unsigned long>(backend));
     if (GetEnvironmentVariableW(L"MMDFACADE_TEST_REQUIRE_ON12", nullptr, 0))
-        Check(SUCCEEDED(backend), "requested DX12 must include the actual original MME device");
+        Check(SUCCEEDED(backend) && plugins::MmeRenderStatus().actualBackend == MMS_MME_BACKEND_D3D9ON12,
+            "requested DX12 must include actual ID3D12Device and shared original MME device");
     const bool dx12Requested = std::strcmp(D3D12NativeStatus(), "disabled") != 0;
     const auto enabled=Pixels(app,L"effekseer-enabled.ppm");
     if (!plugins::LegacyMmeStatus().loaded) {

@@ -17,6 +17,8 @@ def main():
     parser.add_argument('--automatic', action='store_true')
     parser.add_argument('--backend', choices=['dx9','dx12'], default='dx9')
     parser.add_argument('--require-on12', action='store_true')
+    parser.add_argument('--patch', type=Path, help='Patch4MMS package directory')
+    parser.add_argument('--patch-disabled', action='store_true')
     parser.add_argument('--send-input', action='store_true')
     parser.add_argument('--single',action='store_true')
     parser.add_argument('--mme-off',action='store_true')
@@ -48,6 +50,10 @@ def main():
             write_json(mme/'plugin.json',dict(schemaVersion=1,id='test.mme',name='MME',version='0.37.0',kind='legacy_mme',entry='MMEffect.dll',architecture='x64',minWindows='6.1.0',reloadPolicy='restart'))
             if args.automatic or args.no_mme: (mme/'plugin.json').unlink()
             if args.no_mme: (mme/'MMEffect.dll').unlink()
+            if args.patch:
+                shutil.copytree(args.patch.resolve(), directory/'PLUGINS/patch4mms')
+                write_json(directory/'PLUGINS/config.json', dict(schemaVersion=1,maxDepth=2,
+                    enabledPlugins=['patch4mms'],disabledPlugins=['patch4mms'] if args.patch_disabled else []))
             data=directory/'data'; data.mkdir()
             write_json(data/'settings.json',dict(schemaVersion=1,sections=dict(processor=dict(vertices=dict(mode='cpu')))))
             scene=directory/('effect' if args.ascii_effect else '中文特效'); shutil.copytree(args.effect.parent,scene)
@@ -58,7 +64,7 @@ def main():
             if args.no_mme: env['MMDFACADE_TEST_NO_MME']='1'
             if args.require_on12: env['MMDFACADE_TEST_REQUIRE_ON12']='1'
             if args.send_input: env['MMDFACADE_TEST_SENDINPUT']='1'
-            case=dict(backend=args.backend, requireOn12=args.require_on12, sendInput=args.send_input, exe=name,layout=layout,directory=str(directory),passed=False)
+            case=dict(patch=str(args.patch) if args.patch else None, patchDisabled=args.patch_disabled, backend=args.backend, requireOn12=args.require_on12, sendInput=args.send_input, exe=name,layout=layout,directory=str(directory),passed=False)
             with (directory/'result.log').open('wb') as output:
                 try:
                     run=subprocess.run([str(exe),str(effect),'1','--facade-real','--'+args.backend],cwd=directory,env=env,stdout=output,stderr=subprocess.STDOUT,timeout=90,creationflags=subprocess.CREATE_NO_WINDOW)

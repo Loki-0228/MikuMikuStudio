@@ -96,6 +96,8 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
     if (m.name.empty()) throw std::invalid_argument("empty name");
     m.version = ParseVersion(j.At("version").String());
     const auto kind = j.At("kind").String();
+    if (kind != "native" && j.object.count("startup"))
+        throw std::invalid_argument("startup requests require a native plugin");
     if (kind == "legacy_mme") {
         m.kind = Manifest::Kind::LegacyMme; m.major = m.minor = 0;
         if (j.At("architecture").String() != "x64") throw std::invalid_argument("expected x64");
@@ -145,6 +147,12 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
         if (optIn.kind != Json::Boolean) throw std::invalid_argument("optIn must be a boolean");
         m.optIn = optIn.text == "true";
     }
+    if (j.object.count("startup")) {
+        const auto& startup = j.At("startup");
+        m.startupRenderBackend = startup.At("renderBackend").String();
+        if (startup.object.size() != 1 || m.startupRenderBackend != "mme-d3d9on12" || !m.optIn)
+            throw std::invalid_argument("startup requires optIn and the supported mme-d3d9on12 backend");
+    }
     const auto& abi = j.At("abi"); m.major = abi.At("major").UInt(); m.minor = abi.At("minMinor").UInt();
     if (m.major != 1 || m.minor != 0) throw std::invalid_argument("unsupported plugin ABI");
     if (j.At("architecture").String() != "x64") throw std::invalid_argument("expected x64");
@@ -167,6 +175,9 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
         CheckId(dep.id); if (dep.minimum >= dep.maximum || !dependencyIds.insert(dep.id).second) throw std::invalid_argument("invalid/duplicate dependency");
         m.dependencies.push_back(dep);
     }
+    if (!m.startupRenderBackend.empty() && std::none_of(m.services.begin(), m.services.end(), [](const auto& service) {
+            return service.id == "mms.render.mme.on12" && service.major == 1 && service.minor == 0;
+        })) throw std::invalid_argument("mme-d3d9on12 requires mms.render.mme.on12 1.0");
     std::set<std::wstring> paths;
     for (const auto& d : j.At("nativeDependencies").Items()) {
         auto p = PackageFile(m.package, d.String());
@@ -174,7 +185,7 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
             throw std::invalid_argument("invalid/duplicate native dependency");
         m.nativeDependencies.push_back(p);
     }
-    Unknown(j, {"schemaVersion", "id", "name", "version", "kind", "abi", "entry", "architecture", "minWindows", "capabilities", "requiresServices", "dependencies", "nativeDependencies", "reloadPolicy", "optIn"}, log);
+    Unknown(j, {"schemaVersion", "id", "name", "version", "kind", "abi", "entry", "architecture", "minWindows", "capabilities", "requiresServices", "dependencies", "nativeDependencies", "reloadPolicy", "optIn", "startup"}, log);
     return m;
 }
 Discovery Discover(const fs::path& directory, bool useCache) {

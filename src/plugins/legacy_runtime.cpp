@@ -1,4 +1,5 @@
 #include "mikumikustudio/legacy_mme_bootstrap.hpp"
+#include "mikumikustudio/mme_render_startup.hpp"
 #include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/runtime_log.hpp"
@@ -280,18 +281,31 @@ LegacyMmdImage PrepareLegacyMmdImage(const Manifest& manifest, const fs::path& i
 bool BootstrapLegacyMme() noexcept {
     if (attempted) return safeToContinue;
     attempted = true;
+    bool on12Requested = false;
     try {
         const auto install = local_data::ExecutableDirectory();
         if (install.empty()) throw std::runtime_error("installation directory unavailable");
         const auto discovered = Discover(install / L"PLUGINS");
         for (const auto& d : discovered.diagnostics) LogMessage(d);
         const auto order = Resolve(discovered, LogMessage);
+        for (auto index : order) {
+            const auto& request = discovered.packages[index];
+            if (request.kind != Manifest::Kind::Native || request.startupRenderBackend.empty()) continue;
+            // Inspect the declared entry; never execute a DLL to probe its interface.
+            if (WindowsVersion() < request.minWindows) { LogMessage(request.id + ": startup Windows version is unsupported"); continue; }
+            try {
+                InspectPe(request.entry);
+                if (!HasNativeFactory(request.entry))
+                    throw std::runtime_error("startup entry has no native ABI factory");
+                on12Requested = true;
+            } catch (const std::exception& error) { LogMessage(request.id + ": " + error.what()); RecordMmeStartupError(request.id, error.what()); }
+        }
         const Manifest* legacy = nullptr;
         for (auto index : order) if (discovered.packages[index].kind == Manifest::Kind::LegacyMme) {
             if (legacy) throw std::runtime_error("enable only one legacy MME package per process");
             legacy = &discovered.packages[index];
         }
-        if (!legacy) return true;
+        if (!legacy) { ConfigureMmeRenderStartup(on12Requested, false, nullptr); return true; }
         status.id = legacy->id;
         if (WindowsVersion() < legacy->minWindows) throw std::runtime_error("legacy package minimum Windows version is not met");
         if (LegacyMmeModule() || LegacyMmeHackModule() || GetModuleHandleW(L"MMDFacade.dll") || GetModuleHandleW(L"MMSAdapter.dll"))
@@ -341,6 +355,7 @@ bool BootstrapLegacyMme() noexcept {
         Pin(hackModule); Pin(effectModule);
         status.loaded = true; safeToContinue = true;
         LogMessage(status.id + " loaded from " + Utf8(directory.native()));
+        ConfigureMmeRenderStartup(on12Requested, true, hackModule);
     } catch (const std::exception& e) {
         try { status.error = e.what(); LogMessage(status.error); } catch (...) {}
     } catch (...) {
@@ -349,6 +364,7 @@ bool BootstrapLegacyMme() noexcept {
     if (!status.error.empty()) {
         try { MessageBoxW(nullptr, Wide(status.id + "\n" + status.error).c_str(), L"MMDFacade：MME 加载失败", MB_OK | MB_ICONERROR); } catch (...) {}
     }
+    if (!status.loaded) ConfigureMmeRenderStartup(on12Requested, false, nullptr);
     return safeToContinue;
 }
 }

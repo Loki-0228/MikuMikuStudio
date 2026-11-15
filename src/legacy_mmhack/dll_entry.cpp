@@ -1,6 +1,9 @@
 #include "d3dx_hooks.hpp"
 #include <filesystem>
 #include <vector>
+extern "C" BOOL WINAPI MMSSetMmeDx12PatchEnabled(BOOL enable) {
+  return mme_re::mmhack::set_mme_dx12_patch(enable);
+}
 BOOL WINAPI DllMain(HMODULE module, DWORD reason, LPVOID) {
   if (reason != DLL_PROCESS_ATTACH) return TRUE;
   try {

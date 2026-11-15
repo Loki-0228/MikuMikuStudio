@@ -195,6 +195,7 @@ fs::path SystemImport(const fs::path& system, const std::wstring& name) {
 }
 }
 PeInfo InspectPe(const fs::path& file) { return Pe(file).Info(); }
+bool HasNativeFactory(const fs::path& file) { return Pe(file).HasDirectExport("MMSPluginGetApi"); }
 std::set<std::string> InspectLegacyExports(const fs::path& file) {
     const Pe pe(file);
     std::set<std::string> result;

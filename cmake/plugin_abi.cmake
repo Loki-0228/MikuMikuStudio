@@ -1,6 +1,8 @@
 # Native plugin ABI. This target has no renderer, CUDA, NVAPI or DX12 dependency.
 add_subdirectory(src/legacy_adapter)
 add_subdirectory(src/legacy_mmhack)
+add_subdirectory(src/patch4mms)
+add_dependencies(MikuMikuStudio mms_patch4mms)
 set_target_properties(MMDFacade PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>")
 target_link_options(MMDFacade PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
@@ -321,6 +323,7 @@ set_tests_properties(system_settings_store PROPERTIES TIMEOUT 60)
 add_library(mms_plugin_runtime STATIC
     src/plugins/legacy_image.cpp
     src/plugins/legacy_runtime.cpp
+    src/plugins/mme_render_startup.cpp
     src/plugins/original_camera_memory.cpp
     src/plugins/legacy_discovery.cpp
     src/plugins/manifest.cpp
@@ -1130,3 +1133,13 @@ if(TARGET side_mount_host_tests)
     add_dependencies(side_mount_host_tests mms_side_mount_host_probe)
 endif()
 install(FILES PLUGINS/config.json DESTINATION PLUGINS)
+
+add_library(mme_startup_bridge SHARED EXCLUDE_FROM_ALL tests/plugins/mme_startup_bridge.cpp)
+add_executable(mme_startup_tests EXCLUDE_FROM_ALL tests/plugins/mme_startup_tests.cpp)
+target_include_directories(mme_startup_tests PRIVATE src/plugins)
+target_link_libraries(mme_startup_tests PRIVATE mms_plugin_runtime)
+add_dependencies(mme_startup_tests mme_startup_bridge)
+set_target_properties(mme_startup_tests mme_startup_bridge PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+foreach(scenario dx9 disabled missing bridge-missing deny fallback disable-failed hardware)
+    add_test(NAME mme_startup_${scenario} COMMAND mme_startup_tests "$<TARGET_FILE:mme_startup_bridge>" "${scenario}")
+endforeach()

@@ -18,6 +18,7 @@ struct Manifest {
     Version version{}, minWindows{};
     uint32_t major = 1, minor = 0;
     bool optIn = false;
+    std::string startupRenderBackend;
     std::vector<std::string> capabilities;
     std::vector<ServiceRequirement> services;
     std::vector<Dependency> dependencies;

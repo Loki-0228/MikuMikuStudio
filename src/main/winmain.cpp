@@ -1,6 +1,7 @@
 #include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/plugin_menu.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/mme_render_startup.hpp"
 #include "mikumikustudio/plugin_input_focus.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
 // ===========================================================================
@@ -106,6 +107,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         else if (!scenePath) scenePath = argv[i];
     }
     EnableD3D12Native(!forceDx9);
+    plugins::SelectMmeRenderBackend(!forceDx9);
     if (scenePath) {
         wcscpy_s(app->EnvFileName(), 0x100, scenePath);
     } else {

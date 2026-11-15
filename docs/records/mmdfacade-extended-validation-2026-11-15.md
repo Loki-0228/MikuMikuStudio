@@ -1,5 +1,7 @@
 # MMDFacade 扩展验证：启停、MME 像素、设备恢复与后端
 
+后续 Patch4MMS 联调已完成实际 On12 设备、选定原版插件渲染与回退验证，见 [2026-11-16 记录](mmdfacade-on12-integration-2026-11-16.md)。本文保留接入前的历史失败结果。
+
 延续 `feature/mmdfacade-original-camera` 的 `558c7e5`，仍使用独立源码/构建目录，不修改本地 abi 或在用安装。原版 DLL 摘要与[上一轮记录](mmdfacade-original-camera-2026-11-15.md)一致。下面的路径除特别注明外相对于 `D:/MMD-Next/MMS-ABI-integration/build`。
 
 ## 测试发现并修复的缺陷

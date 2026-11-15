@@ -1,5 +1,6 @@
 #include "mikumikustudio/local_data_path.hpp"
 #include "manager.hpp"
+#include "mikumikustudio/mme_render_startup.hpp"
 #include "native_ui.hpp"
 #include "ui_property_refresh.hpp"
 #include "project_storage.hpp"
@@ -514,6 +515,9 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
                 : fs::path();
         }();
         manager->Load(pluginRoot.empty() ? fs::path(module).parent_path() / L"PLUGINS" : pluginRoot);
+        const auto startupErrors = MmeStartupErrors();
+        if (!startupErrors.empty()) MessageBoxW(app->MainWindow(), Wide(startupErrors).c_str(),
+            L"MMDFacade: startup plugin load failed", MB_OK | MB_ICONERROR);
         Refresh(app); return MMS_OK;
     });
     if (initialized != MMS_OK) {

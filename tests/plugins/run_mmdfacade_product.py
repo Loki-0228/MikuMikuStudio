@@ -20,6 +20,7 @@ def main():
     parser.add_argument('--mme', type=Path)
     parser.add_argument('--backend', choices=['dx9', 'dx12'])
     parser.add_argument('--facade-state', choices=['present', 'missing', 'old-name-only'], default='present')
+    parser.add_argument('--patch', type=Path)
     args = parser.parse_args()
     build = args.build.resolve()
     root = Path(tempfile.mkdtemp(prefix='mmdfacade-product-', dir=build.parent))
@@ -54,7 +55,9 @@ def main():
                 (package / 'plugin.json').write_text(json.dumps(dict(schemaVersion=1, id='test.mme', name='MME',
                     version='0.37.0', kind='legacy_mme', entry='MMEffect.dll', architecture='x64',
                     minWindows='6.1.0', reloadPolicy='restart')), encoding='utf-8')
-            (directory / 'PLUGINS/config.json').write_text(json.dumps(dict(schemaVersion=1,maxDepth=3,disabledPlugins=[])))
+            (directory / 'PLUGINS/config.json').write_text(json.dumps(dict(schemaVersion=1,maxDepth=3,disabledPlugins=[],
+                enabledPlugins=['patch4mms'] if args.patch else [])))
+            if args.patch: shutil.copytree(args.patch, directory/'PLUGINS/patch4mms')
             (directory / 'data').mkdir()
             (directory / 'data/settings.json').write_text(json.dumps(dict(schemaVersion=1,
                 sections=dict(processor=dict(vertices=dict(mode='cpu'))))), encoding='utf-8')
@@ -98,6 +101,9 @@ def main():
                         if 'LEGACY_MME missing file or reparse point:' not in trace or 'MMDFacade.dll' not in trace:
                             raise RuntimeError('missing new facade has no explicit diagnostic')
                         case['missingFacadeRejected'] = True
+                if args.patch:
+                    case['actualOn12'] = 'Patch4MMS requested=12 actual=12 reason=1' in trace
+                    if not case['actualOn12']: raise RuntimeError('product did not confirm original MME On12 device')
                 send(main_window, 0x10)
                 case['exitCode'] = process.wait(timeout=20)
                 trace = (directory / 'runtime.log').read_text(encoding='utf-8', errors='replace')

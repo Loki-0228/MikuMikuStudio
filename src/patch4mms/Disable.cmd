@@ -1,0 +1,7 @@
+@echo off
+setlocal
+set "MMS_PATCH_PACKAGE=%~dp0"
+powershell.exe -NoLogo -NoProfile -Command "$ErrorActionPreference='Stop'; try { $directory=Get-Item -LiteralPath $env:MMS_PATCH_PACKAGE; while($directory -and $directory.Name -ine 'PLUGINS') { $directory=$directory.Parent }; if(!$directory) { throw 'Install this package under PLUGINS first.' }; $path=Join-Path $directory.FullName 'config.json'; if(Test-Path -LiteralPath $path) { $config=Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json; if($config.schemaVersion -ne 1) { throw 'Unsupported plugin config version.' } } else { $config=[pscustomobject]@{schemaVersion=1;maxDepth=2;disabledPlugins=@()} }; $config | Add-Member -Force NoteProperty enabledPlugins @($config.enabledPlugins | Where-Object {$_ -ne 'patch4mms'}); $config | Add-Member -Force NoteProperty disabledPlugins @((@($config.disabledPlugins | Where-Object {$_})+'patch4mms') | Select-Object -Unique); $temp=$path+'.patch-'+[guid]::NewGuid().ToString('N')+'.tmp'; [IO.File]::WriteAllText($temp,($config | ConvertTo-Json -Depth 32),(New-Object Text.UTF8Encoding($false))); if([IO.File]::Exists($path)) { [IO.File]::Replace($temp,$path,[NullString]::Value) } else { [IO.File]::Move($temp,$path) }; Write-Host 'Disabled Patch4MMS. Restart MMS to apply.' } catch { Write-Error $_; exit 1 }"
+set "PATCH_RESULT=%ERRORLEVEL%"
+if not "%MMS_PATCH_NO_PAUSE%"=="1" pause
+exit /b %PATCH_RESULT%
