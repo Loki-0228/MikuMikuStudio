@@ -88,6 +88,15 @@ void Run(MMDApp* app,const wchar_t* effect) {
     };
     for(int frame=0;frame<=20;++frame) render(frame);
     Check(dialogs==0,"unexpected plugin error dialog");
+    // IID from the installed Windows SDK d3d9on12.h. Query the actual MME device.
+    constexpr GUID on12Id{0xe7fda234,0xb589,0x4049,{0x94,0x0d,0x88,0x78,0x97,0x75,0x31,0xc8}};
+    IUnknown* on12 = nullptr;
+    const HRESULT backend = app->Renderer()->device->QueryInterface(on12Id, reinterpret_cast<void**>(&on12));
+    if (on12) on12->Release();
+    std::printf("BACKEND native=%s mmeDeviceOn12=%08lx\n", D3D12NativeStatus(), static_cast<unsigned long>(backend));
+    if (GetEnvironmentVariableW(L"MMDFACADE_TEST_REQUIRE_ON12", nullptr, 0))
+        Check(SUCCEEDED(backend), "requested DX12 must include the actual original MME device");
+    const bool dx12Requested = std::strcmp(D3D12NativeStatus(), "disabled") != 0;
     const auto enabled=Pixels(app,L"effekseer-enabled.ppm");
     if (!plugins::LegacyMmeStatus().loaded) {
         D3DPRESENT_PARAMETERS invalid{}; invalid.Windowed=TRUE;
@@ -99,10 +108,13 @@ void Run(MMDApp* app,const wchar_t* effect) {
     const auto reset=Pixels(app,L"effekseer-reset.ppm");
     legacy_mmd_plugin::Stop();
     Check(!GetModuleHandleW(L"EffekseerForMMD.dll") && !GetModuleHandleW(cameraName),"real plugins unloaded");
+    // Compare pixels on the same D3D9 output surface, including the disabled control.
+    EnableD3D12Native(false);
     render(20);
     const auto disabled=Pixels(app,L"effekseer-disabled.ppm");
     std::printf("Effekseer rendered difference enabled=%zu reset=%zu\n",Difference(enabled,disabled),Difference(reset,disabled));
     Check(Difference(enabled,disabled)>100 && Difference(reset,disabled)>100,"real effect draws before and after D3D9 reset");
+    EnableD3D12Native(dx12Requested);
     legacy_mmd_plugin::Start(app);
     for(int frame=0;frame<=20;++frame) render(frame);
     const auto restarted=Pixels(app,L"effekseer-restarted.ppm");

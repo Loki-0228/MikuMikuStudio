@@ -1,5 +1,7 @@
 # MMDFacade 原版相机闭环验证
 
+> 后续启停泄漏修复、MME 独立像素、设备恢复及 DX12 回退结果见[扩展验证记录](mmdfacade-extended-validation-2026-11-15.md)。
+
 基线：本地 `abi` 的 `19fb0255efdfd4330bf9be8f9fee35f84a8f9585`。
 独立分支 `feature/mmdfacade-original-camera`，源码在 `build/facade-original-src`，Release 在 `build/facade-original-build/Release`。未推送、未合并 abi、未覆盖使用中的安装目录。
 

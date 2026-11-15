@@ -1,0 +1,938 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-15",
+  "branch": "feature/mmdfacade-original-camera",
+  "abiBaseline": "19fb0255efdfd4330bf9be8f9fee35f84a8f9585",
+  "previousImplementation": "558c7e5",
+  "sourceDirectory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-src",
+  "buildDirectory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build",
+  "configuration": "Windows x64 Release, VS 2022 v143 14.44.35207, DX12 enabled",
+  "results": {
+    "originalCameraRestart": {
+      "evidence": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\summary.json",
+      "data": {
+        "passed": true,
+        "cases": [
+          {
+            "exe": "MikuMikuDance.exe",
+            "provider": "PLUGINS/LEGACY",
+            "package": "PLUGINS\\LEGACY\\camera",
+            "automatic": true,
+            "exitCode": 0,
+            "originalAndCacheUnchanged": true,
+            "passed": true,
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\0"
+          },
+          {
+            "exe": "Renamed Studio.exe",
+            "provider": "PLUGINS/LEGACY",
+            "package": "PLUGINS\\LEGACY\\分组\\相机",
+            "automatic": true,
+            "exitCode": 0,
+            "originalAndCacheUnchanged": true,
+            "passed": true,
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\1"
+          },
+          {
+            "exe": "中文工作室.exe",
+            "provider": "PLUGINS/LEGACY",
+            "package": "PLUGINS\\LEGACY\\相机",
+            "automatic": true,
+            "exitCode": 0,
+            "originalAndCacheUnchanged": true,
+            "passed": true,
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\2"
+          },
+          {
+            "exe": "MikuMikuDance.exe",
+            "provider": "PLUGINS/legacy-mmdplugin",
+            "package": "PLUGINS\\LEGACY\\camera",
+            "automatic": true,
+            "exitCode": 0,
+            "originalAndCacheUnchanged": true,
+            "passed": true,
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\3"
+          },
+          {
+            "exe": "Renamed Studio.exe",
+            "provider": "PLUGINS/legacy-mmdplugin",
+            "package": "PLUGINS\\LEGACY\\分组\\相机",
+            "automatic": true,
+            "exitCode": 0,
+            "originalAndCacheUnchanged": true,
+            "passed": true,
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\4"
+          },
+          {
+            "exe": "中文工作室.exe",
+            "provider": "PLUGINS/legacy-mmdplugin",
+            "package": "PLUGINS\\LEGACY\\相机",
+            "automatic": true,
+            "exitCode": 0,
+            "originalAndCacheUnchanged": true,
+            "passed": true,
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\5"
+          },
+          {
+            "exe": "MikuMikuDance.exe",
+            "provider": "legacy-mmdplugin",
+            "package": "PLUGINS\\LEGACY\\camera",
+            "automatic": true,
+            "exitCode": 0,
+            "originalAndCacheUnchanged": true,
+            "passed": true,
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\6"
+          },
+          {
+            "exe": "Renamed Studio.exe",
+            "provider": "legacy-mmdplugin",
+            "package": "PLUGINS\\LEGACY\\分组\\相机",
+            "automatic": true,
+            "exitCode": 0,
+            "originalAndCacheUnchanged": true,
+            "passed": true,
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\7"
+          },
+          {
+            "exe": "中文工作室.exe",
+            "provider": "legacy-mmdplugin",
+            "package": "PLUGINS\\LEGACY\\相机",
+            "automatic": true,
+            "exitCode": 0,
+            "originalAndCacheUnchanged": true,
+            "passed": true,
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\8"
+          },
+          {
+            "exe": "MikuMikuDance.exe",
+            "provider": "PLUGINS/components/bridge",
+            "package": "PLUGINS\\LEGACY\\camera",
+            "automatic": true,
+            "exitCode": 0,
+            "originalAndCacheUnchanged": true,
+            "passed": true,
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\9"
+          },
+          {
+            "exe": "Renamed Studio.exe",
+            "provider": "PLUGINS/components/bridge",
+            "package": "PLUGINS\\LEGACY\\分组\\相机",
+            "automatic": true,
+            "exitCode": 0,
+            "originalAndCacheUnchanged": true,
+            "passed": true,
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\10"
+          },
+          {
+            "exe": "中文工作室.exe",
+            "provider": "PLUGINS/components/bridge",
+            "package": "PLUGINS\\LEGACY\\相机",
+            "automatic": true,
+            "exitCode": 0,
+            "originalAndCacheUnchanged": true,
+            "passed": true,
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\original-camera-y1478805\\11"
+          }
+        ]
+      }
+    },
+    "originalEffekseerDx12RequestFallback": {
+      "evidence": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-fq2pxklt\\summary.json",
+      "data": {
+        "passed": true,
+        "cases": [
+          {
+            "backend": "dx12",
+            "requireOn12": false,
+            "sendInput": false,
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-fq2pxklt\\0",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          }
+        ]
+      }
+    },
+    "originalMmeDx12RequestFallback": {
+      "evidence": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-j268mhdg\\summary.json",
+      "data": {
+        "passed": true,
+        "cases": [
+          {
+            "backend": "dx12",
+            "requireOn12": false,
+            "sendInput": false,
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-j268mhdg\\0",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          }
+        ]
+      }
+    },
+    "abi3ProductWindowsDx12Request": {
+      "evidence": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-6hca_32_\\summary.json",
+      "data": {
+        "passed": true,
+        "cases": [
+          {
+            "backendRequested": "dx12",
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-6hca_32_\\0",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "Renamed Studio.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-6hca_32_\\1",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "中文工作室.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-6hca_32_\\2",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-6hca_32_\\3",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "Renamed Studio.exe",
+            "layout": "PLUGINS/legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-6hca_32_\\4",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "中文工作室.exe",
+            "layout": "PLUGINS/legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-6hca_32_\\5",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "MikuMikuDance.exe",
+            "layout": "legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-6hca_32_\\6",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "Renamed Studio.exe",
+            "layout": "legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-6hca_32_\\7",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "中文工作室.exe",
+            "layout": "legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-6hca_32_\\8",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "exitCode": 0
+          }
+        ],
+        "utilitySha256": "c778de083c77a6850b56f98ac8f056d0e8c104c833f24aea420d4715a87612c5"
+      }
+    },
+    "originalMmePixels": {
+      "evidence": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-src\\build\\verification\\legacy-mme-m0ejg244\\summary.json",
+      "data": {
+        "root": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-src\\build\\verification\\legacy-mme-m0ejg244",
+        "originals": {
+          "MMHack.dll": "e450b25e5cd2bcf125ca4b8eb9e57f858ec3ca379633c7d25f9dd40e864b390d",
+          "MMEffect.dll": "74b3f5882a3bad28131cbc57994e2f960938e6ca850fc7139018ce4822bd87dc"
+        },
+        "cases": [
+          {
+            "executable": "MikuMikuDance.exe",
+            "hostHash": "84cd24445b8293b82edc4358c57336b9749b3e5ebfa1747d25d0adccfe813429",
+            "adapterHash": "243cd960ab0dc44b1e1a6238ec73a12b80f7337446c1e8591b3329b1f31229d6",
+            "exitCode": 0,
+            "sourceCopiesUnchanged": true,
+            "settingsRemainInData": true,
+            "passed": true,
+            "cacheDlls": [
+              "data\\plugins\\legacy_mme\\777f3a09fcabc3e407f9e79700f7b0d2daf5279e9aaa852d10cdf5bbf25dafa1\\MMDFacade.dll",
+              "data\\plugins\\legacy_mme\\777f3a09fcabc3e407f9e79700f7b0d2daf5279e9aaa852d10cdf5bbf25dafa1\\MMEffect.dll",
+              "data\\plugins\\legacy_mme\\777f3a09fcabc3e407f9e79700f7b0d2daf5279e9aaa852d10cdf5bbf25dafa1\\MMHack.dll"
+            ],
+            "stableSettings": true,
+            "upgradeExitCode": 0,
+            "upgradeRetainedSettings": true,
+            "lockedPreferencesRefused": true,
+            "unattributedPreferencesRefused": true,
+            "hardlinkedPreferencesRefused": true
+          },
+          {
+            "executable": "An arbitrarily named MMS.exe",
+            "hostHash": "84cd24445b8293b82edc4358c57336b9749b3e5ebfa1747d25d0adccfe813429",
+            "adapterHash": "243cd960ab0dc44b1e1a6238ec73a12b80f7337446c1e8591b3329b1f31229d6",
+            "exitCode": 0,
+            "sourceCopiesUnchanged": true,
+            "settingsRemainInData": true,
+            "passed": true,
+            "cacheDlls": [
+              "data\\plugins\\legacy_mme\\777f3a09fcabc3e407f9e79700f7b0d2daf5279e9aaa852d10cdf5bbf25dafa1\\MMDFacade.dll",
+              "data\\plugins\\legacy_mme\\777f3a09fcabc3e407f9e79700f7b0d2daf5279e9aaa852d10cdf5bbf25dafa1\\MMEffect.dll",
+              "data\\plugins\\legacy_mme\\777f3a09fcabc3e407f9e79700f7b0d2daf5279e9aaa852d10cdf5bbf25dafa1\\MMHack.dll"
+            ],
+            "stableSettings": true,
+            "upgradeExitCode": 0,
+            "upgradeRetainedSettings": true
+          },
+          {
+            "executable": "自定义名字的MMS.exe",
+            "hostHash": "84cd24445b8293b82edc4358c57336b9749b3e5ebfa1747d25d0adccfe813429",
+            "adapterHash": "243cd960ab0dc44b1e1a6238ec73a12b80f7337446c1e8591b3329b1f31229d6",
+            "exitCode": 0,
+            "sourceCopiesUnchanged": true,
+            "settingsRemainInData": true,
+            "passed": true,
+            "cacheDlls": [
+              "data\\plugins\\legacy_mme\\777f3a09fcabc3e407f9e79700f7b0d2daf5279e9aaa852d10cdf5bbf25dafa1\\MMDFacade.dll",
+              "data\\plugins\\legacy_mme\\777f3a09fcabc3e407f9e79700f7b0d2daf5279e9aaa852d10cdf5bbf25dafa1\\MMEffect.dll",
+              "data\\plugins\\legacy_mme\\777f3a09fcabc3e407f9e79700f7b0d2daf5279e9aaa852d10cdf5bbf25dafa1\\MMHack.dll"
+            ],
+            "stableSettings": true,
+            "upgradeExitCode": 0,
+            "upgradeRetainedSettings": true
+          }
+        ],
+        "originalsUnchanged": true,
+        "passed": true
+      }
+    },
+    "originalPluginsInjectedDeviceLoss": {
+      "evidence": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\summary.json",
+      "data": [
+        {
+          "entry": "frame",
+          "scenario": "lost-ready",
+          "exe": "MikuMikuDance.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\0",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "frame",
+            "case": "lost-ready",
+            "mode": "windowed",
+            "wall_ms": 37.901,
+            "thread_cpu_ms": 0.0,
+            "presents": 1,
+            "cooperatives": 3,
+            "resets": 0,
+            "begin_scenes": 1,
+            "readbacks": 0,
+            "copies": 0,
+            "background_copies": 0,
+            "state_calls": 11,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 0,
+            "first_count": 0,
+            "final_count": 0,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "entry": "frame",
+          "scenario": "lost-reset",
+          "exe": "Renamed Studio.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\1",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "frame",
+            "case": "lost-reset",
+            "mode": "windowed",
+            "wall_ms": 231.349,
+            "thread_cpu_ms": 0.0,
+            "presents": 1,
+            "cooperatives": 14,
+            "resets": 1,
+            "begin_scenes": 1,
+            "readbacks": 0,
+            "copies": 0,
+            "background_copies": 0,
+            "state_calls": 16,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 0,
+            "first_count": 0,
+            "final_count": 0,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "entry": "frame",
+          "scenario": "reset-fail",
+          "exe": "中文工作室.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\2",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "frame",
+            "case": "reset-fail",
+            "mode": "windowed",
+            "wall_ms": 26.122,
+            "thread_cpu_ms": 15.625,
+            "presents": 2,
+            "cooperatives": 3,
+            "resets": 3,
+            "begin_scenes": 2,
+            "readbacks": 0,
+            "copies": 0,
+            "background_copies": 0,
+            "state_calls": 28,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 0,
+            "first_count": 0,
+            "final_count": 0,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "entry": "frame",
+          "scenario": "fatal",
+          "exe": "MikuMikuDance.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\3",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "frame",
+            "case": "fatal",
+            "mode": "windowed",
+            "wall_ms": 4.71,
+            "thread_cpu_ms": 0.0,
+            "presents": 1,
+            "cooperatives": 2,
+            "resets": 0,
+            "begin_scenes": 1,
+            "readbacks": 0,
+            "copies": 0,
+            "background_copies": 0,
+            "state_calls": 11,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 0,
+            "first_count": 0,
+            "final_count": 0,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "entry": "readback",
+          "scenario": "lost-ready",
+          "exe": "Renamed Studio.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\4",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "readback",
+            "case": "lost-ready",
+            "mode": "windowed",
+            "wall_ms": 38.441,
+            "thread_cpu_ms": 0.0,
+            "presents": 2,
+            "cooperatives": 3,
+            "resets": 0,
+            "begin_scenes": 0,
+            "readbacks": 1,
+            "copies": 1,
+            "background_copies": 0,
+            "state_calls": 1,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 7,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "entry": "readback",
+          "scenario": "lost-reset",
+          "exe": "中文工作室.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\5",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "readback",
+            "case": "lost-reset",
+            "mode": "windowed",
+            "wall_ms": 217.833,
+            "thread_cpu_ms": 15.625,
+            "presents": 2,
+            "cooperatives": 13,
+            "resets": 1,
+            "begin_scenes": 0,
+            "readbacks": 1,
+            "copies": 1,
+            "background_copies": 0,
+            "state_calls": 8,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 7,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "entry": "readback",
+          "scenario": "reset-fail",
+          "exe": "MikuMikuDance.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\6",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "readback",
+            "case": "reset-fail",
+            "mode": "windowed",
+            "wall_ms": 13.079,
+            "thread_cpu_ms": 0.0,
+            "presents": 2,
+            "cooperatives": 3,
+            "resets": 3,
+            "begin_scenes": 0,
+            "readbacks": 1,
+            "copies": 1,
+            "background_copies": 0,
+            "state_calls": 8,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 7,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "entry": "readback",
+          "scenario": "fatal",
+          "exe": "Renamed Studio.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\7",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "readback",
+            "case": "fatal",
+            "mode": "windowed",
+            "wall_ms": 1.043,
+            "thread_cpu_ms": 0.0,
+            "presents": 1,
+            "cooperatives": 2,
+            "resets": 0,
+            "begin_scenes": 0,
+            "readbacks": 0,
+            "copies": 0,
+            "background_copies": 0,
+            "state_calls": 1,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 7,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "entry": "record-frame",
+          "scenario": "lost-ready",
+          "exe": "中文工作室.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\8",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "record-frame",
+            "case": "lost-ready",
+            "mode": "windowed",
+            "wall_ms": 45.492,
+            "thread_cpu_ms": 0.0,
+            "presents": 3,
+            "cooperatives": 3,
+            "resets": 0,
+            "begin_scenes": 2,
+            "readbacks": 1,
+            "copies": 1,
+            "background_copies": 0,
+            "state_calls": 31,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 8,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "entry": "record-frame",
+          "scenario": "lost-reset",
+          "exe": "MikuMikuDance.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\9",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "record-frame",
+            "case": "lost-reset",
+            "mode": "windowed",
+            "wall_ms": 420.228,
+            "thread_cpu_ms": 31.25,
+            "presents": 3,
+            "cooperatives": 14,
+            "resets": 1,
+            "begin_scenes": 2,
+            "readbacks": 1,
+            "copies": 1,
+            "background_copies": 0,
+            "state_calls": 38,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 8,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "entry": "record-frame",
+          "scenario": "reset-fail",
+          "exe": "Renamed Studio.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\10",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "record-frame",
+            "case": "reset-fail",
+            "mode": "windowed",
+            "wall_ms": 190.099,
+            "thread_cpu_ms": 0.0,
+            "presents": 3,
+            "cooperatives": 3,
+            "resets": 3,
+            "begin_scenes": 2,
+            "readbacks": 1,
+            "copies": 1,
+            "background_copies": 0,
+            "state_calls": 38,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 8,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "entry": "record-frame",
+          "scenario": "fatal",
+          "exe": "中文工作室.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-rtpor_dz\\11",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "record-frame",
+            "case": "fatal",
+            "mode": "windowed",
+            "wall_ms": 8.655,
+            "thread_cpu_ms": 15.625,
+            "presents": 1,
+            "cooperatives": 2,
+            "resets": 0,
+            "begin_scenes": 1,
+            "readbacks": 0,
+            "copies": 0,
+            "background_copies": 0,
+            "state_calls": 15,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 7,
+            "failures": 0
+          },
+          "passed": true
+        }
+      ]
+    },
+    "originalMmeActualDx12Unsupported": {
+      "evidence": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-t_maqtvy\\summary.json",
+      "data": {
+        "passed": false,
+        "cases": [
+          {
+            "backend": "dx12",
+            "requireOn12": true,
+            "sendInput": false,
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-t_maqtvy\\0",
+            "passed": false,
+            "exitCode": 7,
+            "sourcesUnchanged": true
+          }
+        ]
+      }
+    },
+    "originalCameraOperatingSystemInputUnverified": {
+      "evidence": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-0_sa3zbj\\summary.json",
+      "data": {
+        "passed": false,
+        "cases": [
+          {
+            "backend": "dx9",
+            "requireOn12": false,
+            "sendInput": true,
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-0_sa3zbj\\0",
+            "passed": false,
+            "exitCode": 77,
+            "unverified": "foreground/input environment unavailable",
+            "sourcesUnchanged": true
+          }
+        ]
+      }
+    },
+    "unchangedHostAbba": {
+      "evidence": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-abba-fgwqaj3l\\summary.json",
+      "data": {
+        "baseline": {
+          "startupSeconds": 1.2491995499999575,
+          "scenarioSeconds": 1.8951407499994275,
+          "cpuSeconds": 5.5625,
+          "sampledPeakWorkingSetMiB": 564.435546875
+        },
+        "current": {
+          "startupSeconds": 1.2318068500003392,
+          "scenarioSeconds": 1.869188099999974,
+          "cpuSeconds": 5.5234375,
+          "sampledPeakWorkingSetMiB": 564.287109375
+        },
+        "sharedPluginHashes": {
+          "LEGACY\\MMDPlugin.dll": "fa4fe16647642cd5e2a1623d958ab6bd7ea034ba4a3b5c43a91e90ff9e272588",
+          "LEGACY\\mme\\MMEffect.dll": "74b3f5882a3bad28131cbc57994e2f960938e6ca850fc7139018ce4822bd87dc",
+          "LEGACY\\test.camera\\MMSFirstPersonCamera.dll": "8ee5a8226516ba2f9c2568c04a4deb97cad4353aafdbfd06b54dc7948fddf5ea",
+          "LEGACY\\test.effekseer\\EffekseerForMMD.dll": "2a7cf3d9afce099228168a1529589f48b5a232befa24cbaa4ab363756c11f532"
+        }
+      }
+    },
+    "unchangedHostAbbaSamples": {
+      "evidence": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-abba-fgwqaj3l\\samples.json",
+      "data": [
+        {
+          "host": "baseline",
+          "warmup": true,
+          "startupSeconds": 5.940225000000282,
+          "scenarioSeconds": 8.062411700000666,
+          "cpuSeconds": 13.828125,
+          "sampledPeakWorkingSetMiB": 1089.69140625,
+          "exitCode": 0
+        },
+        {
+          "host": "current",
+          "warmup": true,
+          "startupSeconds": 5.192578500000309,
+          "scenarioSeconds": 7.378550400000677,
+          "cpuSeconds": 13.828125,
+          "sampledPeakWorkingSetMiB": 1077.734375,
+          "exitCode": 0
+        },
+        {
+          "host": "baseline",
+          "warmup": false,
+          "startupSeconds": 1.2828753999992841,
+          "scenarioSeconds": 1.8890409999994517,
+          "cpuSeconds": 5.625,
+          "sampledPeakWorkingSetMiB": 563.90234375,
+          "exitCode": 0
+        },
+        {
+          "host": "current",
+          "warmup": false,
+          "startupSeconds": 1.232343600000604,
+          "scenarioSeconds": 1.871359499999926,
+          "cpuSeconds": 5.34375,
+          "sampledPeakWorkingSetMiB": 564.17578125,
+          "exitCode": 0
+        },
+        {
+          "host": "current",
+          "warmup": false,
+          "startupSeconds": 1.2312701000000743,
+          "scenarioSeconds": 1.867016700000022,
+          "cpuSeconds": 5.609375,
+          "sampledPeakWorkingSetMiB": 564.3984375,
+          "exitCode": 0
+        },
+        {
+          "host": "baseline",
+          "warmup": false,
+          "startupSeconds": 1.2232536000001346,
+          "scenarioSeconds": 1.8456489000000147,
+          "cpuSeconds": 5.421875,
+          "sampledPeakWorkingSetMiB": 565.13671875,
+          "exitCode": 0
+        },
+        {
+          "host": "baseline",
+          "warmup": false,
+          "startupSeconds": 1.236595600000328,
+          "scenarioSeconds": 1.9352466000000277,
+          "cpuSeconds": 5.859375,
+          "sampledPeakWorkingSetMiB": 564.36328125,
+          "exitCode": 0
+        },
+        {
+          "host": "current",
+          "warmup": false,
+          "startupSeconds": 1.2503880000003846,
+          "scenarioSeconds": 1.9478400999996666,
+          "cpuSeconds": 5.8125,
+          "sampledPeakWorkingSetMiB": 565.04296875,
+          "exitCode": 0
+        },
+        {
+          "host": "current",
+          "warmup": false,
+          "startupSeconds": 1.2199608999999327,
+          "scenarioSeconds": 1.8426197999997385,
+          "cpuSeconds": 5.4375,
+          "sampledPeakWorkingSetMiB": 563.328125,
+          "exitCode": 0
+        },
+        {
+          "host": "baseline",
+          "warmup": false,
+          "startupSeconds": 1.261803499999587,
+          "scenarioSeconds": 1.9012404999994033,
+          "cpuSeconds": 5.5,
+          "sampledPeakWorkingSetMiB": 564.5078125,
+          "exitCode": 0
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "Actual original MME D3D12 device fails E_NOINTERFACE; only D3D9 fallback passes.",
+    "SendInput precondition failed to obtain foreground; no OS input injected, exit 77.",
+    "Device loss is injected around the real device, not a physical GPU/driver removal.",
+    "ABI 3 observer is built from upstream source, not a verified official release binary.",
+    "ABBA uses the source camera adapter and identical explicit manifests, not original FPC or automatic discovery timing.",
+    "Generic ABI 2/3/4 and full MMDMainData remain unsupported; use the audited field/profile table."
+  ],
+  "releaseArtifacts": {
+    "MikuMikuDance.exe": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\MikuMikuDance.exe",
+      "sha256": "58dc82c49989f2545f189a173759be5df2b6187030aaf94487334ce8d56b0eb4"
+    },
+    "MMDFacade.dll": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\MMDFacade.dll",
+      "sha256": "243cd960ab0dc44b1e1a6238ec73a12b80f7337446c1e8591b3329b1f31229d6"
+    },
+    "MMHack.dll": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\MMHack.dll",
+      "sha256": "91b7eb652cec2e7299838fbe8b2940b8636613411b7c486993c96f4a144d44b8"
+    },
+    "PLUGINS/LEGACY/MMDPlugin.dll": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\PLUGINS\\LEGACY\\MMDPlugin.dll",
+      "sha256": "fa4fe16647642cd5e2a1623d958ab6bd7ea034ba4a3b5c43a91e90ff9e272588"
+    }
+  }
+}

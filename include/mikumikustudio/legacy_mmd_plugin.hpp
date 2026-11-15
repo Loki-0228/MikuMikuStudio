@@ -26,5 +26,8 @@ HRESULT DrawIndexedPrimitive(IDirect3DDevice9*, D3DPRIMITIVETYPE, INT base, UINT
 int ResolveEffekseerModel(const wchar_t* path, std::wstring& templatePath) noexcept;
 const wchar_t* EffekseerFilename(const wchar_t* modelPath);
 bool EffekseerContext() noexcept;
+// The audited Effekseer profile submits D3D9 draws. Keep its viewport on that
+// device while it is active; the native D3D12 path would skip its callbacks.
+bool RequiresD3D9Rendering() noexcept;
 }
 }

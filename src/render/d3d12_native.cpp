@@ -1,5 +1,6 @@
 #include "mikumikustudio/d3d12_native.hpp"
 #include "mikumikustudio/legacy_mme.hpp"
+#include "mikumikustudio/legacy_mmd_plugin.hpp"
 #include "mikumikustudio/viewport_render_scale.hpp"
 #if defined(MMD_ENABLE_DX12) && MMD_ENABLE_DX12
 #define WIN32_LEAN_AND_MEAN
@@ -591,6 +592,7 @@ bool RenderD3D12Native(MMDApp* app,const float world[16]) {
             return false;
         };
         if(mikumikustudio::LegacyMmeModule())return fallback("D3D9 fallback: original MME");
+        if(legacy_mmd_plugin::RequiresD3D9Rendering())return fallback("D3D9 fallback: original Effekseer");
         if(app->RecordingWindow()||app->FloatingWindow()||app->FullscreenMode())
             return fallback("D3D9 fallback: recording/floating/fullscreen");
         for(int i=0;i<255;++i)if(app->AccessorySlot(i))

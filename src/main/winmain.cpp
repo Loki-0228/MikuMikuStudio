@@ -102,7 +102,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     bool forceDx9 = false;
     for (int i = 1; argv && i < argc; ++i) {
         if (wcscmp(argv[i], L"--dx9") == 0) forceDx9 = true;
-        else if (wcscmp(argv[i], L"--d3d12-preview") == 0) continue;
+        else if (wcscmp(argv[i], L"--dx12") == 0 || wcscmp(argv[i], L"--d3d12-preview") == 0) continue;
         else if (!scenePath) scenePath = argv[i];
     }
     EnableD3D12Native(!forceDx9);

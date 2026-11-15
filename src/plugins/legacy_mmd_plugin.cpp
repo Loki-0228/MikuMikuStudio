@@ -532,6 +532,12 @@ const wchar_t* EffekseerFilename(const wchar_t* modelPath) {
 bool EffekseerContext() noexcept {
     return host && host->active && host->active->profile == "effekseer_v2";
 }
+bool RequiresD3D9Rendering() noexcept {
+    if (!host || host->stopRequested) return false;
+    return std::any_of(host->packages.begin(), host->packages.end(), [](const auto& package) {
+        return package && package->started && !package->retiring && package->profile == "effekseer_v2";
+    });
+}
 
 bool HandleInput(HWND window, UINT message, WPARAM key, LPARAM data) noexcept {
     auto* current = host;

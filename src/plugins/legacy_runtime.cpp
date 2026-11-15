@@ -17,11 +17,21 @@ LegacyMmeStartupStatus status;
 bool attempted = false, safeToContinue = true;
 struct Handles {
     std::vector<HANDLE> values;
+    std::map<std::wstring, HANDLE> named;
     ~Handles() { for (auto h : values) CloseHandle(h); }
     HANDLE Hold(HANDLE h) {
         if (h == INVALID_HANDLE_VALUE) throw std::runtime_error("legacy file access error " + std::to_string(GetLastError()));
         try { values.push_back(h); } catch (...) { CloseHandle(h); throw; }
         return h;
+    }
+    HANDLE Hold(HANDLE h, const fs::path& path) {
+        if (h == INVALID_HANDLE_VALUE) return Hold(h);
+        try {
+            auto [entry, inserted] = named.emplace(Lower(path.lexically_normal().native()), h);
+            if (!inserted) { CloseHandle(h); return entry->second; }
+            try { values.push_back(h); } catch (...) { named.erase(entry); throw; }
+            return h;
+        } catch (...) { CloseHandle(h); throw; }
     }
 } retainedFiles;
 void LogMessage(const std::string& message) noexcept {
@@ -50,7 +60,7 @@ void HoldDirectory(const fs::path& path, Handles& handles, bool create) {
         throw std::runtime_error("cannot create legacy cache directory");
     auto h = handles.Hold(CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr), path);
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(h, &info) || !(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
         (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
@@ -58,13 +68,15 @@ void HoldDirectory(const fs::path& path, Handles& handles, bool create) {
 }
 Bytes ReadImage(const fs::path& path, Handles& handles) {
     auto h = handles.Hold(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
-        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr), path);
     BY_HANDLE_FILE_INFORMATION info{}; LARGE_INTEGER size{};
     if (!GetFileInformationByHandle(h, &info) || (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ||
         !GetFileSizeEx(h, &size) || size.QuadPart <= 0 || size.QuadPart > 64 * 1024 * 1024)
         throw std::runtime_error("invalid legacy image file or size");
     Bytes bytes(static_cast<size_t>(size.QuadPart)); DWORD read = 0;
-    if (!::ReadFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read != bytes.size())
+    // A retained immutable cache file may be checked again after plugin restart.
+    if (!SetFilePointerEx(h, LARGE_INTEGER{}, nullptr, FILE_BEGIN) ||
+        !::ReadFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read != bytes.size())
         throw std::runtime_error("incomplete legacy image read");
     return bytes;
 }

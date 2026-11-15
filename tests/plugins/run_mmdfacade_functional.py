@@ -15,6 +15,9 @@ def main():
         parser.add_argument('--'+key,type=Path,required=True)
     parser.add_argument('--original-camera', type=Path)
     parser.add_argument('--automatic', action='store_true')
+    parser.add_argument('--backend', choices=['dx9','dx12'], default='dx9')
+    parser.add_argument('--require-on12', action='store_true')
+    parser.add_argument('--send-input', action='store_true')
     parser.add_argument('--single',action='store_true')
     parser.add_argument('--mme-off',action='store_true')
     parser.add_argument('--ascii-effect',action='store_true')
@@ -53,11 +56,14 @@ def main():
             if args.original_camera: env['MMDFACADE_TEST_ORIGINAL_CAMERA']='1'
             if args.mme_off: env['MMDFACADE_TEST_MME_OFF']='1'
             if args.no_mme: env['MMDFACADE_TEST_NO_MME']='1'
-            case=dict(exe=name,layout=layout,directory=str(directory),passed=False)
+            if args.require_on12: env['MMDFACADE_TEST_REQUIRE_ON12']='1'
+            if args.send_input: env['MMDFACADE_TEST_SENDINPUT']='1'
+            case=dict(backend=args.backend, requireOn12=args.require_on12, sendInput=args.send_input, exe=name,layout=layout,directory=str(directory),passed=False)
             with (directory/'result.log').open('wb') as output:
                 try:
-                    run=subprocess.run([str(exe),str(effect),'1','--facade-real'],cwd=directory,env=env,stdout=output,stderr=subprocess.STDOUT,timeout=90,creationflags=subprocess.CREATE_NO_WINDOW)
+                    run=subprocess.run([str(exe),str(effect),'1','--facade-real','--'+args.backend],cwd=directory,env=env,stdout=output,stderr=subprocess.STDOUT,timeout=90,creationflags=subprocess.CREATE_NO_WINDOW)
                     case['exitCode']=run.returncode
+                    if args.send_input and run.returncode == 77: case['unverified']='foreground/input environment unavailable'
                     case['passed']=run.returncode==0
                 except subprocess.TimeoutExpired: case['error']='timeout'
             case['sourcesUnchanged']=digest(directory/'PLUGINS/LEGACY/test.effekseer'/args.effekseer.name)==digest(args.effekseer)

@@ -101,6 +101,17 @@ int main(int argc, char** argv) {
         Check(VirtualQuery(view, &released, sizeof(released)) && released.State == MEM_FREE, "view released after object destruction");
         const auto z = app->CameraPositionZ();
         Check(!legacy_mmd_plugin::HandleInput(window, WM_KEYDOWN, 'W', 0) && app->CameraPositionZ() == z, "input after stop");
+        DWORD handlesBefore = 0, handlesAfter = 0;
+        Check(GetProcessHandleCount(GetCurrentProcess(), &handlesBefore), "initial process handles");
+        for (unsigned cycle = 0; cycle < 20; ++cycle) {
+            legacy_mmd_plugin::Start(app.get());
+            Check(GetModuleHandleW(L"MMDFirstPersonCamera.dll") != nullptr, "original restart");
+            legacy_mmd_plugin::Stop();
+            Check(!GetModuleHandleW(L"MMDFirstPersonCamera.dll"), "original unload after repeated stop");
+        }
+        Check(GetProcessHandleCount(GetCurrentProcess(), &handlesAfter), "final process handles");
+        std::printf("restart handles before=%lu after=%lu cycles=20\n", handlesBefore, handlesAfter);
+        Check(handlesAfter <= handlesBefore + 4, "repeated original start/stop leaks handles");
         std::puts("PASS ORIGINAL DLL: factory, stable memory, two-way camera state, keyboard, mouse, mode, focus, stop and destruction");
         result = 0;
     } catch (const std::exception& error) { std::fprintf(stderr, "FAIL %s\n", error.what()); }

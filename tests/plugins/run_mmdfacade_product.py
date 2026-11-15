@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--build', type=Path, required=True)
     parser.add_argument('--utility', type=Path, required=True)
     parser.add_argument('--mme', type=Path)
+    parser.add_argument('--backend', choices=['dx9', 'dx12'])
     parser.add_argument('--facade-state', choices=['present', 'missing', 'old-name-only'], default='present')
     args = parser.parse_args()
     build = args.build.resolve()
@@ -62,8 +63,9 @@ def main():
             startup = subprocess.STARTUPINFO()
             startup.dwFlags = subprocess.STARTF_USESHOWWINDOW
             startup.wShowWindow = 0
-            process = subprocess.Popen([str(exe)], cwd=directory, env=env, startupinfo=startup)
-            case = dict(exe=name, layout=layout, directory=str(directory), passed=False, terminated=False)
+            command = [str(exe)] + (['--' + args.backend] if args.backend else [])
+            process = subprocess.Popen(command, cwd=directory, env=env, startupinfo=startup)
+            case = dict(backendRequested=args.backend, exe=name, layout=layout, directory=str(directory), passed=False, terminated=False)
             main_window = None
             try:
                 deadline = time.monotonic() + 90
