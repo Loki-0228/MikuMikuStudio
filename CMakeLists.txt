@@ -1038,6 +1038,7 @@ if(MIKUMIKUSTUDIO_PROFILE STREQUAL "full")
     add_test(NAME vmd_load_safety COMMAND vmd_load_safety_tests)
 else()
     add_test(NAME vmd_large_standard_import COMMAND vmd_load_safety_tests --case parallel)
+    add_test(NAME vmd_morph_import_undo COMMAND vmd_load_safety_tests --case morph-undo)
 endif()
 add_executable(mmv4mms_physics_input_tests EXCLUDE_FROM_ALL
     tests/mmv4mms_physics_input_tests.cpp src/app/app_ctor.cpp)

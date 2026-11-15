@@ -6,7 +6,9 @@
 #include <new>
 #if !MMD_ORIGINAL_PROFILE
 #include <map>
+#include <memory>
 #include <mutex>
+#include <utility>
 #endif
 
 namespace mikumikustudio::undo_storage {
@@ -16,11 +18,17 @@ struct Allocation {
     std::size_t bytes = 0;
     const void* registryIdentity = nullptr;
     std::size_t registryBytes = 0;
+    const void* sidecarIdentity = nullptr;
+    std::size_t sidecarBytes = 0;
 };
 namespace detail {
 enum class Family { New, Malloc };
 #if !MMD_ORIGINAL_PROFILE
-struct Entry { std::size_t bytes; Family family; };
+struct Entry {
+    std::size_t bytes; Family family;
+    std::shared_ptr<const void> sidecar{};
+    std::size_t sidecarBytes = 0;
+};
 inline std::mutex mutex;
 inline std::map<const void*, Entry> capacities;
 inline void Remember(void* pointer, std::size_t bytes, Family family) {
@@ -56,12 +64,27 @@ inline bool Find(const void* pointer, Allocation& out) noexcept {
     const auto found = detail::capacities.find(pointer);
     if (found == detail::capacities.end()) return false;
     // Conservative tree-node overhead, following other native registries.
-    out = {found->second.bytes, &*found, sizeof(*found) + 4 * sizeof(void*)};
+    const auto& entry = found->second;
+    out = {entry.bytes, &*found, sizeof(*found) + 4 * sizeof(void*),
+           entry.sidecar.get(), entry.sidecarBytes};
     return true;
 #else
     (void)pointer; (void)out; return false;
 #endif
 }
+#if !MMD_ORIGINAL_PROFILE
+// Retain nontrivial before-images alongside a raw UndoRecord buffer. Destroy
+// them with the buffer when the ring is recycled or the model is disposed.
+inline bool Attach(const void* pointer, std::shared_ptr<const void> sidecar, std::size_t bytes) noexcept {
+    if (!pointer || !sidecar) return false;
+    std::lock_guard<std::mutex> lock(detail::mutex);
+    const auto found = detail::capacities.find(pointer);
+    if (found == detail::capacities.end() || found->second.sidecar) return false;
+    found->second.sidecar = std::move(sidecar);
+    found->second.sidecarBytes = bytes;
+    return true;
+}
+#endif
 inline std::size_t Count() noexcept {
 #if !MMD_ORIGINAL_PROFILE
     std::lock_guard<std::mutex> lock(detail::mutex);

@@ -11,6 +11,7 @@ void MeasureResources(const mdl::ModelRecord& model, plugins::resource_budget::C
         }
         out.Add(pointer, allocation.bytes, 1);
         out.Add(allocation.registryIdentity, allocation.registryBytes, 1);
+        if(allocation.sidecarIdentity)out.Add(allocation.sidecarIdentity, allocation.sidecarBytes, 1);
     };
     for (const auto& ring : model.undoRings) for (const auto& entry : ring.slots) {
         buffer(entry.bonePose); buffer(entry.auxiliaryPose);
@@ -136,6 +137,13 @@ struct ModelEdit::Impl {
             captured.maxFrame=newMax;captured.searchCursor=newSearch;
         }
         if(!redo)step.aux=Allocate(type==7?DeleteAuxOffset(source)+DeleteAuxSize(captured):size);
+        undo_storage::Allocation allocation;
+        if(type==7&&undo_storage::Find(source.auxiliaryPose,allocation)&&allocation.sidecarIdentity){
+            if(morphLayers)throw std::runtime_error("multiple morph authoring snapshots");
+            const auto* saved=static_cast<const morph_curve::AuthoredLayers*>(allocation.sidecarIdentity);
+            morphLayers=morph_curve::PrepareLayerRestore(model,*saved);
+            if(!redo&&!AttachMorphUndoLayers(model,step.aux.get()))throw std::bad_alloc();
+        }
         for(int i=0;i<source.dirty;++i){
             mdl::BoneKeySnapshot target;std::memcpy(&target,step.sourceAux.data()+std::size_t(i)*sizeof(target),sizeof(target));
             if(target.keyIndex<0||std::size_t(target.keyIndex)>=keyCapacity)throw std::runtime_error("Invalid history key index");

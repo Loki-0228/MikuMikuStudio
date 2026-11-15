@@ -17,6 +17,10 @@
 namespace mikumikustudio {
 namespace kfa {
 
+// Capture native VMD import history before keys or selection marks change.
+bool BeginVmdImportUndo(unsigned char* model, int frame, std::uint32_t boneCount,
+                        bool morph, bool display, bool authoredMorph);
+
 // VMD import owns these cursors and can reuse the last visited key on
 // each track while publishing successive file records on the caller.
 bool RegisterBoneKeyAtCursor(unsigned char* model, unsigned char* record,

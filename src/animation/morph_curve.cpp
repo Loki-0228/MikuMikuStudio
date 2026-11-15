@@ -51,9 +51,9 @@
 // Registration, deletion, movement, drag editing and the channel bake therefore
 // bend the effective curve without touching the author's data, and as soon as
 // the pool again matches the mirror the diff is empty and the authored curve,
-// tangents included, is in force again.  That is what makes a host undo (or a
-// user deleting the extra key) restore custom tangents without this module
-// hooking the undo ring at all.  What plays, what Read returns and what both
+// tangents included, is in force again. Restoring the native keys is enough
+// for ordinary edits. VMD imports that replace authored curves also retain
+// the exact previous layers. What plays, what Read returns and what both
 // savers write is the effective layer, so a save matches what was heard.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -62,6 +62,7 @@
 #include "mikumikustudio/morph_curve.hpp"
 
 #include "mikumikustudio/mmd_app.hpp"
+#include "mikumikustudio/native_edit_history.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/runtime_log.hpp"
@@ -1917,6 +1918,43 @@ bool LayersUnchanged(const unsigned char* model, const AuthoredLayers& layers) {
     if (!Matches(found->second.identity, model)) return false;
     return LayersDigest(found->second) == LayersDigest(layers.impl_->state);
 }
+
+#if !MMD_ORIGINAL_PROFILE
+std::unique_ptr<native_history::SideState> PrepareLayerRestore(unsigned char* model, const AuthoredLayers& saved) {
+    if (!model || !saved.impl_ || saved.impl_->model != model ||
+        (saved.impl_->present && !Matches(saved.impl_->state.identity, model)))
+        throw std::invalid_argument("stale saved morph authoring");
+    struct Restore final : native_history::SideState {
+        unsigned char* model;
+        Identity identity;
+        const State* current;
+        std::uint64_t digest;
+        StateRegistry::node_type target;
+        Restore(unsigned char* value, const State* saved) : model(value), identity(IdentityOf(value)) {
+            const auto found = States().find(model);
+            current = found == States().end() ? nullptr : &found->second;
+            digest = current ? LayersDigest(*current) : 0;
+            if (saved) {
+                StateRegistry scratch;
+                scratch.emplace(model, *saved);
+                target = scratch.extract(scratch.begin());
+                target.mapped().identity = identity;
+            }
+        }
+        bool IsCurrent() const noexcept override {
+            if (!Matches(identity, model)) return false;
+            const auto found = States().find(model);
+            const auto* live = found == States().end() ? nullptr : &found->second;
+            return live == current && (!live || LayersDigest(*live) == digest);
+        }
+        void Publish() noexcept override {
+            auto retired = States().extract(model);
+            if (!target.empty()) States().insert(std::move(target));
+        }
+    };
+    return std::make_unique<Restore>(model, saved.impl_->present ? &saved.impl_->state : nullptr);
+}
+#endif
 
 bool SampleLayersTarget(const AuthoredLayers& layers,const NativeKeyView& view,
     int morph,int frame,float& out,std::string& error) {
