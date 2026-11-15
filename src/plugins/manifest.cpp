@@ -84,6 +84,11 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
         return m;
     }
     if (kind != "native") throw std::invalid_argument("unsupported plugin kind");
+    if (j.object.count("optIn")) {
+        const auto& optIn = j.At("optIn");
+        if (optIn.kind != Json::Boolean) throw std::invalid_argument("optIn must be a boolean");
+        m.optIn = optIn.text == "true";
+    }
     const auto& abi = j.At("abi"); m.major = abi.At("major").UInt(); m.minor = abi.At("minMinor").UInt();
     if (m.major != 1 || m.minor != 0) throw std::invalid_argument("unsupported plugin ABI");
     if (j.At("architecture").String() != "x64") throw std::invalid_argument("expected x64");
@@ -113,7 +118,7 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
             throw std::invalid_argument("invalid/duplicate native dependency");
         m.nativeDependencies.push_back(p);
     }
-    Unknown(j, {"schemaVersion", "id", "name", "version", "kind", "abi", "entry", "architecture", "minWindows", "capabilities", "requiresServices", "dependencies", "nativeDependencies", "reloadPolicy"}, log);
+    Unknown(j, {"schemaVersion", "id", "name", "version", "kind", "abi", "entry", "architecture", "minWindows", "capabilities", "requiresServices", "dependencies", "nativeDependencies", "reloadPolicy", "optIn"}, log);
     return m;
 }
 Discovery Discover(const fs::path& directory) {
@@ -128,7 +133,9 @@ Discovery Discover(const fs::path& directory) {
         c.maxDepth = j.At("maxDepth").UInt();
         if (c.maxDepth > 64) throw std::invalid_argument("maxDepth exceeds 64");
         for (const auto& item : j.At("disabledPlugins").Items()) { auto id = item.String(); CheckId(id); c.disabled.insert(id); }
-        Unknown(j, {"schemaVersion", "maxDepth", "disabledPlugins"}, log); result.config = std::move(c);
+        if (j.object.count("enabledPlugins"))
+            for (const auto& item : j.At("enabledPlugins").Items()) { auto id = item.String(); CheckId(id); c.enabled.insert(id); }
+        Unknown(j, {"schemaVersion", "maxDepth", "disabledPlugins", "enabledPlugins"}, log); result.config = std::move(c);
     } catch (const std::exception& e) { log(std::string("config: ") + e.what() + "; using defaults"); }
     size_t visited = 0;
     std::function<void(const fs::path&, uint32_t)> scan = [&](const fs::path& dir, uint32_t depth) {
@@ -166,7 +173,12 @@ std::vector<size_t> Resolve(const Discovery& d, const Log& log) {
     std::function<bool(size_t)> visit = [&](size_t n) {
         if (state[n]) return state[n] == 2;
         const auto& m = d.packages[n]; state[n] = 1;
-        if (ids[m.id].size() != 1 || d.config.disabled.count(m.id)) { if (log) log(m.id + ": duplicate ID or disabled"); state[n] = 3; return false; }
+        if (ids[m.id].size() != 1 || d.config.disabled.count(m.id) ||
+            (m.optIn && !d.config.enabled.count(m.id))) {
+            if (log) log(m.id + ": duplicate ID or disabled");
+            state[n] = 3;
+            return false;
+        }
         bool ok = true;
         for (const auto& dep : m.dependencies) {
             auto i = ids.find(dep.id);

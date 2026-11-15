@@ -312,6 +312,7 @@ add_library(mms_plugin_runtime STATIC
 target_include_directories(mms_plugin_runtime PUBLIC sdk/mms/include include PRIVATE src/plugins)
 target_link_libraries(mms_plugin_runtime PUBLIC mms_system_settings native_ui::win32 user32 gdi32 comctl32 imm32 bcrypt)
 target_compile_definitions(mms_plugin_runtime PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_compile_definitions(mms_plugin_runtime PRIVATE MMD_ENABLE_DX12=$<BOOL:${MIKUMIKUSTUDIO_ENABLE_DX12}>)
 
 add_executable(ui_catalog_tests EXCLUDE_FROM_ALL tests/ui_catalog_tests.cpp)
 target_link_libraries(ui_catalog_tests PRIVATE mms_plugin_runtime)

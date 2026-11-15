@@ -6,6 +6,8 @@
 #include "storage_store.hpp"
 #include <list>
 
+struct MmsDx12ViewportFrameV1;
+
 namespace mikumikustudio::plugins {
 // UI-thread-only notification staging. A reservation allocates before the
 // associated edit commits; publishing it never allocates or drops an item.
@@ -102,6 +104,9 @@ public:
     MmsResult SaveUiPreferences();
     StorageStore& Storage();
     RenderService& Render();
+    bool HasDx12ViewportPass() const noexcept;
+    MmsResult RecordDx12ViewportPass(const MmsDx12ViewportFrameV1&) noexcept;
+    void RetireDx12Viewport(uint64_t) noexcept;
     bool InCallback() const;
     // Excludes an idle prepared project load, which shutdown must cancel.
     bool ExecutingCallback() const;

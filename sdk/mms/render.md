@@ -4,6 +4,8 @@
 
 不可变 CPU 像素使用独立的 [`mms.render.image` 1.0](render-image.md)。该服务的图像和映射租约独立于设备；本页的设备资源登记与回调规则保持不变。
 
+DX12 主视口命令录制使用独立的 [`mms.render.dx12.viewport` 1.0](dx12-viewport.md)。
+
 ## 查询
 
 成功呈现后 `frameIndex` 递增，`width`／`height` 与 `backBufferFormat` 来自真实 0 号后缓冲。初始查询在这些字段为 0。

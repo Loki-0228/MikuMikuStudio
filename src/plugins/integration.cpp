@@ -291,7 +291,10 @@ void NotifyDpiChangedEvent(MMDApp* app, unsigned dpi) {
     QueueBusinessEvent(app, MMS_EVENT_DPI_CHANGED, 1, &payload, sizeof(payload));
 }
 constexpr UINT kRefresh = WM_APP + 0x6a;
-void LogMessage(const std::string& s) { runtime_log::Write("PLUGIN_ABI %s", s.c_str()); }
+void LogMessage(const std::string& s) {
+    runtime_log::Write("PLUGIN_ABI %s", s.c_str());
+    runtime_log::Trace("PLUGIN_ABI %s", s.c_str());
+}
 LRESULT CALLBACK Subclass(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR) {
     if (message == WM_DPICHANGED) {
         const unsigned dpi = HIWORD(wp);
@@ -737,6 +740,13 @@ bool HandleShortcut(unsigned key, bool viewportFocused) {
 }
 bool HandleDialogMessage(MSG* message) { return ui && !closing && ui->DialogMessage(message); }
 bool InCallback() { return manager && manager->InCallback(); }
+bool HasDx12ViewportPass() noexcept { return manager && manager->HasDx12ViewportPass(); }
+std::int32_t RecordDx12ViewportPass(const MmsDx12ViewportFrameV1& frame) noexcept {
+    return manager ? manager->RecordDx12ViewportPass(frame) : MMS_E_NOT_READY;
+}
+void RetireDx12Viewport(std::uint64_t generation) noexcept {
+    if (manager) manager->RetireDx12Viewport(generation);
+}
 bool CloseBlocked(MMDApp* app) noexcept {
     if (owner != app) return false;
 #if !MMD_ORIGINAL_PROFILE

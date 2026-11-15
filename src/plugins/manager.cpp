@@ -6,6 +6,7 @@
 #include "ui_property_refresh.hpp"
 #include "render_image_store.hpp"
 #include "evaluation_store.hpp"
+#include <mms/dx12_viewport.h>
 #include <atomic>
 #include <mutex>
 
@@ -21,6 +22,9 @@ struct Manager::Impl {
         RenderService::Client render;
         RenderImageStore::Client images;
         EvaluationStore::Client evaluation;
+        MmsDx12ViewportRecordV1 dx12Record = nullptr;
+        MmsDx12ViewportRetireV1 dx12Retire = nullptr;
+        void* dx12User = nullptr;
         std::atomic<bool> stopping{false};
         PluginStatus status;
         MmsHostV1 table{};
@@ -53,6 +57,7 @@ struct Manager::Impl {
     PropertyNotificationQueue pendingPropertyChanges;
     UiRegistry registry;
     RenderService render;
+    Instance* dx12Pass = nullptr;
     RenderImageStore images;
     UiPreferencesFile preferences;
     MmsResult preferencesError = MMS_OK;
@@ -437,6 +442,26 @@ struct Manager::Impl {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
             return Table(major, minor, bytes, out, images.Api(i.images));
         }
+#if MMD_ENABLE_DX12
+        if (id == MMS_DX12_VIEWPORT_SERVICE) {
+            if (closing || i.stopping) return MMS_E_NOT_READY;
+            const MmsDx12ViewportApiV1 api{Header<MmsDx12ViewportApiV1>(), &i,
+                [](void* context, MmsDx12ViewportRecordV1 record, MmsDx12ViewportRetireV1 retire, void* user) -> MmsResult {
+                    auto& client = *static_cast<Instance*>(context);
+                    auto& host = *client.host;
+                    if (GetCurrentThreadId() != host.thread) return MMS_E_THREAD;
+                    if (host.closing || client.stopping) return MMS_E_NOT_READY;
+                    if (bool(record) != bool(retire)) return MMS_E_ARGUMENT;
+                    if (host.dx12Pass && host.dx12Pass != &client) return MMS_E_BUSY;
+                    client.dx12Record = record;
+                    client.dx12Retire = retire;
+                    client.dx12User = user;
+                    host.dx12Pass = record ? &client : nullptr;
+                    return MMS_OK;
+                }};
+            return Table(major, minor, bytes, out, api);
+        }
+#endif
         if (id == "mms.render") {
             if (closing || i.stopping.load()) return MMS_E_NOT_READY;
             if (minor == 2) {
@@ -747,6 +772,7 @@ struct Manager::Impl {
         // service tables must not resurrect callbacks from stop/destroy.
         i.render.retired = true;
         render.DropClient(i.render.id);
+        if (dx12Pass == &i) dx12Pass = nullptr;
         images.Retire(i.images);
         if (evaluations) evaluations->Retire(i.evaluation);
         registry.Refresh().Retire(i.refresh);
@@ -928,6 +954,29 @@ void Manager::Event(uint32_t kind, MmsBytes payload, uint32_t version, MmsObject
 }
 UiRegistry& Manager::Ui() { return impl_->registry; }
 RenderService& Manager::Render() { return impl_->render; }
+bool Manager::HasDx12ViewportPass() const noexcept {
+    const auto& host = *impl_;
+    return GetCurrentThreadId() == host.thread && !host.closing && host.dx12Pass &&
+        host.dx12Pass->started && !host.dx12Pass->stopping && !InCallback();
+}
+MmsResult Manager::RecordDx12ViewportPass(const MmsDx12ViewportFrameV1& frame) noexcept {
+    if (!HasDx12ViewportPass()) return MMS_E_NOT_READY;
+    auto& host = *impl_;
+    auto& client = *host.dx12Pass;
+    ++host.active;
+    const auto result = Boundary([&] { return client.dx12Record(client.dx12User, &frame); });
+    --host.active;
+    return result;
+}
+void Manager::RetireDx12Viewport(uint64_t generation) noexcept {
+    auto& host = *impl_;
+    if (GetCurrentThreadId() != host.thread || !host.dx12Pass || host.dx12Pass->stopping ||
+        !host.dx12Pass->started || ExecutingCallback()) return;
+    auto& client = *host.dx12Pass;
+    ++host.active;
+    Boundary([&] { client.dx12Retire(client.dx12User, generation); return MMS_OK; });
+    --host.active;
+}
 MmsResult Manager::SaveUiPreferences() { return impl_->SavePreferences(); }
 StorageStore& Manager::Storage() { return impl_->storage; }
 bool Manager::ExecutingCallback() const { return impl_->active != 0 || impl_->render.InCallback() || impl_->notifyingEdit || impl_->registry.InCallback() || impl_->storage.InCallback() ||

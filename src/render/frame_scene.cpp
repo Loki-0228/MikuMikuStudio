@@ -592,6 +592,7 @@ void RenderFrameScene(MMDApp* app) {
         frame_rate::Presented(app, true);
         return;
     }
+    ShutdownD3D12Native();
     // Reset releases the legacy recording target. Establish the scene target
     // before the shadow pass captures it, rather than rebinding at its tail.
     if (!transparent && app->RecordingWindow() && sub->multisampleAvailable == 0 &&

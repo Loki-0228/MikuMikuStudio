@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 struct tagMSG;
+struct MmsDx12ViewportFrameV1;
 namespace mikumikustudio {
 class MMDApp;
 namespace plugins {
@@ -21,6 +22,9 @@ bool HandleCommand(unsigned id);
 bool HandleShortcut(unsigned key, bool viewportFocused);
 bool HandleDialogMessage(tagMSG*);
 bool InCallback();
+bool HasDx12ViewportPass() noexcept;
+std::int32_t RecordDx12ViewportPass(const MmsDx12ViewportFrameV1&) noexcept;
+void RetireDx12Viewport(std::uint64_t deviceGeneration) noexcept;
 // UI-thread query for native close dispatch; does not invoke plugin code.
 bool CloseBlocked(MMDApp*) noexcept;
 }

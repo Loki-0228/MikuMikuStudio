@@ -14,10 +14,12 @@
 #include "mikumikustudio/processor_settings.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/graphics_runtime.hpp"
+#include "mikumikustudio/plugin_runtime.hpp"
 #include <d3d12.h>
 #include <d3d12sdklayers.h>
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
+#include <mms/dx12_viewport.h>
 #include <wrl/client.h>
 #include <algorithm>
 #include <array>
@@ -32,6 +34,9 @@
 namespace mikumikustudio {
 namespace {
 using Microsoft::WRL::ComPtr;
+constexpr D3D12_RESOURCE_STATES kSceneIndices = D3D12_RESOURCE_STATE_INDEX_BUFFER |
+    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+uint64_t nextGeneration = 0;
 void Check12(HRESULT hr,const char* name) {
     if(FAILED(hr)) {char text[180];sprintf_s(text,"%s: 0x%08lx",name,hr);throw std::runtime_error(text);}
 }
@@ -65,8 +70,21 @@ struct Native {
         ComPtr<ID3D12Resource> color,depth,sourceIndices,indices,constants,capture;
         ComPtr<ID3D12CommandAllocator> allocator;
         ComPtr<ID3D12GraphicsCommandList> list;
+        ComPtr<ID3D12GraphicsCommandList> effectList, presentList;
+        std::array<ComPtr<IUnknown>, 48> retained;
+        size_t retainedCount = 0;
         UINT64 done=0;bool indicesReady=false;
         std::vector<ComPtr<ID3D12Resource>> uploads;
+        void ClearRetained() noexcept {
+            while (retainedCount) retained[--retainedCount].Reset();
+        }
+        static MmsResult MMS_CALL Retain(void* context, IUnknown* object) {
+            auto& frame = *static_cast<Frame*>(context);
+            if (!object) return MMS_E_ARGUMENT;
+            if (frame.retainedCount == frame.retained.size()) return MMS_E_BUSY;
+            frame.retained[frame.retainedCount++] = object;
+            return MMS_OK;
+        }
     };
     std::array<Frame,3> frames;
     struct Texture {ComPtr<IDirect3DTexture9> source;ComPtr<ID3D12Resource> gpu;};
@@ -83,11 +101,14 @@ struct Native {
     std::uint64_t geometryRevision=0;
     unsigned lastSlot=0;
     bool captureEnabled=false;
+    bool pluginUsed = false;
+    const uint64_t generation = ++nextGeneration;
     struct Constants {
         float wvp[16],wv[16],light[4],lightColor[4],diffuse[4],ambient[4],specular[4],camera[4],flags[4];
     };
     ~Native() {
         try {WaitAll();}catch(...){}
+        if (pluginUsed) plugins::RetireDx12Viewport(generation);
         if(window)DestroyWindow(window);
         if(event)CloseHandle(event);
     }
@@ -136,6 +157,11 @@ struct Native {
         if(renderer.adapterId==0)
             throw std::runtime_error("native preview unavailable: the main render device has no verified LUID");
         if(!skin.Initialize(validation,renderer.adapterId))throw std::runtime_error(skin.Error());
+        D3D12_FEATURE_DATA_D3D12_OPTIONS5 features{};
+        const HRESULT options = Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &features, sizeof(features));
+        runtime_log::Trace("DX12 viewport generation=%llu adapter=%ls raytracingTier=%u optionsHr=0x%08lX",
+            static_cast<unsigned long long>(generation), skin.AdapterName(),
+            static_cast<unsigned>(features.RaytracingTier), options);
         Check12(Device()->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)),"native fence");
         event=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!event)throw std::runtime_error("native event");
         WNDCLASSW wc{};wc.lpfnWndProc=NativeWindow;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"MmdNativeD3D12Viewport";
@@ -195,17 +221,19 @@ struct Native {
         const unsigned w=std::max(1u,size.width),h=std::max(1u,size.height);
         SetWindowPos(window,HWND_TOP,rect.left,rect.top,std::max<LONG>(1,rect.right-rect.left),std::max<LONG>(1,rect.bottom-rect.top),SWP_NOACTIVATE|SWP_SHOWWINDOW);
         if(w==width&&h==height)return;WaitAll();
-        for(auto& f:frames){f.color.Reset();f.depth.Reset();}
+        for(auto& f:frames){f.ClearRetained();f.color.Reset();f.depth.Reset();}
         Check12(swap->ResizeBuffers(3,w,h,DXGI_FORMAT_B8G8R8A8_UNORM,0),"native resize");width=w;height=h;
         for(unsigned i=0;i<3;++i){auto& f=frames[i];Check12(swap->GetBuffer(i,IID_PPV_ARGS(&f.color)),"native backbuffer");
             auto rtv=rtvs->GetCPUDescriptorHandleForHeapStart();rtv.ptr+=i*rtvStep;Device()->CreateRenderTargetView(f.color.Get(),nullptr,rtv);
             D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;D3D12_RESOURCE_DESC d{};
             d.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;d.Width=w;d.Height=h;d.DepthOrArraySize=1;d.MipLevels=1;
-            d.Format=DXGI_FORMAT_D32_FLOAT;d.SampleDesc.Count=1;d.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-            D3D12_CLEAR_VALUE clear{};clear.Format=d.Format;clear.DepthStencil.Depth=1;
+            d.Format=DXGI_FORMAT_R32_TYPELESS;d.SampleDesc.Count=1;d.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+            D3D12_CLEAR_VALUE clear{};clear.Format=DXGI_FORMAT_D32_FLOAT;clear.DepthStencil.Depth=1;
             Check12(Device()->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&d,D3D12_RESOURCE_STATE_DEPTH_WRITE,&clear,IID_PPV_ARGS(&f.depth)),"native depth");
             auto dsv=dsvs->GetCPUDescriptorHandleForHeapStart();dsv.ptr+=i*Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-            Device()->CreateDepthStencilView(f.depth.Get(),nullptr,dsv);}
+            D3D12_DEPTH_STENCIL_VIEW_DESC view{};
+            view.Format=DXGI_FORMAT_D32_FLOAT;view.ViewDimension=D3D12_DSV_DIMENSION_TEXTURE2D;
+            Device()->CreateDepthStencilView(f.depth.Get(),&view,dsv);}
     }
     IDirect3DTexture9* FindTexture(MMDApp* app,const wchar_t* path,bool* alpha=nullptr) {
         if(!path||!path[0])return nullptr;
@@ -308,8 +336,17 @@ struct Native {
             break;
         }
     }
+    void OpenList(Frame& frame, ComPtr<ID3D12GraphicsCommandList>& list) {
+        if (!list) {
+            Check12(Device()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                frame.allocator.Get(), nullptr, IID_PPV_ARGS(&list)), "native viewport pass list");
+        } else {
+            Check12(list->Reset(frame.allocator.Get(), nullptr), "native viewport pass reset");
+        }
+    }
     void Render(MMDApp* app,const float world[16]) {
         Resize(app);unsigned slot=swap->GetCurrentBackBufferIndex();auto& f=frames[slot];Wait(f.done);f.uploads.clear();
+        f.ClearRetained();
         Check12(f.allocator->Reset(),"native allocator reset");Check12(f.list->Reset(f.allocator.Get(),nullptr),"native list reset");
         Gather(app,world,f,slot);
         D3DMATRIX view{},projection{},wv{},wvp{};app->Renderer()->device->GetTransform(D3DTS_VIEW,&view);app->Renderer()->device->GetTransform(D3DTS_PROJECTION,&projection);
@@ -319,12 +356,12 @@ struct Native {
         if(geometry){if(!skin.Submit(packed.vertices,packed.bones,packed.materials,packed.parameters,ticket))throw std::runtime_error(skin.Error());
             Upload(f.sourceIndices,indices.data(),indices.size()*4);
             if(Buffer(f.indices,indices.size()*4,D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COPY_DEST))f.indicesReady=false;
-            if(f.indicesReady){auto b=Barrier(f.indices.Get(),D3D12_RESOURCE_STATE_INDEX_BUFFER,D3D12_RESOURCE_STATE_COPY_DEST);f.list->ResourceBarrier(1,&b);}
+            if(f.indicesReady){auto b=Barrier(f.indices.Get(),kSceneIndices,D3D12_RESOURCE_STATE_COPY_DEST);f.list->ResourceBarrier(1,&b);}
             f.list->CopyBufferRegion(f.indices.Get(),0,f.sourceIndices.Get(),0,indices.size()*4);
             // Every admitted frame runs with sorting off, so the authored
             // order is the submitted order: copy it straight to the index
             // buffer and skip the former compute sort.
-            auto b=Barrier(f.indices.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_INDEX_BUFFER);f.list->ResourceBarrier(1,&b);f.indicesReady=true;
+            auto b=Barrier(f.indices.Get(),D3D12_RESOURCE_STATE_COPY_DEST,kSceneIndices);f.list->ResourceBarrier(1,&b);f.indicesReady=true;
         }
         auto b=Barrier(f.color.Get(),D3D12_RESOURCE_STATE_PRESENT,D3D12_RESOURCE_STATE_RENDER_TARGET);f.list->ResourceBarrier(1,&b);
         auto rtv=rtvs->GetCPUDescriptorHandleForHeapStart();rtv.ptr+=slot*rtvStep;
@@ -348,18 +385,52 @@ struct Native {
                 auto srv=srvs->GetGPUDescriptorHandleForHeapStart();srv.ptr+=size_t(d.textureSlot)*srvStep;f.list->SetGraphicsRootDescriptorTable(2,srv);
                 f.list->DrawIndexedInstanced(d.count,1,d.first,0,0);}
         }
+        ID3D12CommandList* lists[3] = {f.list.Get()};
+        UINT listCount = 1;
+        auto* present = f.list.Get();
+        if (plugins::HasDx12ViewportPass()) {
+            Check12(f.list->Close(), "native scene close");
+            OpenList(f, f.effectList);
+            MmsDx12ViewportFrameV1 frame{};
+            frame.h = {sizeof(frame), 1, 0};
+            frame.deviceGeneration = generation;
+            frame.slot = slot; frame.width = width; frame.height = height;
+            frame.device = Device(); frame.commands = f.effectList.Get();
+            frame.color = f.color.Get(); frame.depth = f.depth.Get(); frame.colorRtv = rtv;
+            if (geometry) {
+                frame.vertices = skin.OutputResource(ticket);
+                frame.indices = f.indices.Get();
+                frame.vertexCount = ticket.count; frame.vertexStride = sizeof(gpu::Output);
+                frame.indexCount = static_cast<uint32_t>(indices.size());
+            }
+            memcpy(frame.worldViewProjection, &wvp, sizeof(frame.worldViewProjection));
+            memcpy(frame.lightDirection, app->LightDirection(), sizeof(frame.lightDirection));
+            frame.projectPath = app->EnvFileName();
+            frame.lifetime = &f; frame.retain = Frame::Retain;
+            pluginUsed = true;
+            const auto result = plugins::RecordDx12ViewportPass(frame);
+            const auto closed = f.effectList->Close();
+            if (result == MMS_OK && SUCCEEDED(closed)) lists[listCount++] = f.effectList.Get();
+            else if (FAILED(closed)) {
+                runtime_log::Write("DX12 viewport pass discarded: command list close hr=0x%08lX", closed);
+                f.effectList.Reset();
+            }
+            OpenList(f, f.presentList);
+            present = f.presentList.Get();
+            lists[listCount++] = present;
+        }
         if(captureEnabled){
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};UINT rows;UINT64 rowBytes,total;
             auto desc=f.color->GetDesc();Device()->GetCopyableFootprints(&desc,0,1,0,&footprint,&rows,&rowBytes,&total);
             Buffer(f.capture,total,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
-            b=Barrier(f.color.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE);f.list->ResourceBarrier(1,&b);
+            b=Barrier(f.color.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE);present->ResourceBarrier(1,&b);
             D3D12_TEXTURE_COPY_LOCATION src{};src.pResource=f.color.Get();src.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
             D3D12_TEXTURE_COPY_LOCATION dst{};dst.pResource=f.capture.Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;dst.PlacedFootprint=footprint;
-            f.list->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
+            present->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
             b=Barrier(f.color.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_PRESENT);
         }else b=Barrier(f.color.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PRESENT);
-        f.list->ResourceBarrier(1,&b);
-        Check12(f.list->Close(),"native close");ID3D12CommandList* lists[]={f.list.Get()};skin.Queue()->ExecuteCommandLists(1,lists);
+        present->ResourceBarrier(1,&b);
+        Check12(present->Close(),"native close");skin.Queue()->ExecuteCommandLists(listCount,lists);
         Check12(skin.Queue()->Signal(fence.Get(),++sequence),"native signal");f.done=sequence;
         if(geometry&&!skin.RetainForQueuedGraphics(ticket))throw std::runtime_error(skin.Error());
         lastSlot=slot;
@@ -371,9 +442,9 @@ struct Native {
         ComPtr<ID3D12Resource> readIndices;
         if(!indices.empty()){
             Buffer(readIndices,indices.size()*4,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
-            auto b=Barrier(f.indices.Get(),D3D12_RESOURCE_STATE_INDEX_BUFFER,D3D12_RESOURCE_STATE_COPY_SOURCE);f.list->ResourceBarrier(1,&b);
+            auto b=Barrier(f.indices.Get(),kSceneIndices,D3D12_RESOURCE_STATE_COPY_SOURCE);f.list->ResourceBarrier(1,&b);
             f.list->CopyBufferRegion(readIndices.Get(),0,f.indices.Get(),0,indices.size()*4);
-            b=Barrier(f.indices.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_INDEX_BUFFER);f.list->ResourceBarrier(1,&b);
+            b=Barrier(f.indices.Get(),D3D12_RESOURCE_STATE_COPY_SOURCE,kSceneIndices);f.list->ResourceBarrier(1,&b);
         }
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};UINT rows;UINT64 rowBytes,total;
         auto desc=f.color->GetDesc();Device()->GetCopyableFootprints(&desc,0,1,0,&footprint,&rows,&rowBytes,&total);
