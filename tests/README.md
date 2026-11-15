@@ -1,5 +1,7 @@
 # 测试保留与清理说明
 
+`workspace_layout_preview_tests` 验证 UI-08 宿主临时让位的 CPU 核心：只把显式授权的面板移到同根预留空槽，整批替换或拒绝，空计划／取消／失效后以当前宿主布局为准；覆盖固定面板、旧代次、其他所有者和相交的宿主操作。运行 `make -C linux check`，或在 Windows 构建该独立目标后运行 CTest `workspace_layout_preview`。不加载 DLL、不写设置、不移动真实窗口，也不代表 UI-08 产品前台验收。
+
 `bone_inheritance_index_tests` 是长期保留的无窗口 CPU 回归，覆盖 A/B/E 继承索引边界和自身姿态保留，注册为 CTest `bone_inheritance_index`。`stage_inheritance_load_tests <工程.pmm> [轮数]` 是需要实际素材的隐藏窗口手动回归，启用 `MIKUMIKUSTUDIO_BUILD_UI_TESTS` 后显式构建，不注册到默认 CTest。工程必须含有非法继承源；先备份输入，在独立测试目录串行运行。它只载入、求值和退出，不保存工程；不能替代真实 MME 和视觉验收。只有继承功能或对应载入路径被移除时才评估删除这两个测试。记录见 [Stage 继承索引修复](../docs/records/stage-inheritance-index-2026-11-14.md)。
 
 `stage_inheritance_runner.py --self-test` 验证原版兼容导入信息提示的精确匹配及拒绝规则。实际运行要求显式指定现有测试 EXE、隔离工程目录、新输出目录及二者预期 SHA-256；仅处理自身私有桌面上的指定中文信息通知，不处理导入拒绝或未知警告。当前 LOVE 的现有 Stage 宿主在真实私有桌面启动时出现 `0xC0000142`，因此该驱动尚未完成真实 Stage 物理回归；不要把匹配自测当成集成通过。仅保留为诊断与测试侧脚本，待进程内宿主处理取代后再评估删除。

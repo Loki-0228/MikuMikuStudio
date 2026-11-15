@@ -295,6 +295,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/loader_win32.cpp
     src/plugins/ui_registry.cpp
     src/plugins/ui_layout_preview.cpp
+    src/plugins/workspace_layout_preview.cpp
     src/plugins/render_service.cpp
     src/plugins/render_image_store.cpp
     src/plugins/evaluation_store.cpp
@@ -1038,6 +1039,14 @@ set_target_properties(legacy_mmd_menu_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_dependencies(plugin_abi_tests legacy_mmd_menu_tests)
 add_test(NAME legacy_mmd_menu_commands COMMAND legacy_mmd_menu_tests)
+add_executable(workspace_layout_preview_tests EXCLUDE_FROM_ALL
+    tests/workspace_layout_preview_tests.cpp src/plugins/workspace_layout_preview.cpp)
+target_compile_features(workspace_layout_preview_tests PRIVATE cxx_std_17)
+target_link_options(workspace_layout_preview_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(workspace_layout_preview_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(plugin_abi_tests workspace_layout_preview_tests)
+add_test(NAME workspace_layout_preview COMMAND workspace_layout_preview_tests)
 find_program(MMS_ABI_POWERSHELL NAMES pwsh)
 if(Python3_Interpreter_FOUND AND MMS_ABI_POWERSHELL)
     add_test(NAME abi_release_package_layout
