@@ -67,6 +67,8 @@
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/ui_language.hpp"
 
+#include "animation_retime_mapping.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -240,6 +242,11 @@ struct FrameMath {
         const long double exact = Exact(frame);
         return std::fabs(exact - std::floor(exact + 0.5L)) <= 1e-12L;
     }
+    template <typename Float = double>
+    Float SampleFrame(std::int32_t frame) const {
+        if (integer) return art::detail::InverseWholeRateFrame<Float>(frame, numerator, denominator);
+        return static_cast<Float>(static_cast<long double>(frame) / ratio);
+    }
 };
 
 FrameMath MakeFrameMath(double originalFPS, double currentFPS) {
@@ -265,9 +272,7 @@ FrameMath MakeFrameMath(double originalFPS, double currentFPS) {
         math.integer = true;
         math.numerator = static_cast<std::int64_t>(roundedCurrent) / divisor;
         math.denominator = static_cast<std::int64_t>(roundedOriginal) / divisor;
-        // The mapping ratio is the reduced fraction, exactly as
-        // animation_retime::BuildMapping defines it, so the inverse-mapped
-        // merged time below is bit-for-bit the one the retime core samples at.
+        // Keep the same reduced fraction as animation_retime::BuildMapping.
         math.ratio = static_cast<long double>(math.numerator) / static_cast<long double>(math.denominator);
     }
     return math;
@@ -1036,13 +1041,7 @@ bool PlanBones(const art::Rates& rates, const art::Options& options, const Frame
                     break;
                 case MergeRule::Sample:
                 default: {
-                    // The same inverse mapping animation_retime samples with:
-                    // the merged time is the target frame over the mapping
-                    // ratio, not over the two floating point rates.
-                    const long double mergedFrame =
-                        static_cast<long double>(group.frame) / math.ratio;
-                    const double position =
-                        NativeLaneValue(rampTrack, controls[3], static_cast<double>(mergedFrame));
+                    const double position = NativeLaneValue(rampTrack, controls[3], math.SampleFrame(group.frame));
                     double lower = std::floor(position);
                     double fraction = position - lower;
                     if (!(fraction >= 0.0) || !(fraction <= 1.0)) {
@@ -1127,7 +1126,7 @@ bool PlanBones(const art::Rates& rates, const art::Options& options, const Frame
                     auto matrix = bone_scale::Key(mp.model, static_cast<int>(chain.slots[group.first]));
                     if (!(chain.frames[group.first] == 0 && group.frame == 0)) {
                         matrix = bone_scale::Sample(mp.model, static_cast<int>(bone),
-                            static_cast<float>(static_cast<long double>(group.frame) / math.ratio));
+                            static_cast<float>(math.SampleFrame<long double>(group.frame)));
                     }
                     if (!bone_scale::Valid(matrix)) { error = "the merged bone scale is invalid"; return false; }
                     const int slot = static_cast<int>(chain.outSlots[index]);

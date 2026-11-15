@@ -20,6 +20,8 @@
 //      the core's key limits, the whole call fails and the output is untouched.
 #include "mikumikustudio/animation_retime.hpp"
 
+#include "animation_retime_mapping.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -69,7 +71,11 @@ struct Mapping {
     }
 
     // Position an output frame maps back to in the input timeline.
-    long double Inverse(std::int32_t frame) const { return (long double)frame / ratio; }
+    template <typename Float = long double>
+    Float Inverse(std::int32_t frame) const {
+        if (integer) return detail::InverseWholeRateFrame<Float>(frame, numerator, denominator);
+        return static_cast<Float>(static_cast<long double>(frame) / ratio);
+    }
 
     // True when the frame lands exactly on its scaled position.
     bool ExactPosition(std::int64_t frame) const {
@@ -109,16 +115,18 @@ struct Mapping {
             out = static_cast<std::int32_t>(whole + extra);
             return true;
         }
-        // Fractional rates: long double throughout.  The range is checked in
-        // long double before any conversion, so a huge position never reaches a
-        // narrowing cast or an out-of-range integer format.
+        // Validate the wide position before narrowing. Fractional rates arrive
+        // as doubles, so use that precision at the final half-frame boundary.
+        // In particular, widening 29.97 exposes a tiny offset below 499.5 at
+        // frame 500 when converting from 30 FPS. Using std::round instead of
+        // adding 0.5 also keeps the preceding double on the correct side.
         const long double exact = Exact(frame);
         if (!(exact >= 0.0L) || !(exact <= limit + 0.5L)) {
             error = "frame " + std::to_string(frame) + " maps past the accepted maximum " +
                     std::to_string(maximum);
             return false;
         }
-        const long double rounded = std::floor(exact + 0.5L);
+        const double rounded = std::round(static_cast<double>(exact));
         if (rounded > limit) {
             error = "frame " + std::to_string(frame) + " maps past the accepted maximum " +
                     std::to_string(maximum);
@@ -396,7 +404,7 @@ bool MergeValue(const Track &input, const std::vector<Group> &groups, std::size_
         out = input.keys[group.last].value;
         return true;
     }
-    const double frame = static_cast<double>(mapping.Inverse(group.frame));
+    const double frame = mapping.Inverse<double>(group.frame);
     out = animation_curve::Evaluate(input, frame).value;
     return Finite(out);
 }

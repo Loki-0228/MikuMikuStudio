@@ -294,11 +294,12 @@ void MergedGroupRules() {
     Check(rt::Retime(late, slow, kOptions, output, report, error), "the 0.07 retime succeeds: " + error);
     Check(output.keys.size() == 1 && output.keys[0].frame == 1, "frames 14 and 15 land on frame 1");
     Check(report.mergeGroups == 1 && report.mergedKeys == 1, "the two keys form one merged group");
-    const double sampled = ac::Evaluate(late, 1.0 / 0.07).value;
+    const double inverseFrame = 100.0 / 7.0;
+    const double sampled = ac::Evaluate(late, inverseFrame).value;
     CheckNear(output.keys[0].value, sampled, 0.0, "a merged first group takes the sampled value");
     Check(output.keys[0].value != late.keys[0].value,
           "a first key that only rounds to frame 1 is not the frame-zero baseline");
-    CheckNear(1.0 / 0.07, 14.285714285714286, 1e-9, "the sample really sits inside the folded window");
+    Check(inverseFrame > 14.0 && inverseFrame < 15.0, "the sample really sits inside the folded window");
 
     // The interpolation of the group's first key belongs to the OUTER segment,
     // so a mixed track must not be read as "the whole group is Step": the folded
@@ -401,8 +402,21 @@ void FrameMappingAndGrouping() {
           "30 -> 24 maps frame 5 to frame 4 exactly");
     Check(rt::MapFrame(3, rt::Rates{24.0, 30.0}, 10000000, frame, error) && frame == 4,
           "24 -> 30 rounds 3.75 up to 4");
+    const double below = std::nextafter(29.97, 0.0);
+    const double above = std::nextafter(29.97, 30.0);
+    Check(rt::MapFrame(500, rt::Rates{30.0, below}, 10000000, frame, error) && frame == 499,
+          "the representable rate below 29.97 stays below the half frame");
     Check(rt::MapFrame(500, rt::Rates{30.0, 29.97}, 10000000, frame, error) && frame == 500,
-          "a fractional rate such as 29.97 works without a special case");
+          "30 to 29.97 rounds the decimal half frame up");
+    Check(rt::MapFrame(500, rt::Rates{30.0, above}, 10000000, frame, error) && frame == 500,
+          "the representable rate above 29.97 also rounds up");
+    frame = -1;
+    Check(!rt::MapFrame(500, rt::Rates{30.0, 29.97}, 499, frame, error) && frame == -1 && !error.empty(),
+          "the limit rejects the rounded frame without touching the output");
+    Check(rt::MapFrame(500, rt::Rates{30.0, below}, 499, frame, error) && frame == 499,
+          "the same limit accepts a position just below the half frame");
+    Check(rt::MapFrame(1, rt::Rates{1.0, std::nextafter(0.5, 0.0)}, 1, frame, error) && frame == 0,
+          "a binary64 position immediately below one half still rounds down");
     Check(rt::MapFrame(100, rt::Rates{30.0, 29.97}, 10000000, frame, error) && frame == 100,
           "a fractional rate keeps a sub-frame offset");
     Check(!rt::MapFrame(100000, rt::Rates{30.0, 60.0}, 100000, frame, error), "the maximum frame is enforced");
@@ -442,6 +456,23 @@ void FrameMappingAndGrouping() {
           "a frame list that does not increase is refused");
     Check(report.inputKeys == unchanged.inputKeys && report.roundedKeys == unchanged.roundedKeys,
           "a refused grouping leaves the report alone");
+
+    const rt::Rates fractional{30.0, 29.97};
+    const std::vector<std::int32_t> adjacent{499, 500};
+    if (rt::GroupFrames(adjacent, fractional, kOptions, groups, report, error)) {
+        Check(groups.size() == 2 && groups[0].frame == 499 && groups[1].frame == 500 && report.mergeGroups == 0,
+              "grouping does not merge adjacent authored frames at the fractional half tie");
+    } else {
+        Check(false, "fractional grouping succeeds: " + error);
+    }
+    const ac::Track authored = MakeTrack({MakeKey(499, 0.25), MakeKey(500, 0.75)});
+    ac::Track mapped;
+    if (rt::Retime(authored, fractional, kOptions, mapped, report, error)) {
+        Check(SameTrack(mapped, authored) && report.mergeGroups == 0 && !report.integralMapping,
+              "retiming keeps both authored keys while reporting the fractional mapping");
+    } else {
+        Check(false, "fractional retiming succeeds: " + error);
+    }
 }
 
 // ---------------------------------------------------------------------------
