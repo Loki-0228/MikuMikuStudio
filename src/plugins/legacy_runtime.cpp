@@ -3,6 +3,7 @@
 #include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "legacy_image.hpp"
+#include "legacy_mmd_image.hpp"
 #include "loader_win32.hpp"
 #include "../io/cache_files_crypto.hpp"
 #include <array>
@@ -218,6 +219,44 @@ void PreloadSystemImports(const fs::path& directory) {
 }
 
 const LegacyMmeStartupStatus& LegacyMmeStatus() noexcept { return status; }
+LegacyMmdImage PrepareLegacyMmdImage(const Manifest& manifest, const fs::path& install) {
+    LegacyMmdImage result{manifest, {}};
+    if (manifest.kind != Manifest::Kind::LegacyMmdPlugin)
+        throw std::invalid_argument("expected legacy MMDPlugin package");
+    const auto imports = InspectPe(manifest.entry).imports;
+    if (std::find(imports.begin(), imports.end(), "mikumikudance.exe") == imports.end()) return result;
+    Handles source;
+    const auto original = ReadImage(PackageFile(manifest.package, Utf8(manifest.entry.lexically_relative(manifest.package).native())), source);
+    if (Sha256(manifest.entry) != manifest.legacyEntrySha256)
+        throw std::invalid_argument("legacy MMDPlugin entry SHA-256 mismatch");
+    auto rewritten = RedirectLegacyHostImport(original);
+    if (!rewritten.ok()) throw std::invalid_argument("legacy MMDPlugin import rewrite: " + rewritten.message);
+    const auto facade = PackageFile(install, "MMDFacade.dll");
+    std::array<Bytes, 3> images{std::move(rewritten.image), ReadImage(facade, source), {}};
+    if (manifest.legacyProfile == "effekseer_v2")
+        images[2] = ReadImage(PackageFile(manifest.package, "efk.pmd"), source);
+    auto directory = install;
+    HoldDirectory(directory, retainedFiles, false);
+    for (const auto& part : {std::wstring(L"data"), std::wstring(L"plugins"), std::wstring(L"legacy_mmdplugin"),
+            Wide(manifest.id), Wide(CacheKey(images))}) {
+        directory /= part; HoldDirectory(directory, retainedFiles, true);
+    }
+    Publish(directory / manifest.entry.filename(), images[0]);
+    Publish(directory / L"MMDFacade.dll", images[1]);
+    if (!images[2].empty()) Publish(directory / L"efk.pmd", images[2]);
+    result.manifest.package = directory;
+    result.manifest.entry = directory / manifest.entry.filename();
+    result.manifest.legacyEntrySha256 = Sha256(result.manifest.entry);
+    result.facade = directory / L"MMDFacade.dll";
+    if (auto existing = GetModuleHandleW(L"MMDFacade.dll")) {
+        const auto bound = ModulePath(existing);
+        PackageFile(bound.parent_path(), "MMDFacade.dll");
+        if (Sha256(bound) != Sha256(result.facade))
+            throw std::invalid_argument("loaded MMDFacade differs from this installation");
+        result.facade = bound; // Share the identical bridge already bound by MME.
+    }
+    return result;
+}
 bool BootstrapLegacyMme() noexcept {
     if (attempted) return safeToContinue;
     attempted = true;

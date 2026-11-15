@@ -3,6 +3,7 @@
 #include <fstream>
 #include <set>
 #include <string_view>
+#include <psapi.h>
 
 namespace mikumikustudio::plugins {
 namespace {
@@ -56,7 +57,7 @@ public:
         for (unsigned i = 0; i < nt_.FileHeader.NumberOfSections; ++i) sections_.push_back(Read<IMAGE_SECTION_HEADER>(base + i * sizeof(IMAGE_SECTION_HEADER)));
     }
     void VerifyLegacyObserverExports(unsigned abi) const {
-        if (abi != 2 && abi != 3) throw std::invalid_argument("unsupported legacy MMDPlugin ABI");
+        if (abi != 2 && abi != 3 && abi != 4) throw std::invalid_argument("unsupported legacy MMDPlugin ABI");
         const auto dir = nt_.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
         if (!dir.VirtualAddress || dir.Size < sizeof(IMAGE_EXPORT_DIRECTORY))
             throw std::invalid_argument("legacy MMDPlugin has no valid export directory");
@@ -91,10 +92,13 @@ public:
             }
             return false;
         };
-        for (const char* name : {"version", abi == 2 ? "create2" : "create3", abi == 2 ? "destroy2" : "destroy3"}) {
+        for (const char* name : {"version", abi == 2 ? "create2" : abi == 3 ? "create3" : "create4",
+                abi == 2 ? "destroy2" : abi == 3 ? "destroy3" : "destroy4"}) {
             if (!hasDirectExport(name))
                 throw std::invalid_argument(std::string("legacy MMDPlugin missing direct export ") + name);
         }
+        if (abi == 4 && !hasDirectExport("MMSLegacyCameraAdapterVersion"))
+            throw std::invalid_argument("FirstPersonCamera requires the MMS camera adapter; original MMDMainData access is unsupported");
     }
     PeInfo Info() const {
         PeInfo result; result.subsystemMajor = nt_.OptionalHeader.MajorSubsystemVersion; result.subsystemMinor = nt_.OptionalHeader.MinorSubsystemVersion;
@@ -125,6 +129,69 @@ fs::path ModulePath(HMODULE module) {
     if (!n || n >= value.size()) throw std::runtime_error("cannot identify loaded module"); value.resize(n); return value;
 }
 bool ApiSet(const std::string& s) { return s.rfind("api-ms-", 0) == 0 || s.rfind("ext-ms-", 0) == 0; }
+fs::path DefaultSystemImport(const fs::path& system, const std::wstring& name) {
+    // A null context from FindActCtxSectionString denotes the system-compatible
+    // default context. QueryActCtx(NULL) instead queries the process default.
+    // Map resources only: obtain the OS-selected path without running DLL code.
+    struct Mapping { HMODULE value; ~Mapping() { if (value) FreeLibrary(value); } } image{
+        LoadLibraryExW((system / name).c_str(), nullptr,
+            LOAD_LIBRARY_AS_IMAGE_RESOURCE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE)};
+    if (!image.value) throw std::invalid_argument("cannot map system DLL binding: " + Utf8(name));
+    wchar_t mapped[32768]{}, device[32768]{};
+    const auto base = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(image.value) & ~uintptr_t(3));
+    const auto count = K32GetMappedFileNameW(GetCurrentProcess(), base, mapped, 32768);
+    const auto drive = system.root_name().native();
+    if (!count || count >= 32768 || !QueryDosDeviceW(drive.c_str(), device, 32768))
+        throw std::invalid_argument("cannot identify system DLL mapping: " + Utf8(name));
+    const std::wstring prefix(device), resolved(mapped, count);
+    if (resolved.size() <= prefix.size() || resolved[prefix.size()] != L'\\' ||
+        Lower(resolved.substr(0, prefix.size())) != Lower(prefix))
+        throw std::invalid_argument("system DLL mapping is outside the Windows volume");
+    const fs::path path(drive + resolved.substr(prefix.size()));
+    const auto store = system.parent_path() / L"WinSxS";
+    if (!SamePath(path.parent_path(), system) && !SamePath(path.parent_path().parent_path(), store))
+        throw std::invalid_argument("system DLL mapping is outside Windows servicing directories");
+    return PackageFile(path.parent_path(), Utf8(path.filename().native()));
+}
+fs::path SystemImport(const fs::path& system, const std::wstring& name) {
+    ACTCTX_SECTION_KEYED_DATA section{sizeof(section)};
+    if (!FindActCtxSectionStringW(FIND_ACTCTX_SECTION_KEY_RETURN_HACTCTX, nullptr,
+            ACTIVATION_CONTEXT_SECTION_DLL_REDIRECTION, name.c_str(), &section))
+        return system / name;
+    if (!section.hActCtx) return DefaultSystemImport(system, name);
+    struct Context {
+        HANDLE value;
+        ~Context() { if (value) ReleaseActCtx(value); }
+    } context{section.hActCtx};
+    SIZE_T needed = 0;
+    ULONG assembly = section.ulAssemblyRosterIndex;
+    QueryActCtxW(0, context.value, &assembly, AssemblyDetailedInformationInActivationContext,
+        nullptr, 0, &needed);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || needed < sizeof(ACTIVATION_CONTEXT_ASSEMBLY_DETAILED_INFORMATION) || needed > 1024 * 1024)
+        throw std::invalid_argument("cannot inspect system activation-context binding: " + Utf8(name));
+    std::vector<unsigned char> storage(needed);
+    if (!QueryActCtxW(0, context.value, &assembly, AssemblyDetailedInformationInActivationContext,
+            storage.data(), storage.size(), &needed))
+        throw std::invalid_argument("cannot resolve system activation-context binding: " + Utf8(name));
+    const auto& info = *reinterpret_cast<const ACTIVATION_CONTEXT_ASSEMBLY_DETAILED_INFORMATION*>(storage.data());
+    wchar_t windows[32768]{};
+    const auto length = GetWindowsDirectoryW(windows, 32768);
+    if (!length || length >= 32768 || !info.lpAssemblyDirectoryName || !info.lpAssemblyManifestPath)
+        throw std::invalid_argument("invalid system activation-context assembly");
+    const auto store = fs::path(windows) / L"WinSxS";
+    fs::path directory(info.lpAssemblyDirectoryName);
+    if (!directory.is_absolute()) directory = store / directory;
+    directory = directory.lexically_normal();
+    // Accept only the exact Windows-serviced assembly selected by the active
+    // context. A package-local manifest or arbitrary same-name DLL is not one.
+    const auto expectedManifest = store / L"Manifests" / (directory.filename().native() + L".manifest");
+    if (!SamePath(directory.parent_path(), store) ||
+        !SamePath(info.lpAssemblyManifestPath, expectedManifest))
+        throw std::invalid_argument("non-system activation-context DLL redirection: " + Utf8(name) +
+            " directory=" + Utf8(directory.native()) + " manifest=" + Utf8(info.lpAssemblyManifestPath));
+    PackageFile(expectedManifest.parent_path(), Utf8(expectedManifest.filename().native()));
+    return PackageFile(directory, Utf8(name));
+}
 }
 PeInfo InspectPe(const fs::path& file) { return Pe(file).Info(); }
 Version WindowsVersion() {
@@ -160,7 +227,8 @@ NativeLoader::NativeLoader(bool forceFallback) {
     wchar_t system[32768]; UINT n = GetSystemDirectoryW(system, 32768);
     if (!n || n >= 32768) throw std::runtime_error("cannot locate system directory"); system_ = std::wstring(system, n);
 }
-LoadedPackage NativeLoader::Load(const Manifest& manifest, const Log& log, const fs::path& legacyMmdProvider) {
+LoadedPackage NativeLoader::Load(const Manifest& manifest, const Log& log, const fs::path& legacyMmdProvider,
+        const fs::path& legacyFacade) {
     if (manifest.kind == Manifest::Kind::LegacyMme) throw std::invalid_argument("legacy MME is loaded only during graphics startup");
     const bool legacyMmd = manifest.kind == Manifest::Kind::LegacyMmdPlugin;
     if (legacyMmd != !legacyMmdProvider.empty()) throw std::invalid_argument("legacy MMDPlugin provider mismatch");
@@ -172,9 +240,14 @@ LoadedPackage NativeLoader::Load(const Manifest& manifest, const Log& log, const
         Lower(legacyMmdProvider.filename().native()) != L"mmdplugin.dll" ||
         !declared.emplace(L"mmdplugin.dll", legacyMmdProvider).second))
         throw std::invalid_argument("invalid legacy MMDPlugin provider or dependency");
+    if (!legacyFacade.empty() && (!legacyMmd || Lower(legacyFacade.filename().native()) != L"mmdfacade.dll" ||
+            !declared.emplace(L"mmdfacade.dll", legacyFacade).second))
+        throw std::invalid_argument("invalid legacy MMDPlugin facade");
     auto verifyPath = [&](const fs::path& path) {
         if (legacyMmd && path == legacyMmdProvider)
             PackageFile(path.parent_path(), "MMDPlugin.dll");
+        else if (!legacyFacade.empty() && path == legacyFacade)
+            PackageFile(path.parent_path(), "MMDFacade.dll");
         else
             PackageFile(manifest.package, Utf8(path.lexically_relative(manifest.package).native()));
     };
@@ -207,10 +280,10 @@ LoadedPackage NativeLoader::Load(const Manifest& manifest, const Log& log, const
                 if (!safeSearch_) throw std::invalid_argument("API-set import needs safe system search on this Windows installation");
                 continue;
             }
-            auto system = system_ / w;
+            auto system = SystemImport(system_, w);
             if (!fs::is_regular_file(system)) throw std::invalid_argument("undeclared non-system dependency: " + imported);
             if (auto loaded = GetModuleHandleW(w.c_str()); loaded && !SamePath(ModulePath(loaded), system))
-                throw std::invalid_argument("system DLL basename already bound outside System32: " + imported);
+                throw std::invalid_argument("system DLL basename differs from Windows binding: " + imported);
             systems.insert(system);
         }
         status = 2; order.push_back(path);

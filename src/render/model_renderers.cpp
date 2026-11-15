@@ -1,3 +1,4 @@
+#include "mikumikustudio/legacy_mmd_plugin.hpp"
 #include "mikumikustudio/transparent_capture.hpp"
 #include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/shadow_filter.hpp"
@@ -1263,7 +1264,7 @@ void DrawModelMaterials(MMDApp* app, unsigned char* model, bool effectPass,
                                           firstIndex);
                         stateDumped = true;
                     }
-                    device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, minVertex,
+                    legacy_mmd_plugin::DrawIndexedPrimitive(device, D3DPT_TRIANGLELIST, 0, minVertex,
                                                  vertexCount,
                                                  firstIndex, indexCount / 3);
                 };
@@ -1359,7 +1360,7 @@ void DrawModelMaterials(MMDApp* app, unsigned char* model, bool effectPass,
                 bool issue = true;
 #if !MMD_ORIGINAL_PROFILE
                 if (selection && selection->peel) {
-                    if (selection->probe) device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, minVertex, vertexCount, firstIndex, 0);
+                    if (selection->probe) legacy_mmd_plugin::DrawIndexedPrimitive(device, D3DPT_TRIANGLELIST, 0, minVertex, vertexCount, firstIndex, 0);
                     const bool accepted = selection->probe ? selection->peel->NativePass()
                         : selection->peel->BeginMaterial(effect);
                     if (selection->valid) *selection->valid &= accepted;
@@ -1367,7 +1368,7 @@ void DrawModelMaterials(MMDApp* app, unsigned char* model, bool effectPass,
                 }
 #endif
                 if (issue) {
-                    const HRESULT drawn=device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, minVertex,
+                    const HRESULT drawn=legacy_mmd_plugin::DrawIndexedPrimitive(device, D3DPT_TRIANGLELIST, 0, minVertex,
                                              vertexCount, firstIndex, indexCount / 3);
                     if(shadowSucceeded&&FAILED(drawn))*shadowSucceeded=false;
                 }
@@ -2388,7 +2389,7 @@ void DrawModelEdgeGeometry(MMDApp* app, unsigned char* model,
                 app->ModelOutlineColorGreen()*(1.f/256.f),app->ModelOutlineColorBlue()*(1.f/256.f),1};
             const float* color=effectEdge?(pmx && sub->postProcessEnabled?record.edgeColor:defaultColor):nullptr;
             if(projectedShadow || !antialias::DrawOutline(app,model,firstIndex,count,color))
-                device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0,
+                legacy_mmd_plugin::DrawIndexedPrimitive(device, D3DPT_TRIANGLELIST, 0, 0,
                     state.vertexCount, firstIndex, count / 3);
         }
         firstIndex += count;
@@ -2580,7 +2581,7 @@ void DrawGroundGeometry(MMDApp* app, IDirect3DDevice9* device) {
         device->SetFVF(66);
         device->SetStreamSource(0, vb, 0, 16);
         device->SetIndices(ib);
-        device->DrawIndexedPrimitive(D3DPT_LINELIST, 0, 0, 90, 0, 45);
+        legacy_mmd_plugin::DrawIndexedPrimitive(device, D3DPT_LINELIST, 0, 0, 90, 0, 45);
     }
 
     device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);

@@ -110,8 +110,10 @@ def run_case(args, directory, layout, name, mode):
                 raise RuntimeError('control observer menu absent')
             paths = modules(process)
             write_json(directory / 'modules.json', paths)
-            if any(Path(p).name.lower() == args.candidate.name.lower() for p in paths):
-                raise RuntimeError('rejected / disabled candidate is mapped into the product')
+            mapped = [p for p in paths if Path(p).name.lower() == args.candidate.name.lower()]
+            accepting = args.accept and mode == 'enabled'
+            if bool(mapped) != accepting:
+                raise RuntimeError('candidate mapping differs from expected state')
             if [Path(p) for p in paths if Path(p).name.lower() == 'mmdplugin.dll'] != [provider]:
                 raise RuntimeError('product loaded a different MMDPlugin provider')
             if not any(Path(p).name.lower() == 'mmdfacade.dll' for p in paths):
@@ -121,20 +123,28 @@ def run_case(args, directory, layout, name, mode):
                 raise RuntimeError('MME control did not load')
             trace = (directory / 'runtime.log').read_text(encoding='utf-8', errors='replace')
             candidate_lines = [line for line in trace.splitlines() if 'LEGACY_MMD ' in line and ('test.candidate' in line or 'PLUGINS\\candidate' in line)]
-            if 'test.candidate started' in trace or 'test.candidate loaded' in trace:
+            if not accepting and ('test.candidate started' in trace or 'test.candidate loaded' in trace):
                 raise RuntimeError('unexpected candidate load or startup')
+            if accepting:
+                if f'test.candidate started ({args.profile})' not in trace:
+                    raise RuntimeError('candidate factory did not complete')
+                case['loadedImage'] = inspect(Path(mapped[0]))
+                if args.profile == 'effekseer_v2' and 'Effekseer' not in titles:
+                    raise RuntimeError('real Effekseer menu absent')
             expected = {'rejected': args.expect, 'missing': 'missing file or reparse point:',
                         'unsupported-profile': 'unsupported legacy MMDPlugin profile'}.get(mode)
             if expected and not any(expected in line for line in candidate_lines):
                 raise RuntimeError('expected diagnostic absent: ' + str(candidate_lines))
             if mode == 'disabled' and candidate_lines:
                 raise RuntimeError('disabled candidate reached legacy startup')
-            case.update(diagnostics=candidate_lines, candidateMapped=False, observerMenuPresent=True, mmeLoaded=True)
+            case.update(diagnostics=candidate_lines, candidateMapped=bool(mapped), observerMenuPresent=True, mmeLoaded=True)
             send(main, 0x10)
             case['exitCode'] = process.wait(timeout=20)
             trace = (directory / 'runtime.log').read_text(encoding='utf-8', errors='replace')
             if case['exitCode'] != 0 or 'stopped and destroyed (test.utility)' not in trace:
                 raise RuntimeError('host / control observer did not shut down cleanly')
+            if accepting and 'stopped and destroyed (test.candidate)' not in trace:
+                raise RuntimeError('candidate was not destroyed cleanly')
             if mode != 'missing' and digest(candidate / args.candidate.name) != digest(args.candidate):
                 raise RuntimeError('candidate bytes changed')
             case['checksPassed'] = True
@@ -153,15 +163,18 @@ def main():
     for option in ['release', 'candidate', 'utility', 'mme']:
         parser.add_argument('--' + option, type=Path, required=True)
     parser.add_argument('--label', required=True)
-    parser.add_argument('--profile', choices=['device_reset_v2', 'window_observer_v3'], required=True)
-    parser.add_argument('--expect', required=True)
+    parser.add_argument('--profile', choices=['device_reset_v2', 'window_observer_v3', 'effekseer_v2', 'first_person_camera_v4'], required=True)
+    parser.add_argument('--expect')
+    parser.add_argument('--accept', action='store_true', help='Require a real factory and clean destruction, without claiming functional support')
     parser.add_argument('--unsupported-profile')
     args = parser.parse_args()
+    if not args.accept and not args.expect:
+        parser.error('--expect is required for rejection tests')
     for option in ['release', 'candidate', 'utility', 'mme']:
         setattr(args, option, getattr(args, option).resolve())
     u.GetMenuStringW.argtypes = [w.HMENU, w.UINT, w.LPWSTR, c.c_int, w.UINT]
     root = Path(tempfile.mkdtemp(prefix='mmdfacade-candidates-', dir=args.release.parent))
-    modes = ['rejected', 'disabled', 'missing'] + (['unsupported-profile'] if args.unsupported_profile else [])
+    modes = ['enabled' if args.accept else 'rejected', 'disabled', 'missing'] + (['unsupported-profile'] if args.unsupported_profile else [])
     report = dict(label=args.label, candidate=inspect(args.candidate), checksPassed=False,
         pluginUsable=False, renderingTested=False, inputTested=False,
         hostSha256=digest(args.release / 'MikuMikuDance.exe'), cases=[])

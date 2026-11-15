@@ -1,5 +1,7 @@
 # MMDFacade：2026-11-15 Windows x64 Release 验证
 
+> 此页记录此前提交的验证；后续 v0.25 与相机适配结果见[接入修复记录](mmdfacade-integration-2026-11-15.md)。
+
 基线：`abi-cloud-test` / `a74e6e1267455125fe7f7e8eed7c71ece1c21b9a`。
 独立分支：`feature/mmdfacade-compat`；独立工作区：`D:/MMD-Next/MMDFacade`。
 通过 `git fetch origin abi-cloud-test` 同步基线，未推送；未修改正式 abi/main 工作区。

@@ -8,7 +8,7 @@
 | 路径 | 组件与职责 | 支持边界 |
 | --- | --- | --- |
 | 旧 MME | `MMDFacade.dll` 转发宿主 37 个 `Exp*` 导出；`MMHack.dll` 提供 22 个旧状态查询及 MME 接入 | 继续使用本地提供的 MME 0.37 x64。原版 MMHack 和内置 MMHack 分别验证，不能外推其他版本 |
-| 旧 MMDPlugin | 独立 `MMDPlugin.dll` 提供 `getHWND`、`createWM_APP_ID`；宿主按清单选择回调配置 | `window_observer_v3` 与新增 `device_reset_v2`。不提供原版内存、完整输入 hook、通用绘制或 D3DX hook |
+| 旧 MMDPlugin | 独立 `MMDPlugin.dll` 提供 `getHWND`、`createWM_APP_ID`；宿主按清单选择回调配置 | `window_observer_v3`、`device_reset_v2`、`effekseer_v2`、`first_person_camera_v4` 四个有限配置。不提供原版内存或通用 D3DX hook |
 
 主 EXE 文件名任意，包括中文。桥通过 `GetModuleHandleW(nullptr)` 找当前宿主。
 `MikuMikuDance.exe` 只用于匹配第三方 DLL 的 PE 导入模块名，不用于确认当前 EXE 身份。
@@ -21,13 +21,16 @@ MMDPlugin 提供者优先从 `<EXE>/PLUGINS/legacy-mmdplugin/MMDPlugin.dll` 加�
 ## 上游 ABI 核对
 
 依据 [EffekseerForMMD 固定提交的上游头文件](https://github.com/oigami/EffekseerForMMD/blob/c55b2f4e0e26cee473931624f0180eec84c297e2/EffekseerForMMD/MMDPlugin/mmd_plugin.h)。
-测试夹具只摘录回调类声明，并附上 MIT 许可，不把固定地址辅助函数带入产品。
+`third_party/mmdplugin/callbacks.hpp` 只摘录回调类声明并附 MIT 许可，不带固定地址辅助函数。
+用户提供的 `D:/MMD-Next/refs/mmd_plugin.h` SHA-256 为
+`775fb19fb67442cff91b31914d440e5901e58cdb6dfa7b7213d22a9ce53b53f0`；
+剔除注释和空白后，ABI 1–4 共 250 个虚函数签名与摘录一致。参考文件未修改。
 
 | ABI | 工厂 / 销毁 | 生命周期与回调 | 本轮实现 |
 | --- | --- | --- | --- |
-| 2 | `int version()` 返回 2；`MMDPluginDLL2* create2(IDirect3DDevice9*)`；`void destroy2(MMDPluginDLL2*)` | 继承 ABI 1 的设备调用前回调，并追加相应的调用后回调。没有 ABI 3 的 `start/stop`、窗口、输入接口。`Reset(D3DPRESENT_PARAMETERS*)` 在实际 Reset 前；`PostReset(D3DPRESENT_PARAMETERS*, HRESULT&)` 在返回后，包括失败 | 仅独立的重置配置；构造后持有对象，关闭时调用同 DLL 的 destroy2，不调用不存在的 start/stop |
+| 2 | `int version()` 返回 2；`MMDPluginDLL2* create2(IDirect3DDevice9*)`；`void destroy2(MMDPluginDLL2*)` | 继承 ABI 1 的设备调用前回调，并追加相应的调用后回调。没有 ABI 3 的 `start/stop`、窗口、输入接口。`Reset(D3DPRESENT_PARAMETERS*)` 在实际 Reset 前；`PostReset(D3DPRESENT_PARAMETERS*, HRESULT&)` 在返回后，包括失败 | 重置配置和 Effekseer 配置；构造后持有对象，关闭时调用同 DLL 的 destroy2，不调用不存在的 start/stop |
 | 3 | `version()==3`；`create3(device)` / `destroy3(object)` | 在 ABI 2 后追加标题、start/stop、窗口观察、消息过滤、鼠标、取消息、键盘，以及可拦截的 WndProc 重载。头文件规定全部对象创建后 start，释放对象前 stop | 保留基线的逐包 create/start、退出逆序 stop/destroy。没有跨插件对象查询的全局启动屏障，因此不声称完整生命周期兼容 |
-| 4 | `version()==4`；`create4(device)` / `destroy4(object)` | 启用 `MMDPLUGIN_D3DX9_HOOK` 后继承 ABI 3，追加 `D3DXCreateEffectFromFileExW` 和 `PostD3DXCreateEffectFromFileExW`。设备、文件名、宏、include、flags、pool、效果及错误输出都是引用参数；post 另带 HRESULT 引用 | 未实现。不能将 ABI 4 的版本返回值改成 3 后冒充兼容 |
+| 4 | `version()==4`；`create4(device)` / `destroy4(object)` | 启用 `MMDPLUGIN_D3DX9_HOOK` 后继承 ABI 3，追加 `D3DXCreateEffectFromFileExW` 和 `PostD3DXCreateEffectFromFileExW`。设备、文件名、宏、include、flags、pool、效果及错误输出都是引用参数；post 另带 HRESULT 引用 | 仅 FirstPersonCamera 源码适配的工厂、生命周期、键盘及鼠标。两个 D3DX 特效回调和 EffectHook 自由函数未实现；版本仍返回 4 |
 
 ABI 3 的两个 WndProc 不同：`void WndProc(CWPSTRUCT*)` 是 `WH_CALLWNDPROC` 观察；
 `std::pair<bool,LRESULT> WndProc(HWND,UINT,WPARAM,LPARAM)` 可以截断宿主处理。
@@ -43,15 +46,16 @@ MSVC x64 的重置槽为 17/136；ABI 3 start/stop/观察槽保持 240/241/243�
 
 | 插件 / 固定源码 | 实际依赖及缺口 | 本轮范围 |
 | --- | --- | --- |
-| [EffekseerForMMD c55b2f4](https://github.com/oigami/EffekseerForMMD/tree/c55b2f4e0e26cee473931624f0180eec84c297e2) | ABI 2；构造 AddRef、析构 Release 设备；BeginScene、EndScene、DrawIndexedPrimitive、Reset/PostReset；设备矩阵；ExpGetFrameTime、模型/排序/ID/文件名、骨骼与表情、当前对象/材质/technic；getHWND；CRT 文件及拖放 API hook；Effekseer 运行库。其 PostReset 未判断 HRESULT 即重建资源 | 借用其重置回调契约实现合成插件。真实 v0.21 DLL 已做产品加载测试，停在 WinSxS GDI+ 路径预检，未进入工厂或粒子渲染。剩余绘制、资源、文件通知应接 MMS 明确接口，不能补伪造地址 |
-| [FirstPersonCamera f71c300](https://github.com/MikuMikuShaders/FirstPersonCamera/tree/f71c300f31eaa5c0e1543839854056774035f119) | ABI 4 工厂；键盘、鼠标回调；构造即 getMMDMainData，直接写 xyz/rxyz/length 并读 is_camera_mode；GetKeyState、鼠标位置和可见性；D3DX 数学。未覆盖 D3DX 特效回调 | 未支持。真实 v0.01 DLL 的 ABI 4 工厂不能通过 ABI 3 预检；需用 MMS 相机状态读取、相机编辑及历史事务代替私有结构，并处理输入焦点和光标释放；没有该源码适配 |
+| [EffekseerForMMD c55b2f4](https://github.com/oigami/EffekseerForMMD/tree/c55b2f4e0e26cee473931624f0180eec84c297e2) | ABI 2；构造 AddRef、析构 Release 设备；BeginScene、EndScene、DrawIndexedPrimitive、Reset/PostReset；设备矩阵；ExpGetFrameTime、模型/排序/ID/文件名、骨骼与表情、当前对象/材质/technic；getHWND；CRT 文件及拖放 API hook；Effekseer 运行库。其 PostReset 未判断 HRESULT 即重建资源 | 真实 v0.25 x64 已接入并验证基础粒子渲染、启停、重置及删除。接入 MMS 原生材质绘制观察接口和显式 .efk 模型导入；不安装旧 CRT/拖放 hook。旧 v0.21 的拒绝记录保留为历史，未据此宣称其现已可用 |
+| [FirstPersonCamera f71c300](https://github.com/MikuMikuShaders/FirstPersonCamera/tree/f71c300f31eaa5c0e1543839854056774035f119) | ABI 4 工厂；键盘、鼠标回调；构造即 getMMDMainData，直接写 xyz/rxyz/length 并读 is_camera_mode；GetKeyState、鼠标位置和可见性；D3DX 数学。未覆盖 D3DX 特效回调 | 新增 MMSFirstPersonCamera.dll 源码适配，通过 MMSAcquireLegacyCameraApi 读取/编辑当前姿态。原版 v0.01 DLL 仍在调用工厂前拒绝，明确报告 MMDMainData 不支持；适配版不注册关键帧、不提供撤销事务 |
 | [MMDUtility 核心 0bff277](https://github.com/oigami/MMDUtility/tree/0bff27755a5d86dbb8a5be3f264101ee4bf52f86/MMDUtility) | ABI 3，getHWND/createWM_APP_ID，构造创建菜单。MsgProc 处理菜单选择；getDLL3Object 用于其他模块查询 | 核心菜单加载属于已有观察范围；MsgProc 和子插件互查仍不支持。不能把核心可加载扩大成全部子插件可用 |
 | [ExamplePlugin 242115c](https://github.com/PTOM76/mmdplugin-ExamplePlugin/tree/242115c99faabf2bc195e1a24a82bd63f5e4718d) | 源码导出 create3/destroy3，但 version 声明及菜单消息需要适配；getHWND、菜单命令、INI 路径 | 基线记录中的 ABI 3 适配版保持原边界；本轮不将上游原样二进制计为已通过 |
 | [DispPlayingFrame 64d7305](https://github.com/Soul-chan/MMDPluginDLL/blob/64d73053739dac0dc126a2c712f5adb72bcd2e78/DispPlayingFrame/DispPlayingFrame.cpp) | ABI 3、窗口/子控件、10ms 定时器，stop 清除定时器；原样检查 MMD 9.31 并读取 MMDMainData 的播放字段 | 已有源码适配使用 MMSAcquireLegacyPlaybackMap 的不可变只读快照，不复刻 MMDMainData；本轮未重跑该适配版的帧号控件 |
 | [CameraModeUndo / OutsideParentReaderWriter / SetCameraFollowBone / SwapOutsideParent，64d7305](https://github.com/Soul-chan/MMDPluginDLL/tree/64d73053739dac0dc126a2c712f5adb72bcd2e78) | 都是 ABI 3，窗口/消息/输入接口，原版版本检查和 MMDMainData；分别依赖相机历史、外亲读写、相机跟随骨骼、外亲交换。声明回调不代表每个都有非空逻辑 | 原样未支持。需要分别接 MMS 相机、场景、外亲、选择及历史接口；不暴露假结构指针 |
 | [AutoSave，0bff277](https://github.com/oigami/MMDUtility/blob/0bff27755a5d86dbb8a5be3f264101ee4bf52f86/AutoSave/AutoSave.cpp) | ABI 3，getDLL3Object、MouseProc 定时触发、CRT hook；从当前 EXE 基址 + 0x750D0 调保存并传 MMDMainData | 未支持。应走 MMS 保存/备份事务接口，不能调用该偏移；线程及 hook 清理还需单独验证 |
 
-真实发布 DLL 的来源、42 组产品加载检查、WinSxS 阻塞及未执行功能见[Effekseer / FirstPersonCamera 测试记录](records/mmdfacade-real-plugins-2026-11-15.md)。
+旧发布 DLL 的 42 组拒绝测试是[历史记录](records/mmdfacade-real-plugins-2026-11-15.md)。
+本次 v0.25、相机适配及真实像素验证见[接入修复记录](records/mmdfacade-integration-2026-11-15.md)。
 
 ## 本轮可独立验收的扩展
 
@@ -65,6 +69,52 @@ PE 预检必须找到直接的 version/create2/destroy2；加载后再核对 ver
 回调中停止会延迟到这对回调结束；递归重置返回 D3DERR_INVALIDCALL。
 C++ 异常包在异常对象销毁后销毁对象并卸载 DLL；stop/destroy 抛异常时固定代码到进程结束。
 访问违规等 SEH 故障不属于 C++ 异常隔离承诺。
+
+## Effekseer 与相机接入边界
+
+`effekseer_v2` 保持真实 ABI 2 的 create2/destroy2。BeginScene/EndScene 在宿主场景边界分发；
+DrawIndexedPrimitive 的前回调使用 MMS 已有的原生绘制观察接口，在 MME 选好目标及着色器后执行，
+仅覆盖宿主模型主材质绘制。回调中的粒子绘制不会再次进入该观察器；不提供通用 PostDrawIndexedPrimitive。
+将 COM QueryInterface 返回的底层设备交给 Effekseer，防止其粒子再次被 MME 当作模型材质处理。
+独立运行时，从 MMS 的当前模型读取对象序号；该分支只在 Effekseer 回调中生效，保留 MME 的注册映射。
+
+Reset 前释放插件资源，失败时不调用 Effekseer 不检查 HRESULT 的 PostReset，并暂停绘制回调；成功后才恢复。
+MME 自身的旧失败重置行为没有改变：人为传入无效参数会弹出 MikuMikuEffect 重置失败提示。
+本次验证了无 MME 的失败重置恢复，以及与 MME 同时启用时的成功重置；不宣称修复 MME 内部的失败恢复。
+
+MMS 显式接受 `.efk`：使用同名 `.pmd` 或包内 `efk.pmd` 作为控制模型，项目保留真实 `.efk` 路径。
+仅在 Effekseer 回调里，文件名查询提供上游需要的 `.pmd.efk` 别名，并按 Windows ANSI 编码输出。
+模型、骨骼、表情和时间读取来自 MMS 字段，不使用原版 EXE 偏移。
+文件 hook 请求返回上游的失败值；MMDPlugin.dll 的 binder 导出只管理寿命，不执行任意导入表 hook。
+停止时清除其弱引用后再卸载 DLL。通用 RewriteFunction、原版拖放 hook、任意新格式粒子、复杂折射及所有后期效果组合未验证。
+
+`first_person_camera_v4` 必须具有直接的 version/create4/destroy4 和 MMSLegacyCameraAdapterVersion 导出；
+加载前拒绝原版 DLL，加载后核对 API 版本。相机 ABI 用定长 C 结构，校验读写版本、姿态和修订号，
+只在主线程的该插件回调期间有效。模型模式、播放、跟随相机、录制、场景事务及模态禁用窗口不能编辑。
+文本框和 Ctrl/Alt/Win 快捷键保留给宿主；鼠标只接管视口，失焦、取消和停止恢复捕获与光标。
+仅支持当前姿态移动；相机历史、关键帧注册、原版 MMDMainData、全局键鼠 hook 和 ABI 4 D3DX 回调未实现。
+
+### 可选插件安装
+
+正式打包命令生成 `build/release/optional-plugins/first-person-camera/`，含 DLL、许可、说明及正确摘要的清单。
+退出 MMS 后将该目录完整复制到 `<EXE>/PLUGINS/first-person-camera/`。安装包不会自动启用它。
+
+Effekseer 使用用户提供的 v0.25 x64 包：将原始 `EffekseerForMMD.dll` 和 `efk.pmd` 复制到
+`<EXE>/PLUGINS/effekseer/`，在该目录生成清单（不要覆盖原下载文件）：
+
+```powershell
+$dll = Join-Path $PWD 'EffekseerForMMD.dll'
+@{ schemaVersion=1; id='mms.legacy.effekseer'; name='EffekseerForMMD'; version='0.25.0';
+   kind='legacy_mmdplugin'; profile='effekseer_v2'; entry='EffekseerForMMD.dll';
+   sha256=(Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash.ToLowerInvariant();
+   architecture='x64'; minWindows='6.1.0'; reloadPolicy='restart' } |
+   ConvertTo-Json | Set-Content -LiteralPath plugin.json -Encoding utf8
+```
+
+重新启动后显式打开 `.efk`，按照上游用法操作控制模型的自动播放、循环等表情。
+依赖的模型、纹理随 `.efk` 保持相对路径。旧插件受 ANSI 路径和长度限制，不能从本机中文测试外推所有字符。
+停用时在 `PLUGINS/config.json` 的 `disabledPlugins` 中加入对应 id，重启生效。
+包摘要、缺失提供者、未知配置及不支持的原版相机均写入启动日志，不用修改当前 EXE 名称绕过检查。
 
 ## DLL 改名与安装迁移
 

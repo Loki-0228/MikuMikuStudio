@@ -1,4 +1,5 @@
 #include "mikumikustudio/model_import.hpp"
+#include "mikumikustudio/legacy_mmd_plugin.hpp"
 #include "mikumikustudio/original_import.hpp"
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/model_vertex_cache.hpp"
@@ -151,13 +152,21 @@ static bool LoadModelFile(unsigned char* m, HWND hwnd, const wchar_t* path,
 
     const wchar_t* source = exact ? path : ResolveUserFilePath(paths, path);
     wcscpy_s(model.path, 0x100, source);
+    std::wstring effekseerTemplate;
+    const auto effekseer = legacy_mmd_plugin::ResolveEffekseerModel(source, effekseerTemplate);
+    if (effekseer < 0) {
+        if (boxGate) model_import::MessageW(hwnd,
+            L"Effekseer .efk import requires an enabled compatible EffekseerForMMD plugin and its efk.pmd template.",
+            L"MMDFacade", MB_OK | MB_ICONERROR);
+        return false;
+    }
 
     // MME records this wide path when associating the index-buffer output
     // slot with the model ID (the PMX parser shares this open path).
     if (!model_import::Preparing()) NotifyEffectFileOpen(model.path);
     int fh = -1;
     errno_t err = _wsopen_s(&fh,
-        model.path,
+        effekseer > 0 ? effekseerTemplate.c_str() : model.path,
         _O_BINARY, _SH_DENYNO, _S_IREAD);
     if (err != 0) {
         if (boxGate) {

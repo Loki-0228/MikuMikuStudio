@@ -92,7 +92,9 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
         if (j.At("architecture").String() != "x64" || j.At("reloadPolicy").String() != "restart")
             throw std::invalid_argument("legacy MMDPlugin requires x64 and restart");
         const auto profile = j.At("profile").String();
-        if (profile == "device_reset_v2") m.major = 2;
+        m.legacyProfile = profile;
+        if (profile == "device_reset_v2" || profile == "effekseer_v2") m.major = 2;
+        else if (profile == "first_person_camera_v4") m.major = 4;
         else if (profile != "window_observer_v3")
             throw std::invalid_argument("unsupported legacy MMDPlugin profile");
         m.minWindows = ParseVersion(j.At("minWindows").String());

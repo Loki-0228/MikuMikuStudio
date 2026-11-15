@@ -14,6 +14,15 @@ target_link_options(mms_legacy_mmd_provider PRIVATE /SUBSYSTEM:WINDOWS,6.01)
 add_dependencies(MikuMikuStudio mms_legacy_mmd_provider)
 # Legacy observers resolve this app-owned provider relative to the host EXE.
 install(TARGETS mms_legacy_mmd_provider RUNTIME DESTINATION legacy-mmdplugin)
+add_library(mms_first_person_camera SHARED src/legacy_first_person/first_person.cpp)
+target_include_directories(mms_first_person_camera PRIVATE sdk/mms/include third_party/dxsdk-d3dx/include)
+target_link_libraries(mms_first_person_camera PRIVATE user32)
+target_compile_options(mms_first_person_camera PRIVATE /utf-8)
+target_link_options(mms_first_person_camera PRIVATE /SUBSYSTEM:WINDOWS,6.01)
+set_target_properties(mms_first_person_camera PROPERTIES OUTPUT_NAME MMSFirstPersonCamera
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>/optional-plugins/first-person-camera"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_dependencies(MikuMikuStudio mms_first_person_camera)
 add_executable(legacy_image_tests EXCLUDE_FROM_ALL
     tests/plugins/legacy_image_tests.cpp src/plugins/legacy_image.cpp)
 target_compile_features(legacy_image_tests PRIVATE cxx_std_17)
@@ -1008,6 +1017,19 @@ add_test(NAME legacy_observer_export_preflight COMMAND legacy_observer_export_te
     "$<TARGET_FILE:mms_legacy_observer_exports_forwarded>")
 set_tests_properties(legacy_observer_export_preflight PROPERTIES TIMEOUT 30)
 
+add_library(legacy_sxs_fixture MODULE EXCLUDE_FROM_ALL tests/plugins/legacy_sxs_fixture.cpp)
+target_link_libraries(legacy_sxs_fixture PRIVATE gdiplus)
+set_target_properties(legacy_sxs_fixture PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/plugins/sxs/$<CONFIG>")
+add_executable(system_import_tests EXCLUDE_FROM_ALL tests/plugins/system_import_tests.cpp)
+target_include_directories(system_import_tests PRIVATE src/plugins)
+target_link_libraries(system_import_tests PRIVATE mms_plugin_runtime)
+set_target_properties(system_import_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(system_import_tests legacy_sxs_fixture mms_legacy_mmd_provider mms_legacy_observer_exports_missing)
+add_test(NAME legacy_system_imports COMMAND system_import_tests
+    "$<TARGET_FILE:mms_legacy_mmd_provider>" "$<TARGET_FILE:legacy_sxs_fixture>" "$<TARGET_FILE:mms_legacy_observer_exports_missing>")
+
 add_executable(legacy_reset_profile_tests EXCLUDE_FROM_ALL tests/plugins/legacy_reset_profile_tests.cpp)
 target_include_directories(legacy_reset_profile_tests PRIVATE src/plugins)
 target_link_libraries(legacy_reset_profile_tests PRIVATE mms_plugin_runtime)
@@ -1029,6 +1051,12 @@ target_link_libraries(legacy_callback_tests PRIVATE mikumikustudio_core d3d9 win
 set_target_properties(legacy_callback_tests PROPERTIES ENABLE_EXPORTS ON
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_dependencies(legacy_callback_tests legacy_callback_fixture_v2 legacy_callback_fixture_v3 mms_legacy_mmd_provider)
+add_executable(first_person_camera_tests EXCLUDE_FROM_ALL tests/plugins/first_person_camera_tests.cpp)
+target_include_directories(first_person_camera_tests PRIVATE third_party/dxsdk-d3dx/include sdk/mms/include)
+target_link_libraries(first_person_camera_tests PRIVATE mikumikustudio_core d3d9 winmm dsound)
+set_target_properties(first_person_camera_tests PROPERTIES ENABLE_EXPORTS ON
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(first_person_camera_tests mms_first_person_camera mms_legacy_mmd_provider)
 add_executable(legacy_mmd_menu_tests EXCLUDE_FROM_ALL tests/legacy_mmd_menu_tests.cpp)
 target_include_directories(legacy_mmd_menu_tests PRIVATE include src)
 set_target_properties(legacy_mmd_menu_tests PROPERTIES
@@ -1037,6 +1065,9 @@ add_dependencies(plugin_abi_tests legacy_mmd_menu_tests)
 add_test(NAME legacy_mmd_menu_commands COMMAND legacy_mmd_menu_tests)
 find_program(MMS_ABI_POWERSHELL NAMES pwsh)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME mmdfacade_camera_input COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/plugins/run_first_person_camera.py" --build "${CMAKE_BINARY_DIR}")
+    set_tests_properties(mmdfacade_camera_input PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
     add_test(NAME mmdfacade_callback_matrix COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/plugins/run_mmdfacade_callbacks.py" --build "${CMAKE_BINARY_DIR}")
     set_tests_properties(mmdfacade_callback_matrix PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE)

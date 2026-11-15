@@ -273,7 +273,7 @@ inline const wchar_t kWOpenFile[] = L"\x30D5\x30A1\x30A4\x30EB\x3092"
 inline const wchar_t kWUserModel[] = L"UserFile\\Model";
 inline const wchar_t kWUserAcc[]   = L"UserFile\\Accessory";
 inline const wchar_t kWFilterModel[] =
-    L"All Model files(*.pmd,*.pmx)\0*.pmd;*.pmx\0";              // 0x52DCE0
+    L"Model / Effekseer files(*.pmd,*.pmx,*.efk)\0*.pmd;*.pmx;*.efk\0";              // 0x52DCE0
 inline const wchar_t kWFilterAccJp[] =
     L"\x8AAD\x8FBC\x53EF\x80FD\x30D5\x30A1\x30A4\x30EB"
       L"(*.x,*.vac)\0*.x;*.vac\0";                               // 0x52D948

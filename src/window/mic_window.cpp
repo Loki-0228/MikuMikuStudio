@@ -1,4 +1,5 @@
 #include "mikumikustudio/update_coordinator.hpp"
+#include "mikumikustudio/legacy_mmd_plugin.hpp"
 #include "mikumikustudio/scene_ownership.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 // ===========================================================================
@@ -190,6 +191,7 @@ LRESULT CALLBACK MicWndProc(HWND hwnd, UINT msg, WPARAM wParam,
          (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
          (msg == WM_SYSCOMMAND && (wParam & 0xfff0) == SC_CLOSE)))
         return 0;
+    if (legacy_mmd_plugin::HandleInput(hwnd, msg, wParam, lParam)) return 0;
     if (plugins::HandleBoundViewportMessage(s, hwnd, msg, wParam, lParam)) return 0;
 #endif
     if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||

@@ -13,6 +13,7 @@ struct Manifest {
     fs::path file, package, entry;
     fs::path legacyHack;
     std::string legacyEntrySha256;
+    std::string legacyProfile;
     std::string id, name;
     Version version{}, minWindows{};
     uint32_t major = 1, minor = 0;
