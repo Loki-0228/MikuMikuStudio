@@ -7,6 +7,7 @@
 
 namespace mikumikustudio {
 class MMDApp;
+namespace recording_output_path { struct Selection; }
 namespace alembic_export {
 struct Selection {
     bool accessory = false;
@@ -40,6 +41,8 @@ struct Result {
     unsigned samples = 0;
     unsigned meshes = 0;
     std::string error;
+    bool destinationChanged = false;
+    std::wstring retainedPrevious;
 };
 using Progress = std::function<bool(int frame, int lastFrame)>;
 bool CanExport(const MMDApp* app);
@@ -48,5 +51,8 @@ void ShowDialog(MMDApp* app);
 void ShowBakeDialog(MMDApp* app);
 Result Export(MMDApp& app, const std::filesystem::path& path,
               const Options& options, const Progress& progress = {});
+// Pass the exact destination snapshot shown to the user, including absence.
+Result Export(MMDApp& app, const std::filesystem::path& path, const Options& options,
+              const Progress& progress, const recording_output_path::Selection* approved);
 }
 }
