@@ -17,6 +17,7 @@ struct Bone {
     row_major float4x4 transformMatrix; float4 quaternion;
     float4 stretch[3]; float4 normalMatrix[3];
     uint flags; uint3 reserved;
+    float4 qdefRotation;
 };
 struct Material { float4 edgeColor; float edgeSize, edgeDistance; uint pmd, opaqueEdge; };
 struct Output {
@@ -103,10 +104,38 @@ uint edgeColor(float4 c, uint opaque) {
     if(opaque!=0) b.w=255;
     return (b.w<<24)|(b.x<<16)|(b.y<<8)|b.z;
 }
+float4 quaternionProduct(float4 a,float4 b) {
+    return float4(a.w*b.xyz+b.w*a.xyz+cross(a.xyz,b.xyz),a.w*b.w-dot(a.xyz,b.xyz));
+}
+void qdef(Vertex v,out float3 position,out float3 normal) {
+    float4 real=0,dual=0,reference=0;
+    float3x3 stretch=(float3x3)0;
+    float total=0; bool first=true;
+    [unroll] for(uint j=0;j<4;++j) {
+        int index=v.bones[j]; float weight=v.weights[j];
+        if(!validBone(index) || weight==0 || !isfinite(weight)) continue;
+        float4 q=bones[index].qdefRotation;
+        if(dot(q,q)<1e-12) continue;
+        if(first) { reference=q; first=false; }
+        float signedWeight=dot(reference,q)<0 ? -weight : weight;
+        real+=q*signedWeight;
+        dual+=quaternionProduct(float4(bones[index].transformMatrix[3].xyz,0),q)*(.5*signedWeight);
+        stretch+=boneStretch(index)*weight; total+=weight;
+    }
+    float len=dot(real,real);
+    if(len<=1e-12 || !isfinite(len) || abs(total)<1e-8) { position=v.position;normal=v.normal;return; }
+    real/=sqrt(len);dual/=sqrt(len);stretch/=total;
+    float4 translation=quaternionProduct(dual,float4(-real.xyz,real.w));
+    position=rotate(mul(v.position,stretch),real)+2*translation.xyz;
+    float determinant=dot(stretch[0],cross(stretch[1],stretch[2]));
+    normal=abs(determinant)>1e-12 ? adjugateMul(v.normal,stretch)/determinant : v.normal;
+    normal=normalizeSafe(rotate(normal,real));
+}
 [numthreads(64,1,1)]
 void main(uint3 id:SV_DispatchThreadID) {
     uint i=id.x; if(i>=vertexCount) return;
     Vertex v=vertices[i]; Output o=(Output)0;
+    bool simulatedPosition=(v.type&0x100)!=0;v.type&=0xff;
     if(v.type==0) {
         o.position=transform(v.position,v.bones.x,true);
         o.normal=transformNormal(v.normal,v.bones.x);
@@ -152,7 +181,12 @@ void main(uint3 id:SV_DispatchThreadID) {
             o.position=rotate(d,q)+pivot;
             o.normal=normalizeSafe(rotate(adjugateMul(v.normal,h),q));
         }
+    } else if(v.type==4) {
+        qdef(v,o.position,o.normal);
+    } else if(v.type==5) {
+        o.position=v.position; o.normal=v.normal;
     }
+    if(simulatedPosition) o.position=float3(v.center.w,v.r0.w,v.r1.w);
     o.uv=v.uv;
     [unroll] for(uint j=0;j<4;++j) o.additionalUv[j]=v.additionalUv[j];
     Material m=materials[min(v.material,materialCount-1)];

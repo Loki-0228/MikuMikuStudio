@@ -27,12 +27,13 @@ inline bool HasSelectedBoneInfluence(const mdl::PmxVertex& vertex,
             || (1.0f - first > 0.0f && selection.Contains(vertex.bone[1]));
     }
     case mdl::PmxWeightType::bdef4:
+    case mdl::PmxWeightType::qdef:
         for (unsigned i = 0; i < 4; ++i)
             if (vertex.weight[i] > 0.0f && selection.Contains(vertex.bone[i]))
                 return true;
         return false;
     default:
-        // QDEF and unknown types are not skinned by the native PMX path.
+        // Unknown weight types do not have a native skinning definition.
         return false;
     }
 }

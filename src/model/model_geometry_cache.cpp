@@ -123,10 +123,11 @@ void VisitPmxFields(Vertex& vertex, unsigned additionalUv, Copy copy) noexcept {
     copy(&vertex.weightType, 1);
     switch (vertex.weightType) {
     case mdl::PmxWeightType::bdef2: copy(vertex.bone, 8); copy(vertex.weight, 4); break;
+    case mdl::PmxWeightType::qdef:
     case mdl::PmxWeightType::bdef4: copy(vertex.bone, 16); copy(vertex.weight, 16); break;
     case mdl::PmxWeightType::sdef:
         copy(vertex.bone, 8); copy(vertex.weight, 4); copy(&vertex.sdef, sizeof(vertex.sdef)); break;
-    default: copy(vertex.bone, 4); break; // The ABI parser's BDEF1/unknown/QDEF fallback.
+    default: copy(vertex.bone, 4); break; // BDEF1/unknown fallback.
     }
     copy(&vertex.edgeScale, 4); copy(&vertex.hasPmxEdgeData, 1);
 }
@@ -438,7 +439,7 @@ void Session::CapturePmx(const mdl::PmxVertex* vertices, const std::int32_t* ind
                 VisitPmxFields(vertices[i], state_->layout.additionalUv,
                     [&](const void*, std::size_t size) { fits = AddSize(vertexBytes, size) && fits; });
                 const auto type = vertices[i].weightType;
-                const unsigned bones = type == mdl::PmxWeightType::bdef4 ? 4 :
+                const unsigned bones = type == mdl::PmxWeightType::bdef4 || type == mdl::PmxWeightType::qdef ? 4 :
                     type == mdl::PmxWeightType::bdef2 || type == mdl::PmxWeightType::sdef ? 2 : 1;
                 wireBytes += 37u + state_->layout.additionalUv * 16u + bones * state_->layout.boneIndexSize +
                     (bones == 4 ? 16u : bones == 2 ? 4u : 0u) + (type == mdl::PmxWeightType::sdef ? 36u : 0u);

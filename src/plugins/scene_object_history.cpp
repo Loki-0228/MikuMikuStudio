@@ -6,6 +6,7 @@
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
+#include "mikumikustudio/pmx21.hpp"
 #include "mikumikustudio/physics_scale.hpp"
 #include "mikumikustudio/physics_scene.hpp"
 #include "mikumikustudio/plugin_scene.hpp"
@@ -118,8 +119,10 @@ struct RetainedSceneObject::Impl {
             if (physics) physics->Publish();
             if (curves) curves->Publish();
             identity->Publish();
-            if (owner.kind == MMS_OBJECT_MODEL)
+            if (owner.kind == MMS_OBJECT_MODEL) {
                 owner.app.ModelSlot(owner.slot) = present ? static_cast<unsigned char*>(owner.object) : nullptr;
+                pmx21::SetPresent(static_cast<unsigned char*>(owner.object), present);
+            }
             else {
                 std::swap(owner.app.AccessoryKeys(owner.slot), owner.inactiveKeys);
                 std::swap(owner.app.AccessoryTrackCursor(owner.slot), owner.inactiveCursor);

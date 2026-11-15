@@ -16,12 +16,26 @@
         "MIKUMIKUSTUDIO_ENABLE_DX12": "OFF",
         "MIKUMIKUSTUDIO_PROFILE": "full"
       }
+    },
+    {
+      "name": "modern-x64",
+      "displayName": "Windows 10/11 x64 with DX12 compute",
+      "inherits": "win7-x64",
+      "binaryDir": "${sourceDir}/build/modern",
+      "toolchainFile": "${sourceDir}/build/conan-modern/build/generators/conan_toolchain.cmake",
+      "cacheVariables": {
+        "MIKUMIKUSTUDIO_WIN7_BASELINE": "OFF",
+        "MIKUMIKUSTUDIO_ENABLE_DX12": "ON",
+        "MIKUMIKUSTUDIO_PROFILE": "full"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "win7-x64-release", "configurePreset": "win7-x64", "configuration": "Release", "jobs": 1 }
+    { "name": "win7-x64-release", "configurePreset": "win7-x64", "configuration": "Release", "jobs": 1 },
+    { "name": "modern-x64-release", "configurePreset": "modern-x64", "configuration": "Release", "jobs": 1 }
   ],
   "testPresets": [
-    { "name": "win7-x64-release", "configurePreset": "win7-x64", "configuration": "Release", "output": { "outputOnFailure": true } }
+    { "name": "win7-x64-release", "configurePreset": "win7-x64", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "modern-x64-release", "configurePreset": "modern-x64", "configuration": "Release", "output": { "outputOnFailure": true } }
   ]
 }

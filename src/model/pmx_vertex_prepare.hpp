@@ -54,6 +54,7 @@ inline void DecodeVertex(Reader& reader, std::uint8_t additionalUv,
         reader.Read(vertex.weight, 4);
         break;
     case mdl::PmxWeightType::bdef4:
+    case mdl::PmxWeightType::qdef:
         for (int bone = 0; bone < 4; ++bone)
             vertex.bone[bone] = ReadBoneIndex(reader, boneIndexSize);
         reader.Read(vertex.weight, 16);
@@ -102,7 +103,8 @@ inline unsigned TailBytes(std::uint8_t weightType,
     const unsigned indexBytes = indexSize == 1 || indexSize == 2 ? indexSize : 4;
     switch (static_cast<mdl::PmxWeightType>(weightType)) {
     case mdl::PmxWeightType::bdef2: return 2 * indexBytes + 4 + 4;
-    case mdl::PmxWeightType::bdef4: return 4 * indexBytes + 16 + 4;
+    case mdl::PmxWeightType::bdef4:
+    case mdl::PmxWeightType::qdef: return 4 * indexBytes + 16 + 4;
     case mdl::PmxWeightType::sdef: return 2 * indexBytes + 4 + 36 + 4;
     default: return indexBytes + 4;
     }

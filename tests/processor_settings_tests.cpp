@@ -216,6 +216,10 @@ void DefaultsAndConstraints() {
     Check(processor::IsValid(processor::Role::Vertices,
                              {processor::Mode::Cpu, 0, L"", {}}),
           "vertices accepts CPU");
+    Check(defaults.cloth.mode==processor::Mode::Automatic &&
+          processor::IsValid(processor::Role::Cloth,{processor::Mode::Cpu}) &&
+          !processor::IsValid(processor::Role::Cloth,{processor::Mode::FollowRenderer}),
+          "soft-body role defaults to automatic and supports independent CPU/GPU choices");
     Check(!processor::IsValid(processor::Role::Vertices,
                               {processor::Mode::FollowRenderer, 0, L"", {}}, &reason) &&
               !reason.empty(),
@@ -240,6 +244,7 @@ void RoundTripAndRestart(const std::wstring& path) {
     processor::Configuration config;
     config.renderer = AdapterChoice(0xAAAABBBBCCCCDDDDull, L"Renderer GPU", identity);
     config.vertices.mode = processor::Mode::Cpu;
+    config.cloth = AdapterChoice(0x12345678ull,L"Cloth GPU",identity);
     config.mmv = AdapterChoice(0x1111222233334444ull, L"MMV GPU",
                                {0x1002, 0x5678, 0x1002, 0xB2});
     std::wstring error;
@@ -252,8 +257,8 @@ void RoundTripAndRestart(const std::wstring& path) {
     Check(error.empty(), "a clean file produces no warning");
     Check(processor::Active().renderer == config.renderer &&
               processor::Active().vertices == config.vertices &&
-              processor::Active().mmv == config.mmv,
-          "restart restores all three roles including the hardware identity");
+              processor::Active().mmv == config.mmv && processor::Active().cloth == config.cloth,
+          "restart restores every role including the cloth hardware identity");
     Check(processor::Requested().renderer == config.renderer,
           "requested equals the saved selection after restart");
     const std::wstring text = ReadText(path);

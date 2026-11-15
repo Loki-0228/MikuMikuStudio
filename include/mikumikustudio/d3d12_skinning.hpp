@@ -12,7 +12,7 @@ namespace mikumikustudio::gpu {
 // Float4-aligned structured records; shared with d3d12_skinning.hlsl.
 struct Vertex {
     float position[3], edgeScale;
-    float normal[3]; std::uint32_t type; // 0 BDEF1, 1 BDEF2/PMD, 2 BDEF4, 3 SDEF
+    float normal[3]; std::uint32_t type; // 0..4 BDEF1/BDEF2/BDEF4/SDEF/QDEF, 5 simulated; bit8 overrides position from center/r0/r1.w
     float uv[2]; std::uint32_t edgeEnabled, material;
     std::int32_t bones[4];
     float weights[4];
@@ -36,17 +36,19 @@ struct Bone {
     float normalMatrix[3][4];  // (linear)^-T rows in xyz, w unused
     std::uint32_t flags;       // bit0: affine extension valid
     std::uint32_t reserved[3];
+    float qdefRotation[4];     // normalized QDEF rotation; independent of SDEF convention
 };
 struct Material { float edgeColor[4], edgeSize, edgeDistance; std::uint32_t pmd, opaqueEdge; };
 struct Output {
     float position[3], normal[3], uv[2], additionalUv[4][4];
     float edgePosition[3]; std::uint32_t edgeColor;
 };
-static_assert(sizeof(Vertex)==192 && sizeof(Bone)==192 && sizeof(Material)==32 && sizeof(Output)==112);
+static_assert(sizeof(Vertex)==192 && sizeof(Bone)==208 && sizeof(Material)==32 && sizeof(Output)==112);
 // The HLSL struct lays the same fields out at the same offsets; keep the
 // 16-byte rows of the affine extension pinned for the shader.
 static_assert(offsetof(Bone, quaternion) == 64 && offsetof(Bone, stretch) == 80 &&
-              offsetof(Bone, normalMatrix) == 128 && offsetof(Bone, flags) == 176,
+              offsetof(Bone, normalMatrix) == 128 && offsetof(Bone, flags) == 176 &&
+              offsetof(Bone, qdefRotation) == 192,
               "bone record ABI shared with d3d12_skinning.hlsl");
 struct Parameters {
     float edgeDistance; bool opaqueEdge; bool pmd; bool perVertex = false;

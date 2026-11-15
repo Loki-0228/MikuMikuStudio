@@ -46,7 +46,7 @@ mdl::PmxVertex Decode(Type type, std::array<std::int32_t, 4> bones,
     packed.Put(bones[0]);
     // Match the records consumed by both the production packed loader and
     // its serial fallback. The fallback type has only one decoded index.
-    if (type == Type::bdef4) {
+    if (type == Type::bdef4 || type == Type::qdef) {
         for (unsigned i = 1; i < bones.size(); ++i) packed.Put(bones[i]);
         for (auto w : weights) packed.Put(w);
     } else if (type == Type::bdef2 || type == Type::sdef) {
@@ -105,8 +105,8 @@ int main() {
     CheckInfluences(Decode(Type::bdef4, {-1, kBones, std::numeric_limits<std::int32_t>::max(), 4},
                            {0.25f, 0.25f, 0.25f, 0.25f}),
                     1u << 4, "BDEF4 rejects invalid indices without hiding valid lanes");
-    CheckInfluences(Decode(Type::qdef, {1}, {}, 0.75f), 0,
-                    "QDEF fallback has no native bone influence");
+    CheckInfluences(Decode(Type::qdef, {0,1,2,3}, {.75f,0,-.125f,.25f}), (1u<<0)|(1u<<3),
+                    "QDEF selects all positive influences");
     CheckInfluences(Decode(static_cast<Type>(0xff), {1}, {}, 0.75f), 0,
                     "unknown fallback has no native bone influence");
 

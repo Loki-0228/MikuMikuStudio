@@ -131,7 +131,7 @@ endif()
 add_library(mikumikustudio_graphics_runtime STATIC src/render/graphics_runtime.cpp)
 target_include_directories(mikumikustudio_graphics_runtime PUBLIC include)
 
-add_library(mikumikustudio_d3d12 STATIC src/render/d3d12_skinning.cpp)
+add_library(mikumikustudio_d3d12 STATIC src/render/d3d12_skinning.cpp src/render/d3d12_cloth.cpp)
 target_include_directories(mikumikustudio_d3d12 PUBLIC include)
 target_link_libraries(mikumikustudio_d3d12 PUBLIC mikumikustudio_graphics_runtime)
 if (MIKUMIKUSTUDIO_ENABLE_DX12)
@@ -494,6 +494,8 @@ add_library(mikumikustudio_core STATIC
     src/window/ui_language_settings.cpp
     src/window/physics_bake_dialog.cpp
     src/model/pmx_load.cpp
+    src/physics/pmx21.cpp
+    src/physics/soft_body_compute.cpp
     src/model/add_model.cpp
     src/model/model_query_gaps.cpp
     src/model/model_dispose.cpp
@@ -1192,14 +1194,31 @@ if (MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS)
     add_test(NAME capture_downsample_regressions COMMAND capture_downsample_tests)
     set_tests_properties(capture_downsample_regressions PROPERTIES TIMEOUT 20)
 
-    foreach (physics_test physics_pose_tests pmx_joint_tests physics_bake_settings_tests physics_scale_tests affine_collision_shape_tests)
+    set(pmx21_physics_tests)
+    if (NOT MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932")
+        list(APPEND pmx21_physics_tests pmx21_tests)
+        if(MIKUMIKUSTUDIO_ENABLE_DX12)
+            list(APPEND pmx21_physics_tests cloth_compute_tests)
+        endif()
+    endif()
+    foreach (physics_test physics_pose_tests pmx_joint_tests ${pmx21_physics_tests} physics_bake_settings_tests physics_scale_tests affine_collision_shape_tests)
         add_executable(${physics_test} EXCLUDE_FROM_ALL tests/${physics_test}.cpp)
         target_link_libraries(${physics_test} PRIVATE mikumikustudio_core winmm dsound)
         set_target_properties(${physics_test} PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
-        add_test(NAME ${physics_test} COMMAND ${physics_test})
+        if (MIKUMIKUSTUDIO_PROFILE STREQUAL "mmd932" AND physics_test STREQUAL "pmx_joint_tests")
+            # The original profile also emits its legacy import notification;
+            # the full-profile localized-dialog assertion does not apply.
+            add_test(NAME ${physics_test} COMMAND ${physics_test} --indices-only)
+        else()
+            add_test(NAME ${physics_test} COMMAND ${physics_test})
+        endif()
         set_tests_properties(${physics_test} PROPERTIES TIMEOUT 30)
     endforeach()
+    if (TARGET pmx21_tests)
+        target_compile_definitions(pmx21_tests PRIVATE MMS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_definitions(pmx21_tests PRIVATE MMS_TEST_DX12=$<BOOL:${MIKUMIKUSTUDIO_ENABLE_DX12}>)
+    endif()
     add_executable(pmx_text_tests EXCLUDE_FROM_ALL tests/pmx_text_tests.cpp)
     target_link_libraries(pmx_text_tests PRIVATE mikumikustudio_core winmm dsound)
     set_target_properties(pmx_text_tests PROPERTIES

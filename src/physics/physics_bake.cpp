@@ -6,6 +6,8 @@
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/bone_pose_safety.hpp"
 #include "mikumikustudio/affine_skinning.hpp"
+#include "mikumikustudio/qdef_skinning.hpp"
+#include "mikumikustudio/pmx21.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
@@ -15,6 +17,9 @@
 #include "mikumikustudio/frame_presentation.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
+#if !MMD_ORIGINAL_PROFILE
+#include <BulletSoftBody/btSoftBodyRigidBodyCollisionConfiguration.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -50,6 +55,7 @@ struct ModelCopy {
     std::vector<unsigned> indices;
     unsigned char* raw() { return reinterpret_cast<unsigned char*>(model.get()); }
     explicit ModelCopy(const mdl::ModelRecord& source, bool geometry = false) : model(new mdl::ModelRecord(source)) {
+        geometry = geometry || pmx21::HasSoftBodies(reinterpret_cast<const unsigned char*>(&source));
         auto& m = *model;
         if (!source.boneKeys || !source.displayKeys ||
             source.boneCount > mdl::BoneKeyCapacity(source)) throw SceneError{};
@@ -90,16 +96,18 @@ struct ModelCopy {
         try {
             bone_scale::CopyState(original, raw());
             morph_curve::CopyState(original, raw());
+            pmx21::CopyState(original, raw());
         } catch (...) {
             // A failed constructor does not run ~ModelCopy. Remove any side
             // tables published before a later copy failed.
             physics_scale::Forget(raw());
             bone_scale::Forget(raw());
             morph_curve::Forget(raw());
+            pmx21::Forget(raw());
             throw;
         }
     }
-    ~ModelCopy() { physics_scale::Forget(raw()); bone_scale::Forget(raw()); morph_curve::Forget(raw()); }
+    ~ModelCopy() { pmx21::Forget(raw()); physics_scale::Forget(raw()); bone_scale::Forget(raw()); morph_curve::Forget(raw()); }
 };
 class BakeJoint final : public btGeneric6DofSpringConstraint {
     btScalar erp_, cfm_;
@@ -128,7 +136,11 @@ public:
     }
 };
 struct WorldCopy {
+#if MMD_ORIGINAL_PROFILE
     btDefaultCollisionConfiguration config;
+#else
+    btSoftBodyRigidBodyCollisionConfiguration config;
+#endif
     btCollisionDispatcher dispatcher{&config};
     btDbvtBroadphase broadphase;
     btSequentialImpulseConstraintSolver solver;
@@ -136,7 +148,7 @@ struct WorldCopy {
     PhysicsScene scene{};
     std::vector<std::unique_ptr<btDefaultMotionState>> motions;
     std::vector<std::unique_ptr<btRigidBody>> bodies;
-    std::vector<std::unique_ptr<BakeJoint>> joints;
+    std::vector<std::unique_ptr<btTypedConstraint>> joints;
     std::unordered_map<const btRigidBody*,btRigidBody*> bodyMap;
     explicit WorldCopy(btDiscreteDynamicsWorld& original,const Settings& settings) {
         scene.world = &world;
@@ -145,6 +157,11 @@ struct WorldCopy {
         world.getSolverInfo().m_globalCfm = settings.cfm;
         world.setGravity(original.getGravity()); world.ResetLocalTime();
         for (int i=0;i<original.getNumCollisionObjects();++i) {
+#if !MMD_ORIGINAL_PROFILE
+            // Soft meshes are reconstructed per ModelCopy, after their rigid
+            // anchor references have been rebound to this isolated world.
+            if (original.getCollisionObjectArray()[i]->getInternalType() == btCollisionObject::CO_SOFT_BODY) continue;
+#endif
             auto* src = btRigidBody::upcast(original.getCollisionObjectArray()[i]);
             if (!src) throw SceneError{};
             const btScalar mass = src->getInvMass() > 0 ? 1/src->getInvMass() : 0;
@@ -179,16 +196,35 @@ struct WorldCopy {
         for (auto& j:copy.joints) {
             if (j.constraint<0) continue;
             auto* ow=original.scenePtr ? original.scenePtr->world : nullptr;
-            btGeneric6DofSpringConstraint* source=nullptr;
+            btTypedConstraint* constraint=nullptr;
             if (ow) for(int i=0;i<ow->getNumConstraints();++i) {
                 auto* c=ow->getConstraint(i);
-                if(c->getUid()==j.constraint) { source=dynamic_cast<btGeneric6DofSpringConstraint*>(c); break; }
+                if(c->getUid()==j.constraint) { constraint=c; break; }
             }
-            if (!source || j.rigidA<0 || j.rigidB<0 || j.rigidA>=static_cast<int>(copy.rigids.size()) ||
+            if (!constraint || j.rigidA<0 || j.rigidB<0 || j.rigidA>=static_cast<int>(copy.rigids.size()) ||
                 j.rigidB>=static_cast<int>(copy.rigids.size())) { j.constraint=-1; continue; }
             auto* a=static_cast<btRigidBody*>(copy.rigids[j.rigidA].body);
             auto* b=static_cast<btRigidBody*>(copy.rigids[j.rigidB].body);
             if(!a||!b) { j.constraint=-1; continue; }
+            auto* source=dynamic_cast<btGeneric6DofSpringConstraint*>(constraint);
+#if !MMD_ORIGINAL_PROFILE
+            if (!source) {
+                unsigned type=0;
+                switch (constraint->getConstraintType()) {
+                case D6_CONSTRAINT_TYPE: type=1; break;
+                case POINT2POINT_CONSTRAINT_TYPE: type=2; break;
+                case CONETWIST_CONSTRAINT_TYPE: type=3; break;
+                case SLIDER_CONSTRAINT_TYPE: type=4; break;
+                case HINGE_CONSTRAINT_TYPE: type=5; break;
+                default: throw SceneError{};
+                }
+                scene.constraintId=j.constraint;
+                j.constraint=pmx21::CreateJoint(scene,*copy.model,j,type);
+                joints.emplace_back(world.getConstraint(world.getNumConstraints()-1));
+                continue;
+            }
+#endif
+            if (!source) { j.constraint=-1; continue; }
             btTransform fa,fb; physics_scale::JointBaseline(*source,fa,fb);
             joints.emplace_back(new BakeJoint(*a,*b,fa,fb,j,settings));
             joints.back()->setUserConstraintId(j.constraint);
@@ -823,11 +859,13 @@ LayerError CheckLayerMeshIsNativeSkin(const native_mesh::LayerObject& object,
         case 3:affine::SkinSdef(refFor(bind.bones[0]),refFor(bind.bones[1]),bind.weights[0],
                                 bind.deformedPosition,bind.deformedNormal,bind.sdefCenter,
                                 bind.sdefR0,bind.sdefR1,operations,skinned);break;
+        case 4:
+            affine::SkinQdef(bind.deformedPosition,bind.deformedNormal,bind.bones,bind.weights,
+                int(object.bones.size()),[&](int b){return object.bones[b].skinMatrix;},aux.data(),
+                skinned.position,skinned.normal);
+            break;
         default:
-            // QDEF and unknown weight types: the host skinning leaves position
-            // and normal untouched (model_skinning.cpp dispatch default), so
-            // the native result is the untransformed input itself.  No new
-            // QDEF behaviour is invented here.
+            // Unknown weight types retain the native untransformed fallback.
             std::memcpy(skinned.position,bind.deformedPosition,sizeof skinned.position);
             std::memcpy(skinned.normal,bind.deformedNormal,sizeof skinned.normal);
             break;

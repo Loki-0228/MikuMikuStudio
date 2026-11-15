@@ -7,6 +7,7 @@
 #include "mikumikustudio/d3d12_native.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/gpu_model.hpp"
+#include "mikumikustudio/pmx21.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
@@ -286,7 +287,9 @@ struct Native {
         packed.parameters={0,false,false,true};
         std::vector<unsigned char*> identity;
         std::vector<std::uint64_t> stamp;
+        bool simulated=false;
         for(int i=0;i<kModelSlotCount;++i)if(auto* model=app->ModelSlot(i)){
+            simulated |= pmx21::HasSoftBodies(model);
             identity.push_back(model);const auto& m=*mdl::Mdl(model);
             stamp.insert(stamp.end(),{std::uint64_t(reinterpret_cast<uintptr_t>(model)),
                 std::uint64_t(reinterpret_cast<uintptr_t>(m.pmxVertices)),
@@ -294,7 +297,7 @@ struct Native {
                 m.vertexCount,m.boneCount,m.materialCount,std::uint64_t(m.comboSelIndex),m.loadComplete});
             for(std::uint32_t j=0;j<m.morphCount;++j){std::uint32_t bits;memcpy(&bits,&mdl::Morphs(model)[j].value,4);stamp.push_back(bits);}
         }
-        const bool geometry=stamp!=geometryStamp||!geometryRevision;
+        const bool geometry=simulated||stamp!=geometryStamp||!geometryRevision;
         if(geometry){geometryStamp=std::move(stamp);++geometryRevision;packed.vertices.clear();}
         packed.parameters.geometryRevision=geometryRevision;
         if(identity!=modelIdentity){WaitAll();textures.clear();modelIdentity=std::move(identity);}

@@ -5,9 +5,8 @@ namespace mikumikustudio {
 class MMDApp;
 
 // The single 运算器 / Processors / 演算器 entry under Help. The host-wide main
-// renderer and vertex compute roles are always present; the MMV role is added
-// only while an MMV DLL with the global-processor capability is loaded.
-// Every choice only updates the per-user processor.ini through
+// renderer, vertex and cloth compute roles are present.
+// Every choice only updates installation-local data/settings.json through
 // processor::SaveRequested.  Nothing here changes a device in the running
 // process; a change starts on the next launch.
 constexpr unsigned kSkinningMenuId = 32000;
@@ -26,6 +25,10 @@ constexpr unsigned kSkinningAdapterLimit = 128;
 constexpr unsigned kRendererAutomaticId = 33000;
 constexpr unsigned kRendererAdapterFirstId = 33001;
 constexpr unsigned kRendererAdapterLimit = 128;
+constexpr unsigned kClothAutomaticId = 33200;
+constexpr unsigned kClothCpuId = 33201;
+constexpr unsigned kClothAdapterFirstId = 33202;
+constexpr unsigned kClothAdapterLimit = 128;
 
 // MMV role: 33400..33529.
 constexpr unsigned kMmvFollowRendererId = 33400;

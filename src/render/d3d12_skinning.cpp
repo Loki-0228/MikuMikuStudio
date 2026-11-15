@@ -241,7 +241,7 @@ void main(uint3 tid : SV_DispatchThreadID) {
                                 Parameters p) {
         const bool update=!p.geometryRevision||p.geometryRevision!=f.geometryRevision;
         if(update) {
-            for(const auto& v:vertices) if(v.type>3 || v.material>=materials.size())
+            for(const auto& v:vertices) if((v.type>5 && (v.type<0x100 || v.type>0x104)) || v.material>=materials.size())
                 throw std::runtime_error("Unsupported skinning type or invalid material");
             Upload(f.vertexUpload,vertices);
             if(Buffer(f.vertices,vertices.size()*sizeof(Vertex),D3D12_HEAP_TYPE_DEFAULT,

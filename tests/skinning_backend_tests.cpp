@@ -207,7 +207,7 @@ int main(int argc, char** argv) {
             MENUITEMINFOW stale{sizeof stale}; stale.fMask=MIIM_SUBMENU;
             Check(!GetMenuItemInfoW(GetSubMenu(menu,2),kSkinningMenuId,FALSE,&stale), "View no longer holds the entry");
             HMENU level2[2]{GetSubMenu(popup,0),GetSubMenu(popup,1)};
-            Check(level2[0]&&level2[1]&&GetMenuItemCount(popup)==5,
+            Check(level2[0]&&level2[1]&&GetSubMenu(popup,2)&&GetMenuItemCount(popup)==6,
                   "only host processor roles are shown without a loaded MMV DLL");
             for(int round=0;round<5;++round) {
                 SendMessageW(window,WM_INITMENUPOPUP,reinterpret_cast<WPARAM>(popup),MAKELPARAM(0,TRUE));
@@ -453,6 +453,9 @@ int main(int argc, char** argv) {
     Check(AutomaticCaption(app.get(),menu)==L"自动（首次测速）", "the automatic choice never names a device");
     Check(VertexCurrentLine(app.get(),menu)==L"最近一次模型运算：等待模型运算", "pending automatic caption does not invent a device");
     skinning::SetPreference({});
+    // This executable owns its local calibration file. Exercise a cold start
+    // even after a previous test run, then check the warm cache below.
+    std::filesystem::remove(skinning::calibration_cache::Path(L"MMS"));
     skinning::InitializeAutomatic(app.get(),device.Get());
     const auto startupCount=skinning::GetStatus().automaticCalibrations;
     Check(startupCount==6 && skinning::GetStartupMeasurements().size()==6,
@@ -482,8 +485,8 @@ int main(int argc, char** argv) {
         pmd[v].position[0]=pmx[v].position[0]=v*.12f; pmd[v].normal[1]=pmx[v].normal[1]=1;
         pmd[v].uv[0]=pmx[v].uv[0]=.25f; pmd[v].uv[1]=pmx[v].uv[1]=.75f;
         pmd[v].bone[0]=0; pmd[v].bone[1]=1; pmd[v].weightPercent=60; pmd[v].edgeDisabled=v&1;
-        pmx[v].weightType=static_cast<mdl::PmxWeightType>(v%4); pmx[v].edgeScale=.9f; pmx[v].hasPmxEdgeData=v&1;
-        for(unsigned b=0;b<4;++b) { pmx[v].bone[b]=b; pmx[v].weight[b]=v%4==2?.25f:.6f; }
+        pmx[v].weightType=static_cast<mdl::PmxWeightType>(v%5); pmx[v].edgeScale=.9f; pmx[v].hasPmxEdgeData=v&1;
+        for(unsigned b=0;b<4;++b) { pmx[v].bone[b]=b; pmx[v].weight[b]=(v%5==2||v%5==4)?.25f:.6f; }
         for(unsigned uv=0;uv<4;++uv) for(unsigned c=0;c<4;++c) pmx[v].additionalUvByComponent[c][uv]=(v+uv+c)*.125f;
         pmx[v].sdef.center[0]=.2f; pmx[v].sdef.r0Offset[1]=.3f; pmx[v].sdef.r1Offset[2]=.4f;
     }
@@ -530,9 +533,8 @@ int main(int argc, char** argv) {
             const auto type=pmx[0].weightType; pmx[0].weightType=static_cast<mdl::PmxWeightType>(4);
             skinning::SetPreference({skinning::Mode::Cpu}); UpdateModelVertexBuffers(app.get(),bytes,world);
             const auto cpu=Read(main.Get(),edge.Get(),stride,count);
-            skinning::SetPreference({}); UpdateModelVertexBuffers(app.get(),bytes,world);
-            Check(skinning::GetStatus().result==skinning::Result::Unsupported, "QDEF CPU fallback");
-            Check(VertexCurrentLine(app.get(),menu)==L"最近一次模型运算：CPU（该模型使用兼容回退）", "automatic caption follows CPU compatibility fallback");
+            skinning::SetPreference({skinning::Mode::Adapter,adapters[0].id,adapters[0].name}); UpdateModelVertexBuffers(app.get(),bytes,world);
+            Check(skinning::GetStatus().result==skinning::Result::Gpu, "QDEF stays on GPU");
             Same(cpu,Read(main.Get(),edge.Get(),stride,count)); pmx[0].weightType=type;
         }
         skinning::SetPreference({}); UpdateModelVertexBuffers(app.get(),bytes,world);
@@ -649,9 +651,9 @@ int main(int argc, char** argv) {
         Check(GetMenuStringW(view,kSkinningMenuId,label,256,MF_BYCOMMAND)>0, "processor caption");
         Check(std::wcscmp(label,L"运算器")==0, "Chinese processor caption");
         Check(std::wcsstr(label,L"蒙皮")==nullptr, "no skinning wording in the caption");
-        Check(GetMenuItemCount(popup)>=2, "two host processor role submenus");
-        const wchar_t* names[2]={L"主渲染设备",L"顶点计算设备"};
-        for(unsigned role=0;role<2;++role) {
+        Check(GetMenuItemCount(popup)>=3, "three host processor role submenus");
+        const wchar_t* names[3]={L"主渲染设备",L"顶点计算设备",L"软体计算设备"};
+        for(unsigned role=0;role<3;++role) {
             HMENU sub=GetSubMenu(popup,role);
             Check(sub!=nullptr, "role submenu is a popup");
             Check(GetMenuStringW(popup,role,label,256,MF_BYPOSITION)>0 &&
@@ -854,7 +856,7 @@ int main(int argc, char** argv) {
                   std::wcscmp(label,L"主渲染设备")==0, "Chinese renderer submenu");
             Check(GetMenuStringW(popup,1,label,128,MF_BYPOSITION)>0 &&
                   std::wcscmp(label,L"顶点计算设备")==0, "Chinese vertex submenu");
-            Check(GetMenuItemCount(popup)==5, "Chinese processor menu contains host roles only");
+            Check(GetMenuItemCount(popup)==6, "Chinese processor menu includes cloth role");
         } else if(language==1) {
             Check(std::wcscmp(label,L"Processors")==0, "English display menu label");
             Check(GetMenuStringW(popup,1,label,128,MF_BYPOSITION)>0 &&

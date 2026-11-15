@@ -303,6 +303,7 @@ void TraceFrameStep() {
     app->SidebarWidth() = 0;  // No timeline surface in this fixture.
     app->ModelSlot(0) = fixture.raw();
     app->SelectedModelSlot() = -1;
+    app->state.optflag[0] = 1;  // No selected model: paint the camera timeline.
     app->PlaybackPhysicsMode() = 3;
     app->state.messageSeen = 1;
 
@@ -593,6 +594,7 @@ void LayerUnit() {
     using namespace layer_unit;
     std::puts("layer bake expressibility: start");
     auto app = std::make_unique<MMDApp>();
+    app->state = MMDAppState{};
     Fixture f;
     mdl::MorphRecord morph{};std::strcpy(morph.name,"smile");
     static wchar_t smile[] = L"smile";morph.jpText = smile;
@@ -692,12 +694,11 @@ void LayerUnit() {
         Check(bake::CheckLayerMeshIsNativeSkin(object, object, message) == bake::LayerError::NoDeformedGeometry,
               "a snapshot without morph-deformed geometry is refused, never assumed");
         object.bindings[0].deformedValid = true;
-        // QDEF and unknown weight types: the host leaves position and normal
-        // untouched, so an unchanged vertex is a native result and a moved one
-        // is not.  No QDEF transform is invented.
+        // QDEF with a unit bone transform preserves the input; extra geometry
+        // still cannot be represented by bone keys.
         object.bindings[0].weightType = 4;
         Check(bake::CheckLayerMeshIsNativeSkin(object, object, message) == bake::LayerError::None,
-              "an untouched QDEF vertex matches the host behaviour");
+              "QDEF identity transform matches native skinning");
         vertex.position[2] = 5.0f;
         Check(bake::CheckLayerMeshIsNativeSkin(object, object, message) == bake::LayerError::ExtraMeshDeform,
               "a moved QDEF vertex cannot come from native keys");

@@ -3,6 +3,7 @@
 #include "mikumikustudio/skinning_menu.hpp"
 #include "mikumikustudio/processor_settings.hpp"
 #include "mikumikustudio/skinning_backend.hpp"
+#include "mikumikustudio/soft_body_compute.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ui_language.hpp"
 #include <algorithm>
@@ -160,6 +161,20 @@ std::wstring VerticesCurrent(MMDApp* app) {
         return Text(app, L"CPU（GPU 不可用）", L"CPU (GPU unavailable)", L"CPU（GPU 使用不可）");
     default:
         return Text(app, L"等待模型运算", L"Waiting for a model computation", L"モデル演算待ち");
+    }
+}
+
+std::wstring ClothCurrent(MMDApp* app) {
+    const auto& state=soft_compute::GetStatus();
+    switch(state.result) {
+    case soft_compute::Result::Gpu:return MenuSafe(state.adapter)+(state.clusterIterationsCpu ?
+        Text(app,L"（簇接触迭代：CPU）",L" (cluster contact iterations: CPU)",L"（クラスタ接触反復：CPU）") : L"");
+    case soft_compute::Result::Cpu:return L"CPU";
+    case soft_compute::Result::Small:return Text(app,L"CPU（小型软体）",L"CPU (small soft body)",L"CPU（小さいソフトボディ）");
+    case soft_compute::Result::MeasuredCpu:return Text(app,L"CPU（实测更快）",L"CPU (measured faster)",L"CPU（実測で高速）");
+    case soft_compute::Result::Unsupported:return Text(app,L"CPU（物理参数兼容）",L"CPU (physics compatibility)",L"CPU（物理設定の互換性）");
+    case soft_compute::Result::Unavailable:return Text(app,L"CPU（GPU 不可用）",L"CPU (GPU unavailable)",L"CPU（GPU 使用不可）");
+    default:return Text(app,L"等待软体运算",L"Waiting for soft-body computation",L"ソフトボディ演算待ち");
     }
 }
 
@@ -489,8 +504,14 @@ void RefreshSkinningMenu(MMDApp* app) {
          Mode::Automatic, Mode::Cpu, false,
          Text(app, L"最近一次模型运算：", L"Last model computation: ", L"直近のモデル演算："),
          VerticesCurrent},
+        {L"软体计算设备",L"Soft-body compute",L"ソフトボディ演算デバイス",
+         &requested.cloth,&computes,kClothAutomaticId,
+         Text(app,L"自动（首次测速）",L"Automatic (benchmark once)",L"自動（初回に測定）"),
+         kClothCpuId,L"CPU",kClothAdapterFirstId,kClothAdapterLimit,
+         Mode::Automatic,Mode::Cpu,false,
+         Text(app,L"最近一次软体运算：",L"Last soft-body computation: ",L"直近のソフトボディ演算："),ClothCurrent},
     };
-    const unsigned roleCount = 2;
+    const unsigned roleCount = 3;
     const Role* roles = allRoles;
 
     // The popup holds the available role submenus, a separator and two status
@@ -651,6 +672,12 @@ bool HandleSkinningCommand(MMDApp* app, unsigned command) {
                command < kSkinningAdapterFirstId + kSkinningAdapterLimit) {
         target = &configuration.vertices; adapters = &processor::ComputeAdapters();
         firstId = kSkinningAdapterFirstId; limit = kSkinningAdapterLimit;
+    } else if(command==kClothAutomaticId) {
+        target=&configuration.cloth;*target=FreshMode(Mode::Automatic);
+    } else if(command==kClothCpuId) {
+        target=&configuration.cloth;*target=FreshMode(Mode::Cpu);
+    } else if(command>=kClothAdapterFirstId && command<kClothAdapterFirstId+kClothAdapterLimit) {
+        target=&configuration.cloth;adapters=&processor::ComputeAdapters();firstId=kClothAdapterFirstId;limit=kClothAdapterLimit;
     } else {
         return false;
     }

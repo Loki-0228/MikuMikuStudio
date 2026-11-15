@@ -48,6 +48,7 @@ bool frozen = false;
 ResolvedInfo actualRenderer;
 ResolvedInfo actualVertices;
 ResolvedInfo actualMmv;
+ResolvedInfo actualCloth;
 bool rendererResolved = false;
 std::wstring configOverride;
 std::vector<AdapterEntry> rendererAdapters;
@@ -143,6 +144,7 @@ const wchar_t* SectionName(Role role) {
     switch (role) {
     case Role::Vertices: return L"Vertices";
     case Role::Mmv: return L"Mmv";
+    case Role::Cloth: return L"Cloth";
     default: return L"Renderer";
     }
 }
@@ -216,6 +218,7 @@ Configuration ReadConfiguration(const wchar_t* path, std::wstring& warning) {
     Configuration configuration;
     configuration.renderer = ReadSelection(path, Role::Renderer, warning);
     configuration.vertices = ReadSelection(path, Role::Vertices, warning);
+    configuration.cloth = ReadSelection(path, Role::Cloth, warning);
     configuration.mmv = ReadSelection(path, Role::Mmv, warning);
     return configuration;
 }
@@ -236,6 +239,7 @@ std::wstring Serialize(const Configuration& configuration) {
     };
     emit(Role::Renderer, configuration.renderer);
     emit(Role::Vertices, configuration.vertices);
+    emit(Role::Cloth, configuration.cloth);
     emit(Role::Mmv, configuration.mmv);
     return text;
 }
@@ -252,6 +256,7 @@ std::string SelectionJson(const Selection& selection) {
 std::string ConfigurationJson(const Configuration& configuration) {
     return "{\"renderer\":" + SelectionJson(configuration.renderer) +
         ",\"vertices\":" + SelectionJson(configuration.vertices) +
+        ",\"cloth\":" + SelectionJson(configuration.cloth) +
         ",\"mmv\":" + SelectionJson(configuration.mmv) + "}";
 }
 Selection JsonSelection(const settings_json::Json& root, const char* name, Role role, std::wstring& warning) {
@@ -286,6 +291,7 @@ Configuration JsonConfiguration(const std::string& body, std::wstring& warning) 
     Configuration configuration;
     configuration.renderer = JsonSelection(root, "renderer", Role::Renderer, warning);
     configuration.vertices = JsonSelection(root, "vertices", Role::Vertices, warning);
+    configuration.cloth = JsonSelection(root, "cloth", Role::Cloth, warning);
     configuration.mmv = JsonSelection(root, "mmv", Role::Mmv, warning);
     return configuration;
 }
@@ -629,6 +635,10 @@ bool IsValid(Role role, const Selection& selection, std::wstring* reason) {
 
 bool IsValid(const Configuration& configuration, std::wstring* reason) {
     std::wstring local;
+    if (!IsValid(Role::Cloth, configuration.cloth, &local)) {
+        if (reason != nullptr) *reason = L"Cloth: " + local;
+        return false;
+    }
     if (!IsValid(Role::Renderer, configuration.renderer, &local)) {
         if (reason != nullptr) *reason = L"Renderer: " + local;
         return false;
@@ -723,6 +733,7 @@ bool Initialize(std::wstring& error) {
     computeAdapters = EnumerateDxgi();
     computeEnumerated = true;
     actualVertices = ResolveComputeRole(active.vertices, computeAdapters);
+    actualCloth = ResolveComputeRole(active.cloth, computeAdapters);
     skinning::SetPreference(PreferenceFrom(SelectionFrom(actualVertices)));
     if (active.mmv.mode == Mode::FollowRenderer) {
         // Expanded later against the real renderer device (ResolvedMmv).
@@ -731,13 +742,16 @@ bool Initialize(std::wstring& error) {
     } else {
         actualMmv = ResolveComputeRole(active.mmv, computeAdapters);
     }
-    runtime_log::Write("PROCESSOR settings active: renderer=%s vertices=%s mmv=%s",
+    runtime_log::Write("PROCESSOR settings active: renderer=%s vertices=%s softbody=%s mmv=%s",
                        ModeNameA(active.renderer.mode),
                        ModeNameA(active.vertices.mode),
+                       ModeNameA(active.cloth.mode),
                        ModeNameA(active.mmv.mode));
     if (actualVertices.fellBack)
         runtime_log::Write("PROCESSOR vertices fallback: %ls",
                            actualVertices.fallbackReason.c_str());
+    if (actualCloth.fellBack)
+        runtime_log::Write("PROCESSOR softbody fallback: %ls",actualCloth.fallbackReason.c_str());
     if (actualMmv.fellBack)
         runtime_log::Write("PROCESSOR mmv fallback: %ls",
                            actualMmv.fallbackReason.c_str());
@@ -826,6 +840,7 @@ unsigned ResolveRenderer(IDirect3D9* d3d, const Selection& choice,
 
 const ResolvedInfo& ActualRenderer() { return actualRenderer; }
 const ResolvedInfo& ActualVertices() { return actualVertices; }
+Selection ResolvedCloth() { return SelectionFrom(actualCloth); }
 const ResolvedInfo& ActualMmv() { return actualMmv; }
 
 Selection ResolvedMmv() {
@@ -887,6 +902,7 @@ void ResetForTesting() {
     frozen = false;
     actualRenderer = ResolvedInfo{};
     actualVertices = ResolvedInfo{};
+    actualCloth = ResolvedInfo{};
     actualMmv = ResolvedInfo{};
     rendererResolved = false;
     configOverride.clear();

@@ -1,11 +1,13 @@
 // ===========================================================================
 // processor_settings.hpp - global processor policy (host side)
 //
-// One menu entry governs three roles (docs/records/performance/devices.md):
+// Processor policy governs four roles (docs/records/performance/devices.md):
 //   Renderer  主渲染设备 - main D3D9 device, shadows, edges, transparency,
 //             final MME output.       Options: Automatic, Adapter.
 //   Vertices  顶点计算设备 - native model vertex transform back end.
 //             Options: Automatic, Adapter, Cpu.
+//   Cloth     软体计算设备 - native PMX soft-body constraint solver.
+//             Options: Automatic, Adapter, Cpu. Default: Automatic.
 //   Mmv       MMV 处理设备 - MMV compute shaders, mesh passes, textures and
 //             intermediate drawing.   Options: FollowRenderer, Automatic,
 //             Adapter, Cpu.  Default: FollowRenderer.
@@ -28,7 +30,7 @@
 // stale LUID is rebound at startup by a unique full-identity match; an
 // ambiguous or missing device falls back to the automatic choice with
 // ResolvedInfo::fallbackReason reported while Requested keeps the user's
-// saved selection.  Vertices and explicit Mmv GPU selections resolve through
+// saved selection. Vertices, Cloth and explicit Mmv GPU selections resolve through
 // the same re-enumeration; nothing passes a saved LUID straight through.
 //
 // The main D3D9 device is still created through the original Direct3DCreate9
@@ -54,7 +56,7 @@ struct IDirect3D9;
 namespace mikumikustudio {
 namespace processor {
 
-enum class Role : std::uint8_t { Renderer = 0, Vertices = 1, Mmv = 2 };
+enum class Role : std::uint8_t { Renderer = 0, Vertices = 1, Mmv = 2, Cloth = 3 };
 
 enum class Mode : std::uint8_t {
     Automatic = 0,
@@ -96,6 +98,7 @@ struct Configuration {
     Selection vertices;
     // MMV defaults to FollowRenderer (contract default, also in ResetForTesting).
     Selection mmv{Mode::FollowRenderer, 0, std::wstring(), DeviceIdentity{}};
+    Selection cloth;
 };
 
 // What a role actually runs this run: the device identity plus, when the
@@ -126,7 +129,7 @@ struct AdapterEntry {
     unsigned performanceRank = kUnknownPerformanceRank;
 };
 
-// Role constraints: Renderer forbids Cpu and FollowRenderer; Vertices forbids
+// Role constraints: Renderer forbids Cpu and FollowRenderer; Vertices and Cloth forbid
 // FollowRenderer; Mmv accepts all four modes.  Adapter requires a non-zero
 // adapterId.  `reason` receives a human-readable explanation on rejection.
 bool IsValid(Role role, const Selection& selection, std::wstring* reason = nullptr);
@@ -134,7 +137,7 @@ bool IsValid(const Configuration& configuration, std::wstring* reason = nullptr)
 
 // Current requested (user-chosen, saved) and active (frozen for this run)
 // configurations.  Before Initialize both are the defaults: Renderer and
-// Vertices Automatic, Mmv FollowRenderer.
+// Vertices and Cloth Automatic, Mmv FollowRenderer.
 const Configuration& Requested();
 const Configuration& Active();
 
@@ -145,7 +148,7 @@ const Configuration& Active();
 bool SaveRequested(const Configuration& configuration, std::wstring& error);
 
 // Startup: read the config file, freeze Active exactly once, re-enumerate the
-// adapters once and resolve the Vertices and explicit Mmv selections against
+// adapters once and resolve the Vertices, Cloth and explicit Mmv selections against
 // that enumeration (stale LUIDs rebind by a unique full-identity match; a
 // missing or ambiguous device runs the role's own automatic behaviour with
 // fellBack and the reason reported while Requested keeps the saved intent).
@@ -186,13 +189,15 @@ const ResolvedInfo& ActualMmv();
 // MMV side owns its own capability reporting; this function never claims a
 // device that was not requested.
 Selection ResolvedMmv();
+// Native cloth uses its own automatic CPU/GPU timing and capability checks.
+Selection ResolvedCloth();
 
 // Adapter lists for the UI menu and for building a Selection (the UI
 // constructs Selections from AdapterEntry, identity fields included).
 // RendererAdapters() is the complete D3D9 adapter list the main device can
 // actually use - initialized and cached by ResolveRenderer from the real
 // D3D9 enumeration, NOT the FL11-only compute list; ComputeAdapters() covers
-// the Vertices and Mmv roles (DXGI).  Both carry the full DeviceIdentity.
+// the Vertices, Cloth and Mmv roles (DXGI). Both carry the full DeviceIdentity.
 // Empty before their enumeration runs.
 const std::vector<AdapterEntry>& RendererAdapters();
 const std::vector<AdapterEntry>& ComputeAdapters();

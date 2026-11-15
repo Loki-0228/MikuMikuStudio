@@ -1,4 +1,5 @@
 #include "mikumikustudio/model_import.hpp"
+#include "mikumikustudio/pmx21.hpp"
 #include "mikumikustudio/display_capacity.hpp"
 #include "mikumikustudio/frame_clipboard.hpp"
 #include "mikumikustudio/bone_edit_axes.hpp"
@@ -138,6 +139,7 @@ void ReleasePhysRigid(void* scene, void* bodyPointer) {
 
 // VA 0x0048F830
 static void DisposeModelResources(unsigned char* m, bool published) {
+    pmx21::Forget(m);
     ForgetBoneHudPreview(m);
     frame_clipboard::ForgetModel(m);
     plugins::ForgetSceneObject(m);

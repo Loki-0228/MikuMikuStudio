@@ -29,16 +29,16 @@ struct MdsBufferShadowOutput {
 	float3 N		: TEXCOORD1;
 	float3 Eye		: TEXCOORD2;
 
-float4 MdsPosition:TEXCOORD6;float MdsId:TEXCOORD7;};
-MdsBufferShadowOutput MdsBufferShadowVS(float4 Pos : POSITION, float4 Normal : NORMAL,float MdsId:TEXCOORD5) {
-BufferShadow_OUTPUT original=BufferShadow_VS(Pos,Normal);MdsBufferShadowOutput result;
+float4 PmxColor:COLOR1;float4 MdsPosition:TEXCOORD6;float MdsId:TEXCOORD7;};
+MdsBufferShadowOutput MdsBufferShadowVS(float4 Pos : POSITION, float4 Normal : NORMAL,float MdsId:TEXCOORD5,float4 PmxColor:TEXCOORD1) {
+BufferShadow_OUTPUT original=BufferShadow_VS(Pos,Normal,PmxColor);MdsBufferShadowOutput result;
 result.Pos=original.Pos;
 result.ZCalcTex=original.ZCalcTex;
 result.N=original.N;
 result.Eye=original.Eye;
-result.MdsPosition=original.Pos;result.MdsId=MdsId;return result;
+result.PmxColor=original.PmxColor;result.MdsPosition=original.Pos;result.MdsId=MdsId;return result;
 }
-MdsFragment MdsBufferShadowPS(float4 ZCalcTex : TEXCOORD0,float3 N : TEXCOORD1,float3 Eye : TEXCOORD2,float4 MdsPosition:TEXCOORD6,float MdsId:TEXCOORD7,float2 pixel:VPOS){return MdsFinish(BufferShadow_PS(ZCalcTex,N,Eye),MdsPosition,MdsId,pixel);}
+MdsFragment MdsBufferShadowPS(float4 ZCalcTex : TEXCOORD0,float3 N : TEXCOORD1,float3 Eye : TEXCOORD2,float4 MdsPosition:TEXCOORD6,float MdsId:TEXCOORD7,float2 pixel:VPOS,float4 PmxColor:COLOR1){return MdsFinish(BufferShadow_PS(ZCalcTex,N,Eye,PmxColor),MdsPosition,MdsId,pixel);}
 technique Mds_BufferShadowTec{pass P0{VertexShader=compile vs_3_0 MdsBufferShadowVS();PixelShader=compile ps_3_0 MdsBufferShadowPS();}}
 
 struct MdsBShadowTextureOutput {
@@ -48,17 +48,17 @@ struct MdsBShadowTextureOutput {
 	float3 N		: TEXCOORD2;
 	float3 Eye		: TEXCOORD3;
 
-float4 MdsPosition:TEXCOORD6;float MdsId:TEXCOORD7;};
-MdsBShadowTextureOutput MdsBShadowTextureVS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0 ,float MdsId:TEXCOORD5) {
-BShadowTexture_OUTPUT original=BShadowTexture_VS(Pos,Normal,Tex);MdsBShadowTextureOutput result;
+float4 PmxColor:COLOR1;float4 MdsPosition:TEXCOORD6;float MdsId:TEXCOORD7;};
+MdsBShadowTextureOutput MdsBShadowTextureVS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0 ,float MdsId:TEXCOORD5,float4 PmxColor:TEXCOORD1) {
+BShadowTexture_OUTPUT original=BShadowTexture_VS(Pos,Normal,Tex,PmxColor);MdsBShadowTextureOutput result;
 result.Pos=original.Pos;
 result.ZCalcTex=original.ZCalcTex;
 result.Tex=original.Tex;
 result.N=original.N;
 result.Eye=original.Eye;
-result.MdsPosition=original.Pos;result.MdsId=MdsId;return result;
+result.PmxColor=original.PmxColor;result.MdsPosition=original.Pos;result.MdsId=MdsId;return result;
 }
-MdsFragment MdsBShadowTexturePS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3,float4 MdsPosition:TEXCOORD6,float MdsId:TEXCOORD7,float2 pixel:VPOS){return MdsFinish(BShadowTexture_PS(ZCalcTex,Tex,N,Eye),MdsPosition,MdsId,pixel);}
+MdsFragment MdsBShadowTexturePS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3,float4 MdsPosition:TEXCOORD6,float MdsId:TEXCOORD7,float2 pixel:VPOS,float4 PmxColor:COLOR1){return MdsFinish(BShadowTexture_PS(ZCalcTex,Tex,N,Eye,PmxColor),MdsPosition,MdsId,pixel);}
 technique Mds_BShadowTextureTec{pass P0{VertexShader=compile vs_3_0 MdsBShadowTextureVS();PixelShader=compile ps_3_0 MdsBShadowTexturePS();}}
 
 struct MdsBShadowSphiaOutput {
@@ -68,17 +68,17 @@ struct MdsBShadowSphiaOutput {
 	float3 N		: TEXCOORD2;
 	float3 Eye		: TEXCOORD3;
 
-float4 MdsPosition:TEXCOORD6;float MdsId:TEXCOORD7;};
-MdsBShadowSphiaOutput MdsBShadowSphiaVS(float4 Pos : POSITION, float4 Normal : NORMAL,float MdsId:TEXCOORD5) {
-BShadowTexture_OUTPUT original=BShadowSphia_VS(Pos,Normal);MdsBShadowSphiaOutput result;
+float4 PmxColor:COLOR1;float4 MdsPosition:TEXCOORD6;float MdsId:TEXCOORD7;};
+MdsBShadowSphiaOutput MdsBShadowSphiaVS(float4 Pos : POSITION, float4 Normal : NORMAL,float MdsId:TEXCOORD5,float4 PmxColor:TEXCOORD1) {
+BShadowTexture_OUTPUT original=BShadowSphia_VS(Pos,Normal,PmxColor);MdsBShadowSphiaOutput result;
 result.Pos=original.Pos;
 result.ZCalcTex=original.ZCalcTex;
 result.Tex=original.Tex;
 result.N=original.N;
 result.Eye=original.Eye;
-result.MdsPosition=original.Pos;result.MdsId=MdsId;return result;
+result.PmxColor=original.PmxColor;result.MdsPosition=original.Pos;result.MdsId=MdsId;return result;
 }
-MdsFragment MdsBShadowSphiaPS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3,float4 MdsPosition:TEXCOORD6,float MdsId:TEXCOORD7,float2 pixel:VPOS){return MdsFinish(BShadowSphia_PS(ZCalcTex,Tex,N,Eye),MdsPosition,MdsId,pixel);}
+MdsFragment MdsBShadowSphiaPS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3,float4 MdsPosition:TEXCOORD6,float MdsId:TEXCOORD7,float2 pixel:VPOS,float4 PmxColor:COLOR1){return MdsFinish(BShadowSphia_PS(ZCalcTex,Tex,N,Eye,PmxColor),MdsPosition,MdsId,pixel);}
 technique Mds_BShadowSphiaTec{pass P0{VertexShader=compile vs_3_0 MdsBShadowSphiaVS();PixelShader=compile ps_3_0 MdsBShadowSphiaPS();}}
 
 struct MdsBShadowSphiaTextureOutput {
@@ -89,18 +89,18 @@ struct MdsBShadowSphiaTextureOutput {
 	float3 N		: TEXCOORD3;
 	float3 Eye		: TEXCOORD4;
 
-float4 MdsPosition:TEXCOORD6;float MdsId:TEXCOORD7;};
-MdsBShadowSphiaTextureOutput MdsBShadowSphiaTextureVS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0 ,float MdsId:TEXCOORD5) {
-BShadowSphiaTexture_OUTPUT original=BShadowSphiaTexture_VS(Pos,Normal,Tex);MdsBShadowSphiaTextureOutput result;
+float4 PmxColor:COLOR1;float4 MdsPosition:TEXCOORD6;float MdsId:TEXCOORD7;};
+MdsBShadowSphiaTextureOutput MdsBShadowSphiaTextureVS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0 ,float MdsId:TEXCOORD5,float4 PmxColor:TEXCOORD1) {
+BShadowSphiaTexture_OUTPUT original=BShadowSphiaTexture_VS(Pos,Normal,Tex,PmxColor);MdsBShadowSphiaTextureOutput result;
 result.Pos=original.Pos;
 result.ZCalcTex=original.ZCalcTex;
 result.Tex=original.Tex;
 result.SpTex=original.SpTex;
 result.N=original.N;
 result.Eye=original.Eye;
-result.MdsPosition=original.Pos;result.MdsId=MdsId;return result;
+result.PmxColor=original.PmxColor;result.MdsPosition=original.Pos;result.MdsId=MdsId;return result;
 }
-MdsFragment MdsBShadowSphiaTexturePS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float2 SpTex : TEXCOORD2,float3 N : TEXCOORD3,float3 Eye : TEXCOORD4,float4 MdsPosition:TEXCOORD6,float MdsId:TEXCOORD7,float2 pixel:VPOS){return MdsFinish(BShadowSphiaTexture_PS(ZCalcTex,Tex,SpTex,N,Eye),MdsPosition,MdsId,pixel);}
+MdsFragment MdsBShadowSphiaTexturePS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float2 SpTex : TEXCOORD2,float3 N : TEXCOORD3,float3 Eye : TEXCOORD4,float4 MdsPosition:TEXCOORD6,float MdsId:TEXCOORD7,float2 pixel:VPOS,float4 PmxColor:COLOR1){return MdsFinish(BShadowSphiaTexture_PS(ZCalcTex,Tex,SpTex,N,Eye,PmxColor),MdsPosition,MdsId,pixel);}
 technique Mds_BShadowSphiaTextureTec{pass P0{VertexShader=compile vs_3_0 MdsBShadowSphiaTextureVS();PixelShader=compile ps_3_0 MdsBShadowSphiaTexturePS();}}
 
 struct MdsBShadowTexCd2Output {
@@ -110,17 +110,17 @@ struct MdsBShadowTexCd2Output {
 	float3 N		: TEXCOORD2;
 	float3 Eye		: TEXCOORD3;
 
-float4 MdsPosition:TEXCOORD6;float MdsId:TEXCOORD7;};
-MdsBShadowTexCd2Output MdsBShadowTexCd2VS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD1,float MdsId:TEXCOORD5) {
+float4 PmxColor:COLOR1;float4 MdsPosition:TEXCOORD6;float MdsId:TEXCOORD7;};
+MdsBShadowTexCd2Output MdsBShadowTexCd2VS(float4 Pos : POSITION, float4 Normal : NORMAL, float4 Tex : TEXCOORD1,float MdsId:TEXCOORD5) {
 BShadowTexture_OUTPUT original=BShadowTexCd2_VS(Pos,Normal,Tex);MdsBShadowTexCd2Output result;
 result.Pos=original.Pos;
 result.ZCalcTex=original.ZCalcTex;
 result.Tex=original.Tex;
 result.N=original.N;
 result.Eye=original.Eye;
-result.MdsPosition=original.Pos;result.MdsId=MdsId;return result;
+result.PmxColor=original.PmxColor;result.MdsPosition=original.Pos;result.MdsId=MdsId;return result;
 }
-MdsFragment MdsBShadowTexCd2PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3,float4 MdsPosition:TEXCOORD6,float MdsId:TEXCOORD7,float2 pixel:VPOS){return MdsFinish(BShadowTexCd2_PS(ZCalcTex,Tex,N,Eye),MdsPosition,MdsId,pixel);}
+MdsFragment MdsBShadowTexCd2PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3,float4 MdsPosition:TEXCOORD6,float MdsId:TEXCOORD7,float2 pixel:VPOS,float4 PmxColor:COLOR1){return MdsFinish(BShadowTexCd2_PS(ZCalcTex,Tex,N,Eye,PmxColor),MdsPosition,MdsId,pixel);}
 technique Mds_BShadowTexCd2Tec{pass P0{VertexShader=compile vs_3_0 MdsBShadowTexCd2VS();PixelShader=compile ps_3_0 MdsBShadowTexCd2PS();}}
 
 struct MdsBShadowTextureTexCd2TecOutput {
@@ -131,8 +131,8 @@ struct MdsBShadowTextureTexCd2TecOutput {
 	float3 N		: TEXCOORD3;
 	float3 Eye		: TEXCOORD4;
 
-float4 MdsPosition:TEXCOORD6;float MdsId:TEXCOORD7;};
-MdsBShadowTextureTexCd2TecOutput MdsBShadowTextureTexCd2TecVS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0, float2 Tex2 : TEXCOORD1 ,float MdsId:TEXCOORD5) {
+float4 PmxColor:COLOR1;float4 MdsPosition:TEXCOORD6;float MdsId:TEXCOORD7;};
+MdsBShadowTextureTexCd2TecOutput MdsBShadowTextureTexCd2TecVS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0, float4 Tex2 : TEXCOORD1 ,float MdsId:TEXCOORD5) {
 BShadowSphiaTexture_OUTPUT original=BShadowTextureTexCd2Tec_VS(Pos,Normal,Tex,Tex2);MdsBShadowTextureTexCd2TecOutput result;
 result.Pos=original.Pos;
 result.ZCalcTex=original.ZCalcTex;
@@ -140,9 +140,9 @@ result.Tex=original.Tex;
 result.SpTex=original.SpTex;
 result.N=original.N;
 result.Eye=original.Eye;
-result.MdsPosition=original.Pos;result.MdsId=MdsId;return result;
+result.PmxColor=original.PmxColor;result.MdsPosition=original.Pos;result.MdsId=MdsId;return result;
 }
-MdsFragment MdsBShadowTextureTexCd2TecPS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float2 SpTex : TEXCOORD2,float3 N : TEXCOORD3,float3 Eye : TEXCOORD4,float4 MdsPosition:TEXCOORD6,float MdsId:TEXCOORD7,float2 pixel:VPOS){return MdsFinish(BShadowTextureTexCd2Tec_PS(ZCalcTex,Tex,SpTex,N,Eye),MdsPosition,MdsId,pixel);}
+MdsFragment MdsBShadowTextureTexCd2TecPS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float2 SpTex : TEXCOORD2,float3 N : TEXCOORD3,float3 Eye : TEXCOORD4,float4 MdsPosition:TEXCOORD6,float MdsId:TEXCOORD7,float2 pixel:VPOS,float4 PmxColor:COLOR1){return MdsFinish(BShadowTextureTexCd2Tec_PS(ZCalcTex,Tex,SpTex,N,Eye,PmxColor),MdsPosition,MdsId,pixel);}
 technique Mds_BShadowTextureTexCd2Tec{pass P0{VertexShader=compile vs_3_0 MdsBShadowTextureTexCd2TecVS();PixelShader=compile ps_3_0 MdsBShadowTextureTexCd2TecPS();}}
 
 // Ping-pong accumulation without hardware blending: the previous group is

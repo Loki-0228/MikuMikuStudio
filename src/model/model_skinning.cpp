@@ -31,6 +31,9 @@
 #include <algorithm>
 
 #include "mikumikustudio/affine_skinning.hpp"
+#include "mikumikustudio/qdef_skinning.hpp"
+#include "mikumikustudio/pmx21_morph.hpp"
+#include "mikumikustudio/pmx21.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/model.hpp"
@@ -453,9 +456,10 @@ void ApplyPmxVertexMorphRange(unsigned char* model, std::uint32_t firstVertex,
     }
 
     const int morphCount = record.morphCount;
+    const pmx21::MorphWeights weights(morphs, morphCount);
     for (int i = 0; i < morphCount; ++i) {
         const mdl::MorphRecord& morph = morphs[i];
-        const float weight = morph.value;
+        const float weight = weights.Get(i, morph.value);
         if (weight == 0.0f)
             continue;
         if (morph.type != 0) {
@@ -637,8 +641,8 @@ void SkinPmd(unsigned char* model, float edgeDistance,
 }
 
 // The x64 stride workers share one per-vertex shape: dispatch on the weight
-// type (QDEF and any unknown type leave position/normal untouched, only the
-// common tail runs), then copy UVs, pack the edge color and expand the
+// type (the full profile adds dual-quaternion skinning for QDEF; unknown
+// types retain the legacy fallback), then copy UVs, pack the edge color and expand the
 // outline. The vertex marker at +172 picks between the material-driven
 // expansion normal * frame scale * vertex scale * material size and the
 // fixed 0.005 shrink.
@@ -691,6 +695,14 @@ void SkinPmx(unsigned char* model, float edgeDistance, bool opaqueEdge,
         case mdl::PmxWeightType::sdef:
             SkinPmxSdef(source, bones, aux, boneCount, main.base);
             break;
+#if !MMD_ORIGINAL_PROFILE
+        case mdl::PmxWeightType::qdef:
+            affine::SkinQdef(source.position, source.normal, source.bone, source.weight,
+                boneCount, [bones](int b) { return bones[b].matInit; }, aux,
+                main.base.position, main.base.normal);
+            std::memcpy(main.base.uv, source.uv, sizeof source.uv);
+            break;
+#endif
         default:
             break;
         }
@@ -782,6 +794,7 @@ bool UpdatePmxModelVertexBuffers(MMDApp* app, unsigned char* model,
                    reinterpret_cast<mdl::SkinnedVertex<4>*>(mainVertices));
         break;
     }
+    pmx21::WriteSoftVertices(model, mainVertices, stride, edgeVertices, edgeDistance);
     DumpModelVertexBuffers(app, model, mainVertices, edgeVertices, count,
                            stride);
     model_vertex_cache::RememberCpuBody(model, mainVertices, count, stride);
@@ -836,6 +849,12 @@ bool UpdateCachedOutline(MMDApp* app, unsigned char* model, float distance,
 }
 
 }  // namespace
+
+#if !MMD_ORIGINAL_PROFILE
+void pmx21::RefreshVertexMorphs(unsigned char* model) {
+    ApplyPmxVertexMorphRange(model, 0, mdl::Mdl(model)->vertexCount);
+}
+#endif
 
 // MMV_HOST_MME_BRIDGE: share the source renderer's outline width calculation.
 float ModelOutlineDistance(MMDApp* app, unsigned char* model, const float world[16]) {
@@ -896,7 +915,7 @@ void UpdateModelVertexBuffers(MMDApp* app, unsigned char* model,
     const auto& state = *mdl::Mdl(model);
     if (!state.loadComplete || !state.vertexCount) return;
     const float distance = PmdEdgeDistance(app, model, frameWorld);
-    if (model_vertex_cache::Reuse(app, model, distance, UpdateCachedOutline)) return;
+    if (!pmx21::HasSoftBodies(model) && model_vertex_cache::Reuse(app, model, distance, UpdateCachedOutline)) return;
     bool updated = skinning::UpdateModel(app, model, frameWorld, UpdateModelVertexBuffersCpu);
     if (!updated) updated = UpdateModelVertexBuffersCpu(app, model, frameWorld);
     if (updated) model_vertex_cache::Remember(app, model, distance);
@@ -935,6 +954,8 @@ bool PrepareGpuModelInput(MMDApp* app,unsigned char* model,const float world[16]
         }
         b.flags = aux.flags;
         b.reserved[0] = b.reserved[1] = b.reserved[2] = 0;
+        std::fill_n(b.qdefRotation,4,0.f);
+        affine::QdefRotation(b.matrix,aux,b.qdefRotation);
     }
     for(unsigned i=0;i<m.materialCount;++i) {
         auto& material=out.materials[i]; material={};
@@ -949,15 +970,15 @@ bool PrepareGpuModelInput(MMDApp* app,unsigned char* model,const float world[16]
         if(pmx) {
             const auto& source=m.pmxVertices[i];
             v.type=static_cast<unsigned>(source.weightType);
-            if(v.type>3 || source.materialIndex<0 || unsigned(source.materialIndex)>=m.materialCount) return false;
+            if(v.type>4 || source.materialIndex<0 || unsigned(source.materialIndex)>=m.materialCount) return false;
             std::memcpy(v.position,source.position,12); std::memcpy(v.normal,source.normal,12);
             std::memcpy(v.uv,source.uv,8);
             // The legacy loader leaves fields unused by this weight type
             // uninitialized. Do not read or upload those inactive lanes.
-            const unsigned boneCount=v.type==0?1:v.type==2?4:2;
+            const unsigned boneCount=v.type==0?1:(v.type==2||v.type==4)?4:2;
             std::memcpy(v.bones,source.bone,boneCount*sizeof(v.bones[0]));
             if(v.type==0)v.weights[0]=1.f;
-            else std::memcpy(v.weights,source.weight,(v.type==2?4:1)*sizeof(float));
+            else std::memcpy(v.weights,source.weight,((v.type==2||v.type==4)?4:1)*sizeof(float));
             if(v.type==3){
                 std::memcpy(v.center,source.sdef.center,12);std::memcpy(v.r0,source.sdef.r0Offset,12);
                 std::memcpy(v.r1,source.sdef.r1Offset,12);
@@ -973,6 +994,7 @@ bool PrepareGpuModelInput(MMDApp* app,unsigned char* model,const float world[16]
             std::memcpy(v.uv,source.uv,8); v.edgeEnabled=source.edgeDisabled==0;
         }
     }
+    pmx21::WriteGpuSoftVertices(model,out.vertices);
     return true;
 }
 

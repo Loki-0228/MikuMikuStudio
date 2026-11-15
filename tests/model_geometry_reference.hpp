@@ -54,11 +54,10 @@ inline Fixture Pmx(std::uint32_t count, unsigned uv = 4, unsigned boneWidth = 2,
         if (type == 1 || type == 3) {
             bone(1); Put(b,.25f);
             if (type == 3) for (int j=0;j<9;++j) Put(b,float(j * 3 - 9));
-        } else if (type == 2) {
+        } else if (type == 2 || type == 4) {
             bone(1);bone(2);bone(3);for(int j=0;j<4;++j)Put(b,.25f);
         }
-        // QDEF and unknown values deliberately use the current loader's
-        // original single-bone fallback, rather than a new PMX interpretation.
+        // Unknown values retain the legacy single-bone fallback.
         Put(b,.75f);
     }
     f.vertexEnd=static_cast<std::int64_t>(b.size()); Put(b,f.indices);
@@ -129,6 +128,7 @@ template<class Input> bool OriginalVertex(Input& reader,unsigned additionalUv,un
     case mdl::PmxWeightType::bdef2:
         if(!index(v.bone[0])||!index(v.bone[1])||!read(v.weight,4))return false;break;
     case mdl::PmxWeightType::bdef4:
+    case mdl::PmxWeightType::qdef:
         for(auto& bone:v.bone)if(!index(bone))return false;
         if(!read(v.weight,16))return false;break;
     case mdl::PmxWeightType::sdef: {
@@ -148,6 +148,7 @@ inline Bytes ParsedFields(const mdl::PmxVertex& v,unsigned uv) {
     copy(&v.weightType,1);
     switch(v.weightType){
     case mdl::PmxWeightType::bdef2:copy(v.bone,8);copy(v.weight,4);break;
+    case mdl::PmxWeightType::qdef:
     case mdl::PmxWeightType::bdef4:copy(v.bone,16);copy(v.weight,16);break;
     case mdl::PmxWeightType::sdef:copy(v.bone,8);copy(v.weight,4);copy(&v.sdef,36);break;
     default:copy(v.bone,4);break;}

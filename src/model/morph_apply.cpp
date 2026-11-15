@@ -54,6 +54,7 @@
 #include <cstring>
 
 #include "mikumikustudio/model.hpp"
+#include "mikumikustudio/pmx21_morph.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -210,6 +211,7 @@ void ModelApplyMorphs(unsigned char* m) {
 
     mdl::MorphRecord* morphs = model.morphs;
     const int morphCount = static_cast<int>(model.morphCount);
+    const pmx21::MorphWeights weights(morphs, morphCount);
     mdl::BoneMorphOffsetRecord* work = mdl::BoneMorphOffsets(m);
     const int workCount = mdl::BoneMorphOffsetCount(m);
 
@@ -224,7 +226,7 @@ void ModelApplyMorphs(unsigned char* m) {
     }
     for (int i = 0; i < morphCount; ++i) {
         const mdl::MorphRecord& morph = morphs[i];
-        const float w = morph.value;
+        const float w = weights.Get(i, morph.value);
         if (w == 0.0f)
             continue;
         if (morph.type != 0) {
@@ -268,7 +270,7 @@ void ModelApplyMorphs(unsigned char* m) {
     }
     for (int i = 0; i < morphCount; ++i) {
         const mdl::MorphRecord& morph = morphs[i];
-        const float w = morph.value;
+        const float w = weights.Get(i, morph.value);
         if (w == 0.0f)
             continue;
         if (morph.type != 0) {

@@ -1,5 +1,7 @@
 # 测试保留与清理说明
 
+`pmx21_tests` 是完整档的 PMX 2.1 导入、QDEF、Flip／冲量、关节、软体及材质像素回归；使用自有隐藏 D3D9 设备和生成夹具。启用 `MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS` 后显式构建，运行同名 CTest。`--topology-only` 比较稀疏拓扑与原始 Bullet；现代档还检查 x64 碰撞缓存唯一性。`--model <PMX绝对路径> [--gpu|--auto]` 只读诊断真实模型的初始化与三步物理，默认 CPU，不改写用户文件或设置。现代 DX12 档另提供 `cloth_compute_tests`，使用真实 GPU 对照软体约束、跨软体接触、簇冲量与节点分配、CPU 回退；`--benchmark` 运行合成大网格 ABBA 对比。参考实现、生命周期和验收边界见 [PMX 2.1 原生支持](../docs/development/pmx21.md)。
+
 `bone_inheritance_index_tests` 是长期保留的无窗口 CPU 回归，覆盖 A/B/E 继承索引边界和自身姿态保留，注册为 CTest `bone_inheritance_index`。`stage_inheritance_load_tests <工程.pmm> [轮数]` 是需要实际素材的隐藏窗口手动回归，启用 `MIKUMIKUSTUDIO_BUILD_UI_TESTS` 后显式构建，不注册到默认 CTest。工程必须含有非法继承源；先备份输入，在独立测试目录串行运行。它只载入、求值和退出，不保存工程；不能替代真实 MME 和视觉验收。只有继承功能或对应载入路径被移除时才评估删除这两个测试。记录见 [Stage 继承索引修复](../docs/records/stage-inheritance-index-2026-11-14.md)。
 
 `stage_inheritance_runner.py --self-test` 验证原版兼容导入信息提示的精确匹配及拒绝规则。实际运行要求显式指定现有测试 EXE、隔离工程目录、新输出目录及二者预期 SHA-256；仅处理自身私有桌面上的指定中文信息通知，不处理导入拒绝或未知警告。当前 LOVE 的现有 Stage 宿主在真实私有桌面启动时出现 `0xC0000142`，因此该驱动尚未完成真实 Stage 物理回归；不要把匹配自测当成集成通过。仅保留为诊断与测试侧脚本，待进程内宿主处理取代后再评估删除。

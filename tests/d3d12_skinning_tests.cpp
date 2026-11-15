@@ -53,7 +53,7 @@ int wmain(int argc,wchar_t** argv) {
         if(!PrepareGpuModelInput(app.get(),model,world,input)) return 6;
         input.parameters.perVertex = pose != 0;
         input.parameters.geometryRevision = pose + 1;
-        unsigned types[4]{};for(auto& v:input.vertices) ++types[v.type];
+        unsigned types[6]{};for(auto& v:input.vertices) ++types[v.type&0xff];
         gpu::Ticket ticket;
         if(!gpu.Submit(input.vertices,input.bones,input.materials,input.parameters,ticket)) {
             std::puts(gpu.Error());return 7;
@@ -161,7 +161,7 @@ int wmain(int argc,wchar_t** argv) {
                         pose, adapter.name.c_str(), bridgeErrors);
             if (bridgeErrors) return 17;
         }
-        std::printf("pose=%u types=%u,%u,%u,%u max_abs_error=%.9g errors=%u\n",pose,types[0],types[1],types[2],types[3],maximum,errors);
+        std::printf("pose=%u types=%u,%u,%u,%u,%u,%u max_abs_error=%.9g errors=%u\n",pose,types[0],types[1],types[2],types[3],types[4],types[5],maximum,errors);
         if(errors) return 10;
         // Recycle all three slots repeatedly; invalid types must not submit.
         for(unsigned i=0;i<7;++i)

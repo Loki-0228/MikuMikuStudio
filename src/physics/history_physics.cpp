@@ -570,11 +570,32 @@ struct KeepPair final : btOverlapFilterCallback {
 struct ImportBroadphaseState {
     using Handle = Broadphase::Handle;
     using Edge = Broadphase::Edge;
+    // Existing soft bodies participate as live peers, while the imported
+    // bundle remains rigid-only until its PMX soft bodies are initialized.
+    struct ObjectState {
+        btCollisionObject* body;
+        btBroadphaseProxy* proxy;
+        short group, mask;
+        btCollisionShape* shape;
+        btVector3 aabbLo, aabbHi;
+        BodyState rigid{};
+        explicit ObjectState(btCollisionObject* object) : body(object), proxy(object->getBroadphaseHandle()),
+            group(proxy->m_collisionFilterGroup), mask(proxy->m_collisionFilterMask),
+            shape(object->getCollisionShape()), aabbLo(PhysicalVector(proxy->m_aabbMin)), aabbHi(PhysicalVector(proxy->m_aabbMax)) {
+            if (auto* value = btRigidBody::upcast(object)) rigid = Read(value);
+        }
+        bool Current(bool ray) const noexcept {
+            if (rigid.body) return history_physics::Current(rigid, false, ray);
+            return body->getBroadphaseHandle() == proxy && body->getCollisionShape() == shape &&
+                proxy->m_collisionFilterGroup == group && proxy->m_collisionFilterMask == mask &&
+                EqualVector(proxy->m_aabbMin, aabbLo) && EqualVector(proxy->m_aabbMax, aabbHi);
+        }
+    };
     struct Entry {
         unsigned id;
         Handle* target;
         Handle* shadow = nullptr;
-        BodyState before;
+        ObjectState before;
         btBroadphaseProxy* oldRay;
         bool added;
         bool outgoing;
@@ -611,13 +632,14 @@ struct ImportBroadphaseState {
             auto* handle = bp.getHandle(id);
             auto* object = static_cast<btCollisionObject*>(handle->m_clientObject);
             auto* body = object ? btRigidBody::upcast(object) : nullptr;
-            if (!body || !body->getCollisionShape() || body->getBroadphaseHandle() != handle || handle->m_uniqueId != static_cast<int>(id) ||
-                handle->m_multiSapParentProxy || body->getNumConstraintRefs() || !handle->m_dbvtProxy ||
-                handle->m_dbvtProxy->m_clientObject != body ||
+            if (!object || (!body && object->getInternalType() != btCollisionObject::CO_SOFT_BODY) ||
+                !object->getCollisionShape() || object->getBroadphaseHandle() != handle || handle->m_uniqueId != static_cast<int>(id) ||
+                handle->m_multiSapParentProxy || (body && body->getNumConstraintRefs()) || !handle->m_dbvtProxy ||
+                handle->m_dbvtProxy->m_clientObject != object ||
                 handle->m_dbvtProxy->m_collisionFilterGroup != handle->m_collisionFilterGroup ||
                 handle->m_dbvtProxy->m_collisionFilterMask != handle->m_collisionFilterMask)
                 throw std::invalid_argument("unsupported live physics proxy");
-            entries.push_back({id, handle, nullptr, Read(body), handle->m_dbvtProxy, false, parking.count(body) != 0});
+            entries.push_back({id, handle, nullptr, ObjectState(object), handle->m_dbvtProxy, false, parking.count(body) != 0});
         }
         if (entries.size() != oldCount) throw std::invalid_argument("invalid live handle count");
         auto next = firstFree;
@@ -628,7 +650,7 @@ struct ImportBroadphaseState {
             auto* handle = bp.getHandle(next);
             const auto following = handle->GetNextFree();
             reserved.emplace_back(next, following);
-            entries.push_back({next, handle, nullptr, Read(body), nullptr, true, false});
+            entries.push_back({next, handle, nullptr, ObjectState(body), nullptr, true, false});
             next = following;
         }
         nextFree = next;
@@ -727,7 +749,7 @@ struct ImportBroadphaseState {
             if (a.m_pos != b.m_pos || a.m_handle != b.m_handle) return false;
         }
         for (const auto& entry : entries) {
-            if (!history_physics::Current(entry.before, false, !entry.added)) return false;
+            if (!entry.before.Current(!entry.added)) return false;
             if (!entry.added && (entry.target->m_dbvtProxy != entry.oldRay ||
                 entry.target->m_uniqueId != static_cast<int>(entry.id))) return false;
         }

@@ -1,4 +1,5 @@
 #include "mikumikustudio/ui_metrics.hpp"
+#include "mikumikustudio/pmx21.hpp"
 #include "mikumikustudio/physics_scale.hpp"
 #include "mikumikustudio/bone_scale.hpp"
 #include "mikumikustudio/perf_timing.hpp"
@@ -622,8 +623,10 @@ void ModelKinematicSync(unsigned char* m) {
     MMD_PERF_SCOPE(PhysicsSync);
     physics_scale::Sync(m);
     const int count = mdl::Mdl(m)->rigidCount;
-    if (count <= 0)
+    if (count <= 0) {
+        pmx21::SyncSoftBodies(m, false);
         return;
+    }
     mdl::RigidRecord* rigids = mdl::Rigids(m);
     for (int i = 0; i < count; ++i) {
         const mdl::RigidRecord& rec = rigids[i];
@@ -641,6 +644,7 @@ void ModelKinematicSync(unsigned char* m) {
         if (btMotionState* ms = body->getMotionState())
             ms->setWorldTransform(tr);
     }
+    pmx21::SyncSoftBodies(m, false);
 }
 
 // VA 0x004B3460 / x64 sub_7FF7CB4E45D0 - reseat dynamic rigid bodies onto
@@ -650,8 +654,10 @@ void ModelKinematicSync(unsigned char* m) {
 void ModelDynamicReseat(unsigned char* m) {
     physics_scale::Sync(m, true);
     const int count = mdl::Mdl(m)->rigidCount;
-    if (count <= 0)
+    if (count <= 0) {
+        pmx21::SyncSoftBodies(m, true);
         return;
+    }
     mdl::RigidRecord* rigids = mdl::Rigids(m);
     const int centerBone = mdl::Mdl(m)->centerBone;   // 0x4B3460
 #ifdef MIKUMIKUSTUDIO_DIAG
@@ -697,6 +703,7 @@ void ModelDynamicReseat(unsigned char* m) {
         MatrixToBasis(&tr, mat);
         ReseatRigidBody(body, tr);
     }
+    pmx21::SyncSoftBodies(m, true);
 }
 
 // VA 0x004B25D0 - pull the simulation result back into the bones.

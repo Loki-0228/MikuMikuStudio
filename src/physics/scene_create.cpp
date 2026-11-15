@@ -43,6 +43,9 @@
 #include "mikumikustudio/physics_scene.hpp"
 #include "mikumikustudio/dynamics_world.hpp"
 #include "mikumikustudio/history_physics.hpp"
+#if !MMD_ORIGINAL_PROFILE
+#include "BulletSoftBody/btSoftBodyRigidBodyCollisionConfiguration.h"
+#endif
 
 #include "scene_gizmo_data.inc"
 
@@ -112,7 +115,11 @@ bool SceneConstruct(PhysicsScene* scene, D3DRenderer* d3dSub) {
         return false;
 
     // ---- Bullet world stack -------------------------------------------------
-    scene->collisionConfig = new btDefaultCollisionConfiguration();  // 0x405D0B (0x58)
+#if MMD_ORIGINAL_PROFILE
+    scene->collisionConfig = new btDefaultCollisionConfiguration();
+#else
+    scene->collisionConfig = new btSoftBodyRigidBodyCollisionConfiguration();
+#endif
     scene->dispatcher =
         new btCollisionDispatcher(scene->collisionConfig);           // 0x405D4F (0x12F0)
 #if MMD_ORIGINAL_PROFILE

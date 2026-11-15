@@ -334,6 +334,12 @@ bool ModelMaterialUsesAlpha(D3DRenderer* sub, const mdl::ModelRecord& state,
     // to the opaque pass could change its visible result.
     if (!MaterialAlphaVisible(alpha) && !mikumikustudio::LegacyMmeLoaded())
         return false;
+#if !MMD_ORIGINAL_PROFILE
+    // Additional UV1 is RGBA for the PMX vertex-color flag. Its alpha can
+    // also be animated by UV morphs, so include it in both coverage passes.
+    if (state.physicsMode == 2 && state.pmxAdditionalUvCount && (material.flags & 0x20))
+        return true;
+#endif
     return alpha < 1.0f ||
         CachedTextureUsesAlpha(sub, material.texturePath) ||
         ((state.physicsMode != 2 || material.sphereMode != 0) &&
@@ -1215,9 +1221,57 @@ void DrawModelMaterials(MMDApp* app, unsigned char* model, bool effectPass,
             if (mdl::Mdl(model)->physicsMode == 2 && (record.flags >> 2 & 1) == 0)
                 draw = false;
         }
+#if !MMD_ORIGINAL_PROFILE
+        const bool vertexColor = !shadowOnly && state.physicsMode == 2 &&
+            state.pmxAdditionalUvCount > 0 && (record.flags & 0x20) != 0;
+        const bool materialEffect = effectPass || (vertexColor && effect && !mmeProxy);
+        if (shadowOnly && state.physicsMode == 2 && (record.flags & 0x40)) draw = false;
+        const auto submit = [&]() -> HRESULT {
+            DWORD fill = D3DFILL_SOLID, cull = D3DCULL_CCW;
+            const unsigned primitive = state.physicsMode == 2 ? record.flags & 0xC0 : 0;
+            if (primitive) {
+                device->GetRenderState(D3DRS_FILLMODE, &fill);
+                device->GetRenderState(D3DRS_CULLMODE, &cull);
+                device->SetRenderState(D3DRS_FILLMODE, primitive & 0x40 ? D3DFILL_POINT : D3DFILL_WIREFRAME);
+                device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+            }
+            const HRESULT result = device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, minVertex,
+                vertexCount, firstIndex, indexCount / 3);
+            if (primitive) {
+                device->SetRenderState(D3DRS_FILLMODE, fill);
+                device->SetRenderState(D3DRS_CULLMODE, cull);
+            }
+            return result;
+        };
+#else
+        const bool materialEffect = effectPass;
+        const auto submit = [&]() { return device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, minVertex, vertexCount, firstIndex, indexCount / 3); };
+#endif
         if (draw) {
 #if !MMD_ORIGINAL_PROFILE
-            const bool opaqueCoverage=!mmeProxy&&!effectPass&&!shadowOnly&&
+            if (materialEffect && effect && !shadowOnly) {
+                FxSetInt(effect, "MdsPmxVertexColor", vertexColor);
+                FxSetInt(effect, "MdsPmxUnshadowed", !effectPass);
+                if (!effectPass) {
+                    Matrix world, view, projection, worldView, wvp, inverse;
+                    device->GetTransform(D3DTS_WORLD, reinterpret_cast<D3DMATRIX*>(&world));
+                    device->GetTransform(D3DTS_VIEW, reinterpret_cast<D3DMATRIX*>(&view));
+                    device->GetTransform(D3DTS_PROJECTION, reinterpret_cast<D3DMATRIX*>(&projection));
+                    Multiply(&worldView, &world, &view); Multiply(&wvp, &worldView, &projection);
+                    float light[4] = {app->LightDirection()[0], app->LightDirection()[1], app->LightDirection()[2], 1};
+                    d3dx::Get().vec3Normalize(light, light);
+                    float camera[3] = {app->ViewOffsetX(), app->ViewOffsetY(), app->CameraDistance()}, place[4]{};
+                    d3dx::Get().inverse(&inverse, nullptr, &world);
+                    d3dx::Get().vec3Transform(place, camera, &inverse);
+                    FxSetFloatArray(effect, "LightDir", light, 4); FxSetFloatArray(effect, "Place", place, 4);
+                    FxSetMatrix(effect, "matWorldViewProj", &wvp);
+                    FxSetMatrix(effect, "matLightViewProj", reinterpret_cast<const Matrix*>(&app->LightViewProjection()));
+                    FxSetMatrix(effect, "matRotate", reinterpret_cast<const Matrix*>(&app->ViewRotationTransform()));
+                }
+            }
+#endif
+#if !MMD_ORIGINAL_PROFILE
+            const bool opaqueCoverage=!mmeProxy&&!materialEffect&&!shadowOnly&&
                 state.displayState==0&&record.diffuse[3]>=1.f&&!ModelMaterialUsesAlpha(sub,state,record);
             deformed_mesh_capture::MaterialScope exportMaterial(model, i, !shadowOnly && !(selection && selection->probe),opaqueCoverage);
 #endif
@@ -1233,7 +1287,7 @@ void DrawModelMaterials(MMDApp* app, unsigned char* model, bool effectPass,
             // first, because FxBeginPass installs the pass state block.
             DWORD savedAlphaRef = 1;
 
-            if (!effectPass && !shadowOnly) {
+            if (!materialEffect && !shadowOnly) {
                 if (solidFirst) {
                     device->GetRenderState(D3DRS_ALPHAREF, &savedAlphaRef);
                     device->SetRenderState(D3DRS_ALPHAREF, 255);
@@ -1263,9 +1317,7 @@ void DrawModelMaterials(MMDApp* app, unsigned char* model, bool effectPass,
                                           firstIndex);
                         stateDumped = true;
                     }
-                    device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, minVertex,
-                                                 vertexCount,
-                                                 firstIndex, indexCount / 3);
+                    submit();
                 };
                 // 0x492203 compares the COPY's Diffuse.a (esp+0x138),
                 // which carries the 0.5 displayState override - not the
@@ -1317,14 +1369,14 @@ void DrawModelMaterials(MMDApp* app, unsigned char* model, bool effectPass,
                     // 0x492954: BeginPass(effect, 0) per material; the
                     // enclosing FxBegin was issued by RenderShadowMap
                     // before the model loop (its FxEnd closes it).
-                    if (effectPass && effect != nullptr) {
+                    if (materialEffect && effect != nullptr) {
                         const HRESULT result=FxBeginPass(effect, 0);
                         if(shadowSucceeded&&FAILED(result)){*shadowSucceeded=false;return;}
                     }
                 } else {
                     device->SetMaterial(&d3dMaterial);
                 }
-                if (effectPass && effect != nullptr && !shadowOnly) {
+                if (materialEffect && effect != nullptr && !shadowOnly) {
                     device->SetRenderState(D3DRS_CULLMODE,
                         record.diffuse[3] >= 1.0f ||
                                 mdl::Mdl(model)->physicsMode == 2
@@ -1367,14 +1419,13 @@ void DrawModelMaterials(MMDApp* app, unsigned char* model, bool effectPass,
                 }
 #endif
                 if (issue) {
-                    const HRESULT drawn=device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, minVertex,
-                                             vertexCount, firstIndex, indexCount / 3);
+                    const HRESULT drawn=submit();
                     if(shadowSucceeded&&FAILED(drawn))*shadowSucceeded=false;
                 }
 #if !MMD_ORIGINAL_PROFILE
                 if (selection && selection->peel && !selection->probe) selection->peel->EndMaterial();
 #endif
-                if (effectPass && effect != nullptr) {
+                if (materialEffect && effect != nullptr) {
                     if (solidFirst)
                         device->SetRenderState(D3DRS_ALPHAREF, savedAlphaRef);
                     const HRESULT ended=FxEndPass(effect);
@@ -1388,6 +1439,12 @@ void DrawModelMaterials(MMDApp* app, unsigned char* model, bool effectPass,
                 }
             }
         }
+#if !MMD_ORIGINAL_PROFILE
+        if (effect && !shadowOnly) {
+            FxSetInt(effect, "MdsPmxVertexColor", 0);
+            FxSetInt(effect, "MdsPmxUnshadowed", 0);
+        }
+#endif
         firstIndex += indexCount;
     }
     state.toonShared = static_cast<std::uint32_t>(-1);
@@ -2372,6 +2429,9 @@ void DrawModelEdgeGeometry(MMDApp* app, unsigned char* model,
         if (!projectedShadow && record.doubleSided == 0)
             draw = false;
         const bool pmx = mdl::Mdl(model)->physicsMode == 2;
+#if !MMD_ORIGINAL_PROFILE
+        if (pmx && (record.flags & 0xC0)) draw = false;
+#endif
         if (pmx && projectedShadow && (record.flags & 2) == 0)
             draw = false;
         if (pmx && projectedShadow && sub->postProcessEnabled != 0 &&

@@ -1,5 +1,6 @@
 #include "model_physics_resources.hpp"
 #include "mikumikustudio/model.hpp"
+#include "mikumikustudio/pmx21.hpp"
 #include "mikumikustudio/model_physics_resource_owner.hpp"
 #include "mikumikustudio/owned_text.hpp"
 #include "mikumikustudio/physics_scale.hpp"
@@ -279,6 +280,9 @@ struct ModelPhysicsResources::Impl {
             } else if(!replay->Publish())std::terminate();
             scale->Publish();
             auto& m=*mdl::Mdl(owner->impl_->model);
+            // Anchors point at the outgoing rigid resources. Recreate them
+            // from the PMX definitions on the next live pose update.
+            pmx21::SuspendSoftBodies(owner->impl_->model);
             m.rigidTable=to->impl_->rigids;m.rigidCount=to->impl_->rigidCount;
             m.jointTable=to->impl_->jointTable;m.jointCount=to->impl_->jointCount;
             owner->impl_->current=to;

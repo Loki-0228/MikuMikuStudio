@@ -9,6 +9,9 @@
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/owned_text.hpp"
+#include "mikumikustudio/pmx21.hpp"
+#include "mikumikustudio/pmx21_morph.hpp"
+#include "../physics/playback_constraint.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
 #include <cwchar>
@@ -117,9 +120,13 @@ void Body(const btRigidBody* body, Collector& out) {
 }
 void Joint(const btTypedConstraint* joint, Collector& out) {
     if (!joint) return;
-    if (typeid(*joint) == typeid(btGeneric6DofSpringConstraint)) out.Add(joint, 1, sizeof(btGeneric6DofSpringConstraint));
+    if (typeid(*joint) == typeid(PlaybackSpringConstraint)) out.Add(joint, 1, sizeof(PlaybackSpringConstraint));
+    else if (typeid(*joint) == typeid(btGeneric6DofSpringConstraint)) out.Add(joint, 1, sizeof(btGeneric6DofSpringConstraint));
     else if (typeid(*joint) == typeid(btGeneric6DofConstraint)) out.Add(joint, 1, sizeof(btGeneric6DofConstraint));
     else if (typeid(*joint) == typeid(btPoint2PointConstraint)) out.Add(joint, 1, sizeof(btPoint2PointConstraint));
+    else if (typeid(*joint) == typeid(btConeTwistConstraint)) out.Add(joint, 1, sizeof(btConeTwistConstraint));
+    else if (typeid(*joint) == typeid(btSliderConstraint)) out.Add(joint, 1, sizeof(btSliderConstraint));
+    else if (typeid(*joint) == typeid(btHingeConstraint)) out.Add(joint, 1, sizeof(btHingeConstraint));
     else { out.Array(joint, 1); out.MissingResource(PhysicsStorage); }
 }
 void Model(const mdl::ModelRecord& m, Collector& out) {
@@ -155,7 +162,8 @@ void Model(const mdl::ModelRecord& m, Collector& out) {
         Table(out, v.vertexEntries, v.offsetCount); Table(out, v.boneEntries, v.boneCount);
         Table(out, v.groupEntries, v.groupCount); Table(out, v.materialEntries, v.materialCount);
         for (unsigned j = 0; j < 5; ++j) Table(out, v.uvEntries[j], v.uvCounts[j]);
-        if (v.impulseEntries || v.impulse2Entries) out.MissingResource(NativeOpaque);
+        if (v.impulseEntries || (v.impulse2Entries && v.type != 10)) out.MissingResource(NativeOpaque);
+        if (v.type == 10) Table(out, reinterpret_cast<const pmx21::Impulse*>(v.impulse2Entries), v.offsetCount);
     }
     out.Array(m.boneKeys, mdl::BoneKeyCapacity(m)); out.Array(m.morphKeys, mdl::MorphKeyCapacity(m.morphKeys));
     const auto displays = mdl::KeyPoolCapacity(m.displayKeys); out.Array(m.displayKeys, displays);
@@ -180,6 +188,7 @@ void Model(const mdl::ModelRecord& m, Collector& out) {
     text_encoding::MeasureResources(m, out); native_mesh::MeasureResources(&m, out);
     physics_scale::MeasureResources(p, out); skinning::MeasureResources(p, out);
     mmv4mms::MeasureResources(p, out);
+    pmx21::MeasureResources(p, out);
 }
 void Accessory(const mdl::AccessoryRecord& a, const mdl::AccessoryKey* keys, Collector& out) {
     out.Array(&a, 1); Table(out, static_cast<const D3DMATERIAL9*>(a.materials), a.materialCount);

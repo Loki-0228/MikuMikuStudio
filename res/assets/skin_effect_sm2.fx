@@ -1,3 +1,5 @@
+bool MdsPmxVertexColor = false;
+bool MdsPmxUnshadowed = false;
 float4x4 matLightViewProj;	// 光方向ビュー射影変換済み行列
 float4x4 matWorldViewProj;	// ワールドビュー射影変換済み行列
 float4x4 matWorld;			// ワールド座標のみ行列
@@ -108,6 +110,7 @@ sampler DefSampler = sampler_state	// サンプラーステート
 
 struct BufferShadow_OUTPUT
 {
+    float4 PmxColor : COLOR1;
 	float4 Pos      : POSITION;		// 射影変換座標
 	float4 ZCalcTex : TEXCOORD0;	// Z値
 	float3 N		: TEXCOORD1;	// 法線
@@ -115,7 +118,7 @@ struct BufferShadow_OUTPUT
 };
 
 // 頂点シェーダ
-BufferShadow_OUTPUT BufferShadow_VS(float4 Pos : POSITION, float4 Normal : NORMAL)
+BufferShadow_OUTPUT BufferShadow_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float4 MdsPmxColor : TEXCOORD1)
 {
 	BufferShadow_OUTPUT Out = (BufferShadow_OUTPUT)0;
 
@@ -131,11 +134,13 @@ BufferShadow_OUTPUT BufferShadow_VS(float4 Pos : POSITION, float4 Normal : NORMA
 	// カメラ相対位置
 	Out.Eye = Place - Pos.xyz;
 	
+	Out.PmxColor = MdsPmxVertexColor ? MdsPmxColor : float4(1,1,1,1);
+    Out.ZCalcTex = MdsPmxUnshadowed ? float4(4,4,4,1) : Out.ZCalcTex;
 	return Out;
 }
 
 // ピクセルシェーダ
-float4 BufferShadow_PS(float4 ZCalcTex : TEXCOORD0,float3 N : TEXCOORD1,float3 Eye : TEXCOORD2) : COLOR
+float4 BufferShadow_PS(float4 ZCalcTex : TEXCOORD0,float3 N : TEXCOORD1,float3 Eye : TEXCOORD2, float4 MdsPmxColor : COLOR1) : COLOR
 {
 	// スペキュラ色計算
 	float4 Specula = pow(max(0,dot(normalize(N),normalize(-LightDir.xyz + normalize(Eye)))),SpcColor.w);
@@ -159,11 +164,11 @@ float4 BufferShadow_PS(float4 ZCalcTex : TEXCOORD0,float3 N : TEXCOORD1,float3 E
 		if(comp==1.0f){
 			float4 ans = EgColor + Specula;
 			if(transp) ans.a = 0.5f;
-			return ans;
+			return (ans) * MdsPmxColor;
 		}else{
 			float4 ans = EgColor*comp + EgColor*ToonColor*(1-comp) + Specula*comp;
 			if(transp) ans.a = 0.5f;
-			return ans;			
+			return (ans) * MdsPmxColor;
 		}
 	}
 }
@@ -186,6 +191,7 @@ sampler s1 : register(s1);      //オブジェクトのテクスチャー
 
 struct BShadowTexture_OUTPUT
 {
+    float4 PmxColor : COLOR1;
 	float4 Pos      : POSITION;		// 射影変換座標
 	float4 ZCalcTex : TEXCOORD0;	// Z値
 	float2 Tex      : TEXCOORD1;	// テクスチャ
@@ -194,7 +200,7 @@ struct BShadowTexture_OUTPUT
 };
 
 // 頂点シェーダ
-BShadowTexture_OUTPUT BShadowTexture_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0 )
+BShadowTexture_OUTPUT BShadowTexture_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0 , float4 MdsPmxColor : TEXCOORD1)
 {
 	BShadowTexture_OUTPUT Out = (BShadowTexture_OUTPUT)0;
 	
@@ -213,11 +219,13 @@ BShadowTexture_OUTPUT BShadowTexture_VS(float4 Pos : POSITION, float4 Normal : N
 	// カメラ相対位置
 	Out.Eye = Place - Pos.xyz;
 	
+	Out.PmxColor = MdsPmxVertexColor ? MdsPmxColor : float4(1,1,1,1);
+    Out.ZCalcTex = MdsPmxUnshadowed ? float4(4,4,4,1) : Out.ZCalcTex;
 	return Out;
 }
 
 // ピクセルシェーダ
-float4 BShadowTexture_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3) : COLOR
+float4 BShadowTexture_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3, float4 MdsPmxColor : COLOR1) : COLOR
 {
 	// スペキュラ色計算
 	float4 Specula = pow(max(0,dot(normalize(N),normalize(-LightDir.xyz + normalize(Eye)))),SpcColor.w);
@@ -243,12 +251,12 @@ float4 BShadowTexture_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,floa
 			float4 ans = EgColor*((tex2D(s1,Tex) * TexCMul + TexCAdd)*alp +(1-alp)) + Specula*comp;
 			if(transp) ans.a = 0.5f;
 			else	   ans.w = EgColor.w * tex2D(s1,Tex).w;
-			return ans;
+			return (ans) * MdsPmxColor;
 		}else{
 			float4 ans = (EgColor*(tex2D(s1,Tex) * TexCMul + TexCAdd)*alp+(1-alp))*(comp + ToonColor*(1-comp)) + Specula*comp;
 			if(transp) ans.a = 0.5f;
 			else	   ans.w = EgColor.w * tex2D(s1,Tex).w;
-			return ans;
+			return (ans) * MdsPmxColor;
 		}
 	}
 }
@@ -268,7 +276,7 @@ technique BShadowTextureTec
 ///////////// 分散光なしテクスチャなしスフィアありバッファシャドウテクニック ////////////////
 
 // 頂点シェーダ
-BShadowTexture_OUTPUT BShadowSphia_VS(float4 Pos : POSITION, float4 Normal : NORMAL)
+BShadowTexture_OUTPUT BShadowSphia_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float4 MdsPmxColor : TEXCOORD1)
 {
 	BShadowTexture_OUTPUT Out = (BShadowTexture_OUTPUT)0;
 	
@@ -287,11 +295,13 @@ BShadowTexture_OUTPUT BShadowSphia_VS(float4 Pos : POSITION, float4 Normal : NOR
 	// カメラ相対位置
 	Out.Eye = Place - Pos.xyz;
 	
+	Out.PmxColor = MdsPmxVertexColor ? MdsPmxColor : float4(1,1,1,1);
+    Out.ZCalcTex = MdsPmxUnshadowed ? float4(4,4,4,1) : Out.ZCalcTex;
 	return Out;
 }
 
 // ピクセルシェーダ
-float4 BShadowSphia_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3) : COLOR
+float4 BShadowSphia_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3, float4 MdsPmxColor : COLOR1) : COLOR
 {
 	// スペキュラ色計算
 	float4 Specula = pow(max(0,dot(normalize(N),normalize(-LightDir.xyz + normalize(Eye)))),SpcColor.w);
@@ -325,12 +335,12 @@ float4 BShadowSphia_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3
 			ans = ans + Specula*comp;
 			if(transp) ans.a = 0.5f;
 			else	   ans.w = EgColor.w * tex2D(s1,Tex).w;
-			return ans;
+			return (ans) * MdsPmxColor;
 		}else{
 			ans = ans*lerp(ToonColor, 1, comp) + Specula*comp;
 			if(transp) ans.a = 0.5f;
 			else	   ans.w = EgColor.w * tex2D(s1,Tex).w;
-			return ans;
+			return (ans) * MdsPmxColor;
 		}
 	}
 }
@@ -353,6 +363,7 @@ sampler s2 : register(s2);      //オブジェクトのテクスチャー
 
 struct BShadowSphiaTexture_OUTPUT
 {
+    float4 PmxColor : COLOR1;
 	float4 Pos      : POSITION;		// 射影変換座標
 	float4 ZCalcTex : TEXCOORD0;	// Z値
 	float2 Tex      : TEXCOORD1;	// テクスチャ座標
@@ -362,7 +373,7 @@ struct BShadowSphiaTexture_OUTPUT
 };
 
 // 頂点シェーダ
-BShadowSphiaTexture_OUTPUT BShadowSphiaTexture_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0 )
+BShadowSphiaTexture_OUTPUT BShadowSphiaTexture_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0 , float4 MdsPmxColor : TEXCOORD1)
 {
 	BShadowSphiaTexture_OUTPUT Out = (BShadowSphiaTexture_OUTPUT)0;
 	
@@ -384,11 +395,13 @@ BShadowSphiaTexture_OUTPUT BShadowSphiaTexture_VS(float4 Pos : POSITION, float4 
 	// カメラ相対位置
 	Out.Eye = Place - Pos.xyz;
 	
+	Out.PmxColor = MdsPmxVertexColor ? MdsPmxColor : float4(1,1,1,1);
+    Out.ZCalcTex = MdsPmxUnshadowed ? float4(4,4,4,1) : Out.ZCalcTex;
 	return Out;
 }
 
 // ピクセルシェーダ
-float4 BShadowSphiaTexture_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float2 SpTex : TEXCOORD2,float3 N : TEXCOORD3,float3 Eye : TEXCOORD4) : COLOR
+float4 BShadowSphiaTexture_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float2 SpTex : TEXCOORD2,float3 N : TEXCOORD3,float3 Eye : TEXCOORD4, float4 MdsPmxColor : COLOR1) : COLOR
 {
 	// スペキュラ色計算
 	float4 Specula = pow(max(0,dot(normalize(N),normalize(-LightDir.xyz + normalize(Eye)))),SpcColor.w);
@@ -418,15 +431,11 @@ float4 BShadowSphiaTexture_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1
         float3 coverage = abs(float3(TransTexCoord, ZCalcTex.z) * 2 - 1);
         if (max(coverage.x, max(coverage.y, coverage.z)) > 1) comp = 1;
 		comp = min(saturate(dot(normalize(N),-LightDir)*3),comp);	// 分散光
-		if(comp==1.0f){
-			ans = ans + Specula*comp;
-			if(transp) ans.a = 0.5f;
-			return ans;
-		}else{
+
 			ans = ans*lerp(ToonColor, 1, comp) + Specula*comp;
 			if(transp) ans.a = 0.5f;
-			return ans;
-		}
+			return (ans) * MdsPmxColor;
+
 	}
 }
 
@@ -444,12 +453,12 @@ technique BShadowSphiaTextureTec
 ///////////// 分散光なしテクスチャなしテクスチャコード２ありバッファシャドウテクニック ////////////////
 
 // 頂点シェーダ
-BShadowTexture_OUTPUT BShadowTexCd2_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD1)
+BShadowTexture_OUTPUT BShadowTexCd2_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float4 Tex : TEXCOORD1)
 {
 	BShadowTexture_OUTPUT Out = (BShadowTexture_OUTPUT)0;
 	
 	// テクスチャ座標
-	Out.Tex = Tex;
+	Out.Tex.xy = Tex.xy;
 
 	// 普通にカメラの目線によるワールドビュー射影変換をする
 	Out.Pos = mul( Pos, matWorldViewProj );
@@ -463,11 +472,13 @@ BShadowTexture_OUTPUT BShadowTexCd2_VS(float4 Pos : POSITION, float4 Normal : NO
 	// カメラ相対位置
 	Out.Eye = Place - Pos.xyz;
 	
+	Out.PmxColor = MdsPmxVertexColor ? Tex : float4(1,1,1,1);
+    Out.ZCalcTex = MdsPmxUnshadowed ? float4(4,4,4,1) : Out.ZCalcTex;
 	return Out;
 }
 
 // ピクセルシェーダ
-float4 BShadowTexCd2_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3) : COLOR
+float4 BShadowTexCd2_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3, float4 MdsPmxColor : COLOR1) : COLOR
 {
 	// スペキュラ色計算
 	float4 Specula = pow(max(0,dot(normalize(N),normalize(-LightDir.xyz + normalize(Eye)))),SpcColor.w);
@@ -491,11 +502,11 @@ float4 BShadowTexCd2_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float
 		if(comp==1.0f){
 			float4 ans = EgColor*(tex2D(s1,Tex) * SphCMul + SphCAdd) + Specula*comp;
 			if(transp) ans.a = 0.5f;
-			return ans;
+			return (ans) * MdsPmxColor;
 		}else{
 			float4 ans = EgColor*(tex2D(s1,Tex) * SphCMul + SphCAdd)*comp + EgColor*tex2D(s1,Tex)*ToonColor*(1-comp) + Specula*comp;
 			if(transp) ans.a = 0.5f;
-			return ans;
+			return (ans) * MdsPmxColor;
 		}
 	}
 }
@@ -515,7 +526,7 @@ technique BShadowTexCd2Tec
 ///////////// 分散光なしテクスチャありテクスチャコード２ありバッファシャドウテクニック ////////////////
 
 // 頂点シェーダ
-BShadowSphiaTexture_OUTPUT BShadowTextureTexCd2Tec_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0, float2 Tex2 : TEXCOORD1 )
+BShadowSphiaTexture_OUTPUT BShadowTextureTexCd2Tec_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0, float4 Tex2 : TEXCOORD1 )
 {
 	BShadowSphiaTexture_OUTPUT Out = (BShadowSphiaTexture_OUTPUT)0;
 	
@@ -523,7 +534,7 @@ BShadowSphiaTexture_OUTPUT BShadowTextureTexCd2Tec_VS(float4 Pos : POSITION, flo
 	Out.Tex = Tex;
 
 	// スフィアマップテクスチャ座標
-	Out.SpTex = Tex2;
+	Out.SpTex = Tex2.xy;
 
 	// 普通にカメラの目線によるワールドビュー射影変換をする
 	Out.Pos = mul( Pos, matWorldViewProj );
@@ -537,11 +548,13 @@ BShadowSphiaTexture_OUTPUT BShadowTextureTexCd2Tec_VS(float4 Pos : POSITION, flo
 	// カメラ相対位置
 	Out.Eye = Place - Pos.xyz;
 	
+	Out.PmxColor = MdsPmxVertexColor ? Tex2 : float4(1,1,1,1);
+    Out.ZCalcTex = MdsPmxUnshadowed ? float4(4,4,4,1) : Out.ZCalcTex;
 	return Out;
 }
 
 // ピクセルシェーダ
-float4 BShadowTextureTexCd2Tec_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float2 SpTex : TEXCOORD2,float3 N : TEXCOORD3,float3 Eye : TEXCOORD4) : COLOR
+float4 BShadowTextureTexCd2Tec_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float2 SpTex : TEXCOORD2,float3 N : TEXCOORD3,float3 Eye : TEXCOORD4, float4 MdsPmxColor : COLOR1) : COLOR
 {
 	// スペキュラ色計算
 	float4 Specula = pow(max(0,dot(normalize(N),normalize(-LightDir.xyz + normalize(Eye)))),SpcColor.w);
@@ -567,15 +580,11 @@ float4 BShadowTextureTexCd2Tec_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCO
         float3 coverage = abs(float3(TransTexCoord, ZCalcTex.z) * 2 - 1);
         if (max(coverage.x, max(coverage.y, coverage.z)) > 1) comp = 1;
 		comp = min(saturate(dot(normalize(N),-LightDir)*3),comp);	// 分散光
-		if(comp==1.0f){
-			ans = ans + Specula*comp;
-			if(transp) ans.a = 0.5f;
-			return ans;
-		}else{
+
 			ans = ans*lerp(ToonColor, 1, comp) + Specula*comp;
 			if(transp) ans.a = 0.5f;
-			return ans;
-		}
+			return (ans) * MdsPmxColor;
+
 	}
 }
 
@@ -594,6 +603,7 @@ technique BShadowTextureTexCd2Tec
 
 struct DiffuseBufferShadow_OUTPUT
 {
+    float4 PmxColor : COLOR1;
 	float4 Pos      : POSITION;		// 射影変換座標
 	float4 ZCalcTex : TEXCOORD0;	// Z値
 	float3 N		: TEXCOORD1;	// 法線
@@ -602,7 +612,7 @@ struct DiffuseBufferShadow_OUTPUT
 };
 
 // 頂点シェーダ
-DiffuseBufferShadow_OUTPUT DiffuseBufferShadow_VS(float4 Pos : POSITION, float4 Normal : NORMAL)
+DiffuseBufferShadow_OUTPUT DiffuseBufferShadow_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float4 MdsPmxColor : TEXCOORD1)
 {
 	DiffuseBufferShadow_OUTPUT Out = (DiffuseBufferShadow_OUTPUT)0;
 
@@ -623,11 +633,13 @@ DiffuseBufferShadow_OUTPUT DiffuseBufferShadow_VS(float4 Pos : POSITION, float4 
 	Out.Color = EgColor + max(0,DifColor * dot(normalize(Out.N),L ));
 	Out.Color.a = EgColor.a;
 
+	Out.PmxColor = MdsPmxVertexColor ? MdsPmxColor : float4(1,1,1,1);
+    Out.ZCalcTex = MdsPmxUnshadowed ? float4(4,4,4,1) : Out.ZCalcTex;
 	return Out;
 }
 
 // ピクセルシェーダ
-float4 DiffuseBufferShadow_PS(float4 ZCalcTex : TEXCOORD0,float3 N : TEXCOORD1,float3 Eye : TEXCOORD2,float4 Color : COLOR0) : COLOR
+float4 DiffuseBufferShadow_PS(float4 ZCalcTex : TEXCOORD0,float3 N : TEXCOORD1,float3 Eye : TEXCOORD2,float4 Color : COLOR0, float4 MdsPmxColor : COLOR1) : COLOR
 {
 	// スペキュラ色計算
 	float4 Specula = pow(max(0,dot(normalize(N),normalize(-LightDir.xyz + normalize(Eye)))),SpcColor.w);
@@ -648,9 +660,9 @@ float4 DiffuseBufferShadow_PS(float4 ZCalcTex : TEXCOORD0,float3 N : TEXCOORD1,f
         float3 coverage = abs(float3(TransTexCoord, ZCalcTex.z) * 2 - 1);
         if (max(coverage.x, max(coverage.y, coverage.z)) > 1) comp = 1;
 		if(comp==1.0f){
-			return Color + Specula;
+			return (Color + Specula) * MdsPmxColor;
 		}else{
-			return (Color + Specula)*comp + EgColor*(1-comp);
+			return ((Color + Specula)*comp + EgColor*(1-comp)) * MdsPmxColor;
 		}
 	}
 }
@@ -671,6 +683,7 @@ technique DiffuseBufferShadowTec
 
 struct DiffuseBSTexture_OUTPUT
 {
+    float4 PmxColor : COLOR1;
 	float4 Pos      : POSITION;		// 射影変換座標
 	float4 ZCalcTex : TEXCOORD0;	// Z値
 	float2 Tex      : TEXCOORD1;	// テクスチャ
@@ -680,7 +693,7 @@ struct DiffuseBSTexture_OUTPUT
 };
 
 // 頂点シェーダ
-DiffuseBSTexture_OUTPUT DiffuseBSTexture_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0 )
+DiffuseBSTexture_OUTPUT DiffuseBSTexture_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0 , float4 MdsPmxColor : TEXCOORD1)
 {
 	DiffuseBSTexture_OUTPUT Out = (DiffuseBSTexture_OUTPUT)0;
 
@@ -703,11 +716,13 @@ DiffuseBSTexture_OUTPUT DiffuseBSTexture_VS(float4 Pos : POSITION, float4 Normal
 	float3 L = -LightDir.xyz;
 	Out.Color = EgColor + max(0,DifColor * dot(normalize(Out.N),L ));
 
+	Out.PmxColor = MdsPmxVertexColor ? MdsPmxColor : float4(1,1,1,1);
+    Out.ZCalcTex = MdsPmxUnshadowed ? float4(4,4,4,1) : Out.ZCalcTex;
 	return Out;
 }
 
 // ピクセルシェーダ
-float4 DiffuseBSTexture_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3,float4 Color : COLOR0) : COLOR
+float4 DiffuseBSTexture_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3,float4 Color : COLOR0, float4 MdsPmxColor : COLOR1) : COLOR
 {
 	// スペキュラ色計算
 	float4 Specula = pow(max(0,dot(normalize(N),normalize(-LightDir.xyz + normalize(Eye)))),SpcColor.w);
@@ -728,9 +743,9 @@ float4 DiffuseBSTexture_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,fl
         float3 coverage = abs(float3(TransTexCoord, ZCalcTex.z) * 2 - 1);
         if (max(coverage.x, max(coverage.y, coverage.z)) > 1) comp = 1;
 		if(comp==1.0f){
-			return Color * tex2D(s1,Tex) + Specula;
+			return (Color * tex2D(s1,Tex) + Specula) * MdsPmxColor;
 		}else{
-			return (Color * tex2D(s1,Tex) + Specula)*comp + EgColor*tex2D(s1,Tex)*(1-comp);
+			return ((Color * tex2D(s1,Tex) + Specula)*comp + EgColor*tex2D(s1,Tex)*(1-comp)) * MdsPmxColor;
 		}
 	}
 }
@@ -750,7 +765,7 @@ technique DiffuseBSTextureTec
 ///////////// 分散光ありテクスチャなしスフィアマップありバッファシャドウテクニック ////////////////
 
 // 頂点シェーダ
-DiffuseBSTexture_OUTPUT DiffuseBSSphia_VS(float4 Pos : POSITION, float4 Normal : NORMAL)
+DiffuseBSTexture_OUTPUT DiffuseBSSphia_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float4 MdsPmxColor : TEXCOORD1)
 {
 	DiffuseBSTexture_OUTPUT Out = (DiffuseBSTexture_OUTPUT)0;
 
@@ -773,11 +788,13 @@ DiffuseBSTexture_OUTPUT DiffuseBSSphia_VS(float4 Pos : POSITION, float4 Normal :
 	float3 L = -LightDir.xyz;
 	Out.Color = EgColor + max(0,DifColor * dot(normalize(Out.N),L ));
 
+	Out.PmxColor = MdsPmxVertexColor ? MdsPmxColor : float4(1,1,1,1);
+    Out.ZCalcTex = MdsPmxUnshadowed ? float4(4,4,4,1) : Out.ZCalcTex;
 	return Out;
 }
 
 // ピクセルシェーダ
-float4 DiffuseBSSphia_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3,float4 Color : COLOR0) : COLOR
+float4 DiffuseBSSphia_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float3 N : TEXCOORD2,float3 Eye : TEXCOORD3,float4 Color : COLOR0, float4 MdsPmxColor : COLOR1) : COLOR
 {
 	// スペキュラ色計算
 	float4 Specula = pow(max(0,dot(normalize(N),normalize(-LightDir.xyz + normalize(Eye)))),SpcColor.w);
@@ -808,10 +825,10 @@ float4 DiffuseBSSphia_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,floa
         float3 coverage = abs(float3(TransTexCoord, ZCalcTex.z) * 2 - 1);
         if (max(coverage.x, max(coverage.y, coverage.z)) > 1) comp = 1;
 		if(comp==1.0f){
-			return ans + Specula;
+			return (ans + Specula) * MdsPmxColor;
 		}else{
-			if(spadd) return (ans + Specula)*comp + (EgColor+texUV)*(1-comp);
-			else	  return (ans + Specula)*comp + (EgColor*texUV)*(1-comp);
+			if(spadd) return ((ans + Specula)*comp + (EgColor+texUV)*(1-comp)) * MdsPmxColor;
+			else	  return ((ans + Specula)*comp + (EgColor*texUV)*(1-comp)) * MdsPmxColor;
 		}
 	}
 }
@@ -831,6 +848,7 @@ technique DiffuseBSSphiaTec
 
 struct DiffuseBSSphiaTex_OUTPUT
 {
+    float4 PmxColor : COLOR1;
 	float4 Pos      : POSITION;		// 射影変換座標
 	float4 ZCalcTex : TEXCOORD0;	// Z値
 	float2 Tex      : TEXCOORD1;	// テクスチャ座標
@@ -841,7 +859,7 @@ struct DiffuseBSSphiaTex_OUTPUT
 };
 
 // 頂点シェーダ
-DiffuseBSSphiaTex_OUTPUT DiffuseBSSphiaTex_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0 )
+DiffuseBSSphiaTex_OUTPUT DiffuseBSSphiaTex_VS(float4 Pos : POSITION, float4 Normal : NORMAL, float2 Tex : TEXCOORD0 , float4 MdsPmxColor : TEXCOORD1)
 {
 	DiffuseBSSphiaTex_OUTPUT Out = (DiffuseBSSphiaTex_OUTPUT)0;
 
@@ -867,11 +885,13 @@ DiffuseBSSphiaTex_OUTPUT DiffuseBSSphiaTex_VS(float4 Pos : POSITION, float4 Norm
 	float3 L = -LightDir.xyz;
 	Out.Color = EgColor + max(0,DifColor * dot(normalize(Out.N),L ));
 
+	Out.PmxColor = MdsPmxVertexColor ? MdsPmxColor : float4(1,1,1,1);
+    Out.ZCalcTex = MdsPmxUnshadowed ? float4(4,4,4,1) : Out.ZCalcTex;
 	return Out;
 }
 
 // ピクセルシェーダ
-float4 DiffuseBSSphiaTex_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float2 SpTex : TEXCOORD2,float3 N : TEXCOORD3,float3 Eye : TEXCOORD4,float4 Color : COLOR0) : COLOR
+float4 DiffuseBSSphiaTex_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,float2 SpTex : TEXCOORD2,float3 N : TEXCOORD3,float3 Eye : TEXCOORD4,float4 Color : COLOR0, float4 MdsPmxColor : COLOR1) : COLOR
 {
 	// スペキュラ色計算
 	float4 Specula = pow(max(0,dot(normalize(N),normalize(-LightDir.xyz + normalize(Eye)))),SpcColor.w);
@@ -902,10 +922,10 @@ float4 DiffuseBSSphiaTex_PS(float4 ZCalcTex : TEXCOORD0,float2 Tex : TEXCOORD1,f
         float3 coverage = abs(float3(TransTexCoord, ZCalcTex.z) * 2 - 1);
         if (max(coverage.x, max(coverage.y, coverage.z)) > 1) comp = 1;
 		if(comp==1.0f){
-			return ans + Specula;
+			return (ans + Specula) * MdsPmxColor;
 		}else{
-			if(spadd) return (ans + Specula)*comp + (EgColor*tex1UV+tex2UV)*(1-comp);
-			else	  return (ans + Specula)*comp + (EgColor*tex1UV*tex2UV)*(1-comp);
+			if(spadd) return ((ans + Specula)*comp + (EgColor*tex1UV+tex2UV)*(1-comp)) * MdsPmxColor;
+			else	  return ((ans + Specula)*comp + (EgColor*tex1UV*tex2UV)*(1-comp)) * MdsPmxColor;
 		}
 	}
 }

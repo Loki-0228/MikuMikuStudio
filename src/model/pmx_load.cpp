@@ -82,6 +82,8 @@
 #include "mikumikustudio/model_load_ui.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/owned_text.hpp"
+#include "mikumikustudio/pmx21_morph.hpp"
+#include "mikumikustudio/pmx21.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 
 namespace mikumikustudio {
@@ -127,7 +129,7 @@ static const char kMsgPmxUtf8Jp[] =
 // path uses (x64 0x7FF7CB550880, x86 0x52DB80; = kTitleOpenFailJp).
 
 IDirect3DDevice9* DevOf(D3DRenderer* sub) {
-    return sub->device;                       // wrapper + 120032
+    return sub ? sub->device : nullptr;
 }
 
 void InitializePmxMainVertices(const mdl::PmxVertex* source,
@@ -186,6 +188,7 @@ void WideToSjis(char* dst, const wchar_t* src, rsize_t size) {
 struct TextReadContext {
     std::int64_t fileLength = -1;  // < 0 when the length could not be queried
     bool failed = false;
+    bool utf8 = false;
 
     // Bytes between the current position and end of file, or -1 when unknown.
     std::int64_t Remaining(const fileio::SequentialFileReader& reader) const {
@@ -210,7 +213,7 @@ bool ReadValidatedTextLength(fileio::SequentialFileReader& reader,
         context.failed = true;
         return false;
     }
-    if ((len & 1u) != 0
+    if ((!context.utf8 && (len & 1u) != 0)
         || len > static_cast<std::uint32_t>(INT_MAX)) {
         context.failed = true;
         return false;
@@ -232,6 +235,32 @@ wchar_t* AllocateTextBuffer(std::uint32_t bytes) {
     return p;
 }
 
+wchar_t* ReadTextPayload(fileio::SequentialFileReader& reader,
+                         TextReadContext& context, std::uint32_t len) {
+    if (!context.utf8) {
+        auto* value = AllocateTextBuffer(len);
+        if (reader.Read(value, len) == static_cast<int>(len)) return value;
+        owned_text::Delete(value);
+    } else {
+        std::vector<char> bytes(len);
+        if (reader.Read(bytes.data(), len) == static_cast<int>(len)) {
+            const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                bytes.data(), static_cast<int>(len), nullptr, 0);
+            if (count > 0) {
+                auto* value = owned_text::AllocateBytes((std::size_t(count) + 1) * sizeof(wchar_t));
+                if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
+                        static_cast<int>(len), value, count) == count) {
+                    value[count] = 0;
+                    return value;
+                }
+                owned_text::Delete(value);
+            }
+        }
+    }
+    context.failed = true;
+    return nullptr;
+}
+
 // Required names keep the legacy generated identity. Optional English names
 // fall back to the original Unicode name instead of manufacturing a Null_XX
 // translation. Each field owns its buffer (ModelDispose frees both).
@@ -243,13 +272,7 @@ wchar_t* ReadTextBuf(fileio::SequentialFileReader& reader, int& nullIdx,
     if (!ReadValidatedTextLength(reader, context, len))
         return nullptr;
     if (len != 0) {
-        wchar_t* p = AllocateTextBuffer(len);
-        if (reader.Read(p, len) != static_cast<int>(len)) {
-            context.failed = true;
-            owned_text::Delete(p);
-            return nullptr;
-        }
-        return p;
+        return ReadTextPayload(reader, context, len);
     }
     if (fallback && *fallback) {
         ++nullIdx; // Preserve subsequent generated names used by existing PMMs.
@@ -271,9 +294,9 @@ bool SkipTextBuf(fileio::SequentialFileReader& reader,
     if (!ReadValidatedTextLength(reader, context, len))
         return false;
     if (len != 0) {
-        owned_text::Buffer p(AllocateTextBuffer(len));
-        const bool ok = reader.Read(p.get(), len) == static_cast<int>(len);
-        if(ok&&preserved)preserved->assign(p.get(),len/sizeof(wchar_t));
+        owned_text::Buffer p(ReadTextPayload(reader, context, len));
+        const bool ok = p.get() != nullptr;
+        if(ok&&preserved)preserved->assign(p.get());
         if (!ok) {
             context.failed = true;
             return false;
@@ -398,10 +421,11 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     reader.Read(text, 1);                                     // 0x4B7806
     float version = 0.0f;
     reader.Read(&version, 4);
-    if (version != 2.0f) {
+    if (version != 2.0f && (MMD_ORIGINAL_PROFILE || version != 2.1f)) {
         if (enData)
             sprintf_s(text, 0x100,
-                      "PMX files version is different from 2.0.");
+                      MMD_ORIGINAL_PROFILE ? "PMX files version is different from 2.0."
+                                           : "Supported PMX versions: 2.0 and 2.1.");
         else
             sprintf_s(text, 0x100, kMsgPmxVersionJp);
         model_import::MessageA(hwnd, text,
@@ -410,7 +434,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
         return false;
     }
     model.physicsMode = 2;
-    reader.Read(text, 1);
+    std::uint8_t headerSize = 0;
+    if (reader.Read(&headerSize, 1) != 1 || headerSize < 8)
+        return AbortPmxLoad(reader, m);
     reader.Read(&model.pmxTextEncoding, 1);
     reader.Read(&model.pmxAdditionalUvCount, 1);
     reader.Read(&model.pmxVertexIndexSize, 1);
@@ -419,7 +445,12 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
     reader.Read(&model.pmxBoneIndexSize, 1);
     reader.Read(&model.pmxMorphIndexSize, 1);
     reader.Read(&model.pmxRigidIndexSize, 1);
-    if (model.pmxTextEncoding != 0) {
+    if (headerSize > 8) {
+        unsigned char extra[247];
+        if (reader.Read(extra, headerSize - 8) != headerSize - 8)
+            return AbortPmxLoad(reader, m);
+    }
+    if (model.pmxTextEncoding > 1 || (MMD_ORIGINAL_PROFILE && model.pmxTextEncoding != 0)) {
         sprintf_s(text, 0x100, enData
             ? "MMD can't read UTF8 encorded PMX.\nPlease exchange it to "
               "UTF16."
@@ -429,6 +460,14 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
         reader.Close();
         return false;
     }
+    textCtx.utf8 = model.pmxTextEncoding == 1;
+#if !MMD_ORIGINAL_PROFILE
+    const auto validIndex = [](unsigned size) { return size == 1 || size == 2 || size == 4; };
+    if (model.pmxAdditionalUvCount > 4 || !validIndex(model.pmxVertexIndexSize) ||
+        !validIndex(model.pmxTextureIndexSize) || !validIndex(model.pmxMaterialIndexSize) ||
+        !validIndex(model.pmxBoneIndexSize) || !validIndex(model.pmxMorphIndexSize) ||
+        !validIndex(model.pmxRigidIndexSize)) return AbortPmxLoad(reader, m);
+#endif
 
     // ---- model / comment text buffers --------------------------------------
     constexpr mdl::PmxTextBufferSlot kTextSlots[] = {
@@ -455,9 +494,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             return false;
         }
         if (len != 0) {
-            buf = AllocateTextBuffer(len);
+            buf = ReadTextPayload(reader, textCtx, len);
             mdl::PmxTextBuffer(m, kTextSlots[i]) = buf;
-            if (reader.Read(buf, len) != static_cast<int>(len)) {
+            if (!buf) {
                 owned_text::Delete(buf);
                 mdl::PmxTextBuffer(m, kTextSlots[i]) = nullptr;
                 for (int j = 0; j < i; ++j) {
@@ -641,6 +680,9 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                 reader.Read(rec.weight, 4);
                 break;
             case mdl::PmxWeightType::bdef4:
+#if !MMD_ORIGINAL_PROFILE
+            case mdl::PmxWeightType::qdef:
+#endif
                 for (int b = 0; b < 4; ++b)
                     rec.bone[b] = readIdx(boneIdxSize);
                 reader.Read(rec.weight, 0x10);
@@ -837,8 +879,8 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             return false;
         }
         if (len != 0) {
-            texPaths[t] = AllocateTextBuffer(len);
-            if (reader.Read(texPaths[t], len) != static_cast<int>(len)) {
+            texPaths[t] = ReadTextPayload(reader, textCtx, len);
+            if (!texPaths[t]) {
                 releaseTexturePaths(texPaths, texCount);
                 reader.Close();
                 return false;
@@ -859,7 +901,7 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
 
 #if !MMD_ORIGINAL_PROFILE
     std::vector<std::wstring> texturePreparationPaths;
-    if (!parallel_prepare_policy::Disabled()) {
+    if (sub && !parallel_prepare_policy::Disabled()) {
         // Preserve the exact concatenated path used by material loading. Live
         // pool entries already have a GPU texture and need no preparation.
         for (std::uint32_t t=0;t<texCount && texturePreparationPaths.size()<64;++t) {
@@ -1333,6 +1375,15 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             reader.Read(&morph.offsetCount, 4);
             const std::int32_t cnt = morph.offsetCount;
             const std::uint8_t type = morph.type;
+#if !MMD_ORIGINAL_PROFILE
+            const unsigned entryBytes[] = {unsigned(morphIdxSize)+4, unsigned(vertIdxSize)+12,
+                unsigned(boneIdxSize)+28, unsigned(vertIdxSize)+16, unsigned(vertIdxSize)+16,
+                unsigned(vertIdxSize)+16, unsigned(vertIdxSize)+16, unsigned(vertIdxSize)+16,
+                unsigned(matIdxSize)+113, unsigned(morphIdxSize)+4, unsigned(model.pmxRigidIndexSize)+25};
+            if (type > 10 || (version == 2.0f && type > 8) || cnt < 0 ||
+                std::int64_t(cnt)*entryBytes[type] > textCtx.Remaining(reader))
+                return AbortPmxLoad(reader, m);
+#endif
             TracePmxOffset(reader, "morph-header", i,
                            (static_cast<int>(type) << 24) |
                                (cnt & 0x00FFFFFF));
@@ -1341,7 +1392,11 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                 continue;
             }
             switch (type) {
-            case 0: {                                       // group
+            case 0:                                         // group
+#if !MMD_ORIGINAL_PROFILE
+            case 9:                                         // flip
+#endif
+            {
                 morph.groupCount = cnt;
                 morph.groupEntries = static_cast<mdl::PmxGroupMorphEntry*>(
                     operator new(sizeof(*morph.groupEntries) * cnt));
@@ -1487,8 +1542,24 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                 morph.offsetCount = 0;
                 break;
             }
-            default:                                        // 9/10 skipped
+#if !MMD_ORIGINAL_PROFILE
+            case 10: {
+                if (cnt < 0 || std::int64_t(cnt) * (model.pmxRigidIndexSize + 25) > textCtx.Remaining(reader))
+                    return AbortPmxLoad(reader, m);
+                auto* entries = static_cast<pmx21::Impulse*>(operator new(sizeof(pmx21::Impulse) * cnt));
+                morph.impulse2Entries = reinterpret_cast<unsigned char*>(entries);
+                for (int o = 0; o < cnt; ++o) {
+                    entries[o] = {};
+                    entries[o].rigid = readIdxS(model.pmxRigidIndexSize);
+                    if (reader.Read(&entries[o].local, 1) != 1 || entries[o].local > 1 ||
+                        reader.Read(entries[o].velocity, 12) != 12 || reader.Read(entries[o].torque, 12) != 12)
+                        return AbortPmxLoad(reader, m);
+                }
                 break;
+            }
+#endif
+            default:
+                return AbortPmxLoad(reader, m);
             }
             TracePmxOffset(reader, "morph-record-end", i,
                            (static_cast<int>(type) << 24) |
@@ -1949,6 +2020,10 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                     return AbortPmxLoad(reader, m);
                 std::uint8_t jointType = 0;
                 reader.Read(&jointType, 1);                    // ignored by v9.32
+#if !MMD_ORIGINAL_PROFILE
+                if (jointType > 5 || (version == 2.0f && jointType != 0))
+                    return AbortPmxLoad(reader, m);
+#endif
                 jt.rigidA = readRigidIdx();
                 jt.rigidB = readRigidIdx();
                 reader.Read(jt.position, sizeof(jt.position));
@@ -1959,6 +2034,13 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
                 reader.Read(&jt.limits[9], 3 * sizeof(float));
                 reader.Read(&jt.limits[6], 3 * sizeof(float));
                 reader.Read(jt.springs, sizeof(jt.springs));
+#if !MMD_ORIGINAL_PROFILE
+                if (jointType != 0) {
+                    if (physScene && physScene->world && MissingJointBodies(model, jt) == 0)
+                        jt.constraint = pmx21::CreateJoint(*physScene, model, jt, jointType);
+                    continue;
+                }
+#endif
                 // Deliberate hardening: the original code stores the joint's rigid
                 // indices at 0x1400B159E/0x1400B15C2 and fetches the rigid bodies
                 // with them at 0x1400B191A/0x1400B192E without checking either
@@ -2032,6 +2114,10 @@ bool LoadPMX(unsigned char* m, D3DRenderer* sub, std::uint8_t showInfo,
             }
         }
     }
+#if !MMD_ORIGINAL_PROFILE
+    if (version == 2.1f && !pmx21::ReadSoftBodies(m, reader, textCtx.fileLength, textCtx.utf8))
+        return AbortPmxLoad(reader, m);
+#endif
     reader.Close();
 
     // ---- animation pools -------------------------------------------------------
