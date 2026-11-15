@@ -1522,7 +1522,7 @@ MmsUiLayoutApiV1 UiRegistry::LayoutApi(UiClient& client) {
 }
 MmsUiLayoutApiV1_1 UiRegistry::LayoutHistoryApi(UiClient& client) {
     const auto base = LayoutApi(client);
-    MmsUiLayoutApiV1_1 a{}; a.h = Header<MmsUiLayoutApiV1_1>(); a.context = &client;
+    MmsUiLayoutApiV1_1 a{}; a.h = MmsHeader{sizeof(MmsUiLayoutApiV1_1), 1, 1}; a.context = &client;
     a.setDefaultHints = base.setDefaultHints;
     a.stageHints = base.stageHints;
     a.acquireSnapshot = base.acquireSnapshot;

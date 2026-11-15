@@ -388,6 +388,7 @@ static void LifecycleChecks(const fs::path& root, const fs::path& fixture) {
             manager.Storage().Saved(records);
         }
         manager.Load(package.parent_path()); CHECK(count("NEGOTIATION_PASS") == 1);
+        CHECK(count("LAYOUT_HISTORY_PASS") == 1);
         if (mode == "failcreate") {
             CHECK(count("CREATE_TASK_ACCEPTED") == 1); CHECK(count("TASK_CANCEL") == 1); CHECK(count("TASK_RUN") == 0);
             CHECK(manager.Status()[0].stage == "failed"); CHECK(manager.Ui().commands.empty());

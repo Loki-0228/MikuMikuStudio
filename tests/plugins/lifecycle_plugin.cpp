@@ -276,6 +276,41 @@ static MmsResult RegisterSerializer(Plugin* p){
     s.releaseBytes=[](void* context,MmsHandle){Log(static_cast<Plugin*>(context),"SERIALIZER_RELEASE");};
     return p->host.registerProvider(p->host.context,S("mms.serializer"),{p->id.data(),p->id.size()},&s,sizeof(s),&p->serializer);
 }
+static bool CheckLayoutNegotiation(const MmsHostV1& host) {
+    const auto name = S("mms.ui.layout");
+    alignas(MmsUiLayoutApiV1_1) unsigned char buffer[sizeof(MmsUiLayoutApiV1_1)];
+    unsigned char original[sizeof(buffer)];
+    std::memset(original, 0x5a, sizeof(original));
+    std::memcpy(buffer, original, sizeof(buffer));
+    const auto rejected = [&](uint32_t major, uint32_t minor, uint32_t bytes, MmsResult expected) {
+        return host.queryService(host.context, name, major, minor, bytes, buffer) == expected &&
+            std::memcmp(buffer, original, sizeof(buffer)) == 0;
+    };
+    if (!rejected(2, 1, sizeof(buffer), MMS_E_VERSION) ||
+        !rejected(1, 2, sizeof(buffer), MMS_E_VERSION) ||
+        !rejected(1, 0, sizeof(MmsUiLayoutApiV1) - 1, MMS_E_ARGUMENT) ||
+        !rejected(1, 1, sizeof(MmsUiLayoutApiV1), MMS_E_ARGUMENT) ||
+        !rejected(1, 1, sizeof(MmsUiLayoutApiV1_1) - 1, MMS_E_ARGUMENT)) return false;
+
+    MmsUiLayoutApiV1 base{};
+    if (host.queryService(host.context, name, 1, 0, sizeof(buffer), buffer) != MMS_OK ||
+        std::memcmp(buffer + sizeof(base), original + sizeof(base), sizeof(buffer) - sizeof(base))) return false;
+    std::memcpy(&base, buffer, sizeof(base));
+    if (base.h.size != 48 || base.h.major != 1 || base.h.minor != 0 ||
+        !base.context || !base.setDefaultHints || !base.stageHints || !base.acquireSnapshot || !base.releaseSnapshot) return false;
+
+    MmsUiLayoutApiV1_1 history{};
+    if (host.queryService(host.context, name, 1, 1, sizeof(history), &history) != MMS_OK ||
+        history.h.size != 72 || history.h.major != 1 || history.h.minor != 1 ||
+        history.context != base.context || history.setDefaultHints != base.setDefaultHints ||
+        history.stageHints != base.stageHints || history.acquireSnapshot != base.acquireSnapshot ||
+        history.releaseSnapshot != base.releaseSnapshot || !history.queryHistory || !history.undo || !history.redo) return false;
+
+    MmsUiLayoutHistoryInfoV1 info{};
+    info.h = H<MmsUiLayoutHistoryInfoV1>();
+    return history.queryHistory(history.context, &info) == MMS_OK &&
+        info.h.size == 40 && info.h.major == 1 && info.h.minor == 0;
+}
 static MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1* info, void** out) {
     *out = nullptr; auto* p = new Plugin{*host}; p->id.assign(info->pluginId.data, size_t(info->pluginId.bytes));
     auto r = host->queryService(host->context, S("mms.ui"), 1, 0, sizeof(p->ui), &p->ui); if (r) { delete p; return r; }
@@ -285,13 +320,7 @@ static MmsResult MMS_CALL Create(const MmsHostV1* host, const MmsCreateInfoV1* i
     if (host->queryService(host->context, S("mms.ui"), 1, 0, 8, buffer) != MMS_E_ARGUMENT || std::memcmp(buffer, original, sizeof(buffer))) { delete p; return MMS_E_FAILED; }
     if (host->queryService(host->context, S("mms.test.unavailable"), 1, 0, sizeof(buffer), buffer) != MMS_E_NOT_FOUND || std::memcmp(buffer, original, sizeof(buffer))) { delete p; return MMS_E_FAILED; }
     if (host->queryService(host->context, S("mms.ui"), 1, 0, sizeof(buffer), buffer) != MMS_OK || std::memcmp(buffer + sizeof(MmsUiApiV1), original + sizeof(MmsUiApiV1), sizeof(buffer) - sizeof(MmsUiApiV1))) { delete p; return MMS_E_FAILED; }
-    MmsUiLayoutApiV1_1 layoutHistory{};
-    if (host->queryService(host->context, S("mms.ui.layout"), 1, 1, sizeof(layoutHistory), &layoutHistory) == MMS_OK &&
-        layoutHistory.undo && layoutHistory.redo && layoutHistory.queryHistory) {
-        Log(p, "LAYOUT_HISTORY_PASS");
-    } else {
-        Log(p, "LAYOUT_HISTORY_MISSING");
-    }
+    Log(p, CheckLayoutNegotiation(*host) ? "LAYOUT_HISTORY_PASS" : "LAYOUT_HISTORY_MISSING");
     Log(p, "NEGOTIATION_PASS");
     if (p->id.find("gui-refresh") != std::string::npos) {
         r = mms::sdk::RefreshServices::Query(*host, p->refresh);
