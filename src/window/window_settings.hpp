@@ -1,6 +1,9 @@
 #pragma once
 #include "settings_json.hpp"
 #include "mikumikustudio/mmd_app.hpp"
+#include <iomanip>
+#include <locale>
+#include <sstream>
 
 namespace mikumikustudio::window_settings {
 inline std::string Snapshot(MMDApp& app, int x, int y, int width, int height,
@@ -18,7 +21,12 @@ inline std::string Snapshot(MMDApp& app, int x, int y, int width, int height,
     number("floatingX",app.SeparateWindowX()); number("floatingY",app.SeparateWindowY());
     number("floatingWidth",app.SeparateWindowWidth()); number("floatingHeight",app.SeparateWindowHeight());
     number("physicsFrame",physics); number("frameVolume",int(app.FrameVolumeControlEnabled()));
-    number("frameNormalization",app.FrameNormalization()); number("sidebarRatio",std::isfinite(app.SidebarRatio()) ? app.SidebarRatio() : -1.0f);
+    number("frameNormalization",app.FrameNormalization());
+    const float sidebarRatio = app.SidebarRatio();
+    std::ostringstream ratio;
+    ratio.imbue(std::locale::classic());
+    ratio << std::fixed << std::setprecision(6) << (std::isfinite(sidebarRatio) ? sidebarRatio : -1.0f);
+    out += ",\"sidebarRatio\":" + ratio.str();
     number("menu119",check119); number("menu12d",check12d);
     auto path = [&](const char* name, const wchar_t* value) { out += ',' + settings_json::Quote(name) + ':' + settings_json::Quote(std::wstring_view(value)); };
     path("modelDirectory",app.DirModel()); path("accessoryDirectory",app.DirAccs()); path("waveDirectory",app.DirWave());

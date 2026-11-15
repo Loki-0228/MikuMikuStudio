@@ -4,6 +4,7 @@
 #include <cmath>
 #include <climits>
 #include <cstdlib>
+#include <locale.h>
 
 namespace mikumikustudio::settings_json {
 using plugins::Json;
@@ -50,8 +51,22 @@ inline int Integer(const Json& object, const char* name, int fallback) {
 inline float Float(const Json& object, const char* name, float fallback) {
     auto found = object.object.find(name);
     if (found == object.object.end() || found->second.kind != Json::Number) return fallback;
-    char* end = nullptr; const float value = std::strtof(found->second.text.c_str(), &end);
-    return end && !*end && std::isfinite(value) ? value : fallback;
+    const auto& text = found->second.text;
+    char* end = nullptr;
+    // The JSON reader already validated the decimal grammar. Use the CRT's
+    // float conversion with explicit JSON punctuation, retaining finite underflow.
+#ifdef _WIN32
+    const auto locale = _create_locale(LC_NUMERIC, "C");
+    if (!locale) return fallback;
+    const float value = _strtof_l(text.c_str(), &end, locale);
+    _free_locale(locale);
+#else
+    const auto locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+    if (!locale) return fallback;
+    const float value = strtof_l(text.c_str(), &end, locale);
+    freelocale(locale);
+#endif
+    return end != text.c_str() && end == text.c_str() + text.size() && std::isfinite(value) ? value : fallback;
 }
 inline bool Read(const char* section, Json& out, system_settings::Result& result) {
     std::string json; result = system_settings::ReadSection(section, json);

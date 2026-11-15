@@ -289,6 +289,8 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 
 `ui_language_tests --name-gaps` 验证旧式名称解码失败回退、双字节截断、UTF-8 标记、模型选择框首次显示和真实 PMX 控件显示；`--model-selectors` 单独验证点击前的名称、绑定项和已有选择保留；`--name-lookup-benchmark` 单独测量 40 万次有效名称查询的 CPU 耗时。
 
+`installation_settings_tests.exe <新输出目录> --settings-window-locale` 在 C 和使用小数逗号的数字区域设置下，检查窗口配置 JSON 的六位小数写入和读取、溢出回退、非有限值默认标记，以及统一配置文件对未知字段和其他配置分节的保留。需要能切换到使用小数逗号的 CRT 区域设置，不改变系统设置。
+
 在 Windows 11 和已安装 Windows SDK 的环境中，运行 `python tests/windows_locale_runner.py <ui_language_tests.exe> <新输出目录>`，为测试副本设置日区、中文、西文和 UTF-8 进程编码。脚本核对实际代码页并保存哈希与结果；不改变系统设置或正式程序清单。若系统不支持指定代码页，检查失败，不记为通过。保留这组回归，移除旧式名称兼容时再评估删除。记录见[日区名称边界修复](../docs/records/interface/languages.md#record-japanese-name-gaps)。
 
 在命令末尾加 `selectors` 可单独运行模型选择框测试。使用 `python tests/windows_locale_runner.py <menu_language_tests.exe> <新输出目录> menu` 验证真实菜单资源，检查翻译项从灰色恢复可用且不改变勾选值。
