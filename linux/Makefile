@@ -6,6 +6,7 @@ linux_dir := $(dir $(lastword $(MAKEFILE_LIST)))
 source_dir := $(abspath $(linux_dir)/..)
 BUILD_DIR ?= $(linux_dir)build
 CXXFLAGS ?= -O2 -Wall -Wextra -Wno-unused-parameter
+PYTHON ?= python3
 
 ifneq ($(shell uname -s),Linux)
 $(error This entry point builds the native Linux CPU targets only)
@@ -22,9 +23,19 @@ tests := $(smoke_tests) animation_retime_tests
 test_bins := $(addprefix $(BUILD_DIR)/tests/,$(tests))
 test_objects := $(addprefix $(BUILD_DIR)/obj/tests/,$(addsuffix .o,$(tests)))
 retime_test := $(BUILD_DIR)/tests/animation_retime_tests
+format_inspect := $(BUILD_DIR)/mms_format_inspect
+format_inspect_obj := $(BUILD_DIR)/obj/tools/mms_format_inspect.o
 
-.PHONY: all check check-retime
-all: $(curve_library) $(test_bins)
+.PHONY: all check check-retime format-inspect check-format-inspect
+all: $(curve_library) $(test_bins) $(format_inspect)
+
+format-inspect: $(format_inspect)
+
+check-format-inspect: $(format_inspect)
+	$(PYTHON) "$(source_dir)/tools/test_mms_format_inspect.py" "$<"
+
+$(format_inspect): $(format_inspect_obj)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o "$@"
 
 check: $(addprefix $(BUILD_DIR)/tests/,$(smoke_tests))
 	@set -e; for test in $^; do \
@@ -50,4 +61,4 @@ $(BUILD_DIR)/obj/%.o: $(source_dir)/%.cpp
 	$(CXX) $(CPPFLAGS) -I"$(source_dir)/include" -I"$(source_dir)/src" \
 		$(CXXFLAGS) -std=c++17 -pthread -MMD -MP -c "$<" -o "$@"
 
--include $(curve_objects:.o=.d) $(test_objects:.o=.d)
+-include $(curve_objects:.o=.d) $(test_objects:.o=.d) $(format_inspect_obj:.o=.d)
