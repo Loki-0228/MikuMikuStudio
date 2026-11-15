@@ -438,7 +438,7 @@ bool Initialize(MMDApp* value, void* instance, int show) {
           value->Physics()->world && value->Physics()->groundBody,
           "actual startup supplies the hidden window, D3D device and Bullet world");
     Check(!GetModuleHandleW(L"MMHack.dll") && !GetModuleHandleW(L"MMEffect.dll") &&
-          !GetModuleHandleW(L"MMSAdapter.dll") && !GetModuleHandleW(L"MMV4MMS.dll"),
+          !GetModuleHandleW(L"MMDFacade.dll") && !GetModuleHandleW(L"MMV4MMS.dll"),
           "fresh lifecycle host did not load MME bridges or MMV");
     D3DDEVICE_CREATION_PARAMETERS creation{};
     Check(SUCCEEDED(value->Renderer()->device->GetCreationParameters(&creation)) &&

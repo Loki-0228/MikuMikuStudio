@@ -1,18 +1,20 @@
 # 旧 MME 插件包
 
-ABI 分支通过原创 `MMSAdapter.dll` 转接旧宿主的 37 个 `Exp*` 导出，保留其名称、序号和调用参数。用户本地的 MMHack、MMEffect 由启动加载器适配：只在 `data` 中生成导入重定向副本，原文件保持不变。宿主可以使用任意 EXE 文件名。
+兼容产品名为 **MMDFacade**。新版将原 `MMSAdapter.dll` 改名为 `MMDFacade.dll`，保留导出签名和序号；`MMHack.dll` 与独立 `MMDPlugin.dll` 不改名。成套更新、缓存及旧安装迁移见 [MMDFacade](MMDFACADE.md)。
 
-宿主同时提供基于 MME-RE/src/mmhack 的独立 `MMHack.dll`，实现旧版 22 个状态查询导出（名称及序号 1–22）。省略清单的 `hack` 字段即可使用随宿主构建的桥接层；显式填写 `hack` 时继续使用用户包内的原版 MMHack。新原生插件使用 `MMSPluginGetApi` 和宿主函数表，不需要链接 MMSAdapter 或 MMHack。
+ABI 分支通过原创 `MMDFacade.dll` 转接旧宿主的 37 个 `Exp*` 导出，保留其名称、序号和调用参数。用户本地的 MMHack、MMEffect 由启动加载器适配：只在 `data` 中生成导入重定向副本，原文件保持不变。宿主可以使用任意 EXE 文件名。
+
+宿主同时提供基于 MME-RE/src/mmhack 的独立 `MMHack.dll`，实现旧版 22 个状态查询导出（名称及序号 1–22）。省略清单的 `hack` 字段即可使用随宿主构建的桥接层；显式填写 `hack` 时继续使用用户包内的原版 MMHack。新原生插件使用 `MMSPluginGetApi` 和宿主函数表，不需要链接 MMDFacade 或 MMHack。
 
 ## 安装
 
-MMSAdapter、随宿主构建的 MMHack 与主程序放在同一个目录。MMHack 仅在启用 legacy_mme 包时加载。专用 ABI [发布预备目录](development/win7-build.md)还放入 `PLUGINS/config.json`、许可文件，以及另一条兼容路径使用的 `legacy-mmdplugin/MMDPlugin.dll`（本项目构建的观察者宿主 DLL）。这不是用户的旧观察者插件，也不是 MMEffect 的替代品。观察者提供者也可放在 `PLUGINS/legacy-mmdplugin/MMDPlugin.dll`，优先于发行包原有位置。详见[窗口观察插件包](abi/legacy.md#mms-窗口观察插件包)。
+MMDFacade、随宿主构建的 MMHack 与主程序放在同一个目录。MMHack 仅在启用 legacy_mme 包时加载。专用 ABI [发布预备目录](development/win7-build.md)还放入 `PLUGINS/config.json`、许可文件，以及另一条兼容路径使用的 `legacy-mmdplugin/MMDPlugin.dll`（本项目构建的观察者宿主 DLL）。这不是用户的旧观察者插件，也不是 MMEffect 的替代品。观察者提供者也可放在 `PLUGINS/legacy-mmdplugin/MMDPlugin.dll`，优先于发行包原有位置。详见[窗口观察插件包](abi/legacy.md#mms-窗口观察插件包)。
 
 以下是用户本地安装一个旧 MME 包的例子：
 
 ```text
 MMS.exe
-MMSAdapter.dll
+MMDFacade.dll
 MMHack.dll           # 随宿主构建；未指定 hack 时使用
 legacy-mmdplugin/
   MMDPlugin.dll       # 随宿主构建；供旧观察者插件使用
@@ -56,9 +58,9 @@ data/
 
 ## 适配与存储
 
-加载器验证 x64 PE 导入表，把其中的 `MikuMikuDance.exe` 模块名替换为 `MMSAdapter.dll`；函数名、函数序号、资源和其他内容不变。当前处理普通未绑定导入；绑定导入、延迟导入、越界或含糊节映射会明确拒绝。
+加载器验证 x64 PE 导入表，把其中的 `MikuMikuDance.exe` 模块名替换为 `MMDFacade.dll`；函数名、函数序号、资源和其他内容不变。当前处理普通未绑定导入；绑定导入、延迟导入、越界或含糊节映射会明确拒绝。
 
-缓存位置是当前 EXE 所在目录的 `data/plugins/legacy_mme/<内容哈希>/`。哈希包含适配后的两份旧 DLL 与 MMSAdapter。复用缓存前逐字节比较，加载时保持 DLL 只读锁，避免使用被替换的缓存。MMEffect 自身的目录查询仍指向 DLL 缓存，但其目标 `MMEffect.ini` 的 A/W 文件访问单独重定向到 `data/plugins/legacy_mme/settings/<插件身份哈希>/MMEffect.ini`。身份哈希只取稳定插件 ID，与 DLL 内容及缓存格式无关。INI 是旧插件专用数据；MMS 通用设置继续使用 `data/settings.json`。新文件从插件包 INI 初始化，未提供内容时才写默认设置；既有用户偏好不会被宿主覆盖。每个身份使用进程期独占锁，另一进程占用时该旧插件启动会明确失败。
+缓存位置是当前 EXE 所在目录的 `data/plugins/legacy_mme/<内容哈希>/`。哈希包含适配后的两份旧 DLL 与 MMDFacade。复用缓存前逐字节比较，加载时保持 DLL 只读锁，避免使用被替换的缓存。MMEffect 自身的目录查询仍指向 DLL 缓存，但其目标 `MMEffect.ini` 的 A/W 文件访问单独重定向到 `data/plugins/legacy_mme/settings/<插件身份哈希>/MMEffect.ini`。身份哈希只取稳定插件 ID，与 DLL 内容及缓存格式无关。INI 是旧插件专用数据；MMS 通用设置继续使用 `data/settings.json`。新文件从插件包 INI 初始化，未提供内容时才写默认设置；既有用户偏好不会被宿主覆盖。每个身份使用进程期独占锁，另一进程占用时该旧插件启动会明确失败。
 
 旧版 DLL 缓存中的 INI 没有插件身份标记。稳定偏好缺失但检测到此类文件时，加载器保留它并报告准确目标路径；用户确认要沿用哪一份后，在 MMS 退出时将该 INI 复制到报告的稳定路径，再启动。加载器不按修改时间或 DLL 相同就替用户选择；已有稳定偏好后，升级适配器或旧 DLL 不再改变偏好路径。
 

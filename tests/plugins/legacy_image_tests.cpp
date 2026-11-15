@@ -98,7 +98,7 @@ constexpr std::uint32_t kDescriptorForwarderChain = 8;
 constexpr std::uint32_t kDescriptorName = 12;
 constexpr std::uint32_t kDescriptorFirstThunk = 16;
 
-constexpr char kAdapterText[] = "MMSAdapter.dll";
+constexpr char kAdapterText[] = "MMDFacade.dll";
 constexpr std::size_t kAdapterLength = sizeof(kAdapterText) - 1;
 
 void Put16(std::vector<std::uint8_t>& image, std::size_t offset, std::uint16_t value) {
@@ -492,7 +492,7 @@ int main() {
 
     // The published names are the ones the caller expects.
     CHECK(std::string(mikumikustudio::plugins::LegacyHostImportName) == "MikuMikuDance.exe");
-    CHECK(std::string(mikumikustudio::plugins::LegacyAdapterModuleName) == "MMSAdapter.dll");
+    CHECK(std::string(mikumikustudio::plugins::LegacyAdapterModuleName) == "MMDFacade.dll");
     CHECK(std::string(mikumikustudio::plugins::LegacyImageErrorName(LegacyImageError::None)) == "None");
 
     std::printf("legacy image rewrite %s checks=%u failures=%u\n",

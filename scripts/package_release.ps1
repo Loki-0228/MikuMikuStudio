@@ -62,7 +62,7 @@ foreach ($build in $builds) {
     $stage = Join-Path $output $name
     New-Item -ItemType Directory -Path $stage | Out-Null
     Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MikuMikuDance.exe') -Destination $stage
-    Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MMSAdapter.dll') -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MMDFacade.dll') -Destination $stage
     Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MMHack.dll') -Destination $stage
     $legacyMmdRoot = Join-Path $stage 'legacy-mmdplugin'
     New-Item -ItemType Directory -Path $legacyMmdRoot | Out-Null

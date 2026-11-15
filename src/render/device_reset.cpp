@@ -1,4 +1,5 @@
 #include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/legacy_mmd_plugin.hpp"
 #include "mikumikustudio/shadow_filter.hpp"
 #include "mikumikustudio/viewport_render_scale.hpp"
 #include "mikumikustudio/model_vertex_cache.hpp"
@@ -100,7 +101,7 @@ bool PostDeviceReset(MMDApp* app) {
     if (device == nullptr)
         return false;
     ui_metrics::Add(ui_metrics::Reset);
-    const HRESULT reset = device->Reset(&r->presentParameters);    // 0x440F57
+    const HRESULT reset = legacy_mmd_plugin::ResetDevice(device, &r->presentParameters);
     runtime_log::Write("DEVICE_RESET size=%ux%u hr=0x%08lX",
         r->presentParameters.BackBufferWidth, r->presentParameters.BackBufferHeight,
         static_cast<unsigned long>(reset));

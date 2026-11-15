@@ -24,7 +24,7 @@ cmake --build --preset win7-x64-release --target MikuMikuStudio
 
 脚本不编译、不安装到系统，也不发布。默认读取 `build/cmake`，可用 `-BuildDirectory` 指向当前源码的另一份完整档 x64 构建。下列各项都必须存在：
 
-- 同一构建的 `Release/MikuMikuDance.exe`、`Release/MMSAdapter.dll`、`Release/MMHack.dll`、`Release/legacy-mmdplugin/MMDPlugin.dll`。发布预备目录保留它们相对 `Release/` 的布局。缺文件时重新构建 `MikuMikuStudio` 目标；不要用旧插件 DLL 补齐。
+- 同一构建的 `Release/MikuMikuDance.exe`、`Release/MMDFacade.dll`、`Release/MMHack.dll`、`Release/legacy-mmdplugin/MMDPlugin.dll`。发布预备目录保留它们相对 `Release/` 的布局。缺文件时重新构建 `MikuMikuStudio` 目标；不要用旧插件 DLL 补齐。
 - 源码中的根 `LICENSE`、`PLUGINS/config.json` 和 `licenses/` 中列入清单的许可文件。
 - `mms-adaptive-ui-template.zip`。默认路径下缺少时，脚本调用项目的[模板打包器](../guides/cpp-adaptive-ui-template.md)；若 `-UiTemplateArchive` 指向另一个路径，须事先生成该源码 ZIP。
 

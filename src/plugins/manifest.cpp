@@ -91,7 +91,9 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
         m.kind = Manifest::Kind::LegacyMmdPlugin; m.major = 3; m.minor = 0;
         if (j.At("architecture").String() != "x64" || j.At("reloadPolicy").String() != "restart")
             throw std::invalid_argument("legacy MMDPlugin requires x64 and restart");
-        if (j.At("profile").String() != "window_observer_v3")
+        const auto profile = j.At("profile").String();
+        if (profile == "device_reset_v2") m.major = 2;
+        else if (profile != "window_observer_v3")
             throw std::invalid_argument("unsupported legacy MMDPlugin profile");
         m.minWindows = ParseVersion(j.At("minWindows").String());
         m.entry = PackageFile(m.package, j.At("entry").String());

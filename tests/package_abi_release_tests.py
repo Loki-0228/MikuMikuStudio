@@ -19,7 +19,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools/package-abi-release.py"
 PRODUCT = (
-    "MikuMikuDance.exe", "MMSAdapter.dll", "MMHack.dll", "legacy-mmdplugin/MMDPlugin.dll",
+    "MikuMikuDance.exe", "MMDFacade.dll", "MMHack.dll", "legacy-mmdplugin/MMDPlugin.dll",
 )
 FIXTURE_PAYLOAD = {
     "LICENSE", "PLUGINS/config.json", "licenses/Alembic-LICENSE.txt", "licenses/FXAA-LICENSE.txt",

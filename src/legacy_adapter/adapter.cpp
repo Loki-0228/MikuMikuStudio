@@ -1,14 +1,14 @@
-// MMSAdapter.dll - legacy MME host export bridge.
+// MMDFacade.dll - legacy MME host export bridge.
 //
 // The legacy effect API is 37 ExpGet*/ExpSet* exports that the running host
-// publishes from its executable. MMSAdapter publishes the same names and
+// publishes from its executable. MMDFacade publishes the same names and
 // ordinals from its own module and forwards every call, unchanged, to the host
 // export of the same name. It is a thin wrapper only: it holds no effect state,
 // loads no module, and links no host import library.
 //
 // Prototypes below come from the host definitions in src/exports/effect_api.cpp.
 // Names and ordinals come from exports/MikuMikuDance.def (ordinals 1..37, base 1)
-// and are pinned in MMSAdapter.def. All three files describe the same 37 exports.
+// and are pinned in MMDFacade.def. All three files describe the same 37 exports.
 //
 // The host table is resolved once, in DLL_PROCESS_ATTACH, with
 // GetModuleHandleW(nullptr) + GetProcAddress. The DLL refuses to load unless all
@@ -86,7 +86,7 @@ constexpr int kHostExportCount = 0
 #undef MMS_ADAPTER_EXPORT
 
 static_assert(kHostExportCount == 37,
-              "MMSAdapter must forward exactly the 37 host Exp* exports.");
+              "MMDFacade must forward exactly the 37 host Exp* exports.");
 
 }  // namespace
 

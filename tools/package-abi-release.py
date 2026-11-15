@@ -17,7 +17,7 @@ import zipfile
 
 BUILD_FILES = (
     "MikuMikuDance.exe",
-    "MMSAdapter.dll",
+    "MMDFacade.dll",
     "MMHack.dll",
     "legacy-mmdplugin/MMDPlugin.dll",
 )

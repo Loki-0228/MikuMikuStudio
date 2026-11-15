@@ -24,6 +24,7 @@ bool Attached() {
 Manifest Entry(const fs::path& file) {
     Manifest manifest;
     manifest.kind = Manifest::Kind::LegacyMmdPlugin;
+    manifest.major = 3;
     manifest.package = file.parent_path();
     manifest.entry = file;
     manifest.id = "test.legacy.observer";
@@ -150,6 +151,16 @@ int wmain(int argc, wchar_t** argv) {
         const auto provider = fs::absolute(argv[1]);
         const auto direct = fs::absolute(argv[2]);
         NativeLoader loader;
+        {
+            auto wrongAbi = Entry(direct);
+            wrongAbi.major = 2;
+            bool rejected = false;
+            try { loader.Load(wrongAbi, {}, provider); }
+            catch (const std::invalid_argument& error) {
+                rejected = std::string_view(error.what()) == "legacy MMDPlugin missing direct export create2";
+            }
+            Check(rejected && !Attached(), "ABI 2 must not use ABI 3 factories or run DllMain");
+        }
         CheckRejected(loader, provider, fs::absolute(argv[3]));
         CheckRejected(loader, provider, fs::absolute(argv[4]));
         {

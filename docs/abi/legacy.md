@@ -2,6 +2,8 @@
 
 [返回功能总览](README.md)
 
+本轮兼容产品名为 **MMDFacade**，宿主导出桥为 `MMDFacade.dll`。新增 ABI 2 的有限 `device_reset_v2` 配置，保留 ABI 3 窗口观察；ABI 4 未支持。工厂、回调及插件依赖核对、改名迁移和验证边界见 [MMDFacade](../MMDFACADE.md)。下方历史真实插件结果不自动成为本轮重跑结果。
+
 ## 当前推进范围
 
 ### 旧MME包装剩余验收
@@ -24,7 +26,7 @@
 | MMDUtility 核心，ABI 3，源码 `0bff277` | `MMDPlugin.dll` 的 `getHWND` 和 `createWM_APP_ID`。 | 原样源码构建在 MMS 产品中创建自己的菜单，与另外两个观察包同时加载并正常退出。此行覆盖核心 DLL，子插件和相互查询对象接口另行验证。见[固定版本的源码](https://github.com/oigami/MMDUtility/tree/0bff27755a5d86dbb8a5be3f264101ee4bf52f86/MMDUtility)。 |
 | ExamplePlugin，源码适配 `242115c` | 同一提供者的两个导出，以及归属于该包的 `WM_COMMAND`。 | 适配了 ABI 3 版本声明、菜单消息和 INI 路径的所有权。实测菜单勾选开关、其他包同时运行及退出。保留版本 1 的对照 DLL 被拒绝，有效包继续启动。见[固定版本的源码](https://github.com/PTOM76/mmdplugin-ExamplePlugin/tree/242115c99faabf2bc195e1a24a82bd63f5e4718d)。 |
 | DispPlayingFrame，ABI 3，源码适配 `64d7305` | 兼容提供者的 `getHWND` 和 MMS 宿主的 `MMSAcquireLegacyPlaybackMap`。 | 隔离 Release 程序自动发现并启用包。控件随相机距离控件移动，覆盖负帧跳转、播放推进、停播跳帧及退出。和真实 MME 0.37 x64 共存时，Release 离屏回归实测显示 `-18 → 124 → 125 → 42` 并正常退出。见[固定版本的上游源码](https://github.com/Soul-chan/MMDPluginDLL/blob/64d73053739dac0dc126a2c712f5adb72bcd2e78/DispPlayingFrame/DispPlayingFrame.cpp)。 |
-| EffekseerForMMD，源码 `c55b2f4` | 使用 ABI 2 工厂及 D3D9 设备重置回调。 | 本版窗口观察模式仅支持 ABI 3。此候选已核对源码，实际绘制和设备重置仍待验证。见[固定版本的项目源码](https://github.com/oigami/EffekseerForMMD/tree/c55b2f4e0e26cee473931624f0180eec84c297e2)。 |
+| EffekseerForMMD，源码 `c55b2f4` | ABI 2 工厂、设备重置和绘制回调、模型查询及文件 hook。 | 新增 `device_reset_v2` 只覆盖合成插件的重置契约；原插件整体未支持，粒子绘制未验证。见[固定版本的项目源码](https://github.com/oigami/EffekseerForMMD/tree/c55b2f4e0e26cee473931624f0180eec84c297e2)。 |
 | FirstPersonCamera，源码 `f71c300` | 使用 ABI 4 工厂和鼠标回调。 | 已核对源码。此候选需要单独适配和实测。 |
 | MMDDiscordRPC，源码 `61ce9b9` | 使用 ABI 3 工厂，另加载 Discord SDK、安装线程定时器并替换主窗窗口过程。该提交未找到 `destroy3` 实现。 | 已核对源码。此候选需要明确移除定时器和还原窗口过程的生命周期，尚未执行。 |
 | CameraModeUndo、OutsideParentReaderWriter、SetCameraFollowBone、SwapOutsideParent，源码 `64d7305` | 原样代码读取原版 `MMDMainData`，并检查 MMD 版本。 | 已核对源码依赖，核心操作需要映射到 MMS 的相机、外亲或历史接口，尚无原样运行通过的证据。见[固定版本的项目源码](https://github.com/Soul-chan/MMDPluginDLL/tree/64d73053739dac0dc126a2c712f5adb72bcd2e78)。 |

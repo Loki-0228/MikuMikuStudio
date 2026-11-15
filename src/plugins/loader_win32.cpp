@@ -55,7 +55,8 @@ public:
         const size_t base = size_t(dos.e_lfanew) + offsetof(IMAGE_NT_HEADERS64, OptionalHeader) + nt_.FileHeader.SizeOfOptionalHeader;
         for (unsigned i = 0; i < nt_.FileHeader.NumberOfSections; ++i) sections_.push_back(Read<IMAGE_SECTION_HEADER>(base + i * sizeof(IMAGE_SECTION_HEADER)));
     }
-    void VerifyLegacyObserverExports() const {
+    void VerifyLegacyObserverExports(unsigned abi) const {
+        if (abi != 2 && abi != 3) throw std::invalid_argument("unsupported legacy MMDPlugin ABI");
         const auto dir = nt_.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
         if (!dir.VirtualAddress || dir.Size < sizeof(IMAGE_EXPORT_DIRECTORY))
             throw std::invalid_argument("legacy MMDPlugin has no valid export directory");
@@ -90,7 +91,7 @@ public:
             }
             return false;
         };
-        for (const char* name : {"version", "create3", "destroy3"}) {
+        for (const char* name : {"version", abi == 2 ? "create2" : "create3", abi == 2 ? "destroy2" : "destroy3"}) {
             if (!hasDirectExport(name))
                 throw std::invalid_argument(std::string("legacy MMDPlugin missing direct export ") + name);
         }
@@ -198,7 +199,7 @@ LoadedPackage NativeLoader::Load(const Manifest& manifest, const Log& log, const
         // Repeat the no-junction check immediately before inspecting any code.
         verifyPath(path);
         const Pe pe(path);
-        if (legacyMmd && path == manifest.entry) pe.VerifyLegacyObserverExports();
+        if (legacyMmd && path == manifest.entry) pe.VerifyLegacyObserverExports(manifest.major);
         for (const auto& imported : pe.Info().imports) {
             auto w = Wide(imported); auto dep = declared.find(Lower(w));
             if (dep != declared.end()) { visit(dep->second); continue; }

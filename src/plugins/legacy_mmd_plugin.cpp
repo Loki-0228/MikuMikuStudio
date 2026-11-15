@@ -22,6 +22,11 @@ using Observer = void(__cdecl*)(void*, CWPSTRUCT*);
 // MSVC x64 MMDPluginDLL3 slots for the audited observer profile.
 // Checked from compiler output for the read-only reference header and sample.
 constexpr unsigned startSlot = 240, stopSlot = 241, observerSlot = 243;
+// MMDPluginDLL1: scalar deleting destructor followed by 119 D3D9 methods.
+// MMDPluginDLL2 appends their 119 post callbacks (upstream c55b2f4).
+constexpr unsigned resetSlot = 17, postResetSlot = 136;
+using ResetCallback = void(__cdecl*)(void*, D3DPRESENT_PARAMETERS*);
+using PostResetCallback = void(__cdecl*)(void*, D3DPRESENT_PARAMETERS*, HRESULT&);
 // Guard the native antialiasing family, which overlapped the old observer range.
 static_assert(antialias::kFirstCommand + unsigned(antialias::Algorithm::Count) <=
               menu_command_ids::kLegacyObserverFirst &&
@@ -42,6 +47,7 @@ struct Session {
     plugins::LoadedPackage code;
     void* object = nullptr;
     Destroy destroy = nullptr;
+    unsigned abi = 3;
     MenuIds menuIds;
     bool started = false;
     bool retiring = false;
@@ -86,7 +92,7 @@ void Retire(Host& current, std::unique_ptr<Session>& package) noexcept {
     current.active = package.get();
     package->retiring = true;
     try {
-        if (package->started) Method<Lifecycle>(package->object, stopSlot)(package->object);
+        if (package->started && package->abi == 3) Method<Lifecycle>(package->object, stopSlot)(package->object);
         if (package->object) package->destroy(package->object);
         if (package->started) {
             runtime_log::Write("LEGACY_MMD stopped and destroyed (%s)", package->id.c_str());
@@ -111,19 +117,22 @@ LRESULT CALLBACK ObserveMessage(int code, WPARAM sent, LPARAM data) {
         const auto& original = *reinterpret_cast<const CWPSTRUCT*>(data);
         current->busy = true;
         for (auto& package : current->packages) {
-            if (!package || !package->started || !Observed(*current, *package, original)) continue;
+            if (!package || !package->started || package->abi != 3 || !Observed(*current, *package, original)) continue;
 #if !MMD_ORIGINAL_PROFILE
             // A synchronous close from the observer must wait until it returns.
             const ScopedSceneCloseDeferral deferClose(*current->app);
 #endif
             auto message = original;
             current->active = package.get();
+            bool failed = false;
             try {
                 Method<Observer>(package->object, observerSlot)(package->object, &message);
             } catch (...) {
                 Log("window observer threw; stopping package");
-                Retire(*current, package);
+                failed = true;
             }
+            // Destroy the foreign exception before unloading its module.
+            if (failed) Retire(*current, package);
             current->active = nullptr;
             if (current->stopRequested) break;
         }
@@ -144,6 +153,7 @@ void Start(MMDApp* app) noexcept {
         const auto install = local_data::ExecutableDirectory();
         if (install.empty()) return;
         const auto discovered = plugins::Discover(install / L"PLUGINS");
+        for (const auto& diagnostic : discovered.diagnostics) Log(diagnostic);
         std::vector<const plugins::Manifest*> packages;
         for (const auto index : plugins::Resolve(discovered, {})) {
             const auto& candidate = discovered.packages[index];
@@ -162,7 +172,9 @@ void Start(MMDApp* app) noexcept {
         for (const auto* manifest : packages) {
             auto& package = host->packages.emplace_back(std::make_unique<Session>());
             package->id = manifest->id;
+            package->abi = manifest->major;
             host->active = package.get();
+            bool failed = false;
             try {
                 package->code = host->loader.Load(*manifest, [](const std::string& message) { Log(message); }, provider);
                 const auto module = package->code.entry;
@@ -170,25 +182,26 @@ void Start(MMDApp* app) noexcept {
                     if (other && other.get() != package.get() && other->code.entry == module)
                         throw std::runtime_error("legacy MMDPlugin DLL is already active in another package");
                 const auto version = reinterpret_cast<Version>(GetProcAddress(module, "version"));
-                const auto create = reinterpret_cast<Create>(GetProcAddress(module, "create3"));
-                package->destroy = reinterpret_cast<Destroy>(GetProcAddress(module, "destroy3"));
-                if (!version || !create || !package->destroy || version() != 3)
-                    throw std::runtime_error("legacy MMDPlugin requires matching version 3 factory and destroy exports");
+                const auto create = reinterpret_cast<Create>(GetProcAddress(module, package->abi == 2 ? "create2" : "create3"));
+                package->destroy = reinterpret_cast<Destroy>(GetProcAddress(module, package->abi == 2 ? "destroy2" : "destroy3"));
+                if (!version || !create || !package->destroy || version() != int(package->abi))
+                    throw std::runtime_error("legacy MMDPlugin version does not match the selected profile factory and destroy exports");
                 if (host->stopRequested) throw std::runtime_error("host closed during plugin load");
                 package->object = create(app->Renderer()->device);
                 if (!package->object) throw std::runtime_error("legacy MMDPlugin factory refused the host");
                 if (host->stopRequested) throw std::runtime_error("host closed during plugin creation");
                 package->started = true;
-                Method<Lifecycle>(package->object, startSlot)(package->object);
-                if (!host->stopRequested) Log(package->id + " started (window_observer_v3)");
+                if (package->abi == 3) Method<Lifecycle>(package->object, startSlot)(package->object);
+                if (!host->stopRequested) Log(package->id + (package->abi == 2 ? " started (device_reset_v2)" : " started (window_observer_v3)"));
             } catch (const std::exception& error) {
                 runtime_log::Write("LEGACY_MMD startup failed: %s (%s)", error.what(), manifest->id.c_str());
                 runtime_log::Trace("LEGACY_MMD startup failed: %s (%s)", error.what(), manifest->id.c_str());
-                Retire(*host, package);
+                failed = true;
             } catch (...) {
                 Log("startup threw");
-                Retire(*host, package);
+                failed = true;
             }
+            if (failed) Retire(*host, package);
             host->active = nullptr;
             if (host->stopRequested) break;
         }
@@ -205,6 +218,47 @@ void Start(MMDApp* app) noexcept {
         if (host) host->busy = false;
         Stop();
     }
+}
+
+HRESULT ResetDevice(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* parameters) noexcept {
+    if (!device || !parameters) return D3DERR_INVALIDCALL;
+    auto* current = host;
+    if (!current || !current->app->Renderer() || current->app->Renderer()->device != device)
+        return device->Reset(parameters);
+    if (std::none_of(current->packages.begin(), current->packages.end(),
+        [](const auto& package) { return package && package->started && package->abi == 2; }))
+        return device->Reset(parameters);
+    // Do not recursively reset while foreign code is running or close is pending.
+    if (current->busy || current->stopRequested) return D3DERR_INVALIDCALL;
+#if !MMD_ORIGINAL_PROFILE
+    const ScopedSceneCloseDeferral deferClose(*current->app);
+#endif
+    current->busy = true;
+    for (auto& package : current->packages) {
+        if (!package || !package->started || package->abi != 2) continue;
+        current->active = package.get();
+        bool failed = false;
+        try { Method<ResetCallback>(package->object, resetSlot)(package->object, parameters); }
+        catch (...) { Log("Reset callback threw; retiring package"); failed = true; }
+        if (failed) Retire(*current, package);
+        current->active = nullptr;
+    }
+    const HRESULT actual = device->Reset(parameters);
+    for (auto& package : current->packages) {
+        if (!package || !package->started || package->abi != 2) continue;
+        current->active = package.get();
+        // The observer profile exposes the real result to each package. Changes
+        // to its local reference cannot disguise device loss to MMS or peers.
+        HRESULT observed = actual;
+        bool failed = false;
+        try { Method<PostResetCallback>(package->object, postResetSlot)(package->object, parameters, observed); }
+        catch (...) { Log("PostReset callback threw; retiring package"); failed = true; }
+        if (failed) Retire(*current, package);
+        current->active = nullptr;
+    }
+    current->busy = false;
+    if (current->stopRequested) Stop();
+    return actual;
 }
 
 void Stop() noexcept {

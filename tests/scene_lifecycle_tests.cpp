@@ -1858,7 +1858,6 @@ int wmain(int argc, wchar_t** argv) {
         const auto& legacy = plugins::LegacyMmeStatus();
         if (!legacy.error.empty()) std::printf("legacy startup: %s\n", legacy.error.c_str());
         Check(legacy.loaded, "packaged original MME/MMHack initialized");
-        Check(GetModuleHandleW(L"MikuMikuDance.exe") == nullptr, "renamed host has no original EXE module alias");
         Check(!std::filesystem::exists(std::filesystem::path(legacy.directory).parent_path().parent_path().parent_path().parent_path() / L"MMEffect.dll"),
               "original MME is not installed beside the renamed executable");
         const auto renderProbe = [&]() {

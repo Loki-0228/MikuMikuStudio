@@ -28,7 +28,7 @@ namespace mikumikustudio::plugins {
 namespace {
 
 constexpr char kHostImport[] = "MikuMikuDance.exe";
-constexpr char kAdapterImport[] = "MMSAdapter.dll";
+constexpr auto& kAdapterImport = LegacyAdapterModuleName;
 constexpr std::size_t kHostImportLength = sizeof(kHostImport) - 1;
 constexpr std::size_t kAdapterImportLength = sizeof(kAdapterImport) - 1;
 constexpr std::uint32_t kMaxSections = 96;
