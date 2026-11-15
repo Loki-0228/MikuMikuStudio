@@ -92,8 +92,11 @@ inline Result ProbePrefix(std::string_view bytes) {
 // ReadAt must fill exactly the requested bytes at an absolute offset without
 // read-ahead. The second window never overlaps the first. Only a recognized
 // PMM 0003 wrapper can receive the optional standalone codec marker check.
+using FooterBytes = std::array<char, kFooterSize>;
+
+// The opt-in directory scan reuses the footer bytes instead of reading them again.
 template<class ReadAt>
-Result Inspect(std::uint64_t fileSize, ReadAt readAt) {
+Result Inspect(std::uint64_t fileSize, ReadAt readAt, FooterBytes* capturedFooter = nullptr) {
     std::array<char, kPrefixSize> prefix{};
     const auto prefixSize =
         static_cast<std::size_t>((std::min)(fileSize, std::uint64_t{kPrefixSize}));
@@ -101,11 +104,12 @@ Result Inspect(std::uint64_t fileSize, ReadAt readAt) {
     auto out = ProbePrefix({prefix.data(), prefixSize});
     if (out.format == Format::Pmm && out.version == "0003" &&
         fileSize >= kPrefixSize + kFooterSize) {
-        std::array<char, kFooterSize> footer{};
+        FooterBytes footer{};
         if (!readAt(fileSize - kFooterSize, footer.data(), footer.size())) return {Status::IoError};
         out.bytesExamined += footer.size();
         // pmm_container.cpp compares exactly these eight bytes at EOF-64.
-        // No sizes, CRCs, table, blocks, or native PMM tails are verified.
+        // The base probe verifies no sizes, CRCs, table, blocks, or native tails.
+        if (capturedFooter) *capturedFooter = footer;
         out.pmm3end = StartsWith({footer.data(), footer.size()}, kPmm3End)
             ? Footer::MarkerOnly : Footer::NotDetected;
     }

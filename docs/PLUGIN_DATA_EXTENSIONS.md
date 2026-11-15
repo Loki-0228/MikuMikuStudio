@@ -37,10 +37,11 @@
 make -C linux format-inspect
 linux/build/mms_format_inspect -- ./example.pmm
 linux/build/mms_format_inspect --json -- ./example.pmx
+linux/build/mms_format_inspect --pmm-directory --json -- ./example.pmm
 make -C linux check-format-inspect
 ```
 
-工具只读打开常规文件，不使用扩展名判断。它采样文件开头最多 30 字节；仅在 PMM 0003 头之后还有足够字节时，再读最后 64 字节（与前缀不重叠，合计最多 94 字节）。采样不提供文件快照；检查时请勿修改文件。
+工具只读打开常规文件，不使用扩展名判断。默认模式采样文件开头最多 30 字节；仅在 PMM 0003 头之后还有足够字节时，再读最后 64 字节（与前缀不重叠，合计最多 94 字节）。采样不提供文件快照；检查时请勿修改文件。
 
 - PMM：比较 30 字节头中的签名和以 NUL 结束的版本。完整配置接受 0001/0002/0003 头，原始兼容配置接受 0001/0002 头。
 - PMX：读取 17 字节固定头，识别 2.0/2.1 和 UTF-16LE/UTF-8。两个配置的原生版本、编码检查均仅接受 2.0 UTF-16LE。工具不检查其他设置、索引或模型数据。
@@ -50,6 +51,23 @@ make -C linux check-format-inspect
 返回码 `0` 表示识别出完整格式头（包括版本或编码不被原生配置接受的情况）；`1` 表示已匹配的头不完整或内容无法识别（空文件也无法识别）；`2` 表示参数或 I/O 错误。两种输出均不回显输入路径。
 `--json` 以一行 JSON 输出：`schema: 1`，`status` 为 `recognized`、`incomplete`、`unrecognized` 或 `io_error`，`format`、`version`、`encoding` 未知或不适用时为 `null`，未列出的版本或编码为 `other`。
 `native_header.full` 和 `native_header.original` 为 `accepted`、`rejected` 或 `unknown`。`pmm3end` 为 `not_checked`、`not_detected` 或 `marker_only`。`bytes_examined` 为成功采样的字节数，`validation` 固定为 `header_only`。参数错误只输出用法提示。
+
+#### 可选的 PMM3END 目录检查
+
+仅当显式指定 `--pmm-directory` 且在 PMM 0003 文件中发现尾标记时，才进一步检查尾标字段、目录 CRC32、条目边界、键唯一性以及目录与块头、块键是否一致。允许块之间有空隙，也允许目录顺序与块的落盘顺序不同，和原生独立编解码器一致。检查不读取块声明的载荷，不重算载荷 CRC32，不解析 PMM 正文或其他扩展。`mms_format_inspect --pmm-directory --help` 显示本模式的用法。
+
+| 目录状态 | 含义 |
+| --- | --- |
+| `absent` | 未检测到适用的 PMM3END；不表示没有其他扩展。 |
+| `metadata_ok` | 目录和各块的元数据一致；不表示工程或载荷有效。 |
+| `invalid` | 已检测到标记，但尾标、目录或块元数据不符合布局。 |
+| `overlapping_ranges` | 声明的块范围交叠。为避免读取其他块的载荷，未检查任何块头；不代表原生编解码器会拒绝。 |
+| `budget_exceeded` | 超过检查上限：目录 256 KiB、2048 项、总读取请求 1 MiB。 |
+| `io_error` | 文件不能读取，或读取所请求范围失败。 |
+
+启用该模式时，`--json` 保留头部字段及原有 `pmm3end` 标记状态；`validation` 改为 `pmm_directory_metadata_only`，新增 `pmm_directory.status` 和 `pmm_directory.blocks`。`bytes_examined` 记录成功读取的总字节数。仅 `metadata_ok` 时按目录顺序列出键、版本、标志、编码编号和载荷字节数。人读和 JSON 输出均不回显输入路径或载荷；键（JSON 中的 `key_escaped`）只保留 ASCII 字母、数字、点、下划线和连字符，其余字节一律以小写十六进制 `\xhh` 表示。
+
+目录状态为 `absent` 或 `metadata_ok` 时沿用头部返回码。目录无效或块范围交叠返回 `1`，I/O 或参数错误返回 `2`，超出预算返回 `3`。未指定 `--pmm-directory` 时，原有输出、读取量和返回码不变。
 
 这一步不验证整份文件是否可加载，不加载场景或模型，也不写入文件或修改工程、工作区、设置、历史。它不是 `mms.format` 服务或提供者注册，未新增公开 ABI。只读预览、编辑、转换和导出仍需分别实现和验收。
 
