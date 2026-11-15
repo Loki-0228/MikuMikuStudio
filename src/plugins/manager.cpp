@@ -1,5 +1,7 @@
 #include "manager.hpp"
 #include "mikumikustudio/legacy_mme_bootstrap.hpp"
+#include "mikumikustudio/system_settings.hpp"
+#include <mms/settings.h>
 #include "ui_preferences_file.hpp"
 #include "edit_store.hpp"
 #include "ui_refresh_binding.hpp"
@@ -17,6 +19,8 @@ struct Manager::Impl {
         UiClient ui;
         SceneClient scene;
         StorageClient storage;
+        // Bound before required-service preflight; never populated from an ABI argument.
+        std::string settingsManifestId;
         EditClient edit;
         RefreshClient refresh{nullptr, {}};
         RenderService::Client render;
@@ -61,6 +65,7 @@ struct Manager::Impl {
     RenderImageStore images;
     UiPreferencesFile preferences;
     MmsResult preferencesError = MMS_OK;
+    std::unique_ptr<system_settings::Store> globalSettings;
     StorageStore storage;
     std::shared_ptr<SceneStore> scene;
     std::shared_ptr<EvaluationStore> evaluations;
@@ -96,6 +101,8 @@ struct Manager::Impl {
     std::unique_ptr<EditBridge> editHost;
     std::unique_ptr<EditStore> edits;
     Instance* runningEditTask = nullptr;
+    Instance* settingsStartupOwner = nullptr;
+    bool settingsTeardown = false;
     Instance* editCallOwner = nullptr;
     struct StageGrant {
         Instance* owner;
@@ -133,12 +140,15 @@ struct Manager::Impl {
     std::function<bool()> refreshGuard;
 
     Impl(fs::path user, Log output, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> sceneStore, bool unifiedSettings,
-        std::shared_ptr<EvaluationStore> evaluationStore):
+        std::shared_ptr<EvaluationStore> evaluationStore, fs::path globalSettingsPath):
         userRoot(std::move(user)), log(std::move(output)), hostUiChanged(std::move(changed)),
         registry([this] { uiRegistryChanged = true; if (hostUiChanged) hostUiChanged(); },
             [this](UiClient& client, MmsResult result) { if (result) for (const auto& i : instances)
                 if (&i->ui == &client) { CancelFailedEdit(*i); break; } }),
-        preferences(userRoot / L"ui-layout.json", unifiedSettings), scene(std::move(sceneStore)), evaluations(std::move(evaluationStore)), loader(fallback) {
+        preferences(userRoot / L"ui-layout.json", unifiedSettings),
+        globalSettings(globalSettingsPath.is_absolute()
+            ? std::make_unique<system_settings::Store>(std::move(globalSettingsPath)) : nullptr),
+        scene(std::move(sceneStore)), evaluations(std::move(evaluationStore)), loader(fallback) {
         WNDCLASSW wc{}; wc.hInstance = GetModuleHandleW(nullptr); wc.lpfnWndProc = Window; wc.lpszClassName = L"MMS.PluginAbi.Dispatch.V1";
         if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) throw std::runtime_error("plugin dispatcher class");
         wake = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, wc.hInstance, this);
@@ -373,6 +383,70 @@ struct Manager::Impl {
         if (result && result != preferencesError) Write("UI preferences save refused result=" + std::to_string(result));
         preferencesError = result; return result;
     }
+    MmsResult SettingsAccess(const Instance& i, bool write) const noexcept {
+        if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
+        if (!globalSettings || i.settingsManifestId.empty()) return MMS_E_NOT_FOUND;
+        if (settingsTeardown || closing || i.stopping) return MMS_E_NOT_READY;
+        if (active != 1 || render.InCallback() || registry.InCallback() || storage.InCallback() ||
+            storage.Prepared() || editCallOwner || notifyingEdit || (edits && edits->InCallback()))
+            return MMS_E_BUSY;
+        if (i.started && runningEditTask == &i) return MMS_OK;
+        if (!write && settingsStartupOwner == &i) return MMS_OK;
+        return MMS_E_BUSY;
+    }
+    static MmsResult SettingsResult(system_settings::PluginResult result) noexcept {
+        using Result = system_settings::PluginResult;
+        switch (result) {
+        case Result::Ok: return MMS_OK;
+        case Result::Missing: return MMS_E_NOT_FOUND;
+        case Result::Invalid: return MMS_E_ARGUMENT;
+        case Result::Busy: return MMS_E_BUSY;
+        case Result::Conflict: return MMS_E_CONFLICT;
+        case Result::Limit: return MMS_E_MEMORY;
+        case Result::Corrupt: case Result::Io: return MMS_E_FAILED;
+        }
+        return MMS_E_FAILED;
+    }
+    MmsSettingsApiV1 SettingsApi(Instance& i) {
+        return {Header<MmsSettingsApiV1>(), &i,
+            [](void* p, char* buffer, uint64_t capacity, uint64_t* outBytes) {
+                return Boundary([&]() -> MmsResult {
+                    if (!p || !outBytes || (!buffer && capacity)) return MMS_E_ARGUMENT;
+                    auto& i = *static_cast<Instance*>(p);
+                    if (const auto result = i.host->SettingsAccess(i, false)) return result;
+                    std::string value;
+                    const auto result = SettingsResult(i.host->globalSettings->ReadPlugin(i.settingsManifestId, value));
+                    if (result != MMS_OK) return result;
+                    if (buffer && capacity < value.size()) {
+                        *outBytes = value.size();
+                        return MMS_E_MEMORY;
+                    }
+                    if (buffer) std::memcpy(buffer, value.data(), value.size());
+                    *outBytes = value.size();
+                    return MMS_OK;
+                });
+            },
+            [](void* p, MmsString expected, MmsString patch) {
+                return Boundary([&]() -> MmsResult {
+                    if (!p || (expected.data == nullptr) != (expected.bytes == 0) ||
+                        expected.bytes > MMS_SETTINGS_MAX_JSON_BYTES || !patch.data || !patch.bytes ||
+                        patch.bytes > MMS_SETTINGS_MAX_JSON_BYTES) return MMS_E_ARGUMENT;
+                    auto& i = *static_cast<Instance*>(p);
+                    if (const auto result = i.host->SettingsAccess(i, true)) return result;
+                    return SettingsResult(i.host->globalSettings->CompareMergePlugin(i.settingsManifestId,
+                        expected.data ? std::string_view(expected.data, static_cast<size_t>(expected.bytes)) : std::string_view{},
+                        {patch.data, static_cast<size_t>(patch.bytes)}));
+                });
+            }};
+    }
+    template<class F> MmsResult StartCallback(Instance& i, F&& callback) {
+        ++active;
+        settingsStartupOwner = &i;
+        const auto result = Boundary(std::forward<F>(callback));
+        settingsStartupOwner = nullptr;
+        --active;
+        return result;
+    }
     MmsResult Query(Instance& i, MmsString name, uint32_t major, uint32_t minor, uint32_t bytes, void* out) {
         if (GetCurrentThreadId() != thread) return MMS_E_THREAD;
         const auto id = String(name);
@@ -530,6 +604,10 @@ struct Manager::Impl {
             MmsSceneApiV1 api{};
             if (const auto result = scene->Api(i.scene, api)) return result;
             std::memcpy(out, &api, sizeof(api)); return MMS_OK;
+        }
+        if (id == "mms.settings" && globalSettings && !i.settingsManifestId.empty()) {
+            if (settingsTeardown || closing || i.stopping) return MMS_E_NOT_READY;
+            return Table(major, minor, bytes, out, SettingsApi(i));
         }
         if (id == "mms.storage") return Table(major, minor, bytes, out, storage.Api(i.storage));
         if (id == "mms.edit" && edits) return Table(major, minor, bytes, out, EditApi(i));
@@ -812,6 +890,7 @@ struct Manager::Impl {
             // cannot complete, retain the manager and retry at a safe point.
             FlushPropertyChanges();
             if (!pendingPropertyChanges.Empty()) { WakePropertyChanges(); return false; }
+            settingsTeardown = true;
             Event(MMS_EVENT_UI_CLOSING); SavePreferences(); closing = true;
         }
         KillTimer(wake, kRefreshRetry);
@@ -850,6 +929,8 @@ struct Manager::Impl {
             i.images.owner = &images;
             i.evaluation.owner = evaluations.get();
             i.storage.store = &storage; i.storage.id = m.id;
+            if (globalSettings && std::find(m.capabilities.begin(), m.capabilities.end(), "settings.global") != m.capabilities.end())
+                i.settingsManifestId = m.id;
             i.edit.store = edits.get(); i.edit.id = m.id;
             i.refresh.queue = &registry.Refresh(); i.refresh.owner = m.id;
             for (const auto& dep : m.dependencies) i.dependencies.push_back(dep.id);
@@ -874,7 +955,7 @@ struct Manager::Impl {
                 std::string package = Utf8(m.package.native()), userPath = Utf8(fs::absolute(user).native());
                 MmsCreateInfoV1 info{Header<MmsCreateInfoV1>(), Text(m.id), Text(package), Text(userPath), MMS_COMPUTE_CPU, 0};
                 i.table = Host(i);
-                ++active; r = Boundary([&] { return i.api.create(&i.table, &info, &i.instance); }); --active;
+                r = StartCallback(i, [&] { return i.api.create(&i.table, &info, &i.instance); });
                 if (r || !i.instance) {
                     // A failing create must release its own unpublished instance.
                     // If it violates the contract, retain code/context rather than
@@ -883,7 +964,7 @@ struct Manager::Impl {
                     throw std::runtime_error("create failed result=" + std::to_string(r));
                 }
                 i.status.stage = "created";
-                ++active; r = Boundary([&] { return i.api.start(i.instance); }); --active;
+                r = StartCallback(i, [&] { return i.api.start(i.instance); });
                 if (r) throw std::runtime_error("start failed result=" + std::to_string(r));
                 i.started = true; i.status.stage = "started"; started.insert(m.id); Write(m.id + ": started");
                 instances.push_back(std::move(instance));
@@ -904,7 +985,9 @@ struct Manager::Impl {
     }
 };
 Manager::Manager(fs::path user, Log log, std::function<void()> changed, bool fallback, std::shared_ptr<SceneStore> scene, bool unifiedSettings,
-    std::shared_ptr<EvaluationStore> evaluations): impl_(std::make_unique<Impl>(std::move(user), std::move(log), std::move(changed), fallback, std::move(scene), unifiedSettings, std::move(evaluations))) {}
+    std::shared_ptr<EvaluationStore> evaluations, fs::path globalSettingsPath):
+    impl_(std::make_unique<Impl>(std::move(user), std::move(log), std::move(changed), fallback,
+        std::move(scene), unifiedSettings, std::move(evaluations), std::move(globalSettingsPath))) {}
 Manager::~Manager() {
     if (!impl_) return;
     const auto stopped = Boundary([&] { return impl_->Stop() ? MMS_OK : MMS_E_BUSY; });

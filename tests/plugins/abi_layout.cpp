@@ -493,3 +493,11 @@ static_assert(sizeof(MmsEvaluationToonTableV1)==1520, "toon table layout");
 static_assert(offsetof(MmsEvaluationApiV1_7,getReferenceCapabilities)==sizeof(MmsEvaluationApiV1_6), "evaluation 1.6 prefix");
 static_assert(sizeof(MmsEvaluationApiV1_7)==sizeof(MmsEvaluationApiV1_6)+4*sizeof(void*), "evaluation 1.7 append");
 static_assert(std::is_standard_layout<MmsEvaluationApiV1_7>::value && std::is_trivially_copyable<MmsEvaluationApiV1_7>::value, "evaluation 1.7 POD");
+
+#include <mms/settings.h>
+static_assert(sizeof(MmsSettingsApiV1) == 32 && offsetof(MmsSettingsApiV1, h) == 0 &&
+    offsetof(MmsSettingsApiV1, context) == 8 && offsetof(MmsSettingsApiV1, read) == 16 &&
+    offsetof(MmsSettingsApiV1, compareAndMerge) == 24, "settings x64 layout");
+static_assert(std::is_standard_layout_v<MmsSettingsApiV1> && std::is_trivially_copyable_v<MmsSettingsApiV1>, "settings POD");
+static_assert(std::is_same_v<decltype(MmsSettingsApiV1::read), MmsResult (MMS_CALL *)(void*, char*, uint64_t, uint64_t*)>, "settings read type");
+static_assert(std::is_same_v<decltype(MmsSettingsApiV1::compareAndMerge), MmsResult (MMS_CALL *)(void*, MmsString, MmsString)>, "settings merge type");

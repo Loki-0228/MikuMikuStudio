@@ -41,6 +41,7 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "../io/project_open.hpp"
+#include "../io/vmd_save_output.hpp"
 #include "../model/vmd_import_target.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../plugins/native_vpd_import.hpp"
@@ -562,8 +563,8 @@ void CmdLoadMotion(MMDApp* app) {
 //     * 模型模式：扫活动模型骨（+0x38/0x3C 步长）、表情（+0x10/0x14，上限
 //       20000）、显示帧（+0x18/0x28，上限 1000）三张表。
 //   无选中帧点则 0x40000 提示退出；否则保存对话框（owner=主窗，
-//   nFilterIndex=1，Flags=6，DirMotion 或 "UserFile\Motion"，defExt
-//   "vmd"）。SaveVmdFile 之后无任何标志写（不置脏）。
+//   nFilterIndex=1，DirMotion 或 "UserFile\Motion"，defExt "vmd"）。
+//   MMS snapshots the destination before overwrite confirmation. The scene stays clean.
 // ---------------------------------------------------------------------------
 void CmdSaveMotion(MMDApp* app) {
     if (app->sceneRecoveryPending || app->SceneMutationInProgress()) return;
@@ -632,7 +633,9 @@ void CmdSaveMotion(MMDApp* app) {
     ofn.lpstrFile = path;
     ofn.nFilterIndex = 1;
     ofn.nMaxFile = kDialogPathLen;
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY;  // 6
+    // Let the writer test the path by creating its own stage. The picker must
+    // not create a test file at the final destination before we snapshot it.
+    ofn.Flags = OFN_HIDEREADONLY | OFN_NOTESTFILECREATE;
     ofn.lpstrInitialDir = RememberFileDialogDirs(app)
                               ? app->DirMotion()
                               : L"UserFile\\Motion";
@@ -643,7 +646,10 @@ void CmdSaveMotion(MMDApp* app) {
                          ? L"save motion data"
                          : kTitleSaveMotionJp;
     if (!GetUiSaveFileNameW(&ofn) || !target.SameTarget(*app)) return;
-    if (SaveVmdFile(path) && target.SameTarget(*app) && RememberFileDialogDirs(app)) {
+    recording_output_path::Selection destination;
+    if (!vmd_save::ConfirmDestination(MainHwnd(app), path, app->EnglishUI(), destination) ||
+        !target.SameTarget(*app)) return;
+    if (vmd_save::Save(destination) && target.SameTarget(*app) && RememberFileDialogDirs(app)) {
         wchar_t directory[kPathFieldCapacity]{};
         CopyDirPathW(app->DirMotion(), ExtractDirFromPath(directory, path, kPathFieldCapacity));
     }

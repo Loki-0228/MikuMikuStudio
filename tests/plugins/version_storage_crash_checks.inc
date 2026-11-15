@@ -1961,7 +1961,128 @@ int RunArchiveIdentity() {
     return 0;
 }
 
+// Original/no-sidecar forward recovery: the real publisher moves the
+// caller's PMM into place, leaving a durable duplicate .new-pmm to clean up.
+// Stop the recovery after that actual deletion, before journal completion.
+constexpr char originalFresh[] = "new schema3 PMM";
+constexpr char originalPrevious[] = "previous schema3 PMM";
+constexpr char originalOldest[] = "oldest schema3 PMM";
+
+Chain OriginalFinishedChain() {
+    return {Level{originalFresh}, Level{originalPrevious}, Level{originalOldest}, Level{}};
+}
+
+TransactionFiles CheckOriginalForwardJournal(const fs::path& target, const std::string& bytes) {
+    const auto j = save_journal_fixture::Parse(bytes);
+    CHECK(j.At("schemaVersion").UInt() == 3 && j.At("effectStage").UInt() == 1);
+    CHECK(j.At("members").String() == "pmm-emm" && j.At("decision").String() == "forward");
+    CHECK(!j.object.count("newSide") && !j.object.count("oldSide"));
+    const fs::path one(target.native() + L"1"), two(target.native() + L"11");
+    const auto& rows = j.At("versions").Items();
+    CHECK(rows.size() == 3);
+    for (const auto& row : rows) {
+        CHECK(row.Items().size() == 2);
+        CHECK(row.Items()[1].String().empty()); // No EMM in any generation.
+    }
+    CHECK(rows[0].Items()[0].String() == FileHash(one));
+    CHECK(rows[1].Items()[0].String() == FileHash(two));
+    CHECK(rows[2].Items()[0].String().empty());
+    CHECK(j.At("oldMain").String() == FileHash(one) && j.At("newMain").String() == FileHash(target));
+    return TransactionFiles(target, j.At("saveId").String());
+}
+
+void CheckOriginalForwardStages(const TransactionFiles& files, bool deleted) {
+    if (deleted) CHECK(!fs::exists(files.newMain));
+    else CHECK(ReadFile(files.newMain) == originalFresh);
+    for (const auto* path : {&files.newSide, &files.oldMain, &files.oldEffect, &files.oldSide, &files.tempJournal})
+        CHECK(!fs::exists(*path));
+}
+
+int OriginalForwardCleanupWriter(const std::wstring& id) {
+    const auto dir = Directory(id), target = dir / L"active.pmm", stage = dir / L"stage.pmm";
+    Handle notification(OpenEventW(EVENT_MODIFY_STATE, FALSE, ReadyName(id).c_str()));
+    Handle parked(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    ArmRenameBarrier(stage, target, notification.value, parked.value);
+    if (!mikumikustudio::pmm_versions::Publish(stage, target))
+        throw std::runtime_error("original writer failed before its barrier (Win32 " +
+                                 std::to_string(GetLastError()) + ")");
+    throw std::runtime_error("original writer did not stop after publishing its PMM");
+}
+
+int InterruptOriginalForwardCleanup(const std::wstring& id) {
+    const auto dir = Directory(id), target = dir / L"active.pmm";
+    const auto journal = fs::path(target.native() + L".mms-save.json");
+    CHECK(ObserveChain(target) == OriginalFinishedChain());
+    const auto files = CheckOriginalForwardJournal(target, ReadFile(journal));
+    CheckOriginalForwardStages(files, false);
+    Handle notification(OpenEventW(EVENT_MODIFY_STATE, FALSE, ReadyName(id).c_str()));
+    Handle parked(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    save_journal_fixture::ArmDeletionBarrier(files.newMain, notification.value, parked.value, deadline);
+    RecoverProjectPair(target);
+    throw std::runtime_error("original recovery did not stop after removing its staged duplicate");
+}
+
+int RetryOriginalForwardCleanup(const std::wstring& id) {
+    const auto dir = Directory(id), target = dir / L"active.pmm";
+    const auto files = CheckOriginalForwardJournal(target, ReadFile(dir / L"writer-journal.json"));
+    for (unsigned attempt = 0; attempt < 2; ++attempt) {
+        RecoverProjectPair(target);
+        CHECK(ObserveChain(target) == OriginalFinishedChain());
+        CheckClean(files);
+    }
+    return 0;
+}
+
+int RunOriginalForwardCleanupInterruption() {
+    const auto id = Wide(StorageId());
+    const auto dir = Directory(id), target = dir / L"active.pmm", stage = dir / L"stage.pmm";
+    CHECK(fs::create_directory(dir));
+    std::cout << "SAVE-01 schema3 forward-cleanup fixture=" << Utf8(dir.native()) << std::endl;
+    Write(target, originalPrevious);
+    Write(fs::path(target.native() + L"1"), originalOldest);
+    Write(stage, originalFresh);
+    const Chain before{Level{originalPrevious}, Level{originalOldest}, Level{}, Level{}};
+    CHECK(ObserveChain(target) == before);
+
+    const HANDLE event = CreateEventW(nullptr, TRUE, FALSE, ReadyName(id).c_str());
+    const DWORD eventError = GetLastError();
+    Handle barrier(event);
+    CHECK(eventError != ERROR_ALREADY_EXISTS);
+    Child writer(L"--version-original-cleanup-write", id, dir);
+    writer.AwaitBarrier(barrier.value);
+    CHECK(ObserveChain(target) == OriginalFinishedChain() && !fs::exists(stage));
+    const auto journal = fs::path(target.native() + L".mms-save.json");
+    const auto record = ReadFile(journal);
+    const auto files = CheckOriginalForwardJournal(target, record);
+    Write(dir / L"writer-journal.json", record);
+    CheckOriginalForwardStages(files, false);
+    writer.Interrupt();
+    CHECK(writer.Join() == interrupted);
+    CHECK(ObserveChain(target) == OriginalFinishedChain() && ReadFile(journal) == record);
+    CheckOriginalForwardStages(files, false);
+
+    CHECK(ResetEvent(barrier.value));
+    Child recovery(L"--version-original-cleanup-interrupt", id, dir);
+    recovery.AwaitBarrier(barrier.value);
+    CheckOriginalForwardStages(files, true);
+    CHECK(ObserveChain(target) == OriginalFinishedChain() && ReadFile(journal) == record);
+    recovery.Interrupt();
+    CHECK(recovery.Join() == interrupted);
+    CheckOriginalForwardStages(files, true);
+    CHECK(ObserveChain(target) == OriginalFinishedChain() && ReadFile(journal) == record);
+
+    for (unsigned child = 0; child < 2; ++child) {
+        Child retry(L"--version-original-cleanup-retry", id, dir);
+        CHECK(retry.Join() == 0);
+        CheckClean(files);
+        CHECK(ObserveChain(target) == OriginalFinishedChain() && !fs::exists(stage));
+    }
+    std::cout << "PASS SAVE-01 schema3 forward cleanup hard-kills=2 fresh-retries=2 exact-chain=1" << std::endl;
+    return 0;
+}
+
 int Run() {
+    RunOriginalForwardCleanupInterruption();
     RunJournalNameOwnership();
     RunPrepublicationCleanupIdentity();
     RunJournalReplacement();

@@ -75,7 +75,7 @@ add_library(mms_system_settings STATIC
     src/plugins/json.cpp)
 target_include_directories(mms_system_settings PUBLIC include sdk/mms/include)
 target_compile_definitions(mms_system_settings PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
-target_link_libraries(mms_system_settings PUBLIC user32)
+target_link_libraries(mms_system_settings PUBLIC user32 advapi32)
 add_library(mms_cache_policy STATIC src/io/cache_policy.cpp)
 target_link_libraries(mms_cache_policy PUBLIC mms_system_settings)
 add_library(mms_cache_manager STATIC src/io/cache_manager.cpp)
@@ -304,6 +304,13 @@ set_target_properties(system_settings_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME system_settings_store COMMAND system_settings_tests)
 set_tests_properties(system_settings_store PROPERTIES TIMEOUT 60)
+add_executable(plugin_settings_merge_tests EXCLUDE_FROM_ALL tests/plugin_settings_merge_tests.cpp)
+target_link_libraries(plugin_settings_merge_tests PRIVATE mms_system_settings)
+target_compile_features(plugin_settings_merge_tests PRIVATE cxx_std_17)
+target_link_options(plugin_settings_merge_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(plugin_settings_merge_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME plugin_settings_merge_policy COMMAND plugin_settings_merge_tests)
+set_tests_properties(plugin_settings_merge_policy PROPERTIES TIMEOUT 30)
 add_library(mms_plugin_runtime STATIC
     src/plugins/legacy_image.cpp
     src/plugins/legacy_runtime.cpp
@@ -311,6 +318,7 @@ add_library(mms_plugin_runtime STATIC
     src/plugins/loader_win32.cpp
     src/plugins/ui_registry.cpp
     src/plugins/ui_layout_preview.cpp
+    src/plugins/workspace_layout_preview.cpp
     src/plugins/render_service.cpp
     src/plugins/render_image_store.cpp
     src/plugins/evaluation_store.cpp
@@ -682,6 +690,25 @@ add_dependencies(storage_lease_manager_tests storage_lease_fixture_plugin)
 add_test(NAME storage_lease_manager COMMAND storage_lease_manager_tests
     "${CMAKE_BINARY_DIR}/tests/storage-lease-manager" "$<TARGET_FILE:storage_lease_fixture_plugin>")
 set_tests_properties(storage_lease_manager PROPERTIES TIMEOUT 120)
+
+add_library(settings_fixture_plugin SHARED EXCLUDE_FROM_ALL
+    tests/plugins/settings_fixture_plugin.cpp tests/plugins/settings_fixture_plugin.def)
+target_include_directories(settings_fixture_plugin PRIVATE sdk/mms/include)
+target_compile_definitions(settings_fixture_plugin PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(settings_fixture_plugin PRIVATE /SUBSYSTEM:WINDOWS,6.01 /DEBUG:NONE)
+set_target_properties(settings_fixture_plugin PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_executable(settings_manager_tests EXCLUDE_FROM_ALL tests/plugins/settings_manager_tests.cpp)
+target_link_libraries(settings_manager_tests PRIVATE mms_plugin_runtime)
+target_include_directories(settings_manager_tests PRIVATE src/plugins)
+target_compile_definitions(settings_manager_tests PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_options(settings_manager_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(settings_manager_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(settings_manager_tests settings_fixture_plugin)
+add_test(NAME plugin_global_settings_manager COMMAND settings_manager_tests
+    "${CMAKE_BINARY_DIR}/tests/plugin-global-settings-manager" "$<TARGET_FILE:settings_fixture_plugin>")
+set_tests_properties(plugin_global_settings_manager PROPERTIES TIMEOUT 60)
 
 add_executable(property_notification_queue_tests EXCLUDE_FROM_ALL tests/plugins/property_notification_queue_tests.cpp)
 target_link_libraries(property_notification_queue_tests PRIVATE mms_plugin_runtime)
@@ -1077,6 +1104,25 @@ set_target_properties(legacy_mmd_menu_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_dependencies(plugin_abi_tests legacy_mmd_menu_tests)
 add_test(NAME legacy_mmd_menu_commands COMMAND legacy_mmd_menu_tests)
+add_executable(workspace_layout_preview_tests EXCLUDE_FROM_ALL
+    tests/workspace_layout_preview_tests.cpp src/plugins/workspace_layout_preview.cpp)
+target_compile_features(workspace_layout_preview_tests PRIVATE cxx_std_17)
+target_link_options(workspace_layout_preview_tests PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+set_target_properties(workspace_layout_preview_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_dependencies(plugin_abi_tests workspace_layout_preview_tests)
+add_test(NAME workspace_layout_preview COMMAND workspace_layout_preview_tests)
+# A visible interactive test only. Do not activate a window in the default test suite.
+if(MIKUMIKUSTUDIO_BUILD_UI_TESTS)
+    add_executable(workspace_layout_win32_fixture EXCLUDE_FROM_ALL
+        tests/workspace_layout_win32_fixture.cpp src/plugins/workspace_layout_preview.cpp)
+    target_compile_features(workspace_layout_win32_fixture PRIVATE cxx_std_17)
+    target_compile_definitions(workspace_layout_win32_fixture PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+    target_link_libraries(workspace_layout_win32_fixture PRIVATE user32 gdi32)
+    target_link_options(workspace_layout_win32_fixture PRIVATE /SUBSYSTEM:CONSOLE,6.01 /DEBUG:NONE)
+    set_target_properties(workspace_layout_win32_fixture PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+endif()
 find_program(MMS_ABI_POWERSHELL NAMES pwsh)
 if(Python3_Interpreter_FOUND)
     add_test(NAME mmdfacade_camera_input COMMAND "${Python3_EXECUTABLE}"

@@ -7,10 +7,11 @@
 // What one run does
 // -----------------
 // Every key frame f becomes round(f * currentFPS / originalFPS); frames are
-// computed with exact integer arithmetic whenever both rates are whole numbers,
-// and with long double otherwise, so fractional rates such as 29.97 work
-// without a special case.  Two rates that are equal are an identity and copy
-// the track field for field, whatever form they have.
+// computed with exact integer arithmetic whenever both rates are whole numbers.
+// Fractional positions are computed and range-checked in long double, then
+// rounded half up at double precision (the precision of the rate inputs).
+// Two rates that are equal are an identity and copy the track field for field,
+// whatever form they have.
 //
 // A run of one key keeps its value.  A merged run does not: it takes one value
 // derived from the input curve (sampled at the inverse-mapped frame, or the

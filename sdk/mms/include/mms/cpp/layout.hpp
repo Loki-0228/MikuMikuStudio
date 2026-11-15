@@ -5,6 +5,7 @@
 // and the original host handles; it owns no layout state.
 #include <mms/layout.h>
 #include <cstdint>
+#include <limits>
 #include <new>
 #include <stdexcept>
 #include <string_view>
@@ -21,39 +22,55 @@ template<class F> MmsResult Call(F&& call) noexcept {
     catch (const std::length_error&) { return MMS_E_MEMORY; }
     catch (...) { return MMS_E_FAILED; }
 }
+inline bool ValidSnapshotItems(MmsSpan items) noexcept {
+    if (!items.count) return true;
+    if (!items.data || items.recordVersion != 1 || items.stride < sizeof(MmsUiLayoutItemV1) ||
+        items.stride % alignof(MmsUiLayoutItemV1)) return false;
+    const auto address = reinterpret_cast<std::uintptr_t>(items.data);
+    if (address % alignof(MmsUiLayoutItemV1)) return false;
+    const auto limit = (std::numeric_limits<std::uintptr_t>::max)() - address;
+    return limit >= sizeof(MmsUiLayoutItemV1) &&
+        items.count - 1 <= (limit - sizeof(MmsUiLayoutItemV1)) / items.stride;
+}
 } // namespace layout_detail
 
 class LayoutSnapshotLease {
     MmsUiLayoutApiV1 api_{};
-    MmsHandle handle_ = 0;
+    MmsUiLayoutSnapshotV1 snapshot_{};
+    friend class LayoutServices;
 public:
     LayoutSnapshotLease() = default;
-    LayoutSnapshotLease(MmsUiLayoutApiV1 api, MmsHandle handle) noexcept : api_(api), handle_(handle) {}
+    // Adopting a raw handle does not recover its geometry or revisions.
+    LayoutSnapshotLease(MmsUiLayoutApiV1 api, MmsHandle handle) noexcept : api_(api) { snapshot_.handle = handle; }
     LayoutSnapshotLease(const LayoutSnapshotLease&) = delete;
     LayoutSnapshotLease& operator=(const LayoutSnapshotLease&) = delete;
-    LayoutSnapshotLease(LayoutSnapshotLease&& other) noexcept : api_(other.api_), handle_(other.handle_) {
-        other.handle_ = 0;
-    }
+    LayoutSnapshotLease(LayoutSnapshotLease&& other) noexcept
+        : api_(other.api_), snapshot_(std::exchange(other.snapshot_, MmsUiLayoutSnapshotV1{})) {}
     LayoutSnapshotLease& operator=(LayoutSnapshotLease&&) = delete;
     MmsResult TransferFrom(LayoutSnapshotLease& other) noexcept {
         if (this == &other) return MMS_OK;
         const auto result = Release();
         if (result != MMS_OK) return result;
-        api_ = other.api_; handle_ = other.handle_; other.handle_ = 0;
+        api_ = other.api_;
+        snapshot_ = std::exchange(other.snapshot_, MmsUiLayoutSnapshotV1{});
         return MMS_OK;
     }
     ~LayoutSnapshotLease() = default; // explicit Release: no host call from a destructor
-    bool valid() const noexcept { return handle_ != 0; }
-    MmsHandle get() const noexcept { return handle_; }
+    bool valid() const noexcept { return snapshot_.handle != 0; }
+    MmsHandle get() const noexcept { return snapshot_.handle; }
+    // The span and nested strings borrow the host lease. The descriptor moves
+    // with the lease and is cleared here when ownership is released or detached.
+    const MmsUiLayoutSnapshotV1& value() const noexcept { return snapshot_; }
     MmsResult Release() noexcept {
-        if (!handle_) return MMS_OK;
+        if (!valid()) return MMS_OK;
         if (!api_.releaseSnapshot) return MMS_E_UNSUPPORTED;
-        const MmsHandle handle = handle_;
-        handle_ = 0;
+        const auto handle = Detach();
         api_.releaseSnapshot(api_.context, handle);
         return MMS_OK;
     }
-    MmsHandle Detach() noexcept { const MmsHandle handle = handle_; handle_ = 0; return handle; }
+    MmsHandle Detach() noexcept {
+        return std::exchange(snapshot_, MmsUiLayoutSnapshotV1{}).handle;
+    }
 };
 
 class LayoutServices {
@@ -101,8 +118,14 @@ public:
             snapshot.h = {sizeof(snapshot), MMS_ABI_MAJOR, MMS_ABI_MINOR};
             const auto result = api_.acquireSnapshot(api_.context, &snapshot);
             if (result != MMS_OK) return result;
-            LayoutSnapshotLease acquired(api_, snapshot.handle);
-            return out.TransferFrom(acquired);
+            const bool version = snapshot.h.size >= sizeof(snapshot) && snapshot.h.major == MMS_ABI_MAJOR;
+            if (!snapshot.handle || !version || !layout_detail::ValidSnapshotItems(snapshot.items)) {
+                if (snapshot.handle) api_.releaseSnapshot(api_.context, snapshot.handle);
+                return version ? MMS_E_FAILED : MMS_E_VERSION;
+            }
+            out.api_ = api_;
+            out.snapshot_ = snapshot;
+            return MMS_OK;
         });
     }
 };

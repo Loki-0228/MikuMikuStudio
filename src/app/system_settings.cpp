@@ -1,13 +1,18 @@
 #include "mikumikustudio/system_settings.hpp"
 #include "mikumikustudio/local_data_path.hpp"
 #include "settings_json.hpp"
+#include "plugin_settings_merge.hpp"
+#include <mms/settings.h>
 #include <atomic>
 
 namespace mikumikustudio::system_settings {
 namespace {
 using plugins::Json;
 using settings_json::Serialize;
-constexpr DWORD MaximumBytes = 1024 * 1024;
+constexpr DWORD MaximumBytes = static_cast<DWORD>(plugin_settings_merge::detail::MaximumBytes);
+constexpr const char* PluginSection = plugin_settings_merge::detail::Section;
+constexpr size_t MaximumPluginBytes = plugin_settings_merge::detail::MaximumPluginBytes;
+static_assert(MaximumPluginBytes == MMS_SETTINGS_MAX_JSON_BYTES);
 struct Handle {
     HANDLE value = INVALID_HANDLE_VALUE;
     ~Handle() { if (value != INVALID_HANDLE_VALUE) CloseHandle(value); }
@@ -17,7 +22,7 @@ struct Lock {
     OVERLAPPED overlap{};
     bool held = false;
     ~Lock() { if (held) UnlockFileEx(file.value, 0, 1, 0, &overlap); }
-    Result Acquire(const std::filesystem::path& path) {
+    Result Acquire(const std::filesystem::path& path, bool wait = true) {
         file.value = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
             FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -31,7 +36,7 @@ struct Lock {
                 0, 1, 0, &overlap)) { held = true; return Result::Ok; }
             const auto error = GetLastError();
             if (error != ERROR_LOCK_VIOLATION && error != ERROR_IO_PENDING) return Result::Io;
-            if (GetTickCount64() - start >= 2000) return Result::Busy;
+            if (!wait || GetTickCount64() - start >= 2000) return Result::Busy;
             Sleep(10);
         } while (true);
     }
@@ -73,25 +78,74 @@ Result Load(const std::filesystem::path& path, Json& root) {
     } catch (const std::invalid_argument&) { return Result::Invalid; }
     return Result::Ok;
 }
-Result Save(const std::filesystem::path& path, const std::string& bytes, bool exists) {
+// A native same-volume rename transfers the staged file's security metadata.
+// Refuse a replacement if default staging would discard relevant restrictions;
+// do not stage settings bytes into a file with different permissions.
+constexpr SECURITY_INFORMATION SettingsSecurity = OWNER_SECURITY_INFORMATION |
+    GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | LABEL_SECURITY_INFORMATION;
+bool SupportsPluginPublication(HANDLE file) noexcept {
+    BY_HANDLE_FILE_INFORMATION info{};
+    // EFS recipients cannot be inferred from the encrypted attribute. Do
+    // not publish via a staging file that might use different EFS recipients.
+    return GetFileInformationByHandle(file, &info) &&
+        !(info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_ENCRYPTED));
+}
+bool LoadSecurity(const std::filesystem::path& path, std::vector<BYTE>& descriptor) {
+    Handle original;
+    original.value = CreateFileW(path.c_str(), READ_CONTROL | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (original.value == INVALID_HANDLE_VALUE || !SupportsPluginPublication(original.value)) return false;
+    DWORD needed = 0;
+    if (GetKernelObjectSecurity(original.value, SettingsSecurity, nullptr, 0, &needed) ||
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER || !needed || needed > 256 * 1024) return false;
+    descriptor.resize(needed);
+    return GetKernelObjectSecurity(original.value, SettingsSecurity, descriptor.data(), needed, &needed) &&
+        needed == descriptor.size();
+}
+bool MatchesSecurity(HANDLE file, const std::vector<BYTE>& descriptor, std::vector<BYTE>& scratch) noexcept {
+    DWORD needed = 0;
+    return GetKernelObjectSecurity(file, SettingsSecurity, scratch.data(), static_cast<DWORD>(scratch.size()), &needed) &&
+        needed == scratch.size() && scratch == descriptor;
+}
+enum class Publication { HostSection, PluginObject };
+Result Save(const std::filesystem::path& path, const std::string& bytes, bool exists,
+    Publication publication = Publication::HostSection) {
     static std::atomic<unsigned long> serial{0};
+    const bool plugin = publication == Publication::PluginObject;
+    const bool verifySecurity = exists && plugin;
+    std::vector<BYTE> original;
+    if (verifySecurity && !LoadSecurity(path, original)) return Result::Io;
+    std::vector<BYTE> securityScratch(original.size());
     std::filesystem::path temporary;
     Handle file;
     for (unsigned attempt = 0; attempt < 32; ++attempt) {
         temporary = path;
         temporary += L".tmp-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(++serial);
-        file.value = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const DWORD access = GENERIC_WRITE | (plugin ? FILE_READ_ATTRIBUTES | READ_CONTROL : 0);
+        file.value = CreateFileW(temporary.c_str(), access, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file.value != INVALID_HANDLE_VALUE) break;
         if (GetLastError() != ERROR_FILE_EXISTS && GetLastError() != ERROR_ALREADY_EXISTS) return Result::Io;
     }
     if (file.value == INVALID_HANDLE_VALUE) return Result::Io;
     DWORD written = 0;
-    const bool ready = WriteFile(file.value, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) &&
+    const bool ready = (!plugin || SupportsPluginPublication(file.value)) &&
+        (!verifySecurity || MatchesSecurity(file.value, original, securityScratch)) &&
+        WriteFile(file.value, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) &&
         written == bytes.size() && FlushFileBuffers(file.value);
     CloseHandle(file.value); file.value = INVALID_HANDLE_VALUE;
     bool saved = false;
-    if (ready) saved = exists ? ReplaceFileW(path.c_str(), temporary.c_str(), nullptr, 0, nullptr, nullptr) != FALSE
-        : MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
+    if (ready) {
+        if (exists && publication == Publication::HostSection)
+            saved = ReplaceFileW(path.c_str(), temporary.c_str(), nullptr, 0, nullptr, nullptr) != FALSE;
+        else {
+            // The plugin path publishes with a single same-directory rename.
+            // ReplaceFileW without a backup may displace the old target even
+            // when it reports failure. Do not allow a copy/delete fallback.
+            const DWORD flags = MOVEFILE_WRITE_THROUGH | (exists ? MOVEFILE_REPLACE_EXISTING : 0);
+            saved = MoveFileExW(temporary.c_str(), path.c_str(), flags) != FALSE;
+        }
+    }
     if (!saved) DeleteFileW(temporary.c_str());
     return saved ? Result::Ok : Result::Io;
 }
@@ -128,7 +182,7 @@ Result Store::CompareExchangeSection(std::string_view name, const std::string* e
 Result Store::Write(std::string_view name, std::string_view object, bool compare,
     const std::string* expected, bool multiple) const noexcept {
     try {
-        if ((!multiple && !ValidName(name)) || path_.empty() || !path_.is_absolute()) return Result::Invalid;
+        if ((!multiple && (!ValidName(name) || name == PluginSection)) || path_.empty() || !path_.is_absolute()) return Result::Invalid;
         Json update;
         try { update = Json::Parse(object, MaximumBytes); }
         catch (const std::invalid_argument&) { return Result::Invalid; }
@@ -136,7 +190,7 @@ Result Store::Write(std::string_view name, std::string_view object, bool compare
         if (multiple) {
             if (update.object.empty()) return Result::Invalid;
             for (const auto& entry : update.object)
-                if (!ValidName(entry.first) || entry.second.kind != Json::Object) return Result::Invalid;
+                if (!ValidName(entry.first) || entry.first == PluginSection || entry.second.kind != Json::Object) return Result::Invalid;
         }
         std::string expectedCanonical;
         if (compare && expected) {
@@ -185,6 +239,78 @@ Result Store::Write(std::string_view name, std::string_view object, bool compare
         return Save(path_, bytes, loaded == Result::Ok);
     } catch (...) { return Result::Io; }
 }
+namespace {
+PluginResult FileStatus(Result result) noexcept {
+    switch (result) {
+    case Result::Ok: return PluginResult::Ok;
+    case Result::Missing: return PluginResult::Missing;
+    case Result::Invalid: return PluginResult::Corrupt;
+    case Result::Busy: return PluginResult::Busy;
+    default: return PluginResult::Io;
+    }
+}
+}
+PluginResult Store::ReadPlugin(std::string_view manifestId, std::string& output) const noexcept {
+    try {
+        if (!plugin_settings_merge::detail::RegularManifestId(manifestId) || !path_.is_absolute())
+            return PluginResult::Invalid;
+        std::error_code error;
+        if (!std::filesystem::exists(path_.parent_path(), error)) return error ? PluginResult::Io : PluginResult::Missing;
+        Lock lock;
+        const auto acquired = lock.Acquire(path_.wstring() + L".lock", false);
+        if (acquired != Result::Ok) return FileStatus(acquired);
+        Json root;
+        const auto loaded = Load(path_, root);
+        if (loaded != Result::Ok) return FileStatus(loaded);
+        const Json* entry = nullptr;
+        if (plugin_settings_merge::Lookup(root, manifestId, entry) != plugin_settings_merge::Result::Ready)
+            return PluginResult::Corrupt;
+        if (!entry) return PluginResult::Missing;
+        auto bytes = Serialize(*entry);
+        if (bytes.size() > MaximumPluginBytes) return PluginResult::Limit;
+        output.swap(bytes);
+        return PluginResult::Ok;
+    } catch (...) { return PluginResult::Io; }
+}
+PluginResult Store::CompareMergePlugin(std::string_view manifestId, std::string_view expected,
+    std::string_view patch) const noexcept {
+    try {
+        if (!plugin_settings_merge::detail::RegularManifestId(manifestId) || !path_.is_absolute())
+            return PluginResult::Invalid;
+        Json baseline, update;
+        try {
+            if (!expected.empty()) baseline = Json::Parse(expected, MaximumPluginBytes);
+            update = Json::Parse(patch, MaximumPluginBytes);
+        } catch (const std::invalid_argument&) { return PluginResult::Invalid; }
+        if ((!expected.empty() && baseline.kind != Json::Object) || update.kind != Json::Object)
+            return PluginResult::Invalid;
+        std::error_code error;
+        std::filesystem::create_directories(path_.parent_path(), error);
+        if (error) return PluginResult::Io;
+        Lock lock;
+        const auto acquired = lock.Acquire(path_.wstring() + L".lock", false);
+        if (acquired != Result::Ok) return FileStatus(acquired);
+        Json root;
+        const auto loaded = Load(path_, root);
+        if (loaded != Result::Ok && loaded != Result::Missing) return FileStatus(loaded);
+        if (loaded == Result::Missing) root = Json::Parse("{\"schemaVersion\":1,\"sections\":{}}");
+        std::string bytes;
+        const auto result = plugin_settings_merge::Plan(root, manifestId,
+            expected.empty() ? nullptr : &baseline, update,
+            [](const Json& value) { return Serialize(value); }, bytes);
+        switch (result) {
+        case plugin_settings_merge::Result::Ready:
+            return FileStatus(Save(path_, bytes, loaded == Result::Ok, Publication::PluginObject));
+        case plugin_settings_merge::Result::Unchanged: return PluginResult::Ok;
+        case plugin_settings_merge::Result::Conflict: return PluginResult::Conflict;
+        case plugin_settings_merge::Result::Corrupt: return PluginResult::Corrupt;
+        case plugin_settings_merge::Result::Invalid: return PluginResult::Invalid;
+        case plugin_settings_merge::Result::Limit: return PluginResult::Limit;
+        }
+        return PluginResult::Io;
+    } catch (...) { return PluginResult::Io; }
+}
+
 std::filesystem::path Path() { return local_data::File(L"settings.json"); }
 Result ReadSection(std::string_view name, std::string& output) noexcept {
     try { return Store(Path()).ReadSection(name, output); } catch (...) { return Result::Io; }

@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -21,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <new>
 #include <stdexcept>
@@ -91,6 +93,8 @@ struct V2RelocationReply {
     const wchar_t* label;
     INT_PTR answer;
     fs::path selection;
+    bool disappearsOnOpen = false;
+    unsigned slot = 0;
 };
 struct V2RelocationDialogs {
     std::vector<V2RelocationReply> replies;
@@ -99,6 +103,11 @@ struct V2RelocationDialogs {
     const wchar_t* projectRoot = nullptr;
     const wchar_t* originalModelDirectory = nullptr;
     const wchar_t* expectedPickerDirectory = nullptr;
+    fs::path disappearingCandidate, parkedCandidate;
+    unsigned disappearedOnOpen = 0, disappearingSlot = 0;
+    unsigned char* retainedModel = nullptr;
+    mdl::BoneKey* retainedBoneKeys = nullptr;
+    bool expectBadModel = false, sawBadModel = false;
 };
 V2RelocationDialogs* v2Relocation = nullptr;
 // ---- Real V2 missing-accessory recovery loop --------------------------------
@@ -129,6 +138,8 @@ struct V2AccessoryDialogs {
     std::vector<bool> loadResults;
     std::vector<void*> loadObjects;
     fs::path disappearingCandidate;
+    bool checkPathCapacity = false;
+    unsigned pathLengthRefusals = 0;
     void* failedObject = nullptr;
     const fs::path* partialFailureSource = nullptr;
     unsigned partialRefusals = 0, partialDisposals = 0;
@@ -582,6 +593,20 @@ LRESULT CALLBACK NoActivation(int code, WPARAM wp, LPARAM lp) {
     return CallNextHookEx(nullptr, code, wp, lp);
 }
 errno_t __cdecl ObserveOpen(int* descriptor, const wchar_t* path, int flags, int sharing, int mode) {
+    if (v2Relocation && !v2Relocation->disappearingCandidate.empty() && path &&
+        v2Relocation->disappearingCandidate.native() == path && flags == _O_BINARY &&
+        sharing == _SH_DENYNO && mode == _S_IREAD) {
+        auto& d = *v2Relocation;
+        Check(monitor && inputOpen && d.parkedCandidate.empty(),
+              "remove the picked PMD only at its first real native open");
+        d.parkedCandidate = d.disappearingCandidate;
+        d.parkedCandidate += L".parked";
+        Check(MoveFileW(path, d.parkedCandidate.c_str()), "park the real picked PMD after the picker confirmed it");
+        const auto status = realOpen(descriptor, path, flags, sharing, mode);
+        Check(status == ENOENT && descriptor && *descriptor == -1, "the real model open fails because the PMD disappeared");
+        ++d.disappearedOnOpen;
+        return status;
+    }
     const auto status = realOpen(descriptor, path, flags, sharing, mode);
     // Observe the shell's exact read-only binary open, not a hash/sidecar
     // std::ifstream used by plugin pair preparation before that open.
@@ -634,16 +659,56 @@ pmm_extension::ReadResult ObserveExtensionRead(int descriptor, pmm_extension::Do
     return result;
 }
 #endif
-enum class MotionDialogAction { None, Accept, Cancel, SwitchModel, SwitchFrame, ResetScene, SwitchAtConfirmation };
+enum class MotionDialogAction {
+    None, Accept, Cancel, SwitchModel, SwitchFrame, ResetScene, SwitchAtConfirmation,
+    DeclineSaveOverwrite, SwitchAtSaveConfirmation, ReplaceDuringSaveConfirmation, ArriveAtSavePublication
+};
 MotionDialogAction motionDialogAction = MotionDialogAction::None;
 fs::path motionDialogPath;
-unsigned motionPicks = 0, motionNotices = 0;
+unsigned motionPicks = 0, motionNotices = 0, motionSaveConfirms = 0, motionLateFiles = 0;
+constexpr char kNewMotionBytes[] = "External bytes must survive the VMD save.";
+decltype(&MoveFileExW) realMotionMove = nullptr;
+BOOL WINAPI ObserveMotionMove(LPCWSTR source, LPCWSTR destination, DWORD flags) {
+    if (motionDialogAction == MotionDialogAction::ArriveAtSavePublication && destination &&
+        !_wcsicmp(destination, motionDialogPath.c_str())) {
+        const auto stagePrefix = motionDialogPath.native() + L".tmp-";
+        Check(source && std::wstring_view(source).find(stagePrefix) == 0 &&
+              fs::file_size(source) > 30, "the actual serializer produced a complete temporary motion before the fault");
+        const HANDLE late = CreateFileW(destination, GENERIC_WRITE, 0, nullptr,
+            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Check(late != INVALID_HANDLE_VALUE, "create a real external file at the previously absent path");
+        DWORD written = 0;
+        Check(WriteFile(late, kNewMotionBytes, sizeof kNewMotionBytes, &written, nullptr) &&
+              written == sizeof kNewMotionBytes && CloseHandle(late),
+              "complete and close the actual late-arriving output before the production rename");
+        ++motionLateFiles;
+    }
+    return realMotionMove(source, destination, flags);
+}
 unsigned char motionOtherSlot = 0;
 const wchar_t* expectedMotionSaveNotice = nullptr;
 std::function<int(UiMessage, const wchar_t*)> scopedProjectOpenNotice;
 bool CacheSaveFailureMessage(HWND, LPCWSTR, LPCWSTR, UINT);
 int WINAPI ErrorW(HWND window, LPCWSTR text, LPCWSTR caption, UINT flags) {
     if (motionDialogAction != MotionDialogAction::None && caption && !std::wcscmp(caption, L"VMD")) {
+        if ((flags & MB_TYPEMASK) == MB_YESNO) {
+            Check(window == app->MainWindow() && (flags & MB_DEFMASK) == MB_DEFBUTTON2 &&
+                text && std::wcsstr(text, motionDialogPath.c_str()) && std::wcsstr(text, L"Replace it?"),
+                "ask about the exact existing destination with No as the default");
+            ++motionSaveConfirms;
+            if (motionDialogAction == MotionDialogAction::DeclineSaveOverwrite) return IDNO;
+            if (motionDialogAction == MotionDialogAction::SwitchAtSaveConfirmation)
+                app->SetSelectedModelSlot(motionOtherSlot);
+            if (motionDialogAction == MotionDialogAction::ReplaceDuringSaveConfirmation) {
+                auto incoming = motionDialogPath; incoming += L".incoming";
+                std::ofstream external(incoming, std::ios::binary);
+                external.write(kNewMotionBytes, sizeof kNewMotionBytes); external.close();
+                Check(bool(external) && realMotionMove(incoming.c_str(), motionDialogPath.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH),
+                    "replace the snapshot with an independently created file while the prompt is active");
+            }
+            return IDYES;
+        }
         Check(window == app->MainWindow() && expectedMotionSaveNotice && text &&
               std::wcsstr(text, expectedMotionSaveNotice) && (flags & MB_ICONERROR),
               "the production export reports the expected VMD failure to the owner");
@@ -741,6 +806,16 @@ int WINAPI ErrorW(HWND window, LPCWSTR text, LPCWSTR caption, UINT flags) {
         }
         return IDOK;
     }
+    if (v2Accessory && v2Accessory->checkPathCapacity) {
+        auto& d = *v2Accessory;
+        Check(build_profile::original && monitor && inputOpen && !d.prompts &&
+              window == app->MainWindow() && text && caption && !std::wcscmp(caption, L"MMD") &&
+              flags == (MB_OK | MB_ICONERROR) &&
+              std::wcsstr(text, L"exceeds the CP932 character or field-length limits") &&
+              ++d.pathLengthRefusals == 1,
+              "an existing oversized X retains the original-profile compatibility notice");
+        return IDOK;
+    }
     if (v2Accessory && v2Accessory->partialFailureSource) {
         auto& d = *v2Accessory;
         auto* record = app->AccessorySlot(0);
@@ -780,6 +855,13 @@ int WINAPI ErrorA(HWND window, LPCSTR text, LPCSTR caption, UINT flags) {
         fault == Fault::None && window == app->MainWindow() && flags == MB_OK && text && caption &&
         !std::strcmp(caption, "open file") && !std::strcmp(text, "This file is not for Ploygon Movie Maker !!")) {
         relocationDialogs->sawBadModel = true;
+        return IDOK;
+    }
+    if (v2Relocation && v2Relocation->expectBadModel && !v2Relocation->sawBadModel &&
+        v2Relocation->next == v2Relocation->replies.size() && !v2Relocation->awaitingPicker &&
+        monitor && inputOpen && window == app->MainWindow() && flags == MB_OK && text && caption &&
+        !std::strcmp(caption, "open file") && !std::strcmp(text, "This file is not for Ploygon Movie Maker !!")) {
+        v2Relocation->sawBadModel = true;
         return IDOK;
     }
     if (expectedPictureError) { ++messages; return IDOK; }
@@ -1002,9 +1084,27 @@ INT_PTR MissingModel(MMDApp* value, HINSTANCE, HWND window, ProjectModelIssue is
         if (d.projectRoot)
             Check(!std::wcscmp(app->PathWorkspace().projectDirectory, d.projectRoot),
                 "a model replacement must leave the PMM resource root intact at later model prompts");
-        if (issue == ProjectModelIssue::StructureMismatch && d.originalModelDirectory)
+        if (d.originalModelDirectory)
             Check(!std::wcscmp(app->DirModel(), d.originalModelDirectory),
-                "a mismatched candidate must leave the previous model picker folder intact");
+                "unaccepted replacements must leave the previous model picker folder intact");
+        if (!d.parkedCandidate.empty()) {
+            auto* model = app->ModelSlot(d.disappearingSlot);
+            if (d.retainedModel) {
+                Check(issue == ProjectModelIssue::StructureMismatch && model == d.retainedModel &&
+                      mdl::BoneKeys(model) == d.retainedBoneKeys &&
+                      mdl::Mdl(model)->path != d.disappearingCandidate.native(),
+                      "offer structure recovery again with the same loaded model and animation pool");
+            } else {
+                Check(issue == ProjectModelIssue::MissingFile && model && !mdl::Mdl(model)->path[0],
+                      "return to missing-model recovery with a clean model slot");
+            }
+            Check(MoveFileW(d.parkedCandidate.c_str(), d.disappearingCandidate.c_str()),
+                  "restore the owned PMD only after recovery is offered again");
+            d.parkedCandidate.clear();
+            d.disappearingCandidate.clear();
+            d.retainedModel = nullptr;
+            d.retainedBoneKeys = nullptr;
+        }
         Check(value == app && window == app->MainWindow() && monitor && inputOpen && fault == Fault::None &&
               !d.awaitingPicker && d.next < d.replies.size(), "V2 recovery dialog in the expected active PMM load");
         const auto& reply = d.replies[d.next++];
@@ -1014,6 +1114,8 @@ INT_PTR MissingModel(MMDApp* value, HINSTANCE, HWND window, ProjectModelIssue is
         Check(issue == reply.issue && label && !std::wcscmp(label, reply.label), "V2 dialog matches exact model and issue");
         if ((issue == ProjectModelIssue::MissingFile && reply.answer == 1) ||
             (issue == ProjectModelIssue::StructureMismatch && reply.answer == 3)) d.awaitingPicker = &reply;
+        if (issue == ProjectModelIssue::StructureMismatch && (reply.answer == 2 || reply.answer == 5))
+            faultThrown = true; // Classify the real reset in the original-profile observer.
         return reply.answer;
     }
     Check(monitor && (v2ModelAbortThrow || fault == Fault::AbortReset || fault == Fault::AbortResetFalse ||
@@ -1469,6 +1571,9 @@ bool ObserveAccessoryLoad(MMDApp* value, void* accessory, const wchar_t* path,
         auto& d = *v2Accessory;
         Check(value == app && accessory != nullptr && path != nullptr,
             "the real V2 accessory load targets the production's own slot record with a concrete path");
+        if (d.checkPathCapacity)
+            Check(std::wcslen(path) < std::size(mdl::Accessory(accessory)->sourcePath),
+                  "no unrepresentable X path reaches the real importer");
         d.loadObjects.push_back(accessory);
         d.loadPaths.emplace_back(path);
         const bool disappears = !d.disappearingCandidate.empty() && d.disappearingCandidate == fs::path(path);
@@ -1558,6 +1663,10 @@ BOOL ObserveUiOpenFileName(LPOPENFILENAMEW parameters) {
               parameters->hwndOwner == (app->state.floatingWindow ? reinterpret_cast<HWND>(app->state.floatingWindow) : app->MainWindow()) &&
               (parameters->Flags & OFN_FILEMUSTEXIST) && parameters->lpstrDefExt &&
               !std::wcscmp(parameters->lpstrDefExt, L"pmd;pmx"), "V2 opens the requested model picker");
+        if (parameters->lpstrFile[0] != L'\0')
+            std::fprintf(stderr, "V2 model picker was seeded with %ls\n", parameters->lpstrFile);
+        Check(parameters->lpstrFile[0] == L'\0',
+              "every V2 model picker starts without the previous incompatible filename");
         if (const auto* expected = v2Relocation->expectedPickerDirectory)
             Check(parameters->lpstrInitialDir && !std::wcscmp(parameters->lpstrInitialDir, expected),
                   "the next open's model picker starts at the previous committed directory");
@@ -1566,6 +1675,17 @@ BOOL ObserveUiOpenFileName(LPOPENFILENAMEW parameters) {
         Check(fs::is_regular_file(reply->selection) &&
               wcscpy_s(parameters->lpstrFile, parameters->nMaxFile, reply->selection.c_str()) == 0,
               "return the exact owned V2 model selection");
+        if (reply->disappearsOnOpen) {
+            Check(v2Relocation->disappearingCandidate.empty(), "arm a single owned V2 open failure");
+            v2Relocation->disappearingCandidate = reply->selection;
+            v2Relocation->disappearingSlot = reply->slot;
+            if (reply->issue == ProjectModelIssue::StructureMismatch) {
+                v2Relocation->retainedModel = app->ModelSlot(reply->slot);
+                Check(v2Relocation->retainedModel, "record the loaded model before selecting a different file");
+                v2Relocation->retainedBoneKeys = mdl::BoneKeys(v2Relocation->retainedModel);
+                Check(v2Relocation->retainedBoneKeys, "record the loaded model's animation pool");
+            }
+        }
         return TRUE;
     }
     if (relocationDialogs) {
@@ -1633,7 +1753,9 @@ std::vector<unsigned char> Bytes(const fs::path& path);
 BOOL ObserveMotionSavePicker(LPOPENFILENAMEW parameters) {
     Check(motionDialogAction != MotionDialogAction::None && parameters->hwndOwner == app->MainWindow() &&
           parameters->lpstrDefExt && !std::wcscmp(parameters->lpstrDefExt, L"vmd") &&
-          (parameters->Flags & OFN_OVERWRITEPROMPT), "the real save command requests VMD with overwrite confirmation");
+          (parameters->Flags & OFN_HIDEREADONLY) && (parameters->Flags & OFN_NOTESTFILECREATE) &&
+          !(parameters->Flags & OFN_OVERWRITEPROMPT),
+          "the picker neither creates the output nor asks for untracked overwrite approval");
     ++motionPicks;
     if (motionDialogAction == MotionDialogAction::Cancel) return FALSE;
     if (motionDialogAction == MotionDialogAction::SwitchModel) app->SetSelectedModelSlot(motionOtherSlot);
@@ -1682,7 +1804,7 @@ void MotionSaveCases() {
     const auto remembered = directory.native();
     const auto projectDir = (directory / L"project-resources").native();
     auto run = [&](MotionDialogAction action, const wchar_t* notice, bool saved = false,
-                   const fs::path& destination = {}) {
+                   const fs::path& destination = {}, unsigned confirms = 0) {
         app->SetSelectedModelSlot(0);
         wcscpy_s(app->DirMotion(), kPathFieldCapacity, remembered.c_str());
         wcscpy_s(app->PathWorkspace().projectDirectory, kPathFieldCapacity, projectDir.c_str());
@@ -1690,11 +1812,14 @@ void MotionSaveCases() {
         motionDialogAction = action;
         motionDialogPath = destination.empty() ? output : destination;
         expectedMotionSaveNotice = notice;
-        motionPicks = motionNotices = 0;
+        motionPicks = motionNotices = motionSaveConfirms = motionLateFiles = 0;
         SendMessageW(main, WM_COMMAND, 210, 0);
         motionDialogAction = MotionDialogAction::None;
         expectedMotionSaveNotice = nullptr;
-        Check(motionPicks == 1 && motionNotices == (notice ? 1u : 0u), "observe only the expected export dialogs");
+        Check(motionPicks == 1 && motionSaveConfirms == confirms && motionNotices == (notice ? 1u : 0u),
+            "observe only the expected save picker, confirmation and failure notice");
+        Check(motionLateFiles == (action == MotionDialogAction::ArriveAtSavePublication ? 1u : 0u),
+            "the late-arrival fault runs at the real publication boundary only in its own case");
         Check(!app->SceneModified(), "export does not mark the scene modified");
         Check((app->SceneGeneration() != generation) == (action == MotionDialogAction::ResetScene),
               "only the explicit modal replacement changes the scene generation");
@@ -1706,12 +1831,26 @@ void MotionSaveCases() {
         } else {
             Check(app->DirMotion() != exportDir.native(), "an obsolete picker cannot update the new scene's motion folder");
         }
-        Check((Bytes(output) != sentinel) == saved, "only a completed export replaces the old VMD");
+        const std::vector<unsigned char> external(kNewMotionBytes, kNewMotionBytes + sizeof kNewMotionBytes);
+        if (action == MotionDialogAction::ReplaceDuringSaveConfirmation)
+            Check(Bytes(output) == external, "the file replaced while the approval is visible retains its exact bytes");
+        else
+            Check((Bytes(output) != sentinel) == saved, "only a completed export replaces the old VMD");
+        if (action == MotionDialogAction::ArriveAtSavePublication)
+            Check(Bytes(destination) == external, "the late-arriving external VMD retains its exact bytes");
         for (const auto& entry : fs::directory_iterator(exportDir))
-            Check(entry.path() == output, "no staged file remains after the save command returns");
+            Check(entry.path() == output || entry.path() == destination,
+                  "no staged or backup file remains after the save command returns");
     };
     run(MotionDialogAction::Cancel, nullptr);
     run(MotionDialogAction::SwitchModel, nullptr);
+    run(MotionDialogAction::DeclineSaveOverwrite, nullptr, false, {}, 1);
+    run(MotionDialogAction::SwitchAtSaveConfirmation, nullptr, false, {}, 1);
+    run(MotionDialogAction::ReplaceDuringSaveConfirmation, L"destination changed", false, {}, 1);
+    fs::copy_file(original, output, fs::copy_options::overwrite_existing);
+    const auto late = exportDir / L"late.vmd";
+    run(MotionDialogAction::ArriveAtSavePublication, L"destination changed", false, late);
+    Check(fs::remove(late), "retire only the owned late-arrival fixture");
     const auto missingDirectory = directory / L"missing-motion-folder";
     run(MotionDialogAction::Accept, L"Check the folder and its write permissions", false,
         missingDirectory / L"existing.vmd");
@@ -1723,16 +1862,16 @@ void MotionSaveCases() {
         std::memcpy(name.data(), bone.name, name.size());
         bone.jpText = nullptr;
         strcpy_s(bone.name, "abcdefghijklmnop");
-        run(MotionDialogAction::Accept, L"CP932 field exactly");
+        run(MotionDialogAction::Accept, L"CP932 field exactly", false, {}, 1);
         std::memcpy(bone.name, name.data(), name.size());
         bone.jpText = wide;
     }
     const HANDLE locked = CreateFileW(output.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     Check(locked != INVALID_HANDLE_VALUE, "deny replacement of the existing output with real file sharing");
-    run(MotionDialogAction::Accept, L"existing file was preserved");
+    run(MotionDialogAction::Accept, L"existing file was preserved", false, {}, 1);
     Check(CloseHandle(locked), "release the output before retrying");
-    run(MotionDialogAction::Accept, nullptr, true);
+    run(MotionDialogAction::Accept, nullptr, true, {}, 1);
 
     app->SetSelectedModelSlot(1);
     app->CurrentFrame() = 14;
@@ -1747,7 +1886,7 @@ void MotionSaveCases() {
     fs::copy_file(original, output, fs::copy_options::overwrite_existing);
     app->SceneModified() = 0;
     run(MotionDialogAction::ResetScene, nullptr);
-    std::puts("PASS VMD save cancellation, stale selection, old-file preservation and retry with reimport");
+    std::puts("PASS VMD save cancellations, stale approvals, late arrivals, and approved retry with reimport");
 }
 
 void MotionModalCases() {
@@ -3651,6 +3790,105 @@ void V1AccessoryRecoveryCases() {
     std::puts("PASS V1 disappeared replacement: retry, save/reopen, skip and cancel");
 }
 
+void AccessoryPathCapacityCases() {
+    const auto root = directory / L"path-limits";
+    Check(root.native().size() + 1 < 244, "keep the isolated path fixture root short");
+    // Keep the directory itself below Win32's legacy directory limit while
+    // placing two ordinary, readable files on opposite sides of the slot limit.
+    const auto assets = root / std::wstring(244 - root.native().size() - 1, L'd');
+    Check(fs::create_directories(assets), "own a fresh accessory path fixture directory");
+    const auto fitting = assets / L"short-ok.x";
+    const auto tooLong = assets / L"too-long1.x";
+    const auto seed = root / L"seed.x";
+    const auto following = root / L"following.x";
+    const auto v1 = root / L"v1.pmm";
+    const auto v2 = root / L"v2.pmm";
+    const auto cwd = fs::current_path();
+    for (const auto& path : {fitting, tooLong, seed, following}) {
+        std::ofstream output(path, std::ios::binary);
+        output << kAccessoryTriangleGood;
+        output.close();
+        Check(bool(output), "write a real X for the path capacity fixture");
+    }
+    const auto relative = tooLong.lexically_relative(root);
+    const auto wire = WirePathText(relative);
+    const auto located = project_model::Locate(wire.c_str(), root, {});
+    Check(fitting.native().size() == 255 && tooLong.native().size() == 256 &&
+          !located.tryLegacy && fs::path(located.exactPath) == tooLong,
+          "the real locator finds the 256-unit X through a representable PMM wire field");
+    const auto fittingBytes = Bytes(fitting);
+    const auto tooLongBytes = Bytes(tooLong);
+    WriteV1AccessoryMaterialRetry(v1, relative, following);
+
+    Check(ResetAppState(app), "seed the real V2 writer on an empty scene");
+    app->EnglishUI() = kUiEnglish;
+    LoadAccessoryFile(seed.c_str());
+    LoadAccessoryFile(following.c_str());
+    auto* first = app->AccessorySlot(0);
+    Check(first && first->mesh && app->AccessorySlot(1) && app->AccessorySlot(1)->mesh &&
+          app->AccessoryKeys(0) && app->AccessoryKeys(1),
+          "the real V2 writer will serialize two loaded X accessories");
+    wcscpy_s(first->sourcePath, relative.c_str());
+    app->AccessoryKeys(0)[0].position[0] = 2.5f;
+    app->AccessoryKeys(1)[0].position[0] = 7.5f;
+    app->CurrentFrame() = 12;
+    Check(SaveSceneCopy(app, v2.c_str()), "save a V2 PMM with the same wire reference");
+
+    for (const auto& project : {v1, v2}) {
+        const auto source = Bytes(project);
+        for (const INT_PTR answer : {INT_PTR{1}, INT_PTR{3}, INT_PTR{4}}) {
+            Check(ResetAppState(app), "start each path recovery from a clean host");
+            app->EnglishUI() = kUiEnglish;
+            V2AccessoryDialogs dialogs;
+            dialogs.expectedLabel = project == v1 ? L"material-retry" : L"seed.x";
+            dialogs.checkPathCapacity = true;
+            dialogs.replies = {{answer, answer == 1 ? fitting : fs::path{}}};
+            const auto errors = messages;
+            Arm(project, Fault::None, false);
+            v2Accessory = &dialogs;
+            const bool loaded = LoadSceneFile(project.c_str());
+            if (answer == 4) FinishV2AccessoryAbort(loaded, project, source);
+            else Finish(loaded, true);
+            v2Accessory = nullptr;
+            Check(dialogs.prompts == 1 && dialogs.picks == (answer == 1 ? 1u : 0u) &&
+                  dialogs.pathLengthRefusals == (build_profile::original ? 1u : 0u) &&
+                  messages == errors, "one recovery prompt, with the original compatibility notice only in that profile");
+            const std::vector<std::wstring> expectedPaths = answer == 1
+                ? std::vector<std::wstring>{fitting.native(), following.native()}
+                : answer == 3 ? std::vector<std::wstring>{following.native()}
+                              : std::vector<std::wstring>{};
+            Check(dialogs.loadPaths == expectedPaths &&
+                  dialogs.loadResults == std::vector<bool>(expectedPaths.size(), true),
+                  "only an accepted replacement and the following X may reach the real importer");
+            if (answer == 4) {
+                Check(dialogs.normalAbortResets == 1, "cancelling resets the replaced scene once");
+            } else {
+                const auto* a = app->AccessorySlot(0);
+                const auto* b = app->AccessorySlot(1);
+                Check(a && (answer == 1 ? a->mesh && fs::path(a->sourcePath) == fitting
+                                        : !a->mesh && !a->sourcePath[0]) &&
+                      b && b->mesh && fs::path(b->sourcePath) == following &&
+                      app->AccessoryKeys(0) && app->AccessoryKeys(0)[0].position[0] == 2.5f &&
+                      app->AccessoryKeys(1) && app->AccessoryKeys(1)[0].position[0] == 7.5f,
+                      "both accessory tracks survive reselecting a 255-unit X or skipping the 256-unit X");
+                if (answer == 1) {
+                    const auto copy = root / (project.stem().native() + L"-recovered.pmm");
+                    Check(SaveSceneCopy(app, copy.c_str()), "save the recovered project to a fresh file");
+                    Arm(copy, Fault::None, false);
+                    Finish(LoadSceneFile(copy.c_str()), true);
+                    const auto* reopened = app->AccessorySlot(0);
+                    Check(reopened && reopened->mesh && fs::path(reopened->sourcePath) == fitting,
+                          "the 255-unit replacement also reopens without recovery");
+                }
+            }
+            Check(Bytes(project) == source && Bytes(tooLong) == tooLongBytes && Bytes(fitting) == fittingBytes,
+                  "reselect, skip and cancel do not rewrite the source PMM or either candidate");
+        }
+    }
+    Check(SetCurrentDirectoryW(cwd.c_str()) != FALSE, "restore the host working directory");
+    std::puts("PASS V1/V2 accessory path capacity: reselect, save/reopen, skip and cancel");
+}
+
 void VacRelocationCases(bool v1) {
     std::puts("STAGE VAC initial import and PMM save");
     const auto root = directory / L"vac-root";
@@ -4657,6 +4895,7 @@ int wmain(int argc, wchar_t** argv) {
             "the cross-process test accepts only its fixed isolated stages");
     }
     const bool v1AccessoryRecoveryMode = argc == 2 && !std::wcscmp(argv[1], L"--v1-accessory-recovery");
+    const bool accessoryPathCapacity = argc == 2 && !std::wcscmp(argv[1], L"--accessory-path-capacity");
     const bool recoveryPickerDirectories = argc == 2 && !std::wcscmp(argv[1], L"--recovery-picker-directories");
     const bool vacRelocationV1 = argc == 2 && !std::wcscmp(argv[1], L"--vac-relocation-v1");
     const bool vacRelocationMode = vacRelocationV1 || (argc == 2 && !std::wcscmp(argv[1], L"--vac-relocation"));
@@ -4690,7 +4929,7 @@ int wmain(int argc, wchar_t** argv) {
     if (cacheSaveMode || cacheResetMode) PrepareCacheSaveHost(fs::path(executable).parent_path());
 #if !MMD_ORIGINAL_PROFILE
     const bool pictureBudgetMode = argc == 3 && !std::wcscmp(argv[1], L"--picture-assets-isolated");
-    Check(argc == 1 || pictureBudgetMode || textureReopenMode || splitRootRelocation || textureOwnerMode || v1AccessoryRecoveryMode || recoveryPickerDirectories || vacRelocationMode || v2ModelCancelThrowMode || midResetFailureMode || motionModalMode || motionSaveMode || preflightRefusalMode,
+    Check(argc == 1 || pictureBudgetMode || textureReopenMode || splitRootRelocation || textureOwnerMode || v1AccessoryRecoveryMode || accessoryPathCapacity || recoveryPickerDirectories || vacRelocationMode || v2ModelCancelThrowMode || midResetFailureMode || motionModalMode || motionSaveMode || preflightRefusalMode,
         "known isolated PMM host mode");
     if (pictureBudgetMode) {
         const auto parent = fs::canonical(fs::path(executable).parent_path());
@@ -4699,7 +4938,7 @@ int wmain(int argc, wchar_t** argv) {
               "budget settings require the explicit actual EXE directory and a previously absent data directory");
     }
 #else
-    Check(argc == 1 || textureReopenMode || splitRootRelocation || textureOwnerMode || v1AccessoryRecoveryMode || recoveryPickerDirectories || vacRelocationMode || v2ModelCancelThrowMode || midResetFailureMode || motionModalMode || motionSaveMode || preflightRefusalMode,
+    Check(argc == 1 || textureReopenMode || splitRootRelocation || textureOwnerMode || v1AccessoryRecoveryMode || accessoryPathCapacity || recoveryPickerDirectories || vacRelocationMode || v2ModelCancelThrowMode || midResetFailureMode || motionModalMode || motionSaveMode || preflightRefusalMode,
         "known isolated original-profile PMM host mode");
 #endif
     directory = fs::path(executable).parent_path() / L"data" / L"pmm-input-host";
@@ -4755,7 +4994,10 @@ int wmain(int argc, wchar_t** argv) {
     Hook(&LocalizeUI, &ObserveLocalize, reinterpret_cast<void**>(&realLocalize));
     Hook(&accessory_import::LoadObject, &ObserveAccessoryLoad, reinterpret_cast<void**>(&realAccessoryLoad));
     Hook(&GetUiOpenFileNameW, &ObserveUiOpenFileName, reinterpret_cast<void**>(&realUiOpenFileName));
-    if (motionSaveMode) Hook(&GetUiSaveFileNameW, &ObserveMotionSavePicker);
+    if (motionSaveMode) {
+        Hook(&GetUiSaveFileNameW, &ObserveMotionSavePicker);
+        Hook(&MoveFileExW, &ObserveMotionMove, reinterpret_cast<void**>(&realMotionMove));
+    }
 #if !MMD_ORIGINAL_PROFILE
     // Armed only around the two FrameDriver calls in the quarantine and reopen
     // stages below; every other real frame boundary forwards the host callback.
@@ -4832,7 +5074,7 @@ int wmain(int argc, wchar_t** argv) {
         std::printf("PASS real PMM cache save host: %u checks; scope=empty-scene+model-save-segments; full Load/Reset/UI acceptance remains pending\n", checks);
         return 0;
     }
-    if (v1AccessoryRecoveryMode || recoveryPickerDirectories || vacRelocationMode || v1MaterialRetryMode || v2ModelCancelThrowMode || midResetFailureMode || v2AccessoryRecoveryMode != 0) {
+    if (v1AccessoryRecoveryMode || accessoryPathCapacity || recoveryPickerDirectories || vacRelocationMode || v1MaterialRetryMode || v2ModelCancelThrowMode || midResetFailureMode || v2AccessoryRecoveryMode != 0) {
         const char* mode = "V2 missing-accessory recovery";
         if (v1AccessoryRecoveryMode) mode = "V1 missing-accessory recovery";
         if (vacRelocationMode) mode = "VAC relocation";
@@ -4848,6 +5090,9 @@ int wmain(int argc, wchar_t** argv) {
             RecoveryPickerDirectoryCases();
         } else if (vacRelocationMode) {
             VacRelocationCases(vacRelocationV1);
+        } else if (accessoryPathCapacity) {
+            mode = "accessory path capacity";
+            AccessoryPathCapacityCases();
         } else if (midResetFailureMode) {
             MidResetFailureCases();
         } else if (v1AccessoryRecoveryMode) {

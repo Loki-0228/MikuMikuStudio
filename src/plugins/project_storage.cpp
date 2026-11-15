@@ -1,8 +1,12 @@
 #include "project_storage.hpp"
+#include "mikumikustudio/build_profile.hpp"
+#include "mikumikustudio/plugin_storage.hpp"
+#include "../io/project_recovery_journal.hpp"
 #include "json.hpp"
 #include "scene_digest.hpp"
 #include "../io/effect_pair_transaction.hpp"
 #include "../io/pmm_save_versions.hpp"
+#include "../io/project_recovery_cleanup.hpp"
 #include <array>
 #include <cstddef>
 #include <fstream>
@@ -117,7 +121,7 @@ void Move(const fs::path& from,const fs::path& to,bool replace=true){Check(MoveF
 struct Paths {
     fs::path main,side,journal,newMain,newSide,oldMain,oldSide,tempJournal,oldEffect;
     bool compactEffect, plugins;
-    Paths(const fs::path& target,const std::string& id,bool compact=false,bool withPlugins=true):main(target),side(PluginSidecar(target)),journal(target.native()+L".mms-save.json"),compactEffect(compact),plugins(withPlugins){
+    Paths(const fs::path& target,const std::string& id,bool compact=false,bool withPlugins=true):main(target),side(PluginSidecar(target)),journal(project_recovery::JournalPath(target)),compactEffect(compact),plugins(withPlugins){
         if(!Hex(id,32))throw std::invalid_argument("save ID");
         auto base=target.native()+L".mms-"+Wide(id);
         newMain=base+L".new-pmm";newSide=base+L".new-json";oldMain=base+L".old-pmm";oldSide=base+L".old-json";tempJournal=base+L".journal";
@@ -319,13 +323,11 @@ void Cleanup(const Paths& p,const StageHashes& hashes,const JournalRecord& journ
     }
     // The successful journal move already consumed tempJournal. A file that
     // later appears at that name was never part of this recovery.
-    for(auto& stage:stages) {
-        if(stage.value==INVALID_HANDLE_VALUE)continue;
+    project_recovery::CompleteCleanup(stages,[](Handle& stage) {
+        if(stage.value==INVALID_HANDLE_VALUE)return;
         Check(MarkStageForDeletion(stage.value)!=FALSE,"remove recovery stage");
         stage.Close();
-    }
-    finishStages();
-    RemoveJournal(p.journal,journal);
+    },finishStages,[&]{RemoveJournal(p.journal,journal);});
 }
 void Cleanup(const Paths& p,const StageHashes& hashes,const JournalRecord& journal){Cleanup(p,hashes,journal,[]{});}
 void ResolvePair(const Paths& p,const std::string& nm,const std::string& ns,const std::string& om,const std::string& os,bool forward){
@@ -692,7 +694,8 @@ void RecoverFrozen(const fs::path& target,const ParsedJournal& parsed,JournalRec
 }
 
 void Recover(const fs::path& target){
-    const auto journal=fs::path(target.native()+L".mms-save.json");if(!fs::exists(journal))return;
+    const auto journal=project_recovery::JournalPath(target);
+    if(project_recovery::JournalAbsent(journal))return;
     auto record=ReadJournal(journal);
     const auto parsed=ParseJournal(record.bytes);
     const auto& j=parsed.json;
@@ -746,10 +749,10 @@ void CheckArchiveOwner(const fs::path& target) {
     fs::path owner=target;
     for(size_t depth=1;pmm_paths::IsProject(owner)&&owner.native().back()==L'1';++depth) {
         owner=owner.native().substr(0,owner.native().size()-1);
-        const fs::path journal=owner.native()+L".mms-save.json";
-        if(!fs::exists(journal))continue;
-        const auto bytes=ReadFile(journal);
-        const auto parsed=ParseJournal(bytes);
+        const auto journal=project_recovery::JournalPath(owner);
+        if(project_recovery::JournalAbsent(journal))continue;
+        const auto record=ReadJournal(journal);
+        const auto parsed=ParseJournal(record.bytes);
         const auto& j=parsed.json;
         const auto schema=j.At("schemaVersion").UInt();
         if(schema==4)continue; // Frozen transactions never move historical generations.
@@ -848,7 +851,13 @@ PluginProject DecodeProject(std::string_view bytes){
     const auto& entries=j.At("plugins");if(entries.kind!=Json::Object||entries.object.size()>4096)throw std::invalid_argument("plugin records");
     for(const auto& [id,v]:entries.object){if(!ValidId(id))throw std::invalid_argument("plugin ID");StoredData data;data.schema=v.At("schemaVersion").UInt();if(!data.schema)throw std::invalid_argument("plugin schema");data.bytes=Decode(v.At("data").String());if(data.bytes.size()>64ull*1024*1024)throw std::invalid_argument("plugin data size");p.records.emplace(id,std::move(data));}return p;
 }
-void RecoverProjectPair(const fs::path& target){CheckArchiveOwner(target);if(!fs::exists(target.native()+L".mms-save.json"))return;Lock lock(target);Recover(target);}
+void RecoverProjectPair(const fs::path& target){
+    CheckArchiveOwner(target);
+    // An intact project without a journal need not create a lock file.
+    if(project_recovery::JournalAbsent(project_recovery::JournalPath(target)))return;
+    Lock lock(target);
+    Recover(target);
+}
 PluginProject ReadPluginProject(const fs::path& target){
     // Opening an intact project must also work from a read-only directory.
     // Hash validation rejects a pair observed during a concurrent replacement.
@@ -859,6 +868,29 @@ PluginProject ReadPluginProject(const fs::path& target){
     }
     if(!fs::exists(PluginSidecar(target))){PluginProject p;p.projectId=StorageId();return p;}
     auto p=DecodeProject(ReadFile(PluginSidecar(target),kMaxSidecar));if(FileHash(target)!=p.mainHash)throw std::runtime_error("PMM and plugin sidecar hashes differ; explicit association required");return p;
+}
+
+BackupRemoval DeletePluginBackup(const fs::path& target, bool (*isOwned)(const fs::path&),
+                                 void (*afterDelete)(const fs::path&) noexcept) {
+    Lock lock(target);
+    // Do not recover a pending transaction here. Recovery could replace the
+    // ownership-marked file with a manual save, which rotation must not delete.
+    std::error_code journalError;
+    if (!project_recovery::JournalAbsent(project_recovery::JournalPath(target),journalError) || !isOwned(target))
+        return BackupRemoval::NotRemoved;
+
+    fs::path side;
+    bool hasSide=false;
+    if (!build_profile::original) {
+        side=PluginSidecar(target);
+        hasSide=fs::exists(side);
+        if (hasSide && DecodeProject(ReadFile(side,kMaxSidecar)).mainHash!=FileHash(target))
+            return BackupRemoval::NotRemoved;
+    }
+    if (!DeleteFileW(target.c_str())) return BackupRemoval::NotRemoved;
+    const auto result=hasSide && !DeleteFileW(side.c_str()) ? BackupRemoval::SidecarLeft : BackupRemoval::Removed;
+    if (afterDelete) afterDelete(target);
+    return result;
 }
 
 effect_save::EffectDigest FrozenEffectSha256(effect_save::EffectBytes bytes) {

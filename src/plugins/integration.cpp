@@ -1,4 +1,5 @@
 #include "mikumikustudio/local_data_path.hpp"
+#include "mikumikustudio/system_settings.hpp"
 #include "manager.hpp"
 #include "native_ui.hpp"
 #include "ui_property_refresh.hpp"
@@ -412,7 +413,8 @@ static void InitializeRuntime(MMDApp* app, bool migrationTest) {
         const auto data = local_data::File(L"plugins");
         if (data.empty()) throw std::runtime_error("plugin data directory unavailable");
         std::wstring module(32768, 0); auto n = GetModuleFileNameW(nullptr, module.data(), DWORD(module.size())); if (!n || n >= module.size()) throw std::runtime_error("process path unavailable"); module.resize(n);
-        manager = std::make_unique<Manager>(data, LogMessage, [window = app->MainWindow()] { PostMessageW(window, kRefresh, 0, 0); }, false, CreateSceneStore(app), true, CreateEvaluationStore(app));
+        manager = std::make_unique<Manager>(data, LogMessage, [window = app->MainWindow()] { PostMessageW(window, kRefresh, 0, 0); },
+            false, CreateSceneStore(app), true, CreateEvaluationStore(app), system_settings::Path());
         manager->SetRefreshGuard([app] { return !closing && app->WindowLayoutReady() && !app->SceneMutationInProgress(); });
         if (manager->Storage().Prepare(currentProject.records) != MMS_OK || !manager->Storage().Commit()) throw std::runtime_error("initialize plugin project data");
         history = std::make_unique<SharedHistory>(manager->Storage(), [app] {
@@ -1032,18 +1034,4 @@ bool ResetPluginProject(MMDApp* app) {
     currentProject={};QueueProjectEvent(app,MMS_EVENT_SCENE_RESET,L"");return true;
 }
 void PluginProjectSaved(MMDApp* app,const wchar_t* path){QueueProjectEvent(app,MMS_EVENT_PROJECT_SAVED,path);}
-bool DeletePluginBackup(const wchar_t* path) {
-    if (!path || !*path) return false;
-    if(build_profile::original)return DeleteFileW(path)!=FALSE;
-    // Caller has already checked the native PMM ownership marker. Only remove
-    // an accompanying extension if its hash proves it belongs to this PMM.
-    return Boundary([&]() -> MmsResult {
-        const fs::path target(path); const auto side=PluginSidecar(target);
-        const bool hasSide=fs::exists(side);
-        if(hasSide) ReadPluginProject(target);
-        if(!DeleteFileW(path))return MMS_E_FAILED;
-        if(hasSide && !DeleteFileW(side.c_str()))LogMessage("obsolete autosave sidecar could not be removed");
-        return MMS_OK;
-    }) == MMS_OK;
-}
 }

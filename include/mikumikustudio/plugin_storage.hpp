@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 namespace mikumikustudio {
@@ -62,8 +63,11 @@ void PluginNotifyPropertyChanged(MMDApp*, const std::string& propertyId, uint64_
 void PluginFramePresented(MMDApp*);
 void PluginFrameBegin(MMDApp*);
 void PluginFrameEnd(MMDApp*);
-// Pure filesystem work; callers check native backup ownership and serialize
-// retention for their backup directory before calling, including on a worker.
-bool DeletePluginBackup(const wchar_t*);
+// Pure filesystem work. The caller holds the backup directory lock. Verify
+// ownership and remove this backup only while its project save lock is held.
+enum class BackupRemoval { NotRemoved, Removed, SidecarLeft };
+BackupRemoval DeletePluginBackup(const std::filesystem::path&,
+    bool (*isOwned)(const std::filesystem::path&),
+    void (*afterDelete)(const std::filesystem::path&) noexcept = nullptr);
 }
 }

@@ -2,6 +2,19 @@
 
 `pmx21_tests` 是完整档的 PMX 2.1 导入、QDEF、Flip／冲量、关节、软体及材质像素回归；使用自有隐藏 D3D9 设备和生成夹具。启用 `MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS` 后显式构建，运行同名 CTest。`--topology-only` 比较稀疏拓扑与原始 Bullet；现代档还检查 x64 碰撞缓存唯一性。`--model <PMX绝对路径> [--gpu|--auto]` 只读诊断真实模型的初始化与三步物理，默认 CPU，不改写用户文件或设置。现代 DX12 档另提供 `cloth_compute_tests`，使用真实 GPU 对照软体约束、跨软体接触、簇冲量与节点分配、CPU 回退；`--benchmark` 运行合成大网格 ABBA 对比。参考实现、生命周期和验收边界见 [PMX 2.1 原生支持](../docs/development/pmx21.md)。
 
+`workspace_layout_preview_tests` 验证 UI-08 宿主临时让位的 CPU 核心：只把显式授权的面板移到同根预留空槽，整批替换或拒绝，空计划／取消／失效后以当前宿主布局为准；覆盖固定面板、旧代次、其他所有者和相交的宿主操作。运行 `make -C linux check`，或在 Windows 构建该独立目标后运行 CTest `workspace_layout_preview`。不加载 DLL、不写设置、不移动真实窗口，也不代表 UI-08 产品前台验收。
+
+`workspace_layout_win32_fixture` 是 UI-08 的独立可见 Win32 夹具。它复用上述宿主核心，通过 `SetWindowPos` 将一个原生子控件移到同一父窗口内的预留空槽。原 HWND 和父窗口不变，旧位置不再命中该控件。移出预留槽、松手、Esc、捕获被接管、取消模式、失活及输入源销毁都能恢复原位。卸载按键仅模拟宿主收到拥有者卸载通知，再销毁夹具的输入源窗口；没有加载 DLL、连接 MMS 产品工作区或写入偏好、历史、工程文件。
+
+在已配置的 Windows 工程中启用 `MIKUMIKUSTUDIO_BUILD_UI_TESTS` 并显式构建 `workspace_layout_win32_fixture`。例如，先运行 `cmake --preset win7-x64 -DMIKUMIKUSTUDIO_BUILD_UI_TESTS=ON`，再运行 `cmake --build --preset win7-x64-release --target workspace_layout_win32_fixture`，产物在 `build/cmake/tests/Release/`。也可从仓库根目录用 x64 Native Tools 命令提示符独立编译，无需 Conan、DirectX 或工程素材：
+
+```bat
+cl /nologo /std:c++17 /EHsc /W4 /utf-8 /D_WIN32_WINNT=0x0601 /DWINVER=0x0601 tests\workspace_layout_win32_fixture.cpp src\plugins\workspace_layout_preview.cpp /Feworkspace_layout_win32_fixture.exe user32.lib gdi32.lib
+```
+
+- **消息回归：** 在独立交互桌面的前台运行 `workspace_layout_win32_fixture.exe --self-test`。退出码为 0 时，窗口坐标、槽位命中、同一 HWND、捕获持有与转移、各撤回路径、旧消息无效和重复拖动均通过。鼠标和 Esc 由消息注入，捕获转移与窗口激活使用实际 Win32 API；不纳入默认 CTest，也不替代物理前台输入。
+- **手动前台：** 无参数启动，按住 `Drag grip` 拖到 `Reserved spare slot`，检查控件移位且旧槽为空；拖出预留槽后返回原位，再拖入并松手，确认仍回原位。分别重新拖入，保持按住鼠标时按 Esc、按 C 让另一个 HWND 接管捕获、切换到其他应用、按 U 模拟卸载，每次应恢复且后续拖动不粘住。U 后返回夹具并按 R 重挂，确认新拖动正常。此流程只验收夹具；真实 MMS 面板、产品 DLL 生命周期与多屏 DPI 仍需单独验收。
+
 `bone_inheritance_index_tests` 是长期保留的无窗口 CPU 回归，覆盖 A/B/E 继承索引边界和自身姿态保留，注册为 CTest `bone_inheritance_index`。`stage_inheritance_load_tests <工程.pmm> [轮数]` 是需要实际素材的隐藏窗口手动回归，启用 `MIKUMIKUSTUDIO_BUILD_UI_TESTS` 后显式构建，不注册到默认 CTest。工程必须含有非法继承源；先备份输入，在独立测试目录串行运行。它只载入、求值和退出，不保存工程；不能替代真实 MME 和视觉验收。只有继承功能或对应载入路径被移除时才评估删除这两个测试。记录见 [Stage 继承索引修复](../docs/records/stage-inheritance-index-2026-11-14.md)。
 
 `stage_inheritance_runner.py --self-test` 验证原版兼容导入信息提示的精确匹配及拒绝规则。实际运行要求显式指定现有测试 EXE、隔离工程目录、新输出目录及二者预期 SHA-256；仅处理自身私有桌面上的指定中文信息通知，不处理导入拒绝或未知警告。当前 LOVE 的现有 Stage 宿主在真实私有桌面启动时出现 `0xC0000142`，因此该驱动尚未完成真实 Stage 物理回归；不要把匹配自测当成集成通过。仅保留为诊断与测试侧脚本，待进程内宿主处理取代后再评估删除。
@@ -52,6 +65,12 @@
 
 `autosave_tests <独立输出目录>` 需要位于全新的独立 EXE 目录，避免误用已有 `backups`。它覆盖实际 PMM 备份、轮换、未登记姿态恢复和故障路径。追加 `--full-zh`、`--full-en`、`--full-ja`、`--full-rotate` 或 `--full-crash` 检查容量告警；每种模式在同一测试目录启动两次，核对重启后再次提示、进程内仅一次、两种备份目录、分配失败和弹窗创建失败后重试。测试窗口须隐藏或放在专用桌面。
 
+`autosave_tests <独立输出目录> --partial-rotation` 检查同步和后台轮换按修改时间优先、同时间按文件名排序，以及旧备份被其他句柄占用时保留现有内容和后续重试。
+
+`autosave_tests <独立输出目录> --pending-save-rotation` 检查同步和后台轮换保留有待恢复保存记录或仍被工程保存锁占用的备份。显式恢复前检查 PMM、旁车、暂存和日志不变；解除占用后，正常轮换并重开新备份。适用于完整与原始兼容配置。
+
+Linux 的 `make -C linux check` 包含 `autosave_rotation_tests`。它使用生产轮换计划检查修改时间快照、同时间文件名排序、备份消失或读取权限故障时不覆盖，以及容量边界；也验证待恢复日志、目录及悬空链接均禁止删除备份。不运行 Windows 保存、文件锁或界面。
+
 `runtime_log_tests <尚不存在的输出目录>` 只在独立子进程触发故障，拦截交互弹窗并核对退出码、UTF-8 日志及恢复结果。覆盖正常退出、SEH、Fatal、terminate、abort、关闭期异常、无法创建日志、多线程写入和持有日志槽位时故障。最后两类逐条核对日志内容；单槽竞争只能丢弃记录，不能等待故障线程。`MMS_RUNTIME_LOG_TESTS` 仅为此测试目标定义，不进入正式程序。
 
 共同代码分别在 `full` 和 `mmd932` 构建档验证。静态导入检查和本机运行不能代替 Win7、AMD 真机验收。
@@ -70,6 +89,10 @@ python tests/run_mme_save_pair.py --profile full --host build/cmake/tests/mme/Re
 常规用例检查增量编号、已有孤立 EMM 保留原样，以及定时备份锁冲突后重试。重叠用例保留一份可重开的旧备份，在定时器已捕获 PMM 后、完成前新增第二个模型并修改 FOV；在完成后、下一次效果渲染前再新增第三个模型并修改 FOV。只接受同一捕获的 PMM/EMM 在成功回报时已经一起存在，或明确失败且没有新成员、旧备份未变。另启进程核对真实 PMM 模型和镜头、EMM 对象与效果行、完整档侧车中的 PMM SHA-256，以及开关 MME 后的 D3D9 像素变化。`results.json` 和各阶段日志保留校验结果，`.ppm` 是实际后备缓冲区裁图，`-effect-off.ppm` 是禁用效果的对照。
 
 `overlap` 是 SAVE-02 放行条件，不能将当前异步旧通知导致的失败标成通过。此用例不证明已实现冻结提供者、请求级回执或断电恢复。保存和另存的重叠、外部 EMM 在保留轮换期间出现的保护，以及真实中断恢复仍有各自独立的验收边界。
+
+## PMM 附件路径容量
+
+在 `full` 和 `mmd932` 构建档分别构建 `pmm_input_host_tests`。把测试程序放在各自全新的短 ASCII 路径测试目录，在有 D3D9／D3DX9 的 Windows 主机上运行 `pmm_input_host_tests.exe --accessory-path-capacity`。此专项在自身隐藏窗口里生成 V1/V2 PMM 和 X；实际加载器读取附件与轨道，恢复窗口及文件选择器使用受控回复。覆盖现有的 256 UTF-16 单元附件路径进入恢复而不调用导入器、选择 255 单元的附件后另存重开、跳过、取消、原始兼容档 CP932 提示以及源文件不改动。不代表实际桌面或文件选择器验收。
 
 ## 附件顺序与选中项回归
 
@@ -375,4 +398,6 @@ MME 测试需在独立目录放入三个 MME DLL，日志必须显示 `PLUGINS m
 
 ## 手动编号保存专项
 
-`plugin_abi_tests --version-storage-only` 检查串 1 和数字轮转、三成员配对、锁与恢复；仅操作进程专属临时目录，保留文件供复查。`project_save_export_tests <独立输出目录> --numbered-only` 使用自有隐藏窗口实际保存并重开编号工程，适合原始配置，避免运行该配置禁用的最近工程断言。两者仍需复制 EXE 到独立安装、空 PLUGINS、受控 TEMP 和 Default 桌面。中央设置和三语言对话框沿用 autosave 专项。证据和未覆盖范围见[编号保存记录](../docs/records/abi-numbered-save-2026-10-23.md)。
+`plugin_abi_tests --version-storage-only` 检查串 1 和数字轮转、三成员配对、锁与恢复；仅操作进程专属临时目录，保留文件供复查。恢复入口同时检查空记录路径、目录和独占句柄，以及活动和历史工程拒绝悬空或有效的恢复日志链接；原始兼容发布不得绕过悬空日志。测试机无文件符号链接权限时只跳过链接子项。`project_save_export_tests <独立输出目录> --numbered-only` 使用自有隐藏窗口实际保存并重开编号工程，适合原始配置，避免运行该配置禁用的最近工程断言。两者仍需复制 EXE 到独立安装、空 PLUGINS、受控 TEMP 和 Default 桌面。中央设置和三语言对话框沿用 autosave 专项。证据和未覆盖范围见[编号保存记录](../docs/records/abi-numbered-save-2026-10-23.md)。
+
+`plugin_abi_tests --version-original-cleanup-crash-only` 单独验证无 EMM、无插件旁车的原始 schema3 前滚恢复。实际发布者在新 PMM 改名后被终止，随后实际恢复进程在删除重复暂存且关闭文件句柄后被终止。恢复日志原字节须保留；两个新进程各恢复两次，检查当前、1、11 代 PMM 字节不变、111 代不存在，且暂存与日志均清理。该专项也包含在 `--version-storage-crash-only` 中；只验证文件级进程中断，不替代可见工程重开或断电验收。

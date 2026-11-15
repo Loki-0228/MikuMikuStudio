@@ -20,9 +20,7 @@
 #include "mikumikustudio/ui_translation.hpp"
 #include "mikumikustudio/ui_scale.hpp"
 #include "../src/window/autosave_dialog.hpp"
-#if !MMD_ORIGINAL_PROFILE
 #include "../src/plugins/project_storage.hpp"
-#endif
 #include <MinHook.h>
 #include <aclapi.h>
 #include <commctrl.h>
@@ -410,6 +408,87 @@ unsigned RedMenuPixels(MMDApp* app) {
 #include "autosave_empty_checks.hpp"
 #include "autosave_permission_checks.hpp"
 
+void CheckPendingSaveRotation(MMDApp* app) {
+    const auto working = root / L"working.pmm";
+    for (const bool queued : {false, true}) {
+        const auto name = queued ? L"queued" : L"immediate";
+        as::Settings value;
+        value.enabled = true;
+        value.maxBackups = 1;
+        value.overwriteOldest = true;
+        value.backupPattern = L"rotation_[/N]";
+        value.directory = (root / name).wstring();
+        Configure(app, value);
+        CopyPathW(app->EnvFileName(), working.c_str());
+        app->CurrentFrame() = 11;
+        app->SceneModified() = 1;
+        Check(as::BackupNow(app) == as::Result::Saved, "create an owned rotation candidate");
+        const auto backups = as::Backups(value.directory);
+        Check(backups.size() == 1, "one owned backup before recovery fixture");
+        const auto& old = backups.front();
+        const auto oldBytes = Bytes(old);
+        const auto oldSidecar = plugins::PluginSidecar(old);
+        const auto oldSidecarBytes = Bytes(oldSidecar);
+        const auto oldHash = plugins::FileHash(old);
+        const std::string saveId = plugins::StorageId();
+        const auto stageBase = old.native() + L".mms-" + plugins::Wide(saveId);
+        const fs::path oldStage(stageBase + L".old-pmm"), newStage(stageBase + L".new-pmm");
+        const fs::path journal(old.native() + L".mms-save.json");
+        fs::copy_file(old, oldStage);
+
+        // Publish a real PMM fixture for the interrupted replacement's staged
+        // generation. The schema-3 rollback record is accepted in both hosts.
+        app->CurrentFrame() = 22;
+        const auto proposed = root / (std::wstring(name) + L"-proposed.pmm");
+        Check(SaveSceneCopy(app, proposed.c_str()), "write a distinct staged PMM fixture");
+        fs::copy_file(proposed, newStage);
+        const auto freshHash = plugins::FileHash(newStage);
+        Check(freshHash != oldHash, "staged and public generations differ");
+        const std::string record = "{\"schemaVersion\":3,\"members\":\"pmm-emm\",\"saveId\":\"" + saveId +
+            "\",\"newMain\":\"" + freshHash + "\",\"oldMain\":\"" + oldHash +
+            "\",\"versions\":[[\"" + oldHash + "\",\"\"],[\"\",\"\"]],\"effectStage\":1,\"decision\":\"rollback\"}";
+        {
+            std::ofstream output(journal, std::ios::binary);
+            output << record;
+            output.close();
+            Check(static_cast<bool>(output), "write the interrupted manual save journal");
+        }
+
+        const auto expectDeferred = [&] {
+            if (queued) {
+                Check(as::QueueBackup(app), "queue a rotation against a reserved backup");
+                background_save::Wait(app);
+                Check(std::wstring_view(background_save::StatusText(app)) == L"备份数量已满，未覆盖旧备份。",
+                    "report that no prior backup was replaced");
+            } else {
+                Check(as::BackupNow(app) == as::Result::Full, "defer synchronous rotation against a reserved backup");
+            }
+            Check(as::Backups(value.directory) == backups && Bytes(old) == oldBytes &&
+                Bytes(oldSidecar) == oldSidecarBytes, "keep the old generation and withdraw the replacement");
+        };
+        expectDeferred();
+        Check(Bytes(journal) == record && Bytes(oldStage) == oldBytes &&
+            plugins::FileHash(newStage) == freshHash, "rotation leaves the waiting stages and journal untouched");
+
+        plugins::RecoverProjectPair(old);
+        Check(!fs::exists(journal) && !fs::exists(oldStage) && !fs::exists(newStage) &&
+            Bytes(old) == oldBytes, "explicit recovery verifies and removes its own stages");
+
+        const fs::path lockPath(old.native() + L".mms-save.lock");
+        const HANDLE lock = CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+            nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+        Check(lock != INVALID_HANDLE_VALUE, "hold the project's actual save lock without a journal");
+        expectDeferred();
+        CloseHandle(lock);
+        Check(as::BackupNow(app) == as::Result::Saved, "retry rotation after the reservation is cleared");
+        const auto retained = as::Backups(value.directory);
+        Check(retained.size() == 1 && retained.front() != old && !fs::exists(old) &&
+            LoadSceneFile(retained.front().c_str()) && app->CurrentFrame() == 22,
+            "normal rotation resumes and its new backup reopens");
+    }
+    std::printf("PASS pending save blocks backup rotation checks=%u\n", checks);
+}
+
 void CheckPartialBackupRotation(MMDApp* app) {
     const auto manual = root / L"working.pmm";
     for (bool queued : {false, true}) {
@@ -426,16 +505,24 @@ void CheckPartialBackupRotation(MMDApp* app) {
             app->SceneModified() = 1;
             Check(as::BackupNow(app) == as::Result::Saved, "create the existing backup generations");
         }
-        const auto old = as::Backups(value.directory);
+        auto old = as::Backups(value.directory);
         Check(old.size() == 3, "three generations before lowering the limit");
+        std::sort(old.begin(), old.end());
+        // File names order in the opposite direction for the oldest backup.
+        // The remaining two share the same timestamp; the lexical first is held open.
+        const auto& oldest = old[2];
+        const auto& second = old[0];
+        const auto& newest = old[1];
         const auto now = fs::file_time_type::clock::now();
-        fs::last_write_time(old[0], now - std::chrono::seconds(30));
-        fs::last_write_time(old[1], now - std::chrono::seconds(20));
-        fs::last_write_time(old[2], now - std::chrono::seconds(10));
-        const auto lockedBytes = Bytes(old[1]), newestBytes = Bytes(old[2]);
+        fs::last_write_time(oldest, now - std::chrono::seconds(30));
+        fs::last_write_time(second, now - std::chrono::seconds(20));
+        fs::last_write_time(newest, now - std::chrono::seconds(20));
+        Check(as::Backups(value.directory) == std::vector<fs::path>{oldest, second, newest},
+              "use mtime ahead of names and break equal mtimes lexically");
+        const auto lockedBytes = Bytes(second), newestBytes = Bytes(newest);
         value.maxBackups = 1;
         Configure(app, value);
-        HANDLE locked = CreateFileW(old[1].c_str(), GENERIC_READ, FILE_SHARE_READ,
+        HANDLE locked = CreateFileW(second.c_str(), GENERIC_READ, FILE_SHARE_READ,
             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         Check(locked != INVALID_HANDLE_VALUE, "hold the second oldest generation open");
         app->CurrentFrame() = 44;
@@ -450,14 +537,14 @@ void CheckPartialBackupRotation(MMDApp* app) {
         }
         CloseHandle(locked);
         const auto retained = as::Backups(value.directory);
-        Check(!fs::exists(old[0]) && retained.size() == 3 &&
-              Bytes(old[1]) == lockedBytes && Bytes(old[2]) == newestBytes,
+        Check(!fs::exists(oldest) && retained.size() == 3 &&
+              Bytes(second) == lockedBytes && Bytes(newest) == newestBytes,
               "partial rotation keeps both remaining generations and the new backup");
         Check(result == as::Result::Saved && (!queued ||
             std::wstring_view(background_save::StatusText(app)) == L"备份已保存，但未能清理全部旧备份。"),
             "report the saved backup and incomplete cleanup");
         const auto fresh = retained.back();
-        Check(fresh != old[2] && app->SceneModified() && fs::path(app->EnvFileName()) == manual,
+        Check(fresh != newest && app->SceneModified() && fs::path(app->EnvFileName()) == manual,
               "published backup keeps the working project and its unsaved edits");
         Check(LoadSceneFile(fresh.c_str()) && app->CurrentFrame() == 44 && app->CameraDistance() == -84,
               "open the backup kept after partial rotation");
@@ -536,8 +623,9 @@ int wmain(int argc, wchar_t** argv) {
     app->EnglishUI() = 2; RefreshMenuLanguage(app);
     SetWindowPos(app->MainWindow(), nullptr, 0, 0, 1600, 800, SWP_NOACTIVATE | SWP_NOZORDER);
     as::Initialize(app);
-    if (mode == L"--partial-rotation") {
-        CheckPartialBackupRotation(app);
+    if (mode == L"--partial-rotation" || mode == L"--pending-save-rotation") {
+        if (mode == L"--pending-save-rotation") CheckPendingSaveRotation(app);
+        else CheckPartialBackupRotation(app);
         as::Shutdown(); ShutdownCleanup(app); g_Block = nullptr; delete app; UnhookWindowsHookEx(hook);
         return 0;
     }

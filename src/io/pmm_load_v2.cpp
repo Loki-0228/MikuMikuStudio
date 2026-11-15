@@ -115,6 +115,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
+#include <memory>
 #include <new>
 #include <cstdlib>
 #include <utility>
@@ -378,8 +380,6 @@ struct PmmV2LoadContext {
     char mbPath[0x100];        // accessory/background path scratch
     wchar_t widePath[0x100];   // model path
     wchar_t wideTmp[0x100];    // accessory path
-    wchar_t ofnFile[0x100];    // GetOpenFileName buffer
-    wchar_t ofnTitle[0x100];
     wchar_t wndText[0x100];    // window-title sprintf target
     char lbText[0x100];        // CB_GETLBTEXT buffer
     // the four re-allocated global tracks (0x454C9A segment)
@@ -1188,6 +1188,40 @@ static void LoadSceneV2_ModelStateLoad(PmmV2LoadContext& ctx, int fd,
 }
 
 
+// A confirmed picker result can disappear before the importer opens it.
+static bool MissingModelSelection(const wchar_t* path) {
+    if (!*path) return true;
+    const DWORD attributes = GetFileAttributesW(path);
+    if (attributes != INVALID_FILE_ATTRIBUTES)
+        return (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    const DWORD error = GetLastError();
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+}
+
+static bool PickV2ModelFile(MMDApp& app, HWND main, wchar_t (&file)[0x100]) {
+    // The common dialog treats lpstrFile as input as well as output. On a
+    // structure mismatch, the last pick is the file we want to replace.
+    file[0] = L'\0';
+    wchar_t title[0x100]{};
+    SetCurrentDirectoryW(app.ExeDir());
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = app.FloatingWindow() ? app.FloatingWindow() : main;
+    ofn.lpstrFilter = kWFilterModel;
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = std::size(file);
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+    using project_relocation::LoadScope;
+    ofn.lpstrInitialDir = LoadScope::RememberPickerDirectory(main)
+        ? LoadScope::PickerDirectory(app, LoadScope::Picker::Model) : kWUserModel;
+    ofn.lpstrDefExt = L"pmd;pmx";
+    ofn.nMaxFileTitle = std::size(title);
+    ofn.lpstrFileTitle = title;
+    ofn.lpstrTitle = app.EnglishUI() == kUiChinese ? L"加载模型"
+        : app.EnglishUI() == kUiJapanese ? L"モデル読み込み" : L"Load model";
+    return GetUiOpenFileNameW(&ofn) != FALSE;
+}
+
 // ---- 0x4504BA..0x45410A: one per-model record - allocate/init, load
 // the PMD (missing-file dialog + locate-and-retry), the reconciliation
 // ring (structure-difference dialog + re-map against a re-loaded file),
@@ -1207,8 +1241,6 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
     unsigned char** const slots = ctx.slots;
     char* const text = ctx.text;
     wchar_t* const widePath = ctx.widePath;
-    wchar_t* const ofnFile = ctx.ofnFile;
-    wchar_t* const ofnTitle = ctx.ofnTitle;
             unsigned char slotByte = 0;
             Rd(fd, &slotByte, 1);                               // 0x4504C2
             // Deliberate hardening: the original reads this byte and writes it
@@ -1289,7 +1321,13 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
             bool doSkip = false;
             bool skipFrom4 = false;  // r==4: counts/names already consumed
             std::wstring finalSelection;
-            ofnFile[0] = L'\0';
+            wchar_t ofnFile[0x100];
+            const auto resetModel = [&] {
+                // The importer sets modelDirectory only after opening the file.
+                if (mdl::Mdl(model)->modelDirectory[0]) ModelDispose(model);
+                std::memset(model, 0, mdl::kSize);
+                ModelInitDefaults(model);
+            };
             const auto loadSelection = [&]() {
                 if (!project_model::LoadExact(model, main, ofnFile, wrap, s->EnglishUI(), s->Physics(), paths))
                     return false;
@@ -1306,11 +1344,7 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                     if (project_relocation::RecoverProjectEffect(*s, main)) {
                         const auto mapped = ctx.relocation.Locate(text, ctx.projectDirectory);
                         if (!mapped.exactPath.empty()) {
-                            if (mdl::Mdl(model)->modelDirectory[0]) {
-                                ModelDispose(model);
-                                std::memset(model, 0, mdl::kSize);
-                                ModelInitDefaults(model);
-                            }
+                            if (mdl::Mdl(model)->modelDirectory[0]) resetModel();
                             loaded = project_model::LoadExact(model, main, mapped.exactPath.c_str(), wrap,
                                                               s->EnglishUI(), s->Physics(), paths);
                         }
@@ -1319,42 +1353,21 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                 }
                 if (r == 2 || r == 4) { AbortV2Load(s, input, workspaceOwner); return false; }   // 0x45426C
                 if (r == 1) {                                   // 0x4506FD
-                    SetCurrentDirectoryW(reinterpret_cast<const wchar_t*>(
-                        s->state.exeDir));
-                    OPENFILENAMEW ofn;
-                    std::memset(&ofn, 0, sizeof(ofn));
-                    ofn.lStructSize = sizeof(ofn);
-                    ofn.hwndOwner =
-                        s->state.floatingWindow
-                            ? reinterpret_cast<HWND>(
-                                  s->state.floatingWindow)
-                            : main;
-                    ofn.lpstrFilter = kWFilterModel;
-                    ofn.lpstrFile = ofnFile;
-                    ofn.nMaxFile = 0x100;
-                    ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-                    ofn.lpstrInitialDir =
-                        project_relocation::LoadScope::RememberPickerDirectory(main)
-                            ? project_relocation::LoadScope::PickerDirectory(*s, project_relocation::LoadScope::Picker::Model)
-                            : kWUserModel;
-                    ofn.lpstrDefExt = L"pmd;pmx";
-                    ofn.nMaxFileTitle = 0x100;
-                    ofn.lpstrFileTitle = ofnTitle;
-                    ofn.lpstrTitle =
-                        s->EnglishUI() == kUiChinese ? L"加载模型"
-                        : s->EnglishUI() == kUiJapanese ? L"モデル読み込み" : L"Load model";
-                    if (!GetUiOpenFileNameW(&ofn)) {
+                    if (!PickV2ModelFile(*s, main, ofnFile)) {
                         // Closing the picker without a file skips this model,
                         // exactly like the dialog's own "skip" answer (r == 3),
                         // instead of aborting the whole project load.
                         doSkip = true;                          // 0x4508FC
                     } else {
-                        if (mdl::Mdl(model)->modelDirectory[0]) {
-                            ModelDispose(model);
-                            std::memset(model, 0, mdl::kSize);
-                            ModelInitDefaults(model);
-                        }
-                        if (!loadSelection()) {
+                        if (mdl::Mdl(model)->modelDirectory[0]) resetModel();
+                        const bool missing = MissingModelSelection(ofnFile);
+                        if (missing || !loadSelection()) {
+                            if (missing || MissingModelSelection(ofnFile)) {
+                                // Leave this record at its recovery choices and
+                                // do not publish the failed pick or its directory.
+                                resetModel();
+                                continue;
+                            }
                             project_relocation::LoadScope::FailCurrent(*s);
                             ShowUiMessage(s, main, UiMessage::OpenModelError, MB_OK, ofnFile);
                             AbortV2Load(s, input, workspaceOwner);
@@ -1611,6 +1624,9 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                     }
                     LogPmmModelStage(fd, "mapping-complete", 0, 0, model);
 
+                    // The names and counts are consumed even if the next
+                    // picker result disappears before a model can be remapped.
+                    firstPass = false;
                     }  // firstPass guard
 
                     // structure-difference gate (0x4519AF..0x451A44)
@@ -1626,77 +1642,45 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                     //   其余值    -> 0x49B2A1 jnz 0x49BB78，与双匹配成立时
                     //                （0x49AA2F 的 jz）同一出口：继续状态装载
                     if (r == 2 || r == 5) { AbortV2Load(s, input, workspaceOwner); return false; }
-                    if (r == 4) {                                // 0x45231C
-                        if (model != nullptr) {
-                            ModelDispose(model);
-                            free(model);
-                        }
+                    // Closing the picker still skips the record, just like r == 4.
+                    if (r == 4 || (r == 3 && !PickV2ModelFile(*s, main, ofnFile))) {
+                        ModelDispose(model);
+                        free(model);
                         slots[slotByte] = nullptr;
                         workspace.skipped = 1;
                         doSkip = true;
                         skipFrom4 = true;
-                        firstPass = false;  // r==4: counts/names consumed
                         break;
                     }
                     if (r != 3)
                         break;  // 非 3 非 4：直接走状态装载，不重载
-                    // r == 3: re-load a different file
-                    if (model != nullptr) {                      // 0x451A5A
-                        ModelDispose(model);
-                        free(model);
-                        slots[slotByte] = nullptr;
+                    if (MissingModelSelection(ofnFile))
+                        continue;
+
+                    // The replacement can disappear during the real open. Keep the
+                    // current model alive, and keep its mappings and finalSelection
+                    // until a replacement actually loads.
+                    const auto dispose = [](unsigned char* value) {
+                        ModelDispose(value);
+                        free(value);
+                    };
+                    auto* const replacement = static_cast<unsigned char*>(operator new(mdl::kSize));
+                    IdentityCtor(replacement);
+                    std::memset(replacement, 0, mdl::kSize);
+                    std::unique_ptr<unsigned char, decltype(dispose)> previous(model, dispose);
+                    slots[slotByte] = model = replacement;
+                    ModelInitDefaults(model);
+                    const bool reloaded = loadSelection();
+                    // modelDirectory is set only after opening the file.
+                    // A parser rejection must still report its error.
+                    if (!reloaded && !mdl::Mdl(replacement)->modelDirectory[0]) {
+                        const bool missing = MissingModelSelection(ofnFile);
+                        slots[slotByte] = model = previous.release();
+                        free(replacement);
+                        if (missing) continue;
                     }
-                    {
-                        unsigned char* nm2 = static_cast<unsigned char*>(
-                            operator new(mdl::kSize));
-                        if (nm2 != nullptr) IdentityCtor(nm2);
-                        slots[slotByte] = nm2;
-                        std::memset(slots[slotByte], 0, mdl::kSize);
-                        ModelInitDefaults(slots[slotByte]);
-                        model = slots[slotByte];
-                    }
-                    SetCurrentDirectoryW(reinterpret_cast<const wchar_t*>(
-                        s->state.exeDir));
-                    {
-                        OPENFILENAMEW ofn;
-                        std::memset(&ofn, 0, sizeof(ofn));
-                        ofn.lStructSize = sizeof(ofn);
-                        ofn.hwndOwner =
-                            s->state.floatingWindow
-                                ? reinterpret_cast<HWND>(
-                                      s->state.floatingWindow)
-                                : main;
-                        ofn.lpstrFilter = kWFilterModel;
-                        ofn.lpstrFile = ofnFile;
-                        ofn.nMaxFile = 0x100;
-                        ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
-                        ofn.lpstrInitialDir =
-                            project_relocation::LoadScope::RememberPickerDirectory(main)
-                                ? project_relocation::LoadScope::PickerDirectory(*s, project_relocation::LoadScope::Picker::Model)
-                                : kWUserModel;
-                        ofn.lpstrDefExt = L"pmd;pmx";
-                        ofn.nMaxFileTitle = 0x100;
-                        ofn.lpstrFileTitle = ofnTitle;
-                        ofn.lpstrTitle =
-                            s->EnglishUI() == kUiChinese ? L"加载模型"
-                            : s->EnglishUI() == kUiJapanese ? L"モデル読み込み" : L"Load model";
-                        if (!GetUiOpenFileNameW(&ofn)) {
-                            // Closing the picker without a file skips this
-                            // model exactly like the dialog's "skip" answer
-                            // (r == 4) instead of aborting the project load.
-                            if (model != nullptr) {
-                                ModelDispose(model);
-                                free(model);
-                            }
-                            slots[slotByte] = nullptr;
-                            workspace.skipped = 1;
-                            doSkip = true;
-                            skipFrom4 = true;
-                            firstPass = false;
-                            break;
-                        }
-                    }
-                    if (!loadSelection()) {
+                    previous.reset();
+                    if (!reloaded) {
                         project_relocation::LoadScope::FailCurrent(*s);
                         ShowUiMessage(s, main, UiMessage::OpenModelError, MB_OK, ofnFile);
                         AbortV2Load(s, input, workspaceOwner);
@@ -1821,7 +1805,6 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                             }
                         }
                     }
-                    firstPass = false;
                 }
             }
 

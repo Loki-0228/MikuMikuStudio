@@ -53,7 +53,7 @@ class Manager {
 public:
     Manager(fs::path userRoot, Log log, std::function<void()> uiChanged = {}, bool forceFallback = false,
         std::shared_ptr<SceneStore> scene = {}, bool unifiedSettings = false,
-        std::shared_ptr<EvaluationStore> evaluations = {});
+        std::shared_ptr<EvaluationStore> evaluations = {}, fs::path globalSettingsPath = {});
     ~Manager();
     Manager(const Manager&) = delete;
     Manager& operator=(const Manager&) = delete;

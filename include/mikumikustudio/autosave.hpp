@@ -49,6 +49,7 @@ Result BackupNow(MMDApp*, bool crash = false) noexcept;
 // Periodic UI path: captures now and writes through the shared save worker.
 bool QueueBackup(MMDApp*) noexcept;
 void TryCrashBackup(unsigned long exceptionCode) noexcept;
+// Owned backups, oldest known first, with unknown ages at the end.
 std::vector<std::filesystem::path> Backups(const std::filesystem::path&);
 bool FolderFull() noexcept;
 void RefreshMenu(MMDApp*);

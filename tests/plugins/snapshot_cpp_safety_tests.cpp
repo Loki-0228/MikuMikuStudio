@@ -12,13 +12,18 @@ static_assert(!std::is_move_assignable_v<mms::sdk::LayoutSnapshotLease>, "transf
 namespace {
 int checks;
 void Check(bool ok) { if (!ok) throw ++checks; ++checks; }
+enum class LayoutReply { Full, Empty, MissingHandle, BadVersion, BadStride, BadRecordVersion };
 struct Host {
     MmsHostV1 host{};
     MmsSceneApiV1 scene{};
     MmsUiLayoutApiV1 layout{};
     unsigned sceneAcquires=0, sceneReleases=0, layoutAcquires=0, layoutReleases=0;
     unsigned sceneObjectReads=0, sceneChannelReads=0;
-    MmsHandle lastSceneRelease=0;
+    MmsHandle lastSceneRelease=0, lastLayoutRelease=0;
+    MmsResult layoutAcquireResult=MMS_OK;
+    LayoutReply layoutReply=LayoutReply::Full;
+    struct LayoutItem { MmsUiLayoutItemV1 item; uint64_t extension; };
+    LayoutItem layoutItems[2][2]{};
     MmsObjectV1 sceneObject{};
     MmsBoneV1 sceneBone{};
     Host() {
@@ -58,14 +63,104 @@ struct Host {
         layout.setDefaultHints=[](void*,MmsString,const MmsUiLayoutHintsV1*)->MmsResult {return MMS_OK;};
         layout.stageHints=[](void*,MmsHandle,MmsString,uint64_t,const MmsUiLayoutHintsV1*)->MmsResult {return MMS_OK;};
         layout.acquireSnapshot=[](void* p,MmsUiLayoutSnapshotV1* out)->MmsResult {
-            auto& h=*static_cast<Host*>(p);out->handle=200+(++h.layoutAcquires);return MMS_OK;
+            auto& h=*static_cast<Host*>(p);
+            if (h.layoutAcquireResult!=MMS_OK) return h.layoutAcquireResult;
+            const auto sequence=++h.layoutAcquires;
+            const auto& items=h.layoutItems[(sequence-1)%2];
+            *out={{sizeof(*out),1,0},200u+sequence,300u+sequence,400u+sequence,
+                  {items,2,sizeof(Host::LayoutItem),1}};
+            if (h.layoutReply==LayoutReply::Empty) out->items={};
+            if (h.layoutReply==LayoutReply::MissingHandle) out->handle=0;
+            if (h.layoutReply==LayoutReply::BadVersion) out->h.major=2;
+            if (h.layoutReply==LayoutReply::BadStride) out->items.stride=sizeof(MmsUiLayoutItemV1)-1;
+            if (h.layoutReply==LayoutReply::BadRecordVersion) out->items.recordVersion=2;
+            return MMS_OK;
         };
-        layout.releaseSnapshot=[](void* p,MmsHandle) {++static_cast<Host*>(p)->layoutReleases;};
+        layout.releaseSnapshot=[](void* p,MmsHandle handle) {
+            auto& h=*static_cast<Host*>(p);
+            ++h.layoutReleases;
+            h.lastLayoutRelease=handle;
+        };
     }
 };
 
 bool SameSpan(MmsSpan a, MmsSpan b) {
     return a.data==b.data && a.count==b.count && a.stride==b.stride && a.recordVersion==b.recordVersion;
+}
+
+void LayoutSnapshotValueChecks() {
+    using namespace mms::sdk;
+    Host h;
+    for (auto& items : h.layoutItems)
+        for (auto& record : items) record.item.h={sizeof(record.item),1,0};
+    h.layoutItems[0][0].item.elementId={"test.group",10};
+    h.layoutItems[0][0].item.rect[2]=80.0f;
+    h.layoutItems[0][1].item.rect[2]=120.0f;
+    LayoutServices layout;
+    Check(LayoutServices::Query(h.host,layout)==MMS_OK);
+
+    const auto empty=[](const LayoutSnapshotLease& lease) {
+        return !lease.valid() && !lease.get() && !lease.value().uiRevision &&
+               !lease.value().geometryRevision && SameSpan(lease.value().items,{});
+    };
+    const auto contains=[&](const LayoutSnapshotLease& lease, unsigned sequence) {
+        const auto& value=lease.value();
+        const MmsSpan expected{h.layoutItems[sequence-1],2,sizeof(Host::LayoutItem),1};
+        return lease.valid() && lease.get()==200u+sequence && value.handle==lease.get() &&
+               value.h.size==sizeof(value) && value.h.major==1 && value.h.minor==0 &&
+               value.uiRevision==300u+sequence && value.geometryRevision==400u+sequence &&
+               SameSpan(value.items,expected);
+    };
+    LayoutSnapshotLease lease;
+    Check(empty(lease));
+    h.layoutAcquireResult=MMS_E_NOT_READY;
+    Check(layout.AcquireSnapshot(lease)==MMS_E_NOT_READY && empty(lease));
+    h.layoutAcquireResult=MMS_OK;
+    Check(layout.AcquireSnapshot(lease)==MMS_OK && contains(lease,1));
+    Check(layout.AcquireSnapshot(lease)==MMS_E_BUSY && contains(lease,1) && h.layoutAcquires==1);
+    const auto& item=*static_cast<const MmsUiLayoutItemV1*>(lease.value().items.data);
+    const auto* next=static_cast<const unsigned char*>(lease.value().items.data)+lease.value().items.stride;
+    Check(std::string_view(item.elementId.data,static_cast<size_t>(item.elementId.bytes))=="test.group" &&
+          item.rect[2]==80.0f && reinterpret_cast<const MmsUiLayoutItemV1*>(next)->rect[2]==120.0f);
+
+    LayoutSnapshotLease moved(std::move(lease));
+    Check(empty(lease) && contains(moved,1) && h.layoutReleases==0);
+    Check(layout.AcquireSnapshot(lease)==MMS_OK && contains(lease,2) && contains(moved,1));
+    Check(lease.TransferFrom(moved)==MMS_OK && contains(lease,1) && empty(moved) &&
+          h.layoutReleases==1 && h.lastLayoutRelease==202);
+    Check(lease.Release()==MMS_OK && empty(lease) && h.layoutReleases==2 && h.lastLayoutRelease==201);
+    Check(lease.Release()==MMS_OK && h.layoutReleases==2);
+
+    Host other;
+    LayoutServices detachLayout;
+    Check(LayoutServices::Query(other.host,detachLayout)==MMS_OK);
+    Check(detachLayout.AcquireSnapshot(lease)==MMS_OK && lease.value().items.data==other.layoutItems[0]);
+    const auto snapshot=lease.value();
+    Check(lease.Detach()==snapshot.handle && empty(lease) && other.layoutReleases==0);
+    detachLayout.api().releaseSnapshot(detachLayout.api().context,snapshot.handle);
+    Check(other.layoutReleases==1 && other.lastLayoutRelease==snapshot.handle);
+
+    LayoutSnapshotLease adopted(h.layout,203);
+    Check(adopted.valid() && adopted.get()==203 && adopted.value().handle==203 &&
+          !adopted.value().uiRevision && !adopted.value().geometryRevision && SameSpan(adopted.value().items,{}));
+    Check(adopted.Release()==MMS_OK && empty(adopted) && h.layoutReleases==3 && h.lastLayoutRelease==203);
+
+    h.layoutReply=LayoutReply::MissingHandle;
+    Check(layout.AcquireSnapshot(lease)==MMS_E_FAILED && empty(lease) && h.layoutReleases==3);
+    h.layoutReply=LayoutReply::BadVersion;
+    Check(layout.AcquireSnapshot(lease)==MMS_E_VERSION && empty(lease) &&
+          h.layoutReleases==4 && h.lastLayoutRelease==204);
+    h.layoutReply=LayoutReply::BadStride;
+    Check(layout.AcquireSnapshot(lease)==MMS_E_FAILED && empty(lease) &&
+          h.layoutReleases==5 && h.lastLayoutRelease==205);
+
+    h.layoutReply=LayoutReply::BadRecordVersion;
+    Check(layout.AcquireSnapshot(lease)==MMS_E_FAILED && empty(lease) &&
+          h.layoutReleases==6 && h.lastLayoutRelease==206);
+    h.layoutReply=LayoutReply::Empty;
+    Check(layout.AcquireSnapshot(lease)==MMS_OK && lease.get()==207 &&
+          lease.value().uiRevision==307 && SameSpan(lease.value().items,{}));
+    Check(lease.Release()==MMS_OK && empty(lease) && h.layoutReleases==7 && h.lastLayoutRelease==207);
 }
 
 void SceneOwnershipChecks() {
@@ -185,6 +280,7 @@ int main() {
         Check(layoutSource.Release()==MMS_OK);
         Check(brokenL.Release()==MMS_E_UNSUPPORTED && brokenL.get()==98 && brokenL.Detach()==98);
         SceneOwnershipChecks();
+        LayoutSnapshotValueChecks();
         std::printf("snapshot_cpp_safety_tests: %d checks passed\n",checks);return 0;
     } catch(int n) {std::fprintf(stderr,"snapshot check %d failed\n",n);return 1;}
 }

@@ -1,6 +1,4 @@
-#include "window_settings.hpp"
 #include "mikumikustudio/pmm_paths.hpp"
-#include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/legacy_mme_bootstrap.hpp"
 #include "mikumikustudio/legacy_mmd_plugin.hpp"
 #include "mikumikustudio/legacy_playback_map.hpp"
@@ -69,12 +67,15 @@ const COLORREF kDefaultThemeColors[] = {
     9895830, 16750230, 4934475, 0, 6579455,
 };
 
-// Strip the trailing '\n' the way the original does: scan for L'\n' and
-// zero it (fgetws keeps it).
-void StripNewline(wchar_t* s) {
-    while (*s != L'\n')
-        ++s;
-    *s = L'\0';
+// Only commit a complete legacy directory row. A truncated row keeps its
+// default and ends parsing of the remaining positional fields.
+bool ReadLegacyDirectory(FILE* stream, wchar_t* target) {
+    wchar_t line[1000];
+    if (!fgetws(line, 1000, stream)) return false;
+    wchar_t* newline = wcschr(line, L'\n');
+    if (!newline) return false;
+    *newline = L'\0';
+    return wcscpy_s(target, 1000, line) == 0;
 }
 
 // JP caption shared by every window-creation failure box of the init path
@@ -244,11 +245,7 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
     const LANGID userLanguage = GetUserDefaultUILanguage();
     s.EnglishUI() = ResolveStartupUiLanguage(-1, userLanguage);
     LoadModelInfoLanguagePreference();
-    settings_json::Json savedWindow; system_settings::Result settingsResult;
-    const bool hasSavedWindow = settings_json::Read("window", savedWindow, settingsResult);
-    const auto legacyConfigPath = local_data::File(L"mmconfig.ini");
-    if (settingsResult != system_settings::Result::Missing || legacyConfigPath.empty() ||
-        _wfopen_s(&stream, legacyConfigPath.c_str(), L"rt") != 0) {    // 0x47B642
+    if (fopen_s(&stream, "Data\\mmconfig.ini", "rt") != 0) {    // 0x47B642
         // no config: full-screen defaults
         nWidth = screenW;
         nHeight = screenH - 30;
@@ -282,28 +279,21 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
                 if (fscanf_s(stream, "%d\n", &tmp) != -1) {
                     if (tmp == 0)
                         checkPhysicsFrame = 0;
-                    if (fscanf_s(stream, "%d\n", &tmp) != -1) {
-                        fgetws(app->DirModel(), 1000, stream);  // 0x47B8A3
-                        StripNewline(app->DirModel());
-                        fgetws(app->DirAccs(), 1000, stream);
-                        StripNewline(app->DirAccs());
-                        fgetws(app->DirWave(), 1000, stream);
-                        StripNewline(app->DirWave());
-                        fgetws(app->DirPose(), 1000, stream);
-                        StripNewline(app->DirPose());
-                        fgetws(app->DirMotion(), 1000, stream);
-                        StripNewline(app->DirMotion());
-                        fgetws(app->DirUser(), 1000, stream);
-                        StripNewline(app->DirUser());
+                    if (fscanf_s(stream, "%d\n", &tmp) != -1 &&
+                        ReadLegacyDirectory(stream, app->DirModel()) &&  // 0x47B8A3
+                        ReadLegacyDirectory(stream, app->DirAccs()) &&
+                        ReadLegacyDirectory(stream, app->DirWave()) &&
+                        ReadLegacyDirectory(stream, app->DirPose()) &&
+                        ReadLegacyDirectory(stream, app->DirMotion()) &&
+                        ReadLegacyDirectory(stream, app->DirUser())) {
                         if (fscanf_s(stream, "%d\n", &tmp) != -1) {
                             fscanf_s(stream, "%d\n", &tmp);
                             s.FrameVolumeControlEnabled() = (tmp != 0);
                             fscanf_s(stream, "%d\n", &s.FrameNormalization());
                             if (fscanf_s(stream, "%d\n", &tmp) != -1) {
                                 fscanf_s(stream, "%f\n", &s.SidebarRatio());
-                                if (fscanf_s(stream, "%d\n", &tmp) != -1) {
-                                    fgetws(app->DirBg(), 1000, stream);
-                                    StripNewline(app->DirBg());
+                                if (fscanf_s(stream, "%d\n", &tmp) != -1 &&
+                                    ReadLegacyDirectory(stream, app->DirBg())) {
                                     if (fscanf_s(stream, "%d\n", &tmp) != -1) {
                                         fscanf_s(stream, "%d\n", &tmp);
                                         if (tmp == 1)
@@ -322,32 +312,6 @@ bool InitMainWindowAndD3D(MMDApp* app, void* hInstanceIn, int nShowCmd) {
             }
         }
         fclose(stream);
-    }
-
-    if (hasSavedWindow) {
-        const auto& j = savedWindow;
-        auto integer = [&](const char* name, int value) { return settings_json::Integer(j,name,value); };
-        X=integer("x",X); Y=integer("y",Y); nWidth=integer("width",nWidth); nHeight=integer("height",nHeight);
-        startMaximized=integer("maximized",startMaximized)!=0;
-        s.RenderWidth()=integer("renderWidth",s.RenderWidth()); s.RenderHeight()=integer("renderHeight",s.RenderHeight());
-        s.SidebarWidth()=integer("sidebarWidth",s.SidebarWidth());
-        s.EnglishUI()=ResolveStartupUiLanguage(integer("uiLanguage",-1),userLanguage);
-        runFlagSubsystem=integer("floating",runFlagSubsystem)!=0;
-        s.SeparateWindowMaximized()=integer("floatingMaximized",s.SeparateWindowMaximized())!=0;
-        s.SeparateWindowX()=integer("floatingX",s.SeparateWindowX()); s.SeparateWindowY()=integer("floatingY",s.SeparateWindowY());
-        s.SeparateWindowWidth()=integer("floatingWidth",s.SeparateWindowWidth()); s.SeparateWindowHeight()=integer("floatingHeight",s.SeparateWindowHeight());
-        checkPhysicsFrame=integer("physicsFrame",checkPhysicsFrame)!=0;
-        s.FrameVolumeControlEnabled()=integer("frameVolume",s.FrameVolumeControlEnabled())!=0;
-        s.FrameNormalization()=integer("frameNormalization",s.FrameNormalization());
-        s.SidebarRatio()=settings_json::Float(j,"sidebarRatio",s.SidebarRatio());
-        checkMenu119=integer("menu119",checkMenu119)!=0; checkMenu12D=integer("menu12d",checkMenu12D)!=0;
-        window_settings::ReadPath(j,"modelDirectory",app->DirModel()); window_settings::ReadPath(j,"accessoryDirectory",app->DirAccs());
-        window_settings::ReadPath(j,"waveDirectory",app->DirWave()); window_settings::ReadPath(j,"poseDirectory",app->DirPose());
-        window_settings::ReadPath(j,"motionDirectory",app->DirMotion()); window_settings::ReadPath(j,"userDirectory",app->DirUser());
-        window_settings::ReadPath(j,"backgroundDirectory",app->DirBg());
-    } else if (settingsResult == system_settings::Result::Missing) {
-        system_settings::CompareExchangeSection("window", nullptr,
-            window_settings::Snapshot(s,X,Y,nWidth,nHeight,startMaximized,runFlagSubsystem,checkPhysicsFrame,checkMenu119,checkMenu12D));
     }
 
     if (!nWidth)  nWidth = screenW;                             // 0x47BB27

@@ -480,6 +480,14 @@ int wmain(int argc, wchar_t** argv) {
             return version_storage_crash::RunDecisionIdentity();
         if (argc == 2 && std::wstring(argv[1]) == L"--version-archive-identity-only")
             return version_storage_crash::RunArchiveIdentity();
+        if (argc == 2 && std::wstring(argv[1]) == L"--version-original-cleanup-crash-only")
+            return version_storage_crash::RunOriginalForwardCleanupInterruption();
+        if (argc == 3 && std::wstring(argv[1]) == L"--version-original-cleanup-write")
+            return version_storage_crash::OriginalForwardCleanupWriter(argv[2]);
+        if (argc == 3 && std::wstring(argv[1]) == L"--version-original-cleanup-interrupt")
+            return version_storage_crash::InterruptOriginalForwardCleanup(argv[2]);
+        if (argc == 3 && std::wstring(argv[1]) == L"--version-original-cleanup-retry")
+            return version_storage_crash::RetryOriginalForwardCleanup(argv[2]);
         if (argc == 2 && std::wstring(argv[1]) == L"--version-storage-crash-only")
             return version_storage_crash::Run();
         if (argc == 3 && std::wstring(argv[1]) == L"--version-storage-crash-write")

@@ -6,6 +6,7 @@
 
 namespace mikumikustudio::system_settings {
 enum class Result { Ok, Missing, Invalid, Busy, Io, Conflict };
+enum class PluginResult { Ok, Missing, Invalid, Busy, Io, Conflict, Corrupt, Limit };
 // Each section is a JSON object. Writes merge object members recursively, so
 // modules can update known settings without discarding newer/unknown members.
 // Reads leave output untouched on failure. Invalid/unsupported files are never
@@ -25,6 +26,12 @@ public:
     // fields inside this section. Other sections and root fields are preserved.
     Result CompareExchangeSection(std::string_view name, const std::string* expected,
         std::string_view object) const noexcept;
+    // Host-owned plugin registry. The ordinary write APIs cannot modify it.
+    // The caller takes manifestId only from the validated package manifest.
+    // These calls use the same file lock as all other sections, without waiting.
+    PluginResult ReadPlugin(std::string_view manifestId, std::string& output) const noexcept;
+    PluginResult CompareMergePlugin(std::string_view manifestId, std::string_view expected,
+        std::string_view patch) const noexcept; // empty expected means absent
 private:
     Result Write(std::string_view name, std::string_view object, bool compare,
         const std::string* expected, bool multiple = false) const noexcept;

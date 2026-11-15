@@ -5,13 +5,13 @@
 #include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/system_settings.hpp"
 #include "settings_json.hpp"
+#include "autosave_rotation.hpp"
 #include "mikumikustudio/plugin_storage.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/pmm_extension.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
 #include "mikumikustudio/effect_api.hpp"
-#include <algorithm>
 #include <atomic>
 #include <cwchar>
 #include <fcntl.h>
@@ -158,6 +158,39 @@ bool Owned(const fs::path& path) {
     return marker && std::string(marker->value.begin(), marker->value.end()) == filename;
 }
 
+std::vector<fs::path> OwnedBackups(const fs::path& directory) {
+    std::vector<fs::path> result;
+    std::error_code ec;
+    fs::directory_iterator it(directory, ec), end;
+    if (ec) throw fs::filesystem_error("Read autosave folder", directory, ec);
+    for (; it != end; it.increment(ec)) {
+        if (ec) throw fs::filesystem_error("Read autosave folder", directory, ec);
+        if (Owned(it->path())) result.push_back(it->path());
+    }
+    if (ec) throw fs::filesystem_error("Read autosave folder", directory, ec);
+    return result;
+}
+
+rotation::Plan PrepareRotation(const fs::path& directory, const Settings& value) {
+    auto plan = rotation::Prepare(OwnedBackups(directory), value.maxBackups, value.overwriteOldest,
+        rotation::ReadWriteTime);
+    if (plan.action == rotation::Action::AgeUnavailable)
+        runtime_log::WritePath("AUTOSAVE rotation deferred: could not read backup age", directory.c_str());
+    return plan;
+}
+
+bool RemoveOwnedBackup(const fs::path& path, bool removeEffects) {
+    try {
+        const auto result = plugins::DeletePluginBackup(path, Owned, removeEffects ? RemoveBackupEffects : nullptr);
+        if (result == plugins::BackupRemoval::SidecarLeft)
+            runtime_log::WritePath("AUTOSAVE obsolete sidecar could not be removed", path.c_str());
+        return result != plugins::BackupRemoval::NotRemoved;
+    } catch (...) {
+        runtime_log::WritePath("AUTOSAVE could not verify or remove backup", path.c_str());
+        return false;
+    }
+}
+
 enum class Rotation { WithinLimit, Replaced, CleanupIncomplete, Full };
 
 Rotation FinishRotation(const std::vector<fs::path>& old, unsigned limit,
@@ -169,13 +202,7 @@ Rotation FinishRotation(const std::vector<fs::path>& old, unsigned limit,
         std::error_code sameError;
         if (_wcsicmp(candidate.c_str(), active.c_str()) == 0 ||
             (!active.empty() && fs::equivalent(candidate, active, sameError))) continue;
-        try {
-            if (!Owned(candidate) || !plugins::DeletePluginBackup(candidate.c_str())) break;
-        } catch (...) {
-            runtime_log::WritePath("AUTOSAVE could not verify or remove old backup", candidate.c_str());
-            break;
-        }
-        RemoveBackupEffects(candidate);
+        if (!RemoveOwnedBackup(candidate, true)) break;
         if (--remaining < limit) return Rotation::Replaced;
     }
 
@@ -183,7 +210,7 @@ Rotation FinishRotation(const std::vector<fs::path>& old, unsigned limit,
     // another generation is held open. If nothing was removed, keep the
     // existing full-folder behavior and withdraw the new candidate.
     if (remaining < old.size()) return Rotation::CleanupIncomplete;
-    if (!plugins::DeletePluginBackup(destination.c_str())) return Rotation::CleanupIncomplete;
+    if (!RemoveOwnedBackup(destination, false)) return Rotation::CleanupIncomplete;
     // MME is notified only after retention. Any EMM at this candidate's
     // path was created independently and does not belong to this rollback.
     return Rotation::Full;
@@ -207,7 +234,7 @@ void RefreshCapacity(MMDApp* app) noexcept {
         const auto inspect = [&](const fs::path& directory) {
             if (directory.empty()) return;
             try {
-                if (Backups(directory).size() >= settings.maxBackups) {
+                if (OwnedBackups(directory).size() >= settings.maxBackups) {
                     if (!folders.empty()) folders += L"\n";
                     folders += directory.native();
                 }
@@ -400,22 +427,7 @@ bool Configure(MMDApp* app, const Settings& value, std::wstring& error) {
     return true;
 }
 std::vector<fs::path> Backups(const fs::path& directory) {
-    std::vector<fs::path> result;
-    std::error_code ec;
-    fs::directory_iterator it(directory, ec), end;
-    if (ec) throw fs::filesystem_error("Read autosave folder", directory, ec);
-    for (; it != end; it.increment(ec)) {
-        if (ec) throw fs::filesystem_error("Read autosave folder", directory, ec);
-        if (Owned(it->path())) result.push_back(it->path());
-    }
-    if (ec) throw fs::filesystem_error("Read autosave folder", directory, ec);
-    // All timestamps have fixed width; use last-write time across different stems.
-    std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
-        std::error_code ea, eb;
-        const auto ta = fs::last_write_time(a, ea), tb = fs::last_write_time(b, eb);
-        return !ea && !eb && ta != tb ? ta < tb : a.native() < b.native();
-    });
-    return result;
+    return rotation::Rank(OwnedBackups(directory), rotation::ReadWriteTime).paths;
 }
 bool FolderFull() noexcept { return full; }
 bool QueueBackup(MMDApp* app) noexcept {
@@ -446,14 +458,14 @@ bool QueueBackup(MMDApp* app) noexcept {
             work->lock = CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                 OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
             if (work->lock == INVALID_HANDLE_VALUE) return false;
-            work->old = Backups(work->settings.directory);
-            if (work->old.size() < work->settings.maxBackups) return true;
-            if (work->settings.overwriteOldest) {
-                background_save::ReportBackupOverwrite();
-                return true;
+            auto plan = PrepareRotation(work->settings.directory, work->settings);
+            if (!plan.CanWrite()) {
+                work->rotation = Rotation::Full;
+                return false;
             }
-            work->rotation = Rotation::Full;
-            return false;
+            work->old = std::move(plan.oldestFirst);
+            if (plan.action == rotation::Action::Rotate) background_save::ReportBackupOverwrite();
+            return true;
         };
         options.afterWrite = [work] {
             work->rotation = FinishRotation(work->old, work->settings.maxBackups,
@@ -495,8 +507,8 @@ Result BackupNow(MMDApp* app, bool crash) noexcept {
             OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
         if (lock == INVALID_HANDLE_VALUE) return Result::Busy;
         struct Unlock { HANDLE h; ~Unlock() { CloseHandle(h); } } unlock{lock};
-        auto old = Backups(directory);
-        if (old.size() >= settings.maxBackups && !settings.overwriteOldest) {
+        const auto plan = PrepareRotation(directory, settings);
+        if (!plan.CanWrite()) {
             if (!crash) RefreshCapacity(app);
             return Result::Full;
         }
@@ -506,7 +518,7 @@ Result BackupNow(MMDApp* app, bool crash) noexcept {
         // Also protect the currently opened project even if it is a recovery file.
         std::error_code ec;
         const fs::path active = *app->EnvFileName() ? fs::absolute(app->EnvFileName(), ec) : fs::path();
-        const auto rotation = FinishRotation(old, settings.maxBackups, active, destination);
+        const auto rotation = FinishRotation(plan.oldestFirst, settings.maxBackups, active, destination);
         if (rotation == Rotation::Full) {
             if (!crash) RefreshCapacity(app);
             return Result::Full;
