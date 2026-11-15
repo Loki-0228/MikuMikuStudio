@@ -94,6 +94,7 @@ struct V2RelocationReply {
     INT_PTR answer;
     fs::path selection;
     bool disappearsOnOpen = false;
+    unsigned slot = 0;
 };
 struct V2RelocationDialogs {
     std::vector<V2RelocationReply> replies;
@@ -103,7 +104,10 @@ struct V2RelocationDialogs {
     const wchar_t* originalModelDirectory = nullptr;
     const wchar_t* expectedPickerDirectory = nullptr;
     fs::path disappearingCandidate, parkedCandidate;
-    unsigned disappearedOnOpen = 0;
+    unsigned disappearedOnOpen = 0, disappearingSlot = 0;
+    unsigned char* retainedModel = nullptr;
+    mdl::BoneKey* retainedBoneKeys = nullptr;
+    bool expectBadModel = false, sawBadModel = false;
 };
 V2RelocationDialogs* v2Relocation = nullptr;
 // ---- Real V2 missing-accessory recovery loop --------------------------------
@@ -853,6 +857,13 @@ int WINAPI ErrorA(HWND window, LPCSTR text, LPCSTR caption, UINT flags) {
         relocationDialogs->sawBadModel = true;
         return IDOK;
     }
+    if (v2Relocation && v2Relocation->expectBadModel && !v2Relocation->sawBadModel &&
+        v2Relocation->next == v2Relocation->replies.size() && !v2Relocation->awaitingPicker &&
+        monitor && inputOpen && window == app->MainWindow() && flags == MB_OK && text && caption &&
+        !std::strcmp(caption, "open file") && !std::strcmp(text, "This file is not for Ploygon Movie Maker !!")) {
+        v2Relocation->sawBadModel = true;
+        return IDOK;
+    }
     if (expectedPictureError) { ++messages; return IDOK; }
     std::fprintf(stderr, "Unexpected PMM ANSI modal: %s / %s\n", caption ? caption : "", text ? text : "");
     Check(false, "no unexpected native ANSI dialog blocks the hidden fixture"); return IDOK;
@@ -1077,13 +1088,22 @@ INT_PTR MissingModel(MMDApp* value, HINSTANCE, HWND window, ProjectModelIssue is
             Check(!std::wcscmp(app->DirModel(), d.originalModelDirectory),
                 "unaccepted replacements must leave the previous model picker folder intact");
         if (!d.parkedCandidate.empty()) {
-            const auto* model = app->ModelSlot(0);
-            Check(issue == ProjectModelIssue::MissingFile && model && !mdl::Mdl(model)->path[0],
-                  "return to missing-model recovery with a clean model slot");
+            auto* model = app->ModelSlot(d.disappearingSlot);
+            if (d.retainedModel) {
+                Check(issue == ProjectModelIssue::StructureMismatch && model == d.retainedModel &&
+                      mdl::BoneKeys(model) == d.retainedBoneKeys &&
+                      mdl::Mdl(model)->path != d.disappearingCandidate.native(),
+                      "offer structure recovery again with the same loaded model and animation pool");
+            } else {
+                Check(issue == ProjectModelIssue::MissingFile && model && !mdl::Mdl(model)->path[0],
+                      "return to missing-model recovery with a clean model slot");
+            }
             Check(MoveFileW(d.parkedCandidate.c_str(), d.disappearingCandidate.c_str()),
                   "restore the owned PMD only after recovery is offered again");
             d.parkedCandidate.clear();
             d.disappearingCandidate.clear();
+            d.retainedModel = nullptr;
+            d.retainedBoneKeys = nullptr;
         }
         Check(value == app && window == app->MainWindow() && monitor && inputOpen && fault == Fault::None &&
               !d.awaitingPicker && d.next < d.replies.size(), "V2 recovery dialog in the expected active PMM load");
@@ -1094,6 +1114,8 @@ INT_PTR MissingModel(MMDApp* value, HINSTANCE, HWND window, ProjectModelIssue is
         Check(issue == reply.issue && label && !std::wcscmp(label, reply.label), "V2 dialog matches exact model and issue");
         if ((issue == ProjectModelIssue::MissingFile && reply.answer == 1) ||
             (issue == ProjectModelIssue::StructureMismatch && reply.answer == 3)) d.awaitingPicker = &reply;
+        if (issue == ProjectModelIssue::StructureMismatch && (reply.answer == 2 || reply.answer == 5))
+            faultThrown = true; // Classify the real reset in the original-profile observer.
         return reply.answer;
     }
     Check(monitor && (v2ModelAbortThrow || fault == Fault::AbortReset || fault == Fault::AbortResetFalse ||
@@ -1656,6 +1678,13 @@ BOOL ObserveUiOpenFileName(LPOPENFILENAMEW parameters) {
         if (reply->disappearsOnOpen) {
             Check(v2Relocation->disappearingCandidate.empty(), "arm a single owned V2 open failure");
             v2Relocation->disappearingCandidate = reply->selection;
+            v2Relocation->disappearingSlot = reply->slot;
+            if (reply->issue == ProjectModelIssue::StructureMismatch) {
+                v2Relocation->retainedModel = app->ModelSlot(reply->slot);
+                Check(v2Relocation->retainedModel, "record the loaded model before selecting a different file");
+                v2Relocation->retainedBoneKeys = mdl::BoneKeys(v2Relocation->retainedModel);
+                Check(v2Relocation->retainedBoneKeys, "record the loaded model's animation pool");
+            }
         }
         return TRUE;
     }

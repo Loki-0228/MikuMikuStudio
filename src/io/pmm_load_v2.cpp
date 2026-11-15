@@ -116,6 +116,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <memory>
 #include <new>
 #include <cstdlib>
 #include <utility>
@@ -1623,6 +1624,9 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                     }
                     LogPmmModelStage(fd, "mapping-complete", 0, 0, model);
 
+                    // The names and counts are consumed even if the next
+                    // picker result disappears before a model can be remapped.
+                    firstPass = false;
                     }  // firstPass guard
 
                     // structure-difference gate (0x4519AF..0x451A44)
@@ -1638,51 +1642,45 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                     //   其余值    -> 0x49B2A1 jnz 0x49BB78，与双匹配成立时
                     //                （0x49AA2F 的 jz）同一出口：继续状态装载
                     if (r == 2 || r == 5) { AbortV2Load(s, input, workspaceOwner); return false; }
-                    if (r == 4) {                                // 0x45231C
-                        if (model != nullptr) {
-                            ModelDispose(model);
-                            free(model);
-                        }
+                    // Closing the picker still skips the record, just like r == 4.
+                    if (r == 4 || (r == 3 && !PickV2ModelFile(*s, main, ofnFile))) {
+                        ModelDispose(model);
+                        free(model);
                         slots[slotByte] = nullptr;
                         workspace.skipped = 1;
                         doSkip = true;
                         skipFrom4 = true;
-                        firstPass = false;  // r==4: counts/names consumed
                         break;
                     }
                     if (r != 3)
                         break;  // 非 3 非 4：直接走状态装载，不重载
-                    // r == 3: re-load a different file
-                    if (model != nullptr) {                      // 0x451A5A
-                        ModelDispose(model);
-                        free(model);
-                        slots[slotByte] = nullptr;
+                    if (MissingModelSelection(ofnFile))
+                        continue;
+
+                    // The replacement can disappear during the real open. Keep the
+                    // current model alive, and keep its mappings and finalSelection
+                    // until a replacement actually loads.
+                    const auto dispose = [](unsigned char* value) {
+                        ModelDispose(value);
+                        free(value);
+                    };
+                    auto* const replacement = static_cast<unsigned char*>(operator new(mdl::kSize));
+                    IdentityCtor(replacement);
+                    std::memset(replacement, 0, mdl::kSize);
+                    std::unique_ptr<unsigned char, decltype(dispose)> previous(model, dispose);
+                    slots[slotByte] = model = replacement;
+                    ModelInitDefaults(model);
+                    const bool reloaded = loadSelection();
+                    // modelDirectory is set only after opening the file.
+                    // A parser rejection must still report its error.
+                    if (!reloaded && !mdl::Mdl(replacement)->modelDirectory[0]) {
+                        const bool missing = MissingModelSelection(ofnFile);
+                        slots[slotByte] = model = previous.release();
+                        free(replacement);
+                        if (missing) continue;
                     }
-                    {
-                        unsigned char* nm2 = static_cast<unsigned char*>(
-                            operator new(mdl::kSize));
-                        if (nm2 != nullptr) IdentityCtor(nm2);
-                        slots[slotByte] = nm2;
-                        std::memset(slots[slotByte], 0, mdl::kSize);
-                        ModelInitDefaults(slots[slotByte]);
-                        model = slots[slotByte];
-                    }
-                    if (!PickV2ModelFile(*s, main, ofnFile)) {
-                        // Closing the picker without a file skips this
-                        // model exactly like the dialog's "skip" answer
-                        // (r == 4) instead of aborting the project load.
-                        if (model != nullptr) {
-                            ModelDispose(model);
-                            free(model);
-                        }
-                        slots[slotByte] = nullptr;
-                        workspace.skipped = 1;
-                        doSkip = true;
-                        skipFrom4 = true;
-                        firstPass = false;
-                        break;
-                    }
-                    if (!loadSelection()) {
+                    previous.reset();
+                    if (!reloaded) {
                         project_relocation::LoadScope::FailCurrent(*s);
                         ShowUiMessage(s, main, UiMessage::OpenModelError, MB_OK, ofnFile);
                         AbortV2Load(s, input, workspaceOwner);
@@ -1807,7 +1805,6 @@ static bool LoadSceneV2_ModelBlock(PmmV2LoadContext& ctx, pmm_io::Input& input,
                             }
                         }
                     }
-                    firstPass = false;
                 }
             }
 
