@@ -18,7 +18,7 @@ python -B tests/run_windows_abi_candidate.py --build build/cmake --ui-template b
 | 自动检查 | 证据与边界 |
 | --- | --- |
 | 构建与模板身份 | `build.json` 记录配置、实际候选 EXE 和私有兼容 DLL、组件 EXE、模板等哈希。模板清单必须与当前 HEAD、脚本和源码字节对应。前后源码清单记录工作树实际内容，不证明二进制一定由这些字节构建；应另存本次完整构建日志并避免中途切换源码。 |
-| 发行与安装 | `package-hashes.json` 检查预期发布布局、私有 `legacy-mmdplugin/MMDPlugin.dll`、无第二份同名 DLL，及已复制文件的 SHA-256。安装树可另外有运行库。运行库闭包及 Win7/AMD 真机仍是单独的门槛。 |
+| 发行与安装 | `package-hashes.json` 检查预期发布布局、私有 `PLUGINS/legacy-mmdplugin/MMDPlugin.dll`、无第二份同名 DLL，及已复制文件的 SHA-256。安装树可另外有运行库。运行库闭包及 Win7/AMD 真机仍是单独的门槛。 |
 | 菜单与观察者预检 | 运行三个精确匹配的 CTest 名称。未注册的项记 `BLOCKED`，不得把空 CTest 算通过。已注册的预检使用测试观察者，不代替真实审阅 DLL、MME 0.37 或 AA 共存。 |
 | 单张 PNG，原生 Shell 组件 | 在组件自建的非输入桌面运行 `image_sequence_tests --still-shell-only`。真实 Shell 对话框用隔离控件脚本测试。 |
 | 单张 PNG，渲染组件 | 在新目录运行 `image_sequence_tests --still-only`。渲染使用隐藏的真实 D3D 路径，选择输入由测试替代。与上一项互补，不能算可见产品一条路径通过。 |

@@ -28,7 +28,7 @@ def main():
             shutil.copy2(args.build/'tests/mme/Release/MikuMikuDance.exe',exe)
             for dll in ['MMDFacade.dll','MMHack.dll']: shutil.copy2(args.build/'Release'/dll,directory/dll)
             provider=directory/layout/'MMDPlugin.dll'; provider.parent.mkdir(parents=True)
-            shutil.copy2(args.build/'Release/legacy-mmdplugin/MMDPlugin.dll',provider)
+            shutil.copy2(args.build/'Release/PLUGINS/legacy-mmdplugin/MMDPlugin.dll',provider)
             for source,profile,identity in [
                 (args.effekseer,'effekseer_v2','test.effekseer'),
                 (args.build/'Release/optional-plugins/first-person-camera/MMSFirstPersonCamera.dll','first_person_camera_v4','test.camera')]:

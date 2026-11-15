@@ -23,8 +23,10 @@ def main():
             shutil.copy2(build / 'tests/Release/first_person_camera_tests.exe', exe)
             provider = directory / layout / 'MMDPlugin.dll'
             provider.parent.mkdir(parents=True)
-            shutil.copy2(build / 'Release/legacy-mmdplugin/MMDPlugin.dll', provider)
-            package = directory / 'PLUGINS/camera'
+            shutil.copy2(build / 'Release/PLUGINS/legacy-mmdplugin/MMDPlugin.dll', provider)
+            package_path = ['PLUGINS/camera', 'PLUGINS/optional-plugins/first-person-camera',
+                            'PLUGINS/我的插件/自选相机'][len(cases) % 3]
+            package = directory / package_path
             package.mkdir(parents=True)
             dll = package / 'MMSFirstPersonCamera.dll'
             shutil.copy2(build / 'Release/optional-plugins/first-person-camera/MMSFirstPersonCamera.dll', dll)
@@ -37,7 +39,8 @@ def main():
             run = subprocess.run([str(exe)], cwd=directory, env=env, capture_output=True, timeout=30,
                 creationflags=subprocess.CREATE_NO_WINDOW)
             (directory / 'result.log').write_bytes(run.stdout + run.stderr)
-            case = dict(exe=name, layout=layout, exitCode=run.returncode, passed=run.returncode == 0, directory=str(directory))
+            case = dict(exe=name, layout=layout, package=package_path, exitCode=run.returncode,
+                        passed=run.returncode == 0, directory=str(directory))
             cases.append(case)
             (root / 'summary.json').write_text(json.dumps(dict(passed=all(c['passed'] for c in cases) and len(cases)==6, cases=cases), indent=2), encoding='utf-8')
             print(json.dumps(case, ensure_ascii=True), flush=True)

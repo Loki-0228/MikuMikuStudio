@@ -17,6 +17,7 @@
 
 MMDPlugin 提供者优先从 `<EXE>/PLUGINS/legacy-mmdplugin/MMDPlugin.dll` 加载；仅该路径不存在时使用
 `<EXE>/legacy-mmdplugin/MMDPlugin.dll`。首选位置损坏时明确失败，不静默退回旧位置。
+新构建、发布包和安装树统一使用 `PLUGINS/legacy-mmdplugin/MMDPlugin.dll`，根目录位置只兼容旧安装。
 
 ## 上游 ABI 核对
 
@@ -97,10 +98,12 @@ MMS 显式接受 `.efk`：使用同名 `.pmd` 或包内 `efk.pmd` 作为控制�
 ### 可选插件安装
 
 正式打包命令生成 `build/release/optional-plugins/first-person-camera/`，含 DLL、许可、说明及正确摘要的清单。
-退出 MMS 后将该目录完整复制到 `<EXE>/PLUGINS/first-person-camera/`。安装包不会自动启用它。
+退出 MMS 后，将完整插件包放到 `<EXE>/PLUGINS/` 内自己选择的目录，包目录名称与分组不限；
+也可以把整个 `optional-plugins` 移入 `PLUGINS`。MMS 递归发现清单，默认扫描两层子目录，
+更深的分组由现有 `PLUGINS/config.json` 的 `maxDepth` 配置。发布包不会自动启用它。
 
 Effekseer 使用用户提供的 v0.25 x64 包：将原始 `EffekseerForMMD.dll` 和 `efk.pmd` 复制到
-`<EXE>/PLUGINS/effekseer/`，在该目录生成清单（不要覆盖原下载文件）：
+`<EXE>/PLUGINS/` 内任意包目录（例如 `effekseer/`），在包目录生成清单（不要覆盖原下载文件）：
 
 ```powershell
 $dll = Join-Path $PWD 'EffekseerForMMD.dll'
@@ -120,7 +123,7 @@ $dll = Join-Path $PWD 'EffekseerForMMD.dll'
 
 1. **导入改写**：原 MikuMikuDance.exe 导入槽改为 MMDFacade.dll，长度仍能放入原槽。37 个导出从原表沿用，签名和 ordinal 1–37 未变；MMHack 的 ordinal 1–22 未变。
 2. **加载器**：加载安装目录中的新名，再发布到内容寻址缓存。新 DLL 字节及导入名称使缓存代次变化；插件身份对应的 INI 路径不变。旧缓存不删除、不执行原地修改。
-3. **构建**：目标和 .def 改为 MMDFacade；产物 MMDFacade.dll。不再生成 MMSAdapter.dll；MMHack、MMDPlugin 继续独立构建。`cmake --install` 包含两个 MME 桥和独立提供者。
+3. **构建**：目标和 .def 改为 MMDFacade；产物 MMDFacade.dll。不再生成 MMSAdapter.dll；MMHack、MMDPlugin 继续独立构建。`cmake --install` 包含两个 MME 桥，独立提供者安装到 `PLUGINS/legacy-mmdplugin/`。
 4. **打包**：两个打包入口均仅带新名。旧名遗留的目录会被保护规则拒绝覆盖，应输出到新的发布目录，确认后再切换安装。
 5. **安装**：退出 MMS，以同一构建的 EXE、MMDFacade.dll、MMHack.dll 成套更新。只复制或重命名旧 MMSAdapter 不完成迁移；新宿主缺少 MMDFacade 时明确报错。用户源插件包和 data 下偏好不变。旧安装可保留供回退，新加载器不回退加载旧名；检测到旧桥已在进程中加载时拒绝混用。
 

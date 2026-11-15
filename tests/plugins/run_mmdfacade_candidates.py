@@ -59,7 +59,7 @@ def run_case(args, directory, layout, name, mode):
         shutil.copy2(args.release / dll, directory / dll)
     provider = directory / layout / 'MMDPlugin.dll'
     provider.parent.mkdir(parents=True)
-    shutil.copy2(args.release / 'legacy-mmdplugin/MMDPlugin.dll', provider)
+    shutil.copy2(args.release / 'PLUGINS/legacy-mmdplugin/MMDPlugin.dll', provider)
     candidate = directory / 'PLUGINS/candidate'
     shutil.copytree(args.candidate.parent, candidate)
     profile = args.unsupported_profile if mode == 'unsupported-profile' else args.profile

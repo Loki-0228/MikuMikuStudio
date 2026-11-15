@@ -18,7 +18,7 @@ def main():
     powershell, script_name = sys.argv[1:]
     script = pathlib.Path(script_name).resolve()
     source = script.parents[1]
-    provider_path = pathlib.Path("legacy-mmdplugin/MMDPlugin.dll")
+    provider_path = pathlib.Path("PLUGINS/legacy-mmdplugin/MMDPlugin.dll")
     provider_bytes = fake_pe(provider_path.as_posix())
     with tempfile.TemporaryDirectory(prefix="mms-abi-package-") as temporary:
         root = pathlib.Path(temporary)
@@ -61,7 +61,7 @@ def main():
         result = subprocess.run(command, capture_output=True, text=True, errors="replace", check=False)
         check(result.returncode == 0, f"fixture packaging failed: {result.stderr}")
         check({item.name for item in release.iterdir()} == {
-            "MikuMikuDance.exe", "MMDFacade.dll", "MMHack.dll", "legacy-mmdplugin",
+            "MikuMikuDance.exe", "MMDFacade.dll", "MMHack.dll",
             "LICENSE", "PLUGINS", "licenses", "mms-adaptive-ui-template.zip",
             "optional-plugins",
         }, "unexpected top-level release contents")

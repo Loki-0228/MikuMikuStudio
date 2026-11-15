@@ -83,3 +83,23 @@ python -B tools/package-abi-release.py --force
 | `MMHack.dll` | `56a80edc5447bf444b75e7d8aaaadf6bf703626a4fad84057496a19048736c84` |
 | `legacy-mmdplugin/MMDPlugin.dll` | `9fe221f65bee0f0266b93b315c172153b79f19c52b20246f182fac0330ad76fa` |
 | `optional-plugins/first-person-camera/MMSFirstPersonCamera.dll` | `8422e0b7e293a9cecdecc7e62e53dacd2a6038e63f09c788ba34efbc0d1f8ec9` |
+
+## 后续目录修正
+
+前述首版发布包将提供者放在根目录，这是打包规则遗漏。现在构建、两个发布入口和 CMake 安装
+统一输出 `PLUGINS/legacy-mmdplugin/MMDPlugin.dll`，发布包不再带根目录同名目录；
+加载器仍保留旧路径回退以兼容已有安装，没有要求用户改 EXE 名称。
+
+optional 插件的包目录名称和分组不固定：用户可以把完整包放在 `PLUGINS` 内自选目录，
+或把整个 `optional-plugins` 移入其中。递归深度继续使用已有 `maxDepth` 配置，默认两层。
+实际验证了直放、`optional-plugins/first-person-camera` 分组及中文自定义分组，
+分别覆盖两处提供者位置和三种 EXE 名。
+
+本次通过 14 项打包测试（含旧布局迁移和用户插件文件保护）、PowerShell 打包入口、
+3 项 CTest（含 48 组回调矩阵与 6 组相机输入矩阵），并执行真实 CMake 安装。
+新发布目录和安装树均只有 `PLUGINS/legacy-mmdplugin/MMDPlugin.dll` 一份提供者。
+源码未改渲染逻辑，本次未重跑粒子/旧 MME 像素矩阵，也未执行完整 full/minimal ZIP 发布命令。
+
+证据：`build/facade-layout-red.log`（修复前失败）、`build/facade-layout-tests.log`、
+`build/facade-layout-runtime.log`、`build/facade-layout-install.log`、`build/facade-layout-hashes.json`、
+`build/first-person-input-csnoqffn/summary.json`。实际发布目录仍为 `build/release`。

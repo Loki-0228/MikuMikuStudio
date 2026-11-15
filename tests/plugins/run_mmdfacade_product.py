@@ -37,7 +37,7 @@ def main():
                 shutil.copy2(build / 'Release' / dll, directory / destination)
             provider = directory / layout / 'MMDPlugin.dll'
             provider.parent.mkdir(parents=True)
-            shutil.copy2(build / 'Release/legacy-mmdplugin/MMDPlugin.dll', provider)
+            shutil.copy2(build / 'Release/PLUGINS/legacy-mmdplugin/MMDPlugin.dll', provider)
             package = directory / 'PLUGINS/utility'
             package.mkdir(parents=True)
             shutil.copy2(args.utility, package / 'MMDUtility.dll')

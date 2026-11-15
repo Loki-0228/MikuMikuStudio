@@ -20,7 +20,7 @@ BUILD_FILES = (
     "MikuMikuDance.exe",
     "MMDFacade.dll",
     "MMHack.dll",
-    "legacy-mmdplugin/MMDPlugin.dll",
+    "PLUGINS/legacy-mmdplugin/MMDPlugin.dll",
     "optional-plugins/first-person-camera/MMSFirstPersonCamera.dll",
 )
 CAMERA_DIR = "optional-plugins/first-person-camera"
@@ -40,7 +40,11 @@ DEFAULT_BUILD = Path("build/cmake")
 DEFAULT_RELEASE = Path("build/release")
 DEFAULT_TEMPLATE = Path("build/packages/mms-adaptive-ui-template.zip")
 PACKAGE_FILES = frozenset((*BUILD_FILES, *REPO_FILES, *EXTRA_FILES, f"{CAMERA_DIR}/plugin.json", DEFAULT_TEMPLATE.name))
-PACKAGE_DIRS = frozenset(("legacy-mmdplugin", "PLUGINS", "licenses", "optional-plugins", CAMERA_DIR))
+PACKAGE_DIRS = frozenset(("PLUGINS/legacy-mmdplugin", "PLUGINS", "licenses", "optional-plugins", CAMERA_DIR))
+# Recognize only the previous package-owned provider when rebuilding staging.
+# New output never contains this old location, and adjacent user files still fail.
+PREVIOUS_PACKAGE_FILES = frozenset(("legacy-mmdplugin/MMDPlugin.dll",))
+PREVIOUS_PACKAGE_DIRS = frozenset(("legacy-mmdplugin",))
 
 
 def cache_value(cache: str, name: str) -> str:
@@ -101,8 +105,8 @@ def check_release(release: Path, force: bool) -> None:
     for path in release.rglob("*"):
         name = path.relative_to(release).as_posix()
         if (is_link(path)
-                or not ((path.is_dir() and name in PACKAGE_DIRS)
-                        or (path.is_file() and name in PACKAGE_FILES))):
+                or not ((path.is_dir() and name in PACKAGE_DIRS | PREVIOUS_PACKAGE_DIRS)
+                        or (path.is_file() and name in PACKAGE_FILES | PREVIOUS_PACKAGE_FILES))):
             raise ValueError(f"发布目录含非打包文件，拒绝覆盖：{path}")
 
 

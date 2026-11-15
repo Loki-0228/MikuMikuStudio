@@ -20,7 +20,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools/package-abi-release.py"
 PRODUCT = (
-    "MikuMikuDance.exe", "MMDFacade.dll", "MMHack.dll", "legacy-mmdplugin/MMDPlugin.dll",
+    "MikuMikuDance.exe", "MMDFacade.dll", "MMHack.dll", "PLUGINS/legacy-mmdplugin/MMDPlugin.dll",
     "optional-plugins/first-person-camera/MMSFirstPersonCamera.dll",
 )
 FIXTURE_PAYLOAD = {
@@ -95,7 +95,7 @@ class PackageAbiTest(unittest.TestCase):
     def test_exact_files_and_hashes_with_build_and_repo_noise(self) -> None:
         for relative in ("build tree/Release/MMEffect.dll", "build tree/Release/MMSNvidiaAAFix.dll",
                          "build tree/Release/d3dx9_43.dll", "build tree/Release/MikuMikuDance.pdb",
-                         "build tree/Release/legacy-mmdplugin/raw-observer.dll",
+                         "build tree/Release/PLUGINS/legacy-mmdplugin/raw-observer.dll",
                          "PLUGINS/local-dev-plugin.dll", "licenses/local-notes.txt"):
             (self.root / relative).write_bytes(b"must not be copied")
         result = self.run_packager()
@@ -208,6 +208,22 @@ class PackageAbiTest(unittest.TestCase):
                 self.assertNotEqual(self.run_packager("--force", release=release).returncode, 0)
                 self.assertTrue((self.build / "Release/MMHack.dll").is_file())
 
+    def test_force_migrates_old_provider_without_removing_user_files(self) -> None:
+        old = self.release / "legacy-mmdplugin/MMDPlugin.dll"
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"previous provider")
+        extra = old.parent / "user-plugin.dll"
+        extra.write_bytes(b"preserve user plugin")
+        self.assertNotEqual(self.run_packager("--force").returncode, 0)
+        self.assertEqual(extra.read_bytes(), b"preserve user plugin")
+        self.assertEqual(old.read_bytes(), b"previous provider")
+        extra.unlink()
+        result = self.run_packager("--force")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(old.parent.exists())
+        provider = self.release / "PLUGINS/legacy-mmdplugin/MMDPlugin.dll"
+        self.assertEqual(provider.read_bytes(), (self.build / "Release" / provider.relative_to(self.release)).read_bytes())
+
     def load_core(self):
         spec = importlib.util.spec_from_file_location("abi_release_fixture", TOOL)
         tool = importlib.util.module_from_spec(spec)
@@ -273,7 +289,7 @@ class PackageAbiTest(unittest.TestCase):
 
     def test_linked_provider_is_not_copied(self) -> None:
         runtime = self.build / "Release"
-        provider = runtime / "legacy-mmdplugin"
+        provider = runtime / "PLUGINS/legacy-mmdplugin"
         outside = self.root / "other provider"
         provider.rename(outside)
         try:

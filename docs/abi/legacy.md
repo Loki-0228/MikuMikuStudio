@@ -40,7 +40,7 @@ DispPlayingFrame 的上游版本检查 MMD 9.31 并读取 `MMDMainData`。源码
 
 ### MMS 窗口观察插件包
 
-适配插件可将自编译的 x64 DLL 和 `plugin.json` 放在 MMS 安装目录的 `PLUGINS/<包目录>/`。MMS 自己构建的 `MMDPlugin.dll` 提供 `getHWND` 和 `createWM_APP_ID`，插件可链接该 DLL 的导入库。宿主以当前 EXE 所在目录为基准，优先使用 `PLUGINS/legacy-mmdplugin/MMDPlugin.dll`；仅在首选路径不存在时，才使用发行包原有的 `legacy-mmdplugin/MMDPlugin.dll`。首选路径存在但读取、校验或加载失败时不会回退。发行包仍只带原有位置的一份 DLL；如需采用首选位置，退出 MMS 后移动这份同一构建的 DLL 即可。
+适配插件可将自编译的 x64 DLL 和 `plugin.json` 放在 MMS 安装目录的 `PLUGINS/<包目录>/`。MMS 自己构建的 `MMDPlugin.dll` 提供 `getHWND` 和 `createWM_APP_ID`，插件可链接该 DLL 的导入库。宿主以当前 EXE 所在目录为基准，优先使用 `PLUGINS/legacy-mmdplugin/MMDPlugin.dll`；仅在首选路径不存在时，才使用发行包原有的 `legacy-mmdplugin/MMDPlugin.dll`。首选路径存在但读取、校验或加载失败时不会回退。新构建和发行包只在 `PLUGINS/legacy-mmdplugin/` 带一份 DLL；根目录旧位置仅保留为兼容回退。用户插件包可在 `PLUGINS` 内自行命名和分组，由 `maxDepth` 配置控制递归深度。
 
 提供者不从工作目录或各插件包里搜索。请勿把第三方 DLL 放入上述两个提供者位置。其他插件所需的原版 MMDPlugin 运行时依各自文档配置。MMDPlugin 与 MME 所需的 MMHack 分别配置；两条兼容路径都不要求 MMS 主程序使用固定文件名。
 
@@ -91,7 +91,7 @@ Pop-Location
 ```powershell
 python -B tests/plugins/run_legacy_observer_smoke.py `
     --exe 'build/cmake/Release/MikuMikuDance.exe' `
-    --provider 'build/cmake/Release/legacy-mmdplugin/MMDPlugin.dll' `
+    --provider 'build/cmake/Release/PLUGINS/legacy-mmdplugin/MMDPlugin.dll' `
     --sample "$sample/DispPlayingFrame.dll" `
     --output 'build/legacy-observer-smoke'
 ```

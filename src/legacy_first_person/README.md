@@ -4,7 +4,10 @@
 ABI 4 工厂及输入回调保留；原版的 `MMDMainData` 读写改为 MMS 明确提供的相机 API。
 原版 `MMDFirstPersonCamera.dll` 不能直接替换此文件，宿主会在调用其工厂前拒绝。
 
-退出 MMS，将本目录完整复制到 `<EXE>/PLUGINS/first-person-camera/`，然后启动。
+退出 MMS，将本插件包完整放入 `<EXE>/PLUGINS/` 内自己选择的目录，然后启动。
+包目录名称和分组不固定，例如 `PLUGINS/相机工具/第一人称/`，或直接把
+`optional-plugins` 整体移入 `PLUGINS`；MMS 会递归发现清单。
+默认扫描两层子目录，更深的分组按现有 `PLUGINS/config.json` 的 `maxDepth` 配置。
 `plugin.json` 的 SHA-256 必须与 DLL 一致。停用时在 `PLUGINS/config.json` 的
 `disabledPlugins` 中加入 `mms.legacy.first-person-camera`，重启生效。
 独立 `MMDPlugin.dll` 仍由主程序安装包提供，新旧提供者目录均受支持。

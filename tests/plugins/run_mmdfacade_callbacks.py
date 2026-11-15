@@ -26,7 +26,7 @@ def main():
                 if mode != 'missing':
                     provider = directory / layout / 'MMDPlugin.dll'
                     provider.parent.mkdir(parents=True)
-                    shutil.copy2(build / 'Release/legacy-mmdplugin/MMDPlugin.dll', provider)
+                    shutil.copy2(build / 'Release/PLUGINS/legacy-mmdplugin/MMDPlugin.dll', provider)
                 ids = []
                 for abi, dll, profile in [(2, 'reset.dll', 'device_reset_v2'), (3, 'observer.dll', 'window_observer_v3')]:
                     package = directory / 'PLUGINS' / f'fixture{abi}'
