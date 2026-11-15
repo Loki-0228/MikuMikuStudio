@@ -230,14 +230,14 @@ Result Export(MMDApp& app,const std::filesystem::path& path,const Options& optio
                         }
                         if(choice){
                             const auto material=uint32_t(std::stoul(mesh.name.substr(mesh.name.find("_material_")+10)));
-                            if(!choice->materials.empty()&&std::find(choice->materials.begin(),choice->materials.end(),material)==choice->materials.end())continue;
+                            if(!choice->materials.Allows(material))continue;
                             if(options.bakeIntoProject&&(!choice->materials.empty()||!choice->vertices.empty()||choice->selectedBoneVertices)){
                                 mesh.vertexPatch=true;
                                 if(mesh.sourceVertices.size()!=mesh.positions.size())throw std::runtime_error("This mesh has no source-vertex mapping for a partial bake");
                                 bool any=false;
                                 for(auto& vertex:mesh.sourceVertices){
                                     if(vertex==UINT32_MAX)throw std::runtime_error("Generated vertices cannot be partially baked without a source index; select the complete object");
-                                    bool selected=choice->vertices.empty()||std::find(choice->vertices.begin(),choice->vertices.end(),vertex)!=choice->vertices.end();
+                                    bool selected=choice->vertices.Allows(vertex);
                                     if(choice->selectedBoneVertices){
                                         if(!model)throw std::runtime_error("Accessories do not have bone-weight selections");
                                         const auto& m=*mdl::Mdl(app.ModelSlot(slot));if(vertex>=m.vertexCount)throw std::runtime_error("Source vertex index exceeds model geometry");

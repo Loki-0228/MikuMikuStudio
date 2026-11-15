@@ -185,7 +185,7 @@ MikuMikuDance.exe <测试输出绝对路径> extra
 MikuMikuDance.exe <测试输出绝对路径> varying
 ```
 
-每个运行目录需要 `Data`。`native` 和 `bone-vertices` 不放插件。后者核对选中骨骼顶点、材质及显式编号交集实际写入 ABC 的源顶点映射，并读取安装后的工程缓存；`mme` 放 MME 的 `d3d9.dll`、`MMEffect.dll`、`MMHack.dll`；`combined` 再放正式 `MMV.dll` 与 `MMV` 资源目录。`extra`、`varying` 使用 `build/tests/mmv-fixture/Release/MMV.dll`，分别验证追加几何与逐帧拓扑出现/消失。夹具 DLL 只用于测试，不放入正式运行目录。测试自行隐藏窗口，不读取桌面画面。
+每个运行目录需要 `Data`。`native` 和 `bone-vertices` 不放插件。后者核对选中骨骼顶点、材质及显式编号交集实际写入 ABC 的源顶点映射，并读取安装后的工程缓存。数字列表与界面区间写出相同的映射，纯 ABC 输出仍拒绝顶点区间；`mme` 放 MME 的 `d3d9.dll`、`MMEffect.dll`、`MMHack.dll`；`combined` 再放正式 `MMV.dll` 与 `MMV` 资源目录。`extra`、`varying` 使用 `build/tests/mmv-fixture/Release/MMV.dll`，分别验证追加几何与逐帧拓扑出现/消失。夹具 DLL 只用于测试，不放入正式运行目录。测试自行隐藏窗口，不读取桌面画面。
 
 2026-09-20 已在 Win32/x64 布局编译通过后删除临时 `build/layout-probe/`，同时清理 5 份旧 followup 日志，具体文件见清理清单 C08。正式布局约束保留在头文件断言中，测试源文件及现有测试构建目标全部保留（数量以实际文件与 CTest 清单为准，见上节）。之后产生的本地探针和迭代日志仍不应补加入 Git；清理前确认无需符号、失败日志和探针证据。
 

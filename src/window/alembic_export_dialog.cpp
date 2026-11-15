@@ -14,7 +14,6 @@
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/text_encoding.hpp"
 #include "mikumikustudio/channel_bake.hpp"
-#include <set>
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
@@ -120,17 +119,6 @@ std::wstring Wide(const std::string& input) {
 std::wstring EditText(HWND d,int id){const auto w=GetDlgItem(d,id);const int n=GetWindowTextLengthW(w);std::wstring s(size_t(n)+1,L'\0');GetWindowTextW(w,s.data(),n+1);s.resize(n);return s;}
 void StoreRow(HWND d,Context& c){if(c.row<0||size_t(c.row)>=c.rows.size())return;auto& r=c.rows[c.row];r.materials=EditText(d,Materials);r.vertices=EditText(d,Vertices);r.selection.selectedBoneVertices=IsDlgButtonChecked(d,BoneVertices)==BST_CHECKED;}
 void SelectRow(HWND d,Context& c,int row){StoreRow(d,c);c.row=row;if(row<0||size_t(row)>=c.rows.size())return;const auto& r=c.rows[row];SetDlgItemTextW(d,Materials,r.materials.c_str());SetDlgItemTextW(d,Vertices,r.vertices.c_str());CheckDlgButton(d,BoneVertices,r.selection.selectedBoneVertices?BST_CHECKED:BST_UNCHECKED);EnableWindow(GetDlgItem(d,BoneVertices),!r.selection.accessory);}
-bool Indices(const std::wstring& text,std::vector<uint32_t>& out){
-    std::set<uint32_t> values;const wchar_t* p=text.c_str();
-    while(*p){while(iswspace(*p)||*p==L',')++p;if(!*p)break;
-        if(!iswdigit(*p))return false;wchar_t* end=nullptr;const unsigned long first=wcstoul(p,&end,10);p=end;while(iswspace(*p))++p;unsigned long last=first;
-        if(*p==L'-'){++p;while(iswspace(*p))++p;if(!iswdigit(*p))return false;last=wcstoul(p,&end,10);p=end;}
-        if(last<first||last>16000000||last-first>16000000)return false;
-        for(uint32_t i=uint32_t(first);i<=last;++i)values.insert(i);
-        while(iswspace(*p))++p;if(*p&&*p!=L',')return false;
-    }
-    out.assign(values.begin(),values.end());return true;
-}
 void Run(HWND d,Context& c) {
     Options options;
     if(!Integer(d,First,options.firstFrame)||!Integer(d,Last,options.lastFrame)||options.lastFrame<options.firstFrame||
@@ -141,7 +129,7 @@ void Run(HWND d,Context& c) {
     StoreRow(d,c);options.explicitSelection=true;
     for(size_t i=0;i<c.rows.size();++i)if(ListView_GetCheckState(GetDlgItem(d,Objects),int(i))){
         auto selection=c.rows[i].selection;
-        if(!Indices(c.rows[i].materials,selection.materials)||!Indices(c.rows[i].vertices,selection.vertices)){
+        if(!IndexFilter::Parse(c.rows[i].materials,selection.materials)||!IndexFilter::Parse(c.rows[i].vertices,selection.vertices)){
             SetDlgItemTextW(d,Status,Text(c,L"编号格式：0,2,5-10；留空表示全部。",L"Use indices such as 0,2,5-10; leave blank for all.",L"番号は 0,2,5-10。空欄はすべてです。"));return;
         }
         options.selection.push_back(std::move(selection));

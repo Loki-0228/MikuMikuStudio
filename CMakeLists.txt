@@ -651,6 +651,11 @@ target_include_directories(mesh_bake_bone_selection_tests PRIVATE include src)
 set_target_properties(mesh_bake_bone_selection_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 add_test(NAME mesh_bake_bone_selection_regressions COMMAND mesh_bake_bone_selection_tests)
 
+add_executable(mesh_bake_index_filter_tests EXCLUDE_FROM_ALL tests/mesh_bake_index_filter_tests.cpp)
+target_include_directories(mesh_bake_index_filter_tests PRIVATE include)
+set_target_properties(mesh_bake_index_filter_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
+add_test(NAME mesh_bake_index_filter_regressions COMMAND mesh_bake_index_filter_tests)
+
 add_executable(model_geometry_cache_tests EXCLUDE_FROM_ALL
     tests/model_geometry_cache_tests.cpp src/model/model_geometry_cache.cpp)
 target_include_directories(model_geometry_cache_tests PRIVATE include)

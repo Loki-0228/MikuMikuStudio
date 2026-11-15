@@ -406,6 +406,26 @@ void BoneSelectionRoundtrip(MMDApp& app,const std::filesystem::path& out){
     options.selection[0].materials={0};
     options.selection[0].vertices={0,1,3};
     checkBake(out/L"bone-vertices-intersection.abc",{{UINT32_MAX,1,0}});
+    Check(alembic_export::IndexFilter::Parse(L" 0-0 , 0 ",options.selection[0].materials) &&
+          alembic_export::IndexFilter::Parse(L"3,0 - 1,1",options.selection[0].vertices),
+          "parse the equivalent material and vertex ranges used by the dialog");
+    checkBake(out/L"bone-vertices-range-intersection.abc",{{UINT32_MAX,1,0}});
+
+    options.bakeIntoProject=false;
+    options.selection[0].selectedBoneVertices=false;
+    const auto refusedPath=out/L"abc-vertex-filter.abc";
+    std::ofstream(refusedPath)<<"keep";
+    const auto refused=alembic_export::Export(app,refusedPath,options);
+    Check(!refused.success&&!refused.abcWritten&&!refused.baked&&
+          refused.error.find("Vertex-range filters require native project baking")!=std::string::npos,
+          "ABC-only preflight refuses a compact explicit vertex range");
+    std::ifstream old(refusedPath);std::string contents;old>>contents;
+    Check(contents=="keep"&&mesh_bake_cache::Empty(),"preflight leaves the target and project cache unchanged");
+
+    options.selection[0].vertices={};
+    const auto materialOnly=alembic_export::Export(app,out/L"abc-material-filter.abc",options);
+    Check(materialOnly.success&&materialOnly.abcWritten&&!materialOnly.baked&&materialOnly.meshes==1,
+          "ABC-only output still supports compact material filters");
 }
 void KeyframeMenuState(MMDApp& app,bool enabled,const char* context){
     bake::RefreshMenu(&app);
