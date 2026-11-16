@@ -141,6 +141,10 @@ void Test(const fs::path& root, const fs::path& source) {
         CHECK(plugin.observe()->query == MMS_OK && optedOut.observe()->query == MMS_E_NOT_FOUND);
         CHECK(plugin.observe()->createRead == MMS_E_NOT_FOUND);
         CHECK(plugin.observe()->startMerge == MMS_E_BUSY && plugin.observe()->eventRead == MMS_E_BUSY);
+        // Dispatch queued plugin-startup registry notifications before exercising settings.
+        manager.Drain();
+        const auto ownerEvents = plugin.observe()->unexpectedEvents;
+        const auto optedOutEvents = optedOut.observe()->unexpectedEvents;
         const auto prefsRevision = manager.Ui().PreferencesRevision();
         CHECK(!manager.Storage().Prepared() && manager.Storage().Records().empty());
         CHECK(ReadFile(settings) == initial);
@@ -183,7 +187,8 @@ void Test(const fs::path& root, const fs::path& source) {
         CHECK(ReadFile(settings) == beforeConflict);
         CHECK(plugin.Merge(manager, R"({ "count":7, "view":{"mode":"light","future":true} })",
             R"({"view":{"mode":"dark"}})") == MMS_OK);
-        CHECK(plugin.observe()->unexpectedEvents == 0 && optedOut.observe()->unexpectedEvents == 0);
+        CHECK(plugin.observe()->unexpectedEvents == ownerEvents &&
+            optedOut.observe()->unexpectedEvents == optedOutEvents);
         CHECK(manager.Ui().PreferencesRevision() == prefsRevision);
         CHECK(!manager.Storage().Prepared() && manager.Storage().Records().empty());
         SettingsFixtureRequest cancelled{};
@@ -203,6 +208,9 @@ void Test(const fs::path& root, const fs::path& source) {
         CHECK(FindStatus(manager, owner).stage == "started" && FindStatus(manager, other).stage == "started");
         const Plugin plugin(ownerDll), second(otherDll);
         CHECK(plugin.observe()->createRead == MMS_OK && second.observe()->createRead == MMS_OK);
+        manager.Drain();
+        const auto ownerEvents = plugin.observe()->unexpectedEvents;
+        const auto secondEvents = second.observe()->unexpectedEvents;
         const auto loaded = Json::Parse(plugin.Read(manager));
         CHECK(loaded.At("view").At("mode").String() == "dark");
         CHECK(loaded.At("view").At("future").text == "true" && loaded.At("count").UInt() == 7);
@@ -214,7 +222,8 @@ void Test(const fs::path& root, const fs::path& source) {
         CHECK(plugin.Merge(manager, ownerBaseline, R"({"count":8})") == MMS_OK);
         CHECK(Json::Parse(second.Read(manager)).At("secondWrite").UInt() == 9 &&
             !Json::Parse(second.Read(manager)).object.count("count"));
-        CHECK(plugin.observe()->unexpectedEvents == 0 && second.observe()->unexpectedEvents == 0);
+        CHECK(plugin.observe()->unexpectedEvents == ownerEvents &&
+            second.observe()->unexpectedEvents == secondEvents);
         CHECK(manager.Stop());
     }
 

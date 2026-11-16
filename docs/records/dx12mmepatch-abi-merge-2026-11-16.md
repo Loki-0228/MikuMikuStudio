@@ -16,11 +16,13 @@
 | 原版 FirstPersonCamera、Effekseer、MME 的复制安装控制 | 9/9；原版字节与用户配置不变；含黑名单、DX9、中文目录、错误弹框 | `patch-copy-ft1xfbj1/summary.json` |
 | 不带参数的正式 EXE，3 种名称 × 3 种组件布局 | 9/9；实际 On12、菜单、停止/销毁和退出 | `mmdfacade-product-o5obwipv/summary.json` |
 | MME 启动协议 | 8/8 | `validation/facade-copy-install/abi-services.log` |
-| 全局设置管理器测试 | 1 项既有失败，不能记为通过；未合并的 abi 基线同样失败于第 186 行的事件计数断言 | `abi-services.log`、`abi-control-settings.log`（均在上述验证目录） |
+| 全局设置管理器测试 | 修复前，未合并基线与整合版本均失败于第 186 行；用户随后要求修复，修复后 185 个检查通过，连同后端协议合计 9/9 | `abi-services.log`、`abi-control-settings.log`、`settings-fixed-services-final.log`（均在上述验证目录） |
 
 首个原版三插件场景的 Effekseer 像素差为 1040，Reset、重启后均为 1040；窗口消息/相机内存同步通过。正式 EXE 的 MMDUtility 是未改上游源码构建的 ABI 3 测试样本，仍不冒充原版发布 DLL。系统级 SendInput、原版 FXAA 和物理 GPU 掉线没有新增验证。
 
-为核实设置失败，单独检出未合并的 `4660740` 到 `build/abi-copy-control-src`，构建并运行同一测试，复现相同断言。主工作区已有另一会话对该测试的修改，未纳入本次提交。
+为核实设置失败，单独检出未合并的 `4660740` 到 `build/abi-copy-control-src`，构建并运行同一测试，复现相同断言。用户随后明确要求修复，核对并采用主工作区已有的这一个测试文件的修正，其余无关修改仍不提交。
+
+失败原因是插件启动时的 UI 注册表通知仍在队列里，首次设置操作处理队列后，旧断言误把启动通知算成设置操作产生的事件。修复在两次启动后先 Drain，记录各插件的事件计数，再断言设置操作没有新增事件；读写、线程、锁定、冲突、隔离和销毁检查仍保留。没有修改宿主事件行为，也没有直接删除断言。复制文件保留旧时间戳，首次增量构建未重新编译；刷新测试源码时间后重新构建并验证，最终日志为 `settings-fix-build-final.log` 和 `settings-fixed-services-final.log`。
 
 ## 安装
 

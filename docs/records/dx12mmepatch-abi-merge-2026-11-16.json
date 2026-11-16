@@ -191,11 +191,15 @@
   },
   "startupProtocolPassed": 8,
   "settingsManager": {
-    "passed": false,
+    "passed": true,
     "baselineAlsoFails": true,
     "assertion": "settings_manager_tests.cpp:186 unexpectedEvents == 0",
     "baselineLog": "D:\\MMD-Next\\MMS-ABI-integration\\build\\validation\\facade-copy-install\\abi-control-settings.log",
-    "integratedLog": "D:\\MMD-Next\\MMS-ABI-integration\\build\\validation\\facade-copy-install\\abi-services.log"
+    "integratedLog": "D:\\MMD-Next\\MMS-ABI-integration\\build\\validation\\facade-copy-install\\abi-services.log",
+    "beforeFixPassed": false,
+    "checks": 185,
+    "fixedLog": "D:\\MMD-Next\\MMS-ABI-integration\\build\\validation\\facade-copy-install\\settings-fixed-services-final.log",
+    "fix": "Drain startup registry notifications and compare event deltas during settings operations"
   },
   "artifacts": [
     {
