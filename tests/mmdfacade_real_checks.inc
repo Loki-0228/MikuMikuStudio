@@ -35,7 +35,10 @@ size_t Difference(const std::vector<uint32_t>& a,const std::vector<uint32_t>& b)
 }
 void Run(MMDApp* app,const wchar_t* effect) {
     const auto dialogHook=SetWindowsHookExW(WH_CBT,RejectDialog,nullptr,GetCurrentThreadId());
-    Check(GetModuleHandleW(L"MMSFirstPersonCamera.dll") && GetModuleHandleW(L"EffekseerForMMD.dll"),"both real plugins started");
+    const bool original = GetEnvironmentVariableW(L"MMDFACADE_TEST_ORIGINAL_CAMERA", nullptr, 0) != 0;
+    const auto cameraName = original ? L"MMDFirstPersonCamera.dll" : L"MMSFirstPersonCamera.dll";
+    BYTE savedKeys[256]{}, keys[256]{}; GetKeyboardState(savedKeys); SetKeyboardState(keys);
+    Check(GetModuleHandleW(cameraName) && GetModuleHandleW(L"EffekseerForMMD.dll"),"both real plugins started");
     Check(plugins::LegacyMmeStatus().loaded || GetEnvironmentVariableW(L"MMDFACADE_TEST_NO_MME",nullptr,0),"MME coexistence control");
     if(GetEnvironmentVariableW(L"MMDFACADE_TEST_MME_OFF",nullptr,0))
         SendMessageW(app->MainWindow(),WM_COMMAND,40006,0);
@@ -43,20 +46,25 @@ void Run(MMDApp* app,const wchar_t* effect) {
     app->CameraPositionX()=app->CameraPositionY()=app->CameraPositionZ()=0;
     SetFocus(app->MainWindow());
     SendMessageW(app->MainWindow(),WM_KEYDOWN,'W',1);
-    Check(std::abs(app->CameraPositionZ()-1)<.0001f,"real window routes camera W");
+    Check(std::abs(app->CameraPositionZ()-(original ? 4.f : 1.f))<.0001f,"real window routes camera W");
     SendMessageW(app->MainWindow(),WM_KEYUP,'W',LPARAM(1)<<31);
-    Check(std::abs(app->CameraPositionZ()-1)<.0001f,"real window ignores key release");
+    Check(std::abs(app->CameraPositionZ()-(original ? 8.f : 1.f))<.0001f,"real window preserves actual plugin key release behavior");
     { FrameSceneOutputScope viewport(app); Check(viewport.Ready(),"hidden camera viewport scope");
     const auto rect=app->ViewportRect(); const POINT p{(rect.left+rect.right)/2,(rect.top+rect.bottom)/2};
+    POINT originalCursor{}; GetCursorPos(&originalCursor);
     SendMessageW(app->MainWindow(),WM_LBUTTONDOWN,MK_LBUTTON,MAKELPARAM(p.x,p.y));
     std::printf("camera viewport=%ld,%ld,%ld,%ld capture=%d\n",rect.left,rect.top,rect.right,rect.bottom,GetCapture()==app->MainWindow());
     SendMessageW(app->MainWindow(),WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM(p.x+50,p.y+25));
     std::printf("camera mouse yaw=%g pitch=%g capture=%d\n",app->CameraYaw(),app->CameraPitch(),GetCapture()==app->MainWindow());
-    Check(std::abs(app->CameraYaw()+.1f)<.0001f && std::abs(app->CameraPitch()+.05f)<.0001f,"real window routes camera mouse look");
+    POINT end{p.x+50,p.y+25}; ClientToScreen(app->MainWindow(), &end);
+    const float yaw = original ? -(end.x-originalCursor.x)/500.f : -.1f;
+    const float pitch = original ? -(end.y-originalCursor.y)/500.f : -.05f;
+    Check(std::abs(app->CameraYaw()-yaw)<.0001f && std::abs(app->CameraPitch()-pitch)<.0001f,"real window routes camera mouse look");
     SendMessageW(app->MainWindow(),WM_CANCELMODE,0,0);
     Check(!GetCapture(),"real window releases camera capture");
     }
     std::puts("PASS real window camera keyboard and mouse routing");
+    SetKeyboardState(savedKeys);
     LoadModelFile(app,effect,false);
     auto* raw=static_cast<unsigned char*>(app->ModelSlot(0));
     Check(raw!=nullptr,"explicit .efk model import");
@@ -80,6 +88,27 @@ void Run(MMDApp* app,const wchar_t* effect) {
     };
     for(int frame=0;frame<=20;++frame) render(frame);
     Check(dialogs==0,"unexpected plugin error dialog");
+    // IID from the installed Windows SDK d3d9on12.h. Query the actual MME device.
+    constexpr GUID on12Id{0xe7fda234,0xb589,0x4049,{0x94,0x0d,0x88,0x78,0x97,0x75,0x31,0xc8}};
+    D3DDEVICE_CREATION_PARAMETERS creation{};
+    D3DADAPTER_IDENTIFIER9 adapter{};
+    Check(SUCCEEDED(app->Renderer()->device->GetCreationParameters(&creation)) &&
+        SUCCEEDED(app->Renderer()->d3d9->GetAdapterIdentifier(creation.AdapterOrdinal, 0, &adapter)), "query active render adapter");
+    std::printf("ADAPTER ordinal=%u vendor=%04x device=%04x name=%s\n", creation.AdapterOrdinal, adapter.VendorId, adapter.DeviceId, adapter.Description);
+    IDirect3DDevice9On12* on12 = nullptr;
+    const HRESULT backend = app->Renderer()->device->QueryInterface(on12Id, reinterpret_cast<void**>(&on12));
+    if (on12) {
+        ID3D12Device* gpu = nullptr;
+        Check(SUCCEEDED(on12->GetD3D12Device(IID_PPV_ARGS(&gpu))) && gpu, "query actual D3D12 device in integration test");
+        const auto luid = gpu->GetAdapterLuid();
+        std::printf("D3D12_ADAPTER luid=%08x:%08x\n", unsigned(luid.HighPart), unsigned(luid.LowPart));
+        gpu->Release(); on12->Release();
+    }
+    std::printf("BACKEND native=%s mmeDeviceOn12=%08lx\n", D3D12NativeStatus(), static_cast<unsigned long>(backend));
+    if (GetEnvironmentVariableW(L"MMDFACADE_TEST_REQUIRE_ON12", nullptr, 0))
+        Check(SUCCEEDED(backend) && plugins::MmeRenderStatus().actualBackend == MMS_MME_BACKEND_D3D9ON12,
+            "requested DX12 must include actual ID3D12Device and shared original MME device");
+    const bool dx12Requested = std::strcmp(D3D12NativeStatus(), "disabled") != 0;
     const auto enabled=Pixels(app,L"effekseer-enabled.ppm");
     if (!plugins::LegacyMmeStatus().loaded) {
         D3DPRESENT_PARAMETERS invalid{}; invalid.Windowed=TRUE;
@@ -90,11 +119,14 @@ void Run(MMDApp* app,const wchar_t* effect) {
     render(20);
     const auto reset=Pixels(app,L"effekseer-reset.ppm");
     legacy_mmd_plugin::Stop();
-    Check(!GetModuleHandleW(L"EffekseerForMMD.dll") && !GetModuleHandleW(L"MMSFirstPersonCamera.dll"),"real plugins unloaded");
+    Check(!GetModuleHandleW(L"EffekseerForMMD.dll") && !GetModuleHandleW(cameraName),"real plugins unloaded");
+    // Compare pixels on the same D3D9 output surface, including the disabled control.
+    EnableD3D12Native(false);
     render(20);
     const auto disabled=Pixels(app,L"effekseer-disabled.ppm");
     std::printf("Effekseer rendered difference enabled=%zu reset=%zu\n",Difference(enabled,disabled),Difference(reset,disabled));
     Check(Difference(enabled,disabled)>100 && Difference(reset,disabled)>100,"real effect draws before and after D3D9 reset");
+    EnableD3D12Native(dx12Requested);
     legacy_mmd_plugin::Start(app);
     for(int frame=0;frame<=20;++frame) render(frame);
     const auto restarted=Pixels(app,L"effekseer-restarted.ppm");

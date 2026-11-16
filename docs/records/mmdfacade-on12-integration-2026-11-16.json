@@ -1,0 +1,1298 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-16",
+  "branch": "feature/mmdfacade-original-camera",
+  "baseCommit": "bfd235d3906d1909b78718c317972d8589d4a968",
+  "patchBridgeSource": "2a7619c9e53356e30de17cef1a0de4ddb2a2d4e5",
+  "results": {
+    "originalOn12": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-tdfyahrs\\summary.json",
+      "result": {
+        "passed": true,
+        "cases": [
+          {
+            "patch": "..\\facade-original-build\\Release\\PLUGINS\\patch4mms",
+            "patchDisabled": false,
+            "backend": "dx12",
+            "requireOn12": true,
+            "sendInput": false,
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-tdfyahrs\\0",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          },
+          {
+            "patch": "..\\facade-original-build\\Release\\PLUGINS\\patch4mms",
+            "patchDisabled": false,
+            "backend": "dx12",
+            "requireOn12": true,
+            "sendInput": false,
+            "exe": "Renamed Studio.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-tdfyahrs\\1",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          },
+          {
+            "patch": "..\\facade-original-build\\Release\\PLUGINS\\patch4mms",
+            "patchDisabled": false,
+            "backend": "dx12",
+            "requireOn12": true,
+            "sendInput": false,
+            "exe": "中文工作室.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-tdfyahrs\\2",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          },
+          {
+            "patch": "..\\facade-original-build\\Release\\PLUGINS\\patch4mms",
+            "patchDisabled": false,
+            "backend": "dx12",
+            "requireOn12": true,
+            "sendInput": false,
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-tdfyahrs\\3",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          },
+          {
+            "patch": "..\\facade-original-build\\Release\\PLUGINS\\patch4mms",
+            "patchDisabled": false,
+            "backend": "dx12",
+            "requireOn12": true,
+            "sendInput": false,
+            "exe": "Renamed Studio.exe",
+            "layout": "PLUGINS/legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-tdfyahrs\\4",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          },
+          {
+            "patch": "..\\facade-original-build\\Release\\PLUGINS\\patch4mms",
+            "patchDisabled": false,
+            "backend": "dx12",
+            "requireOn12": true,
+            "sendInput": false,
+            "exe": "中文工作室.exe",
+            "layout": "PLUGINS/legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-tdfyahrs\\5",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          },
+          {
+            "patch": "..\\facade-original-build\\Release\\PLUGINS\\patch4mms",
+            "patchDisabled": false,
+            "backend": "dx12",
+            "requireOn12": true,
+            "sendInput": false,
+            "exe": "MikuMikuDance.exe",
+            "layout": "legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-tdfyahrs\\6",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          },
+          {
+            "patch": "..\\facade-original-build\\Release\\PLUGINS\\patch4mms",
+            "patchDisabled": false,
+            "backend": "dx12",
+            "requireOn12": true,
+            "sendInput": false,
+            "exe": "Renamed Studio.exe",
+            "layout": "legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-tdfyahrs\\7",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          },
+          {
+            "patch": "..\\facade-original-build\\Release\\PLUGINS\\patch4mms",
+            "patchDisabled": false,
+            "backend": "dx12",
+            "requireOn12": true,
+            "sendInput": false,
+            "exe": "中文工作室.exe",
+            "layout": "legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-tdfyahrs\\8",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          }
+        ]
+      }
+    },
+    "mmePixels": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-src\\build\\verification\\legacy-mme-n_3r2n8b\\summary.json",
+      "result": {
+        "root": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-src\\build\\verification\\legacy-mme-n_3r2n8b",
+        "originals": {
+          "MMHack.dll": "e450b25e5cd2bcf125ca4b8eb9e57f858ec3ca379633c7d25f9dd40e864b390d",
+          "MMEffect.dll": "74b3f5882a3bad28131cbc57994e2f960938e6ca850fc7139018ce4822bd87dc"
+        },
+        "cases": [
+          {
+            "executable": "MikuMikuDance.exe",
+            "hostHash": "28ceba9d8ef03af4fd6fd463e375d28daef095b694a1885a2fb760972490db72",
+            "adapterHash": "243cd960ab0dc44b1e1a6238ec73a12b80f7337446c1e8591b3329b1f31229d6",
+            "exitCode": 0,
+            "sourceCopiesUnchanged": true,
+            "settingsRemainInData": true,
+            "passed": true,
+            "actualDeviceOn12": true,
+            "cacheDlls": [
+              "data\\plugins\\legacy_mme\\e3f3e0b6a0aa6a2dc294d8738b362ab5cda71ed707580de28771c3ef6dedca1c\\MMDFacade.dll",
+              "data\\plugins\\legacy_mme\\e3f3e0b6a0aa6a2dc294d8738b362ab5cda71ed707580de28771c3ef6dedca1c\\MMEffect.dll",
+              "data\\plugins\\legacy_mme\\e3f3e0b6a0aa6a2dc294d8738b362ab5cda71ed707580de28771c3ef6dedca1c\\MMHack.dll"
+            ],
+            "stableSettings": true,
+            "upgradeExitCode": 0,
+            "upgradeRetainedSettings": true,
+            "lockedPreferencesRefused": true,
+            "unattributedPreferencesRefused": true,
+            "hardlinkedPreferencesRefused": true
+          },
+          {
+            "executable": "An arbitrarily named MMS.exe",
+            "hostHash": "28ceba9d8ef03af4fd6fd463e375d28daef095b694a1885a2fb760972490db72",
+            "adapterHash": "243cd960ab0dc44b1e1a6238ec73a12b80f7337446c1e8591b3329b1f31229d6",
+            "exitCode": 0,
+            "sourceCopiesUnchanged": true,
+            "settingsRemainInData": true,
+            "passed": true,
+            "actualDeviceOn12": true,
+            "cacheDlls": [
+              "data\\plugins\\legacy_mme\\e3f3e0b6a0aa6a2dc294d8738b362ab5cda71ed707580de28771c3ef6dedca1c\\MMDFacade.dll",
+              "data\\plugins\\legacy_mme\\e3f3e0b6a0aa6a2dc294d8738b362ab5cda71ed707580de28771c3ef6dedca1c\\MMEffect.dll",
+              "data\\plugins\\legacy_mme\\e3f3e0b6a0aa6a2dc294d8738b362ab5cda71ed707580de28771c3ef6dedca1c\\MMHack.dll"
+            ],
+            "stableSettings": true,
+            "upgradeExitCode": 0,
+            "upgradeRetainedSettings": true
+          },
+          {
+            "executable": "自定义名字的MMS.exe",
+            "hostHash": "28ceba9d8ef03af4fd6fd463e375d28daef095b694a1885a2fb760972490db72",
+            "adapterHash": "243cd960ab0dc44b1e1a6238ec73a12b80f7337446c1e8591b3329b1f31229d6",
+            "exitCode": 0,
+            "sourceCopiesUnchanged": true,
+            "settingsRemainInData": true,
+            "passed": true,
+            "actualDeviceOn12": true,
+            "cacheDlls": [
+              "data\\plugins\\legacy_mme\\e3f3e0b6a0aa6a2dc294d8738b362ab5cda71ed707580de28771c3ef6dedca1c\\MMDFacade.dll",
+              "data\\plugins\\legacy_mme\\e3f3e0b6a0aa6a2dc294d8738b362ab5cda71ed707580de28771c3ef6dedca1c\\MMEffect.dll",
+              "data\\plugins\\legacy_mme\\e3f3e0b6a0aa6a2dc294d8738b362ab5cda71ed707580de28771c3ef6dedca1c\\MMHack.dll"
+            ],
+            "stableSettings": true,
+            "upgradeExitCode": 0,
+            "upgradeRetainedSettings": true
+          }
+        ],
+        "originalsUnchanged": true,
+        "passed": true
+      }
+    },
+    "product": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-d18dl4wd\\summary.json",
+      "result": {
+        "passed": true,
+        "cases": [
+          {
+            "backendRequested": "dx12",
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-d18dl4wd\\0",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "actualOn12": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "Renamed Studio.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-d18dl4wd\\1",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "actualOn12": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "中文工作室.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-d18dl4wd\\2",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "actualOn12": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-d18dl4wd\\3",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "actualOn12": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "Renamed Studio.exe",
+            "layout": "PLUGINS/legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-d18dl4wd\\4",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "actualOn12": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "中文工作室.exe",
+            "layout": "PLUGINS/legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-d18dl4wd\\5",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "actualOn12": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "MikuMikuDance.exe",
+            "layout": "legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-d18dl4wd\\6",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "actualOn12": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "Renamed Studio.exe",
+            "layout": "legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-d18dl4wd\\7",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "actualOn12": true,
+            "exitCode": 0
+          },
+          {
+            "backendRequested": "dx12",
+            "exe": "中文工作室.exe",
+            "layout": "legacy-mmdplugin",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-d18dl4wd\\8",
+            "passed": true,
+            "terminated": false,
+            "menuPresent": true,
+            "mmeLoaded": true,
+            "actualOn12": true,
+            "exitCode": 0
+          }
+        ],
+        "utilitySha256": "c778de083c77a6850b56f98ac8f056d0e8c104c833f24aea420d4715a87612c5"
+      }
+    },
+    "deviceLoss": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\summary.json",
+      "result": [
+        {
+          "actualOn12": true,
+          "entry": "frame",
+          "scenario": "lost-ready",
+          "exe": "MikuMikuDance.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\0",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "frame",
+            "case": "lost-ready",
+            "mode": "windowed",
+            "wall_ms": 39.194,
+            "thread_cpu_ms": 0.0,
+            "presents": 1,
+            "cooperatives": 3,
+            "resets": 0,
+            "begin_scenes": 1,
+            "readbacks": 0,
+            "copies": 0,
+            "background_copies": 0,
+            "state_calls": 11,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 0,
+            "first_count": 0,
+            "final_count": 0,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "actualOn12": true,
+          "entry": "frame",
+          "scenario": "lost-reset",
+          "exe": "Renamed Studio.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\1",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "frame",
+            "case": "lost-reset",
+            "mode": "windowed",
+            "wall_ms": 223.693,
+            "thread_cpu_ms": 0.0,
+            "presents": 1,
+            "cooperatives": 14,
+            "resets": 1,
+            "begin_scenes": 1,
+            "readbacks": 0,
+            "copies": 0,
+            "background_copies": 0,
+            "state_calls": 16,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 0,
+            "first_count": 0,
+            "final_count": 0,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "actualOn12": true,
+          "entry": "frame",
+          "scenario": "reset-fail",
+          "exe": "中文工作室.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\2",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "frame",
+            "case": "reset-fail",
+            "mode": "windowed",
+            "wall_ms": 19.488,
+            "thread_cpu_ms": 0.0,
+            "presents": 2,
+            "cooperatives": 3,
+            "resets": 3,
+            "begin_scenes": 2,
+            "readbacks": 0,
+            "copies": 0,
+            "background_copies": 0,
+            "state_calls": 28,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 0,
+            "first_count": 0,
+            "final_count": 0,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "actualOn12": true,
+          "entry": "frame",
+          "scenario": "fatal",
+          "exe": "MikuMikuDance.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\3",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "frame",
+            "case": "fatal",
+            "mode": "windowed",
+            "wall_ms": 7.827,
+            "thread_cpu_ms": 0.0,
+            "presents": 1,
+            "cooperatives": 2,
+            "resets": 0,
+            "begin_scenes": 1,
+            "readbacks": 0,
+            "copies": 0,
+            "background_copies": 0,
+            "state_calls": 11,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 0,
+            "first_count": 0,
+            "final_count": 0,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "actualOn12": true,
+          "entry": "readback",
+          "scenario": "lost-ready",
+          "exe": "Renamed Studio.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\4",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "readback",
+            "case": "lost-ready",
+            "mode": "windowed",
+            "wall_ms": 61.5,
+            "thread_cpu_ms": 0.0,
+            "presents": 2,
+            "cooperatives": 3,
+            "resets": 0,
+            "begin_scenes": 0,
+            "readbacks": 1,
+            "copies": 1,
+            "background_copies": 0,
+            "state_calls": 1,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 7,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "actualOn12": true,
+          "entry": "readback",
+          "scenario": "lost-reset",
+          "exe": "中文工作室.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\5",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "readback",
+            "case": "lost-reset",
+            "mode": "windowed",
+            "wall_ms": 251.452,
+            "thread_cpu_ms": 15.625,
+            "presents": 2,
+            "cooperatives": 14,
+            "resets": 1,
+            "begin_scenes": 0,
+            "readbacks": 1,
+            "copies": 1,
+            "background_copies": 0,
+            "state_calls": 8,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 7,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "actualOn12": true,
+          "entry": "readback",
+          "scenario": "reset-fail",
+          "exe": "MikuMikuDance.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\6",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "readback",
+            "case": "reset-fail",
+            "mode": "windowed",
+            "wall_ms": 33.025,
+            "thread_cpu_ms": 15.625,
+            "presents": 2,
+            "cooperatives": 3,
+            "resets": 3,
+            "begin_scenes": 0,
+            "readbacks": 1,
+            "copies": 1,
+            "background_copies": 0,
+            "state_calls": 8,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 7,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "actualOn12": true,
+          "entry": "readback",
+          "scenario": "fatal",
+          "exe": "Renamed Studio.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\7",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "readback",
+            "case": "fatal",
+            "mode": "windowed",
+            "wall_ms": 0.983,
+            "thread_cpu_ms": 0.0,
+            "presents": 1,
+            "cooperatives": 2,
+            "resets": 0,
+            "begin_scenes": 0,
+            "readbacks": 0,
+            "copies": 0,
+            "background_copies": 0,
+            "state_calls": 1,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 7,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "actualOn12": true,
+          "entry": "record-frame",
+          "scenario": "lost-ready",
+          "exe": "中文工作室.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\8",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "record-frame",
+            "case": "lost-ready",
+            "mode": "windowed",
+            "wall_ms": 433.079,
+            "thread_cpu_ms": 15.625,
+            "presents": 3,
+            "cooperatives": 3,
+            "resets": 0,
+            "begin_scenes": 2,
+            "readbacks": 1,
+            "copies": 1,
+            "background_copies": 0,
+            "state_calls": 31,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 8,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "actualOn12": true,
+          "entry": "record-frame",
+          "scenario": "lost-reset",
+          "exe": "MikuMikuDance.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\9",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "record-frame",
+            "case": "lost-reset",
+            "mode": "windowed",
+            "wall_ms": 704.681,
+            "thread_cpu_ms": 468.75,
+            "presents": 3,
+            "cooperatives": 13,
+            "resets": 1,
+            "begin_scenes": 2,
+            "readbacks": 1,
+            "copies": 1,
+            "background_copies": 0,
+            "state_calls": 38,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 8,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "actualOn12": true,
+          "entry": "record-frame",
+          "scenario": "reset-fail",
+          "exe": "Renamed Studio.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\10",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "record-frame",
+            "case": "reset-fail",
+            "mode": "windowed",
+            "wall_ms": 451.64,
+            "thread_cpu_ms": 421.875,
+            "presents": 3,
+            "cooperatives": 3,
+            "resets": 3,
+            "begin_scenes": 2,
+            "readbacks": 1,
+            "copies": 1,
+            "background_copies": 0,
+            "state_calls": 38,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 8,
+            "failures": 0
+          },
+          "passed": true
+        },
+        {
+          "actualOn12": true,
+          "entry": "record-frame",
+          "scenario": "fatal",
+          "exe": "中文工作室.exe",
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\legacy-loss-gqhwv2vp\\11",
+          "originalPluginsStarted": true,
+          "exitCode": 0,
+          "measurements": {
+            "entry": "record-frame",
+            "case": "fatal",
+            "mode": "windowed",
+            "wall_ms": 5.702,
+            "thread_cpu_ms": 0.0,
+            "presents": 1,
+            "cooperatives": 2,
+            "resets": 0,
+            "begin_scenes": 1,
+            "readbacks": 0,
+            "copies": 0,
+            "background_copies": 0,
+            "state_calls": 15,
+            "invalid_copies": 0,
+            "stale_calls": 0,
+            "work_before_recovery": 0,
+            "driver_reset_calls": 0,
+            "driver_cooperatives": 0,
+            "initial_count": 7,
+            "first_count": 7,
+            "final_count": 7,
+            "failures": 0
+          },
+          "passed": true
+        }
+      ]
+    },
+    "controls": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-tq442sqd\\summary.json",
+      "result": [
+        {
+          "case": "dx9",
+          "passed": true,
+          "exitCode": 0,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-tq442sqd\\dx9",
+          "originalsUnchanged": true,
+          "actualBackend": 9,
+          "reason": 2
+        },
+        {
+          "case": "dx9-first",
+          "passed": true,
+          "exitCode": 0,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-tq442sqd\\dx9-first",
+          "originalsUnchanged": true,
+          "actualBackend": 9,
+          "reason": 2
+        },
+        {
+          "case": "dx9-last",
+          "passed": true,
+          "exitCode": 0,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-tq442sqd\\dx9-last",
+          "originalsUnchanged": true,
+          "actualBackend": 9,
+          "reason": 2
+        },
+        {
+          "case": "disabled",
+          "passed": true,
+          "exitCode": 0,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-tq442sqd\\disabled",
+          "originalsUnchanged": true,
+          "actualBackend": null,
+          "reason": null
+        },
+        {
+          "case": "uninstalled",
+          "passed": true,
+          "exitCode": 0,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-tq442sqd\\uninstalled",
+          "originalsUnchanged": true,
+          "actualBackend": null,
+          "reason": null
+        },
+        {
+          "case": "old-bridge",
+          "passed": true,
+          "exitCode": 0,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-tq442sqd\\old-bridge",
+          "originalsUnchanged": true,
+          "actualBackend": 9,
+          "reason": 5
+        },
+        {
+          "case": "missing-mme",
+          "passed": true,
+          "exitCode": 0,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-tq442sqd\\missing-mme",
+          "originalsUnchanged": true,
+          "actualBackend": 0,
+          "reason": 4
+        },
+        {
+          "case": "moved",
+          "passed": true,
+          "exitCode": 0,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-tq442sqd\\moved",
+          "originalsUnchanged": true,
+          "actualBackend": 12,
+          "reason": 1
+        },
+        {
+          "case": "corrupt-plugin",
+          "passed": true,
+          "exitCode": 8,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-tq442sqd\\corrupt-plugin",
+          "originalsUnchanged": true,
+          "actualBackend": null,
+          "reason": null
+        },
+        {
+          "case": "missing-entry",
+          "passed": true,
+          "exitCode": 8,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-tq442sqd\\missing-entry",
+          "originalsUnchanged": true,
+          "actualBackend": null,
+          "reason": null
+        },
+        {
+          "case": "missing-service",
+          "passed": true,
+          "exitCode": 8,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-tq442sqd\\missing-service",
+          "originalsUnchanged": true,
+          "actualBackend": null,
+          "reason": null
+        }
+      ]
+    },
+    "factoryFallback": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-29_nm0x5\\summary.json",
+      "result": [
+        {
+          "case": "factory-failure",
+          "passed": true,
+          "exitCode": 0,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-29_nm0x5\\0",
+          "originalsUnchanged": true,
+          "actualBackend": 9,
+          "reason": 6
+        }
+      ]
+    },
+    "deviceFallback": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-5rrsd44y\\summary.json",
+      "result": [
+        {
+          "case": "device-failure",
+          "passed": true,
+          "exitCode": 0,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-5rrsd44y\\0",
+          "originalsUnchanged": true,
+          "actualBackend": 9,
+          "reason": 7
+        }
+      ]
+    },
+    "configuration": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\validation\\facade-on12\\configuration.json",
+      "result": {
+        "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\validation\\facade-on12\\patch-config-1ix4ib2o",
+        "passed": true,
+        "cases": [
+          {
+            "action": "Enable",
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "action": "Enable",
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "action": "Disable",
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "action": "Enable",
+            "passed": true,
+            "exitCode": 0
+          },
+          {
+            "action": "preserve-invalid-config",
+            "passed": true,
+            "exitCode": 1
+          }
+        ]
+      }
+    },
+    "performance": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-abba-zn5si0ww\\summary.json",
+      "result": {
+        "dx9": {
+          "startupSeconds": 1.197633149999092,
+          "scenarioSeconds": 1.7884031000003233,
+          "cpuSeconds": 4.96875,
+          "sampledPeakWorkingSetMiB": 564.451171875
+        },
+        "dx12": {
+          "startupSeconds": 1.2690716000006432,
+          "scenarioSeconds": 1.8605056000005789,
+          "cpuSeconds": 1.6796875,
+          "sampledPeakWorkingSetMiB": 633.87109375
+        },
+        "pluginHashes": {
+          "LEGACY\\MMDPlugin.dll": "fa4fe16647642cd5e2a1623d958ab6bd7ea034ba4a3b5c43a91e90ff9e272588",
+          "patch4mms\\Patch4MMS.dll": "b239e4cf957e37e85f1ad126f31f7cfdc68abd9668e66bfab89a96f3aab8f96c",
+          "LEGACY\\mme\\MMEffect.dll": "74b3f5882a3bad28131cbc57994e2f960938e6ca850fc7139018ce4822bd87dc",
+          "LEGACY\\test.camera\\MMDFirstPersonCamera.dll": "d3515d48da411d15a55e09eefd9372fc4e9624405a4f1cf863d8dad5ce64a1ef",
+          "LEGACY\\test.effekseer\\EffekseerForMMD.dll": "2a7cf3d9afce099228168a1529589f48b5a232befa24cbaa4ab363756c11f532"
+        }
+      }
+    },
+    "performanceSamples": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-abba-zn5si0ww\\samples.json",
+      "result": [
+        {
+          "backend": "dx9",
+          "warmup": true,
+          "startupSeconds": 1.8115799999995943,
+          "scenarioSeconds": 2.423354599999584,
+          "cpuSeconds": 5.0,
+          "sampledPeakWorkingSetMiB": 565.5625,
+          "exitCode": 0,
+          "backendConfirmed": true
+        },
+        {
+          "backend": "dx12",
+          "warmup": true,
+          "startupSeconds": 1.7198097000000416,
+          "scenarioSeconds": 2.3315512999997736,
+          "cpuSeconds": 1.6875,
+          "sampledPeakWorkingSetMiB": 635.3046875,
+          "exitCode": 0,
+          "backendConfirmed": true
+        },
+        {
+          "backend": "dx9",
+          "warmup": false,
+          "startupSeconds": 1.233628600000884,
+          "scenarioSeconds": 1.846764500000063,
+          "cpuSeconds": 5.25,
+          "sampledPeakWorkingSetMiB": 564.39453125,
+          "exitCode": 0,
+          "backendConfirmed": true
+        },
+        {
+          "backend": "dx12",
+          "warmup": false,
+          "startupSeconds": 1.2661167000005662,
+          "scenarioSeconds": 1.837884500000655,
+          "cpuSeconds": 1.703125,
+          "sampledPeakWorkingSetMiB": 633.875,
+          "exitCode": 0,
+          "backendConfirmed": true
+        },
+        {
+          "backend": "dx12",
+          "warmup": false,
+          "startupSeconds": 1.213441400001102,
+          "scenarioSeconds": 1.8064332000012655,
+          "cpuSeconds": 1.625,
+          "sampledPeakWorkingSetMiB": 634.30078125,
+          "exitCode": 0,
+          "backendConfirmed": true
+        },
+        {
+          "backend": "dx9",
+          "warmup": false,
+          "startupSeconds": 1.194496899999649,
+          "scenarioSeconds": 1.7659512999998697,
+          "cpuSeconds": 4.9375,
+          "sampledPeakWorkingSetMiB": 564.5078125,
+          "exitCode": 0,
+          "backendConfirmed": true
+        },
+        {
+          "backend": "dx9",
+          "warmup": false,
+          "startupSeconds": 1.193804500000624,
+          "scenarioSeconds": 1.7848356000013155,
+          "cpuSeconds": 5.0,
+          "sampledPeakWorkingSetMiB": 564.96484375,
+          "exitCode": 0,
+          "backendConfirmed": true
+        },
+        {
+          "backend": "dx12",
+          "warmup": false,
+          "startupSeconds": 1.2720265000007203,
+          "scenarioSeconds": 1.8831267000005028,
+          "cpuSeconds": 1.75,
+          "sampledPeakWorkingSetMiB": 633.8671875,
+          "exitCode": 0,
+          "backendConfirmed": true
+        },
+        {
+          "backend": "dx12",
+          "warmup": false,
+          "startupSeconds": 1.3099877000004199,
+          "scenarioSeconds": 1.9040968999997858,
+          "cpuSeconds": 1.65625,
+          "sampledPeakWorkingSetMiB": 633.65234375,
+          "exitCode": 0,
+          "backendConfirmed": true
+        },
+        {
+          "backend": "dx9",
+          "warmup": false,
+          "startupSeconds": 1.200769399998535,
+          "scenarioSeconds": 1.7919705999993312,
+          "cpuSeconds": 4.9375,
+          "sampledPeakWorkingSetMiB": 563.55859375,
+          "exitCode": 0,
+          "backendConfirmed": true
+        }
+      ]
+    },
+    "exports": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\validation\\facade-on12\\exports.json",
+      "result": {
+        "MMDFacade.dll": {
+          "previous": {
+            "1": "ExpGetAcsDisp",
+            "2": "ExpGetAcsFilename",
+            "3": "ExpGetAcsID",
+            "4": "ExpGetAcsMatNum",
+            "5": "ExpGetAcsMaterial",
+            "6": "ExpGetAcsNum",
+            "7": "ExpGetAcsOrder",
+            "8": "ExpGetAcsRx",
+            "9": "ExpGetAcsRy",
+            "10": "ExpGetAcsRz",
+            "11": "ExpGetAcsSi",
+            "12": "ExpGetAcsTr",
+            "13": "ExpGetAcsWorldMat",
+            "14": "ExpGetAcsX",
+            "15": "ExpGetAcsY",
+            "16": "ExpGetAcsZ",
+            "17": "ExpGetCurrentMaterial",
+            "18": "ExpGetCurrentObject",
+            "19": "ExpGetCurrentTechnic",
+            "20": "ExpGetEnglishMode",
+            "21": "ExpGetFrameTime",
+            "22": "ExpGetPmdBoneName",
+            "23": "ExpGetPmdBoneNum",
+            "24": "ExpGetPmdBoneWorldMat",
+            "25": "ExpGetPmdDisp",
+            "26": "ExpGetPmdFilename",
+            "27": "ExpGetPmdID",
+            "28": "ExpGetPmdMatNum",
+            "29": "ExpGetPmdMaterial",
+            "30": "ExpGetPmdMorphName",
+            "31": "ExpGetPmdMorphNum",
+            "32": "ExpGetPmdMorphValue",
+            "33": "ExpGetPmdNum",
+            "34": "ExpGetPmdOrder",
+            "35": "ExpGetPreAcsNum",
+            "36": "ExpGetRenderRepeatCount",
+            "37": "ExpSetRenderRepeatCount"
+          },
+          "current": {
+            "1": "ExpGetAcsDisp",
+            "2": "ExpGetAcsFilename",
+            "3": "ExpGetAcsID",
+            "4": "ExpGetAcsMatNum",
+            "5": "ExpGetAcsMaterial",
+            "6": "ExpGetAcsNum",
+            "7": "ExpGetAcsOrder",
+            "8": "ExpGetAcsRx",
+            "9": "ExpGetAcsRy",
+            "10": "ExpGetAcsRz",
+            "11": "ExpGetAcsSi",
+            "12": "ExpGetAcsTr",
+            "13": "ExpGetAcsWorldMat",
+            "14": "ExpGetAcsX",
+            "15": "ExpGetAcsY",
+            "16": "ExpGetAcsZ",
+            "17": "ExpGetCurrentMaterial",
+            "18": "ExpGetCurrentObject",
+            "19": "ExpGetCurrentTechnic",
+            "20": "ExpGetEnglishMode",
+            "21": "ExpGetFrameTime",
+            "22": "ExpGetPmdBoneName",
+            "23": "ExpGetPmdBoneNum",
+            "24": "ExpGetPmdBoneWorldMat",
+            "25": "ExpGetPmdDisp",
+            "26": "ExpGetPmdFilename",
+            "27": "ExpGetPmdID",
+            "28": "ExpGetPmdMatNum",
+            "29": "ExpGetPmdMaterial",
+            "30": "ExpGetPmdMorphName",
+            "31": "ExpGetPmdMorphNum",
+            "32": "ExpGetPmdMorphValue",
+            "33": "ExpGetPmdNum",
+            "34": "ExpGetPmdOrder",
+            "35": "ExpGetPreAcsNum",
+            "36": "ExpGetRenderRepeatCount",
+            "37": "ExpSetRenderRepeatCount"
+          },
+          "added": {}
+        },
+        "MMHack.dll": {
+          "previous": {
+            "1": "GetAcsAttachedPmd",
+            "2": "GetBlendMode",
+            "3": "GetClearColor",
+            "4": "GetCurrentDrawType",
+            "5": "GetCurrentEffect",
+            "6": "GetCurrentFrameTime",
+            "7": "GetCurrentModelID",
+            "8": "GetCurrentSubsetIndex",
+            "9": "GetDrawnWindow",
+            "10": "GetLightViewProjMatrix",
+            "11": "GetMMDMainWindow",
+            "12": "GetMaterialName",
+            "13": "GetSphereMapMode",
+            "14": "GetSphereMapTexture",
+            "15": "GetTexture",
+            "16": "GetToonTexture",
+            "17": "IsDebugMode",
+            "18": "IsEditMode",
+            "19": "IsEffectFileUsed",
+            "20": "IsToonUsed",
+            "21": "LoadedPMMFile",
+            "22": "SavedPMMFile"
+          },
+          "current": {
+            "1": "GetAcsAttachedPmd",
+            "2": "GetBlendMode",
+            "3": "GetClearColor",
+            "4": "GetCurrentDrawType",
+            "5": "GetCurrentEffect",
+            "6": "GetCurrentFrameTime",
+            "7": "GetCurrentModelID",
+            "8": "GetCurrentSubsetIndex",
+            "9": "GetDrawnWindow",
+            "10": "GetLightViewProjMatrix",
+            "11": "GetMMDMainWindow",
+            "12": "GetMaterialName",
+            "13": "GetSphereMapMode",
+            "14": "GetSphereMapTexture",
+            "15": "GetTexture",
+            "16": "GetToonTexture",
+            "17": "IsDebugMode",
+            "18": "IsEditMode",
+            "19": "IsEffectFileUsed",
+            "20": "IsToonUsed",
+            "21": "LoadedPMMFile",
+            "23": "MMSSetMmeDx12PatchEnabled",
+            "22": "SavedPMMFile"
+          },
+          "added": {
+            "23": "MMSSetMmeDx12PatchEnabled"
+          }
+        }
+      }
+    },
+    "beforeIntegration": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-zpdad86q\\summary.json",
+      "result": {
+        "passed": false,
+        "cases": [
+          {
+            "patch": "..\\patch4mms-startup-build\\Release\\PLUGINS\\patch4mms",
+            "patchDisabled": false,
+            "backend": "dx12",
+            "requireOn12": true,
+            "sendInput": false,
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-zpdad86q\\0",
+            "passed": false,
+            "exitCode": 7,
+            "sourcesUnchanged": true
+          }
+        ]
+      }
+    },
+    "popupBefore": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-mh83q7g1\\summary.json",
+      "result": [
+        {
+          "case": "corrupt-plugin",
+          "passed": false,
+          "exitCode": 0,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-mh83q7g1\\corrupt-plugin",
+          "originalsUnchanged": true,
+          "actualBackend": null,
+          "reason": null
+        }
+      ]
+    },
+    "longPathLimit": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-kwdmns2a\\summary.json",
+      "result": [
+        {
+          "case": "factory-failure",
+          "passed": false,
+          "exitCode": 8,
+          "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\on12-controls-kwdmns2a\\factory-failure",
+          "originalsUnchanged": true,
+          "actualBackend": 9,
+          "reason": 6
+        }
+      ]
+    },
+    "finalOn12": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-293699ci\\summary.json",
+      "result": {
+        "passed": true,
+        "cases": [
+          {
+            "patch": "..\\facade-original-build\\Release\\PLUGINS\\patch4mms",
+            "patchDisabled": false,
+            "backend": "dx12",
+            "requireOn12": false,
+            "sendInput": false,
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-293699ci\\0",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          }
+        ]
+      }
+    },
+    "finalDx9": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-d2glu0xx\\summary.json",
+      "result": {
+        "passed": true,
+        "cases": [
+          {
+            "patch": "..\\facade-original-build\\Release\\PLUGINS\\patch4mms",
+            "patchDisabled": false,
+            "backend": "dx9",
+            "requireOn12": false,
+            "sendInput": false,
+            "exe": "MikuMikuDance.exe",
+            "layout": "PLUGINS/LEGACY",
+            "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-functional-d2glu0xx\\0",
+            "passed": true,
+            "exitCode": 0,
+            "sourcesUnchanged": true
+          }
+        ]
+      }
+    }
+  },
+  "actualAdapters": {
+    "dx9": "NVIDIA GeForce RTX 4070 Laptop GPU, vendor 10de, device 2820, ordinal 0",
+    "dx12": "NVIDIA GeForce RTX 4070 Laptop GPU, vendor 10de, device 2820, ordinal 0, D3D12 LUID 00000000:00019eee"
+  },
+  "artifacts": {
+    "MikuMikuDance.exe": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\MikuMikuDance.exe",
+      "sha256": "b7689dba5f547057ecfeee278b31a11b36e27b281fd3d475d9cd3eaae0346018"
+    },
+    "MMDFacade.dll": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\MMDFacade.dll",
+      "sha256": "243cd960ab0dc44b1e1a6238ec73a12b80f7337446c1e8591b3329b1f31229d6"
+    },
+    "MMHack.dll": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\MMHack.dll",
+      "sha256": "fa449dfc2e4cdb0e467f618427f1313e6323fd8eeea9dec0661946f760d61bcf"
+    },
+    "PLUGINS/LEGACY/MMDPlugin.dll": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\PLUGINS\\LEGACY\\MMDPlugin.dll",
+      "sha256": "fa4fe16647642cd5e2a1623d958ab6bd7ea034ba4a3b5c43a91e90ff9e272588"
+    },
+    "PLUGINS/patch4mms/Patch4MMS.dll": {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\PLUGINS\\patch4mms\\Patch4MMS.dll",
+      "sha256": "b239e4cf957e37e85f1ad126f31f7cfdc68abd9668e66bfab89a96f3aab8f96c"
+    }
+  },
+  "package": {
+    "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\validation\\facade-on12\\Patch4MMS-win-x64.zip",
+    "sha256": "a5bcf68b0933f0c61cd185406633e437c5138ee57ad5ee7f740ada4300857ee8",
+    "files": [
+      "Patch4MMS.dll",
+      "plugin.json",
+      "Enable.cmd",
+      "Disable.cmd",
+      "README.md"
+    ]
+  }
+}

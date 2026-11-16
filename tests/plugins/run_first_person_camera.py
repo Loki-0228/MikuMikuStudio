@@ -30,6 +30,8 @@ def main():
             dll = package / 'MMSFirstPersonCamera.dll'
             shutil.copy2(build / 'Release/PLUGINS/first-person-camera/MMSFirstPersonCamera.dll', dll)
             shutil.copy2(build / 'Release/PLUGINS/first-person-camera/plugin.json', package / 'plugin.json')
+            (directory / 'PLUGINS/config.json').write_text(json.dumps(dict(schemaVersion=1, maxDepth=3,
+                disabledPlugins=[], enabledPlugins=['org.mikumikustudio.legacy.first-person-camera'])), encoding='utf-8')
             env = os.environ.copy()
             env['MIKUMIKUSTUDIO_TRACE_FILE'] = str(directory / 'runtime.log')
             run = subprocess.run([str(exe)], cwd=directory, env=env, capture_output=True, timeout=30,

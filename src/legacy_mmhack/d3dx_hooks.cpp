@@ -1,11 +1,13 @@
 #include "d3dx_hooks.hpp"
 #include "technique_table.hpp"
+#include <d3d9on12.h>
 #include <algorithm>
 #include <array>
 namespace mme_re::mmhack {
 namespace {
 struct InstalledHook { HMODULE target; FARPROC original; FARPROC replacement; };
 std::vector<InstalledHook> installed_hooks;
+PFN_Direct3DCreate9On12 create_on12 = nullptr;
 bool install_one(const char* name, FARPROC replacement, HMODULE target, HMODULE provider) {
   if (!target) target = GetModuleHandleW(nullptr);
   const auto original = GetProcAddress(provider, name);
@@ -44,7 +46,22 @@ void record_texture_output(State& state, const std::wstring& filename, IDirect3D
   }
   state.toon_textures.emplace(std::move(key), TextureRecord{output ? *output : nullptr, captured});
 }
-IDirect3D9* WINAPI hooked_direct3d_create9(UINT sdk_version) { return runtime().wrap(Direct3DCreate9(sdk_version)); }
+BOOL set_mme_dx12_patch(BOOL enable) noexcept {
+  if (!enable) {
+    create_on12 = nullptr;
+    return TRUE;
+  }
+  const auto module = GetModuleHandleW(L"d3d9.dll");
+  create_on12 = module ? reinterpret_cast<PFN_Direct3DCreate9On12>(
+      GetProcAddress(module, "Direct3DCreate9On12")) : nullptr;
+  return create_on12 != nullptr;
+}
+IDirect3D9* WINAPI hooked_direct3d_create9(UINT sdk_version) {
+  if (!create_on12) return runtime().wrap(Direct3DCreate9(sdk_version));
+  D3D9ON12_ARGS arguments{};
+  arguments.Enable9On12 = TRUE;
+  return runtime().wrap(create_on12(sdk_version, &arguments, 1));
+}
 HRESULT WINAPI hooked_load_mesh_w(LPCWSTR filename, DWORD options, IDirect3DDevice9* device, ID3DXBuffer** adjacency, ID3DXBuffer** materials, ID3DXBuffer** instances, DWORD* material_count, ID3DXMesh** output) {
   // 0x1800043b0 forwards R8 unchanged. The mesh must retain the host's
   // wrapped device so DrawSubset reaches the MME draw callbacks.

@@ -59,6 +59,10 @@ def main():
     parser.add_argument("--adapter", type=Path, default=ROOT / "build/cmake/Release/MMDFacade.dll")
     parser.add_argument("--ascii-only", action="store_true")
     parser.add_argument("--bridge", type=Path, help="Use the built-in MMHack bridge instead of the original hack")
+    parser.add_argument("--automatic", action="store_true", help="Discover the original MME under LEGACY without a manifest")
+    parser.add_argument("--patch", type=Path)
+    parser.add_argument("--backend", choices=["dx9", "dx12"], default="dx9")
+    parser.add_argument("--require-on12", action="store_true")
     args = parser.parse_args()
     originals = {name: args.originals.resolve() / name for name in ("MMHack.dll", "MMEffect.dll")}
     before = {name: digest(path) for name, path in originals.items()}
@@ -75,7 +79,7 @@ def main():
         shutil.copy2(args.adapter, directory / "MMDFacade.dll")
         if args.bridge:
             shutil.copy2(args.bridge, directory / "MMHack.dll")
-        package = directory / "PLUGINS/effects/user/legacy_mme"
+        package = directory / ("PLUGINS/LEGACY/effects/user" if args.automatic else "PLUGINS/effects/user/legacy_mme")
         package.mkdir(parents=True)
         for filename, path in originals.items():
             shutil.copy2(path, package / filename)
@@ -85,8 +89,12 @@ def main():
                         architecture="x64", minWindows="6.1.0", reloadPolicy="restart")
         if args.bridge:
             manifest.pop("hack")
-        (package / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
-        (directory / "PLUGINS/config.json").write_text(json.dumps(dict(schemaVersion=1, maxDepth=3, disabledPlugins=[])), encoding="utf-8")
+        if args.automatic:
+            if not args.bridge: raise ValueError("automatic MME requires the built-in bridge")
+        else: (package / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+        (directory / "PLUGINS/config.json").write_text(json.dumps(dict(schemaVersion=1, maxDepth=3,
+            disabledPlugins=[])), encoding="utf-8")
+        if args.patch: shutil.copytree(args.patch, directory / "PLUGINS/dx12mmepatch")
         model = directory / "probe.x"
         model.write_text(X_MESH, encoding="ascii")
         model.with_suffix(".fx").write_text(FX, encoding="ascii")
@@ -96,9 +104,10 @@ def main():
         (project / "effects/relative.fx").write_text("project-relative-effect", encoding="ascii")
         case = dict(executable=name, hostHash=digest(exe), adapterHash=digest(directory / "MMDFacade.dll"))
         environment = isolated_environment(directory)
+        environment["MIKUMIKUSTUDIO_TRACE_FILE"] = str(directory / "runtime.log")
         with (directory / "result.log").open("wb") as out:
             try:
-                run = subprocess.run([str(exe), str(model), "1", "--legacy-package"], cwd=directory,
+                run = subprocess.run([str(exe), str(model), "1", "--legacy-package", "--"+args.backend], cwd=directory,
                                      env=environment, stdin=subprocess.DEVNULL,
                                      stdout=out, stderr=subprocess.STDOUT, timeout=90,
                                      creationflags=subprocess.CREATE_NO_WINDOW)
@@ -109,6 +118,10 @@ def main():
         case["sourceCopiesUnchanged"] = all(digest(package / n) == h for n, h in before.items())
         case["settingsRemainInData"] = not any(directory.glob("MMEffect.*"))
         case["passed"] = case.get("exitCode") == 0 and "PASS renamed packaged MME" in log and case["sourceCopiesUnchanged"] and case["settingsRemainInData"]
+        if args.require_on12:
+            trace = (directory / "runtime.log").read_text(encoding="utf-8", errors="replace")
+            case["actualDeviceOn12"] = "MME_BACKEND D3D12 active via D3D9On12" in trace
+            case["passed"] &= case["actualDeviceOn12"]
         case["cacheDlls"] = [str(p.relative_to(directory)) for p in (directory / "data").rglob("*.dll")]
         stable = list((directory / "data/plugins/legacy_mme/settings").glob("*/MMEffect.ini"))
         case["stableSettings"] = len(stable) == 1 and "wide=retained" in stable[0].read_text(encoding="utf-8", errors="replace")
@@ -119,7 +132,7 @@ def main():
             with (directory / "MMDFacade.dll").open("ab") as adapter:
                 adapter.write(b"MMS settings upgrade probe")
             with (directory / "upgrade.log").open("wb") as out:
-                upgrade = subprocess.run([str(exe), str(model), "1", "--legacy-package"], cwd=directory,
+                upgrade = subprocess.run([str(exe), str(model), "1", "--legacy-package", "--"+args.backend], cwd=directory,
                     env=environment, stdin=subprocess.DEVNULL, stdout=out,
                     stderr=subprocess.STDOUT, timeout=90, creationflags=subprocess.CREATE_NO_WINDOW)
             case["upgradeExitCode"] = upgrade.returncode
@@ -137,22 +150,22 @@ def main():
             if lock in (None, ctypes.c_void_p(-1).value):
                 raise RuntimeError("cannot hold isolated preferences lock")
             try:
-                held = subprocess.run([str(exe), str(model), "1", "--legacy-package"], cwd=directory,
+                held = subprocess.run([str(exe), str(model), "1", "--legacy-package", "--"+args.backend], cwd=directory,
                     env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=90, creationflags=subprocess.CREATE_NO_WINDOW)
             finally:
                 kernel.CloseHandle(lock)
             (directory / "locked.log").write_bytes(held.stdout + held.stderr)
-            case["lockedPreferencesRefused"] = held.returncode == 7 and b"legacy file access error 32" in held.stdout
+            case["lockedPreferencesRefused"] = held.returncode == 8 and b"MMDFacade" in (held.stdout + held.stderr) and b"legacy file access error 32" in (held.stdout + held.stderr)
             backup = stable[0].with_name("preserved-settings.ini")
             stable[0].rename(backup)
             old = generations[0] / "MMEffect.ini"
             old.write_bytes(b"[System]\nSkipValidation=true\n;unattributed-old-preferences\n")
             try:
-                conflict = subprocess.run([str(exe), str(model), "1", "--legacy-package"], cwd=directory,
+                conflict = subprocess.run([str(exe), str(model), "1", "--legacy-package", "--"+args.backend], cwd=directory,
                     env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=90, creationflags=subprocess.CREATE_NO_WINDOW)
                 (directory / "conflict.log").write_bytes(conflict.stdout + conflict.stderr)
-                case["unattributedPreferencesRefused"] = conflict.returncode == 7 and \
-                    b"unattributed old MMEffect.ini" in conflict.stdout and not stable[0].exists() and \
+                case["unattributedPreferencesRefused"] = conflict.returncode == 8 and b"MMDFacade" in (conflict.stdout + conflict.stderr) and \
+                    b"unattributed old MMEffect.ini" in (conflict.stdout + conflict.stderr) and not stable[0].exists() and \
                     b"unattributed-old-preferences" in old.read_bytes()
             finally:
                 old.unlink()
@@ -162,11 +175,11 @@ def main():
             sentinel.write_bytes(b"[System]\n;must-not-change\n")
             os.link(sentinel, stable[0])
             try:
-                linked = subprocess.run([str(exe), str(model), "1", "--legacy-package"], cwd=directory,
+                linked = subprocess.run([str(exe), str(model), "1", "--legacy-package", "--"+args.backend], cwd=directory,
                     env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=90, creationflags=subprocess.CREATE_NO_WINDOW)
                 (directory / "hardlink.log").write_bytes(linked.stdout + linked.stderr)
-                case["hardlinkedPreferencesRefused"] = linked.returncode == 7 and \
-                    b"invalid legacy preferences file" in linked.stdout and sentinel.read_bytes() == b"[System]\n;must-not-change\n"
+                case["hardlinkedPreferencesRefused"] = linked.returncode == 8 and b"MMDFacade" in (linked.stdout + linked.stderr) and \
+                    b"invalid legacy preferences file" in (linked.stdout + linked.stderr) and sentinel.read_bytes() == b"[System]\n;must-not-change\n"
             finally:
                 stable[0].unlink()
                 backup.rename(stable[0])
@@ -174,7 +187,7 @@ def main():
         report["cases"].append(case)
         print(name, case["passed"], case.get("exitCode"), flush=True)
         if not case["passed"]:
-            print(log[-3000:], flush=True)
+            print(log[-3000:].encode('ascii', errors='backslashreplace').decode('ascii'), flush=True)
             break
     report["originalsUnchanged"] = all(digest(p) == before[n] for n, p in originals.items())
     report["passed"] = report["originalsUnchanged"] and len(report["cases"]) == len(names) and all(c["passed"] for c in report["cases"])

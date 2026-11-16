@@ -33,6 +33,7 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/processor_settings.hpp"
 #include "mikumikustudio/runtime_log.hpp"
+#include "mikumikustudio/mme_render_startup.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -133,6 +134,10 @@ bool InitD3D(MMDApp* app, HWND hwnd, bool english, HMODULE hModule) {
                         reinterpret_cast<LPARAM>(r));
 
     IDirect3D9* d3d = Direct3DCreate9(D3D_SDK_VERSION /*0x20*/);
+    if (!d3d && plugins::MmeOn12Attempting()) {
+        if (!plugins::FallBackMmeOn12(MMS_MME_ON12_FACTORY_FAILED)) return false;
+        d3d = Direct3DCreate9(D3D_SDK_VERSION);
+    }
     r->d3d9 = d3d;
     if (d3d == nullptr) {
         MessageBoxA(hwnd,
@@ -255,6 +260,13 @@ bool InitD3D(MMDApp* app, HWND hwnd, bool english, HMODULE hModule) {
         if (SUCCEEDED(result)) createdType = type;
         return result;
     };
+    const auto retryDx9 = [&](uint32_t reason) {
+        if (r->device) r->device->Release();
+        r->device = nullptr;
+        d3d->Release(); r->d3d9 = nullptr;
+        if (!plugins::FallBackMmeOn12(reason)) return false;
+        return InitD3D(app, hwnd, english, hModule);
+    };
     HRESULT hr = createDevice(D3DDEVTYPE_HAL, 0x40 /*HARDWARE VP*/);
     if (FAILED(hr)) {
         r->backbufferFormat = static_cast<D3DFORMAT>(22);
@@ -280,6 +292,7 @@ bool InitD3D(MMDApp* app, HWND hwnd, bool english, HMODULE hModule) {
                     hr = createDevice(D3DDEVTYPE_HAL,
                                       0x20 /*SOFTWARE VP*/);
                     if (FAILED(hr)) {
+                        if (plugins::MmeOn12Attempting()) return retryDx9(MMS_MME_ON12_DEVICE_FAILED);
                         hr = createDevice(D3DDEVTYPE_REF, 0x40);
                         if (FAILED(hr)) {
                             hr = createDevice(D3DDEVTYPE_REF, 0x20);
@@ -312,6 +325,11 @@ bool InitD3D(MMDApp* app, HWND hwnd, bool english, HMODULE hModule) {
         }
     }
     IDirect3DDevice9* device = r->device;
+    if (plugins::MmeOn12Attempting()) {
+        if (!plugins::ConfirmMmeOn12Device(device)) return retryDx9(MMS_MME_ON12_CONFIRMATION_FAILED);
+    } else plugins::RecordMmeDx9Device();
+    runtime_log::Write("MME_BACKEND %s", plugins::MmeRenderReason());
+    runtime_log::Trace("MME_BACKEND %s", plugins::MmeRenderReason());
     // MME is now loaded by its D3D proxy. Verify/install once before resources
     // can be lost; unknown MME builds continue without the compatibility fix.
     InstallEffectApngCompatibility();

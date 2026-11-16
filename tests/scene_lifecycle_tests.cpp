@@ -1781,6 +1781,9 @@ void CheckRecordingFrames(MMDApp* app) {
 
 }
 #include "model_order_dialog_checks.inc"
+#include "original_camera_sendinput_checks.inc"
+#include "mikumikustudio/mme_render_startup.hpp"
+#include "mme_on12_failure_checks.inc"
 #include "mmdfacade_real_checks.inc"
 int wmain(int argc, wchar_t** argv) {
     using namespace mikumikustudio;
@@ -1803,6 +1806,10 @@ int wmain(int argc, wchar_t** argv) {
         return 2;
 #endif
     }
+    const bool sendInput = facadeProbe && GetEnvironmentVariableW(L"MMDFACADE_TEST_SENDINPUT", nullptr, 0);
+    bool dx12 = false, dx9 = false;
+    for (int i = 4; i < argc; ++i) { dx12 |= std::wcscmp(argv[i], L"--dx12") == 0; dx9 |= std::wcscmp(argv[i], L"--dx9") == 0; }
+    if (legacyProbe) { EnableD3D12Native(dx12 && !dx9); plugins::SelectMmeRenderBackend(dx12 && !dx9); mme_on12_failure_checks::Install(); }
     HHOOK cameraLoadHook = (cameraLoad || legacyProbe || rayGizmo || savePair) ? SetWindowsHookExW(WH_CBT,
         GuardCameraLoadProbe, nullptr, GetCurrentThreadId()) : nullptr;
     if (cameraLoad || legacyProbe || rayGizmo || savePair)
@@ -1847,6 +1854,10 @@ int wmain(int argc, wchar_t** argv) {
     }
     ShowWindow(app->MainWindow(), SW_HIDE);
     if (facadeProbe) {
+        if (sendInput) {
+            UnhookWindowsHookEx(cameraLoadHook); cameraLoadHook = nullptr;
+            if (!original_camera_sendinput_checks::Run(app)) { ShutdownCleanup(app); delete app; g_Block=nullptr; return 77; }
+        }
         mmdfacade_real_checks::Run(app,scenePath);
         ShutdownCleanup(app); delete app; g_Block=nullptr;
         UnhookWindowsHookEx(cameraLoadHook);

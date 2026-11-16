@@ -4,6 +4,9 @@
 namespace mikumikustudio::plugins {
 struct PeInfo { std::vector<std::string> imports; uint16_t subsystemMajor = 0, subsystemMinor = 0; };
 PeInfo InspectPe(const fs::path&);
+bool HasNativeFactory(const fs::path&);
+// Static PE inspection; never map or execute candidate DLLs.
+std::set<std::string> InspectLegacyExports(const fs::path&);
 std::string Sha256(const fs::path&);
 Version WindowsVersion();
 struct LoadedModule {

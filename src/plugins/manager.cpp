@@ -2,6 +2,7 @@
 #include "mikumikustudio/legacy_mme_bootstrap.hpp"
 #include "mikumikustudio/system_settings.hpp"
 #include <mms/settings.h>
+#include "mikumikustudio/mme_render_startup.hpp"
 #include "ui_preferences_file.hpp"
 #include "edit_store.hpp"
 #include "ui_refresh_binding.hpp"
@@ -609,6 +610,7 @@ struct Manager::Impl {
             if (settingsTeardown || closing || i.stopping) return MMS_E_NOT_READY;
             return Table(major, minor, bytes, out, SettingsApi(i));
         }
+        if (id == "mms.render.mme.on12") return Table(major, minor, bytes, out, MmeOn12Api());
         if (id == "mms.storage") return Table(major, minor, bytes, out, storage.Api(i.storage));
         if (id == "mms.edit" && edits) return Table(major, minor, bytes, out, EditApi(i));
         return MMS_E_NOT_FOUND;
@@ -935,7 +937,7 @@ struct Manager::Impl {
             i.refresh.queue = &registry.Refresh(); i.refresh.owner = m.id;
             for (const auto& dep : m.dependencies) i.dependencies.push_back(dep.id);
             bool ready = std::all_of(i.dependencies.begin(), i.dependencies.end(), [&](const auto& d) { return started.count(d) != 0; });
-            if (!ready) { i.status.stage = "failed"; i.status.error = "dependency failed to start"; failed.push_back(i.status); Write(m.id + ": " + i.status.error); continue; }
+            if (!ready) { i.status.stage = "failed"; i.status.error = "dependency failed to start"; failed.push_back(i.status); Write(m.id + ": " + i.status.error); if (!m.startupRenderBackend.empty()) RecordMmeStartupError(m.id, i.status.error); continue; }
             try {
                 const auto paired = registry.Refresh().PropertyRefresh().BindClient(i.refresh, i.ui);
                 if (paired != MMS_OK) throw std::runtime_error("property refresh client pairing failed result=" + std::to_string(paired));
@@ -970,6 +972,7 @@ struct Manager::Impl {
                 instances.push_back(std::move(instance));
             } catch (const std::exception& e) {
                 i.status.stage = "failed"; i.status.error = e.what(); Write(m.id + " " + Utf8(m.package.native()) + ": " + i.status.error);
+                if (!m.startupRenderBackend.empty()) RecordMmeStartupError(m.id, i.status.error);
                 auto error = i.status.error;
                 // create can accept host tasks before failing with a null
                 // instance. Its host context still owns those callbacks.

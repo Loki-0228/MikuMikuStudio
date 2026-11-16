@@ -8,6 +8,7 @@
 #include "legacy_mmd_menu.hpp"
 #include "legacy_mmd_image.hpp"
 #include "loader_win32.hpp"
+#include "original_camera_memory.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
 #include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
@@ -54,6 +55,8 @@ Function Method(void* object, unsigned slot) {
 struct Session {
     std::string id;
     plugins::LoadedPackage code;
+    // The object is destroyed first, then its view, then its module.
+    std::unique_ptr<plugins::OriginalCameraMemory> originalCamera;
     void* object = nullptr;
     Destroy destroy = nullptr;
     unsigned abi = 3;
@@ -174,8 +177,14 @@ bool Observed(const Host& current, const Session& package, const CWPSTRUCT& mess
 void Retire(Host& current, std::unique_ptr<Session>& package) noexcept {
     if (!package) return;
     current.active = package.get();
-    package->retiring = true;
     try {
+        // Original v0.01 has neither a cancel handler nor destructor cleanup.
+        // Release against the last valid view before publishing a changed mode.
+        if (package->object && package->originalCamera && package->cameraCapture && package->originalCamera->CameraMode()) {
+            MOUSEHOOKSTRUCT mouse{}; mouse.hwnd = package->cameraCapture;
+            Method<void(__cdecl*)(void*, WPARAM, MOUSEHOOKSTRUCT*)>(package->object, 245)(package->object, WM_LBUTTONUP, &mouse);
+        }
+        package->retiring = true;
         if (package->started && package->abi >= 3) Method<Lifecycle>(package->object, stopSlot)(package->object);
         if (package->object) package->destroy(package->object);
         if (package->started) {
@@ -186,6 +195,7 @@ void Retire(Host& current, std::unique_ptr<Session>& package) noexcept {
         }
     } catch (...) {
         package->code.Pin();
+        package->originalCamera.release();
         Log("teardown threw; retaining loaded code until exit");
     }
     if (package->cameraCapture && GetCapture() == package->cameraCapture) ReleaseCapture();
@@ -243,11 +253,28 @@ void Start(MMDApp* app) noexcept {
 #if !MMD_ORIGINAL_PROFILE
     const ScopedSceneCloseDeferral deferClose(*app);
 #endif
+    struct Errors {
+        HWND window;
+        std::vector<std::string> messages;
+        ~Errors() {
+            if (messages.empty()) return;
+            try {
+                std::string text;
+                for (const auto& message : messages) { if (text.size() > 12000) break; text += message + "\n\n"; }
+                MessageBoxW(window, plugins::Wide(text).c_str(), L"MMDFacade：旧插件加载失败", MB_OK | MB_ICONERROR);
+            } catch (...) {}
+        }
+    } errors{app->MainWindow()};
     try {
         const auto install = local_data::ExecutableDirectory();
         if (install.empty()) return;
         const auto discovered = plugins::Discover(install / L"PLUGINS");
         for (const auto& diagnostic : discovered.diagnostics) Log(diagnostic);
+        errors.messages = discovered.errors;
+        std::map<std::string, unsigned> counts;
+        for (const auto& candidate : discovered.packages) ++counts[candidate.id];
+        for (const auto& [id, count] : counts) if (count > 1 && !discovered.config.disabled.count(id))
+            errors.messages.push_back(id + ": duplicate plugin identity; select one installed copy");
         std::vector<const plugins::Manifest*> packages;
         for (const auto index : plugins::Resolve(discovered, {})) {
             const auto& candidate = discovered.packages[index];
@@ -284,9 +311,16 @@ void Start(MMDApp* app) noexcept {
                 if (!version || !create || !package->destroy || version() != int(package->abi))
                     throw std::runtime_error("legacy MMDPlugin version does not match the selected profile factory and destroy exports");
                 if (package->abi == 4) {
-                    const auto adapter = reinterpret_cast<Version>(GetProcAddress(module, "MMSLegacyCameraAdapterVersion"));
-                    if (!adapter || adapter() != MMS_LEGACY_CAMERA_API_VERSION)
-                        throw std::runtime_error("unsupported MMS camera adapter API version");
+                    if (manifest->legacyEntrySha256 == plugins::kOriginalFirstPersonCameraSha256 &&
+                            package->profile == "first_person_camera_v4") {
+                        package->originalCamera = std::make_unique<plugins::OriginalCameraMemory>();
+                        package->originalCamera->Sync(CameraSnapshot(*app), app->CameraMode() != 0);
+                        package->originalCamera->Bind(module);
+                    } else {
+                        const auto adapter = reinterpret_cast<Version>(GetProcAddress(module, "MMSLegacyCameraAdapterVersion"));
+                        if (!adapter || adapter() != MMS_LEGACY_CAMERA_API_VERSION)
+                            throw std::runtime_error("unsupported ABI 4 artifact: no verified original memory layout or explicit camera adapter");
+                    }
                 }
                 if (host->stopRequested) throw std::runtime_error("host closed during plugin load");
                 if (package->profile == "effekseer_v2" && GetMenuState(GetMenu(host->window), WM_APP + 1, MF_BYCOMMAND) != UINT(-1))
@@ -322,31 +356,43 @@ void Start(MMDApp* app) noexcept {
                     DrawMenuBar(host->window);
                 }
                 if (host->stopRequested) throw std::runtime_error("host closed during plugin creation");
-                package->started = true;
-                if (package->abi >= 3) Method<Lifecycle>(package->object, startSlot)(package->object);
-                if (!host->stopRequested) Log(package->id + " started (" + package->profile + ")");
             } catch (const std::exception& error) {
+                errors.messages.push_back(manifest->id + "\n" + plugins::Utf8(manifest->entry.native()) + "\n" + error.what());
                 runtime_log::Write("LEGACY_MMD startup failed: %s (%s)", error.what(), manifest->id.c_str());
                 runtime_log::Trace("LEGACY_MMD startup failed: %s (%s)", error.what(), manifest->id.c_str());
                 failed = true;
             } catch (...) {
-                Log("startup threw");
+                errors.messages.push_back("legacy plugin startup threw an unknown exception"); Log("startup threw");
                 failed = true;
             }
             if (failed) Retire(*host, package);
             host->active = nullptr;
             if (host->stopRequested) break;
         }
+        // All surviving objects must exist before any start callback can query peers.
+        for (auto& package : host->packages) {
+            if (!package || host->stopRequested) continue;
+            host->active = package.get();
+            bool failed = false;
+            try {
+                package->started = true;
+                if (package->abi >= 3) Method<Lifecycle>(package->object, startSlot)(package->object);
+                if (!host->stopRequested) Log(package->id + " started (" + package->profile + ")");
+            } catch (...) { errors.messages.push_back(package->id + ": start callback failed"); Log("start callback threw; retiring package"); failed = true; }
+            if (failed) Retire(*host, package);
+            host->active = nullptr;
+        }
         host->busy = false;
         if (host->stopRequested || std::none_of(host->packages.begin(), host->packages.end(),
                                                [](const auto& package) { return bool(package); })) Stop();
     } catch (const std::exception& error) {
+        errors.messages.push_back(error.what());
         runtime_log::Write("LEGACY_MMD startup failed: %s", error.what());
         runtime_log::Trace("LEGACY_MMD startup failed: %s", error.what());
         if (host) host->busy = false;
         Stop();
     } catch (...) {
-        Log("startup threw");
+        errors.messages.push_back("legacy plugin startup threw an unknown exception"); Log("startup threw");
         if (host) host->busy = false;
         Stop();
     }
@@ -486,6 +532,12 @@ const wchar_t* EffekseerFilename(const wchar_t* modelPath) {
 bool EffekseerContext() noexcept {
     return host && host->active && host->active->profile == "effekseer_v2";
 }
+bool RequiresD3D9Rendering() noexcept {
+    if (!host || host->stopRequested) return false;
+    return std::any_of(host->packages.begin(), host->packages.end(), [](const auto& package) {
+        return package && package->started && !package->retiring && package->profile == "effekseer_v2";
+    });
+}
 
 bool HandleInput(HWND window, UINT message, WPARAM key, LPARAM data) noexcept {
     auto* current = host;
@@ -503,7 +555,7 @@ bool HandleInput(HWND window, UINT message, WPARAM key, LPARAM data) noexcept {
         bool dispatch = false;
         UINT mouseMessage = message;
         POINT point{short(LOWORD(data)), short(HIWORD(data))};
-        if (release) { dispatch = package->cameraCapture != nullptr; mouseMessage = WM_CANCELMODE; }
+        if (release) { dispatch = package->cameraCapture != nullptr; mouseMessage = package->originalCamera ? WM_LBUTTONUP : WM_CANCELMODE; }
         else if (keyboard) {
             const auto focus = GetFocus();
             const bool shortcut = ((GetKeyState(VK_CONTROL) | GetKeyState(VK_MENU) |
@@ -525,6 +577,12 @@ bool HandleInput(HWND window, UINT message, WPARAM key, LPARAM data) noexcept {
             current->active = package.get();
             bool failed = false;
             try {
+                MmsLegacyCameraStateV1 before{};
+                if (package->originalCamera && !release) {
+                    before.byteSize = sizeof(before); before.version = MMS_LEGACY_CAMERA_API_VERSION;
+                    if (CameraRead(&before) != MMS_OK) throw std::runtime_error("original camera snapshot unavailable");
+                    package->originalCamera->Sync(before, current->app->CameraMode() != 0);
+                }
                 if (keyboard && !release)
                     Method<void(__cdecl*)(void*, WPARAM, LPARAM)>(package->object, 247)(package->object, key,
                         message == WM_KEYUP ? data | (LPARAM(1) << 31) : data);
@@ -532,6 +590,18 @@ bool HandleInput(HWND window, UINT message, WPARAM key, LPARAM data) noexcept {
                     ClientToScreen(window, &point);
                     MOUSEHOOKSTRUCT mouse{point, window, HTCLIENT, 0};
                     Method<void(__cdecl*)(void*, WPARAM, MOUSEHOOKSTRUCT*)>(package->object, 245)(package->object, mouseMessage, &mouse);
+                }
+                if (package->originalCamera) {
+                    if (!release) {
+                        auto desired = before;
+                        if (!package->originalCamera->ReadChanges(desired))
+                            throw std::runtime_error("original camera wrote an unsupported mode field");
+                        if (!SamePose(before, desired)) {
+                            const auto result = CameraEdit(&before, &desired);
+                            if (result != MMS_OK) Log("original camera writeback rejected result=" + std::to_string(result));
+                        }
+                    }
+                    package->originalCamera->Sync(CameraSnapshot(*current->app), current->app->CameraMode() != 0);
                 }
             } catch (...) { Log("camera input callback threw; retiring package"); failed = true; }
             if (failed) Retire(*current, package);
@@ -543,6 +613,8 @@ bool HandleInput(HWND window, UINT message, WPARAM key, LPARAM data) noexcept {
             package->cameraCapture = nullptr;
             if (captured && GetCapture() == captured) ReleaseCapture();
         }
+        if (package && package->originalCamera)
+            package->originalCamera->Sync(CameraSnapshot(*current->app), current->app->CameraMode() != 0);
         if (current->stopRequested) break;
     }
     current->busy = false;

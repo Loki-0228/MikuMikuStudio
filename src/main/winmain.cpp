@@ -1,6 +1,7 @@
 #include "mikumikustudio/autosave.hpp"
 #include "mikumikustudio/plugin_menu.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/mme_render_startup.hpp"
 #include "mikumikustudio/plugin_input_focus.hpp"
 #include "mikumikustudio/bake_ui_lock.hpp"
 // ===========================================================================
@@ -102,10 +103,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     bool forceDx9 = false;
     for (int i = 1; argv && i < argc; ++i) {
         if (wcscmp(argv[i], L"--dx9") == 0) forceDx9 = true;
-        else if (wcscmp(argv[i], L"--d3d12-preview") == 0) continue;
+        else if (wcscmp(argv[i], L"--dx12") == 0 || wcscmp(argv[i], L"--d3d12-preview") == 0) continue;
         else if (!scenePath) scenePath = argv[i];
     }
     EnableD3D12Native(!forceDx9);
+    plugins::SelectMmeRenderBackend(!forceDx9);
     if (scenePath) {
         wcscpy_s(app->EnvFileName(), 0x100, scenePath);
     } else {

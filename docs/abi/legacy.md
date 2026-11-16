@@ -1,5 +1,7 @@
 # 旧 MME 与特效兼容
 
+> 当前原版 FirstPersonCamera、LEGACY 递归识别和内存支持范围见[原版闭环记录](../records/mmdfacade-original-camera-2026-11-15.md)。下文保留既有接口背景与开发者显式清单示例；普通用户安装已支持的原版 DLL 无需手写这些清单。
+
 [返回功能总览](README.md)
 
 本轮兼容产品名为 **MMDFacade**，宿主导出桥为 `MMDFacade.dll`。新增 ABI 2 的有限 `device_reset_v2` 配置，保留 ABI 3 窗口观察；ABI 4 未支持。工厂、回调及插件依赖核对、改名迁移和验证边界见 [MMDFacade](../MMDFACADE.md)。下方历史真实插件结果不自动成为本轮重跑结果。

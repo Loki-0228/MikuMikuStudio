@@ -1,4 +1,5 @@
 #include "loader_win32.hpp"
+#include "original_camera_memory.hpp"
 #include <bcrypt.h>
 #include <fstream>
 #include <set>
@@ -56,19 +57,17 @@ public:
         const size_t base = size_t(dos.e_lfanew) + offsetof(IMAGE_NT_HEADERS64, OptionalHeader) + nt_.FileHeader.SizeOfOptionalHeader;
         for (unsigned i = 0; i < nt_.FileHeader.NumberOfSections; ++i) sections_.push_back(Read<IMAGE_SECTION_HEADER>(base + i * sizeof(IMAGE_SECTION_HEADER)));
     }
-    void VerifyLegacyObserverExports(unsigned abi) const {
-        if (abi != 2 && abi != 3 && abi != 4) throw std::invalid_argument("unsupported legacy MMDPlugin ABI");
+    bool HasDirectExport(std::string_view name) const {
         const auto dir = nt_.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
         if (!dir.VirtualAddress || dir.Size < sizeof(IMAGE_EXPORT_DIRECTORY))
-            throw std::invalid_argument("legacy MMDPlugin has no valid export directory");
+            return false;
         const auto table = Read<IMAGE_EXPORT_DIRECTORY>(Offset(dir.VirtualAddress, sizeof(IMAGE_EXPORT_DIRECTORY)));
         if (!table.NumberOfNames || !table.NumberOfFunctions || !table.AddressOfNames ||
             !table.AddressOfNameOrdinals || !table.AddressOfFunctions)
-            throw std::invalid_argument("legacy MMDPlugin has no named factory exports");
+            return false;
         const auto names = Offset(table.AddressOfNames, size_t(table.NumberOfNames) * sizeof(DWORD));
         const auto ordinals = Offset(table.AddressOfNameOrdinals, size_t(table.NumberOfNames) * sizeof(WORD));
         const auto functions = Offset(table.AddressOfFunctions, size_t(table.NumberOfFunctions) * sizeof(DWORD));
-        auto hasDirectExport = [&](std::string_view name) {
             uint32_t begin = 0, end = table.NumberOfNames;
             while (begin < end) {
                 const auto index = begin + (end - begin) / 2;
@@ -91,14 +90,16 @@ public:
                 }
             }
             return false;
-        };
+    }
+    void VerifyLegacyObserverExports(unsigned abi, bool originalCamera = false) const {
+        if (abi != 2 && abi != 3 && abi != 4) throw std::invalid_argument("unsupported legacy MMDPlugin ABI");
         for (const char* name : {"version", abi == 2 ? "create2" : abi == 3 ? "create3" : "create4",
                 abi == 2 ? "destroy2" : abi == 3 ? "destroy3" : "destroy4"}) {
-            if (!hasDirectExport(name))
+            if (!HasDirectExport(name))
                 throw std::invalid_argument(std::string("legacy MMDPlugin missing direct export ") + name);
         }
-        if (abi == 4 && !hasDirectExport("MMSLegacyCameraAdapterVersion"))
-            throw std::invalid_argument("FirstPersonCamera requires the MMS camera adapter; original MMDMainData access is unsupported");
+        if (abi == 4 && !originalCamera && !HasDirectExport("MMSLegacyCameraAdapterVersion"))
+            throw std::invalid_argument("unsupported ABI 4 artifact: original memory layout is not verified");
     }
     PeInfo Info() const {
         PeInfo result; result.subsystemMajor = nt_.OptionalHeader.MajorSubsystemVersion; result.subsystemMinor = nt_.OptionalHeader.MinorSubsystemVersion;
@@ -194,6 +195,15 @@ fs::path SystemImport(const fs::path& system, const std::wstring& name) {
 }
 }
 PeInfo InspectPe(const fs::path& file) { return Pe(file).Info(); }
+bool HasNativeFactory(const fs::path& file) { return Pe(file).HasDirectExport("MMSPluginGetApi"); }
+std::set<std::string> InspectLegacyExports(const fs::path& file) {
+    const Pe pe(file);
+    std::set<std::string> result;
+    for (const auto* name : {"version", "create2", "destroy2", "create3", "destroy3", "create4", "destroy4",
+            "MMSLegacyCameraAdapterVersion", "Initialize", "OnLostDevice", "OnResetDevice"})
+        if (pe.HasDirectExport(name)) result.insert(name);
+    return result;
+}
 Version WindowsVersion() {
     using Fn = LONG(WINAPI*)(OSVERSIONINFOW*); auto fn = reinterpret_cast<Fn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"));
     OSVERSIONINFOW v{sizeof(v)}; if (!fn || fn(&v) != 0) throw std::runtime_error("cannot query Windows version"); return {v.dwMajorVersion, v.dwMinorVersion, v.dwBuildNumber};
@@ -272,7 +282,12 @@ LoadedPackage NativeLoader::Load(const Manifest& manifest, const Log& log, const
         // Repeat the no-junction check immediately before inspecting any code.
         verifyPath(path);
         const Pe pe(path);
-        if (legacyMmd && path == manifest.entry) pe.VerifyLegacyObserverExports(manifest.major);
+        if (legacyMmd && path == legacyMmdProvider &&
+            (!pe.HasDirectExport("getHWND") || !pe.HasDirectExport("createWM_APP_ID") ||
+             !pe.HasDirectExport("MMSClearLegacyHookBinders")))
+            throw std::invalid_argument("MMDPlugin.dll is not the MMS compatibility provider; install the matching host component");
+        if (legacyMmd && path == manifest.entry) pe.VerifyLegacyObserverExports(manifest.major,
+            manifest.legacyProfile == "first_person_camera_v4" && manifest.legacyEntrySha256 == kOriginalFirstPersonCameraSha256);
         for (const auto& imported : pe.Info().imports) {
             auto w = Wide(imported); auto dep = declared.find(Lower(w));
             if (dep != declared.end()) { visit(dep->second); continue; }

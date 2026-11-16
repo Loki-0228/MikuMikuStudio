@@ -1,10 +1,12 @@
 #include "mikumikustudio/legacy_mme_bootstrap.hpp"
+#include "mikumikustudio/mme_render_startup.hpp"
 #include "mikumikustudio/legacy_mme.hpp"
 #include "mikumikustudio/local_data_path.hpp"
 #include "mikumikustudio/runtime_log.hpp"
 #include "legacy_image.hpp"
 #include "legacy_mmd_image.hpp"
 #include "loader_win32.hpp"
+#include "original_camera_memory.hpp"
 #include "../io/cache_files_crypto.hpp"
 #include <array>
 #include <fstream>
@@ -16,11 +18,21 @@ LegacyMmeStartupStatus status;
 bool attempted = false, safeToContinue = true;
 struct Handles {
     std::vector<HANDLE> values;
+    std::map<std::wstring, HANDLE> named;
     ~Handles() { for (auto h : values) CloseHandle(h); }
     HANDLE Hold(HANDLE h) {
         if (h == INVALID_HANDLE_VALUE) throw std::runtime_error("legacy file access error " + std::to_string(GetLastError()));
         try { values.push_back(h); } catch (...) { CloseHandle(h); throw; }
         return h;
+    }
+    HANDLE Hold(HANDLE h, const fs::path& path) {
+        if (h == INVALID_HANDLE_VALUE) return Hold(h);
+        try {
+            auto [entry, inserted] = named.emplace(Lower(path.lexically_normal().native()), h);
+            if (!inserted) { CloseHandle(h); return entry->second; }
+            try { values.push_back(h); } catch (...) { named.erase(entry); throw; }
+            return h;
+        } catch (...) { CloseHandle(h); throw; }
     }
 } retainedFiles;
 void LogMessage(const std::string& message) noexcept {
@@ -49,7 +61,7 @@ void HoldDirectory(const fs::path& path, Handles& handles, bool create) {
         throw std::runtime_error("cannot create legacy cache directory");
     auto h = handles.Hold(CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr), path);
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(h, &info) || !(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
         (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
@@ -57,13 +69,15 @@ void HoldDirectory(const fs::path& path, Handles& handles, bool create) {
 }
 Bytes ReadImage(const fs::path& path, Handles& handles) {
     auto h = handles.Hold(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
-        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr), path);
     BY_HANDLE_FILE_INFORMATION info{}; LARGE_INTEGER size{};
     if (!GetFileInformationByHandle(h, &info) || (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ||
         !GetFileSizeEx(h, &size) || size.QuadPart <= 0 || size.QuadPart > 64 * 1024 * 1024)
         throw std::runtime_error("invalid legacy image file or size");
     Bytes bytes(static_cast<size_t>(size.QuadPart)); DWORD read = 0;
-    if (!::ReadFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read != bytes.size())
+    // A retained immutable cache file may be checked again after plugin restart.
+    if (!SetFilePointerEx(h, LARGE_INTEGER{}, nullptr, FILE_BEGIN) ||
+        !::ReadFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read != bytes.size())
         throw std::runtime_error("incomplete legacy image read");
     return bytes;
 }
@@ -85,9 +99,9 @@ std::string CacheKey(const std::array<Bytes, 3>& images) {
 }
 void Publish(const fs::path& path, const Bytes& bytes) {
     if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        auto temp = path; temp += L".tmp." + std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(GetTickCount64());
+        const auto temp = path.parent_path() / (L"new-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()) + L".tmp");
         HANDLE h = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot stage legacy cache image");
+        if (h == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot stage legacy cache image (Win32 " + std::to_string(GetLastError()) + "): " + Utf8(temp.native()));
         DWORD written = 0;
         const bool ok = WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) &&
             written == bytes.size() && FlushFileBuffers(h);
@@ -224,15 +238,22 @@ LegacyMmdImage PrepareLegacyMmdImage(const Manifest& manifest, const fs::path& i
     if (manifest.kind != Manifest::Kind::LegacyMmdPlugin)
         throw std::invalid_argument("expected legacy MMDPlugin package");
     const auto imports = InspectPe(manifest.entry).imports;
-    if (std::find(imports.begin(), imports.end(), "mikumikudance.exe") == imports.end()) return result;
+    const bool rewriteHost = std::find(imports.begin(), imports.end(), "mikumikudance.exe") != imports.end();
+    const bool originalCamera = manifest.legacyProfile == "first_person_camera_v4" &&
+        manifest.legacyEntrySha256 == kOriginalFirstPersonCameraSha256;
+    if (!rewriteHost && !originalCamera) return result;
     Handles source;
     const auto original = ReadImage(PackageFile(manifest.package, Utf8(manifest.entry.lexically_relative(manifest.package).native())), source);
     if (Sha256(manifest.entry) != manifest.legacyEntrySha256)
         throw std::invalid_argument("legacy MMDPlugin entry SHA-256 mismatch");
-    auto rewritten = RedirectLegacyHostImport(original);
-    if (!rewritten.ok()) throw std::invalid_argument("legacy MMDPlugin import rewrite: " + rewritten.message);
-    const auto facade = PackageFile(install, "MMDFacade.dll");
-    std::array<Bytes, 3> images{std::move(rewritten.image), ReadImage(facade, source), {}};
+    Bytes entryImage = original;
+    if (rewriteHost) {
+        auto rewritten = RedirectLegacyHostImport(original);
+        if (!rewritten.ok()) throw std::invalid_argument("legacy MMDPlugin import rewrite: " + rewritten.message);
+        entryImage = std::move(rewritten.image);
+    }
+    const auto facade = LegacyComponentFile(install, "MMDFacade.dll");
+    std::array<Bytes, 3> images{std::move(entryImage), ReadImage(facade, source), {}};
     if (manifest.legacyProfile == "effekseer_v2")
         images[2] = ReadImage(PackageFile(manifest.package, "efk.pmd"), source);
     auto directory = install;
@@ -260,18 +281,31 @@ LegacyMmdImage PrepareLegacyMmdImage(const Manifest& manifest, const fs::path& i
 bool BootstrapLegacyMme() noexcept {
     if (attempted) return safeToContinue;
     attempted = true;
+    bool on12Requested = false;
     try {
         const auto install = local_data::ExecutableDirectory();
         if (install.empty()) throw std::runtime_error("installation directory unavailable");
         const auto discovered = Discover(install / L"PLUGINS");
         for (const auto& d : discovered.diagnostics) LogMessage(d);
         const auto order = Resolve(discovered, LogMessage);
+        for (auto index : order) {
+            const auto& request = discovered.packages[index];
+            if (request.kind != Manifest::Kind::Native || request.startupRenderBackend.empty()) continue;
+            // Inspect the declared entry; never execute a DLL to probe its interface.
+            if (WindowsVersion() < request.minWindows) { LogMessage(request.id + ": startup Windows version is unsupported"); continue; }
+            try {
+                InspectPe(request.entry);
+                if (!HasNativeFactory(request.entry))
+                    throw std::runtime_error("startup entry has no native ABI factory");
+                on12Requested = true;
+            } catch (const std::exception& error) { LogMessage(request.id + ": " + error.what()); RecordMmeStartupError(request.id, error.what()); }
+        }
         const Manifest* legacy = nullptr;
         for (auto index : order) if (discovered.packages[index].kind == Manifest::Kind::LegacyMme) {
             if (legacy) throw std::runtime_error("enable only one legacy MME package per process");
             legacy = &discovered.packages[index];
         }
-        if (!legacy) return true;
+        if (!legacy) { ConfigureMmeRenderStartup(on12Requested, false, nullptr); return true; }
         status.id = legacy->id;
         if (WindowsVersion() < legacy->minWindows) throw std::runtime_error("legacy package minimum Windows version is not met");
         if (LegacyMmeModule() || LegacyMmeHackModule() || GetModuleHandleW(L"MMDFacade.dll") || GetModuleHandleW(L"MMSAdapter.dll"))
@@ -281,7 +315,7 @@ bool BootstrapLegacyMme() noexcept {
         if (legacy->legacyHack.empty()) {
             // The built-in bridge resolves the current host directly; it has no
             // MikuMikuDance.exe import to rewrite. Validate its PE before loading.
-            const auto bridge = PackageFile(install, "MMHack.dll");
+            const auto bridge = LegacyComponentFile(install, "MMHack.dll");
             InspectPe(bridge);
             hack.image = ReadImage(bridge, source);
         } else {
@@ -291,7 +325,7 @@ bool BootstrapLegacyMme() noexcept {
         if (!hack.ok()) throw std::runtime_error("MMHack: " + std::string(LegacyImageErrorName(hack.error)) + " " + hack.message);
         if (!effect.ok()) throw std::runtime_error("MMEffect: " + std::string(LegacyImageErrorName(effect.error)) + " " + effect.message);
         std::array<Bytes, 3> images{std::move(hack.image), std::move(effect.image),
-            ReadImage(PackageFile(install, "MMDFacade.dll"), source)};
+            ReadImage(LegacyComponentFile(install, "MMDFacade.dll"), source)};
         auto directory = install;
         HoldDirectory(directory, retainedFiles, false);
         for (const auto& part : {std::wstring(L"data"), std::wstring(L"plugins"), std::wstring(L"legacy_mme"), Wide(CacheKey(images))}) {
@@ -321,11 +355,16 @@ bool BootstrapLegacyMme() noexcept {
         Pin(hackModule); Pin(effectModule);
         status.loaded = true; safeToContinue = true;
         LogMessage(status.id + " loaded from " + Utf8(directory.native()));
+        ConfigureMmeRenderStartup(on12Requested, true, hackModule);
     } catch (const std::exception& e) {
         try { status.error = e.what(); LogMessage(status.error); } catch (...) {}
     } catch (...) {
         try { status.error = "legacy MME startup failed"; LogMessage(status.error); } catch (...) {}
     }
+    if (!status.error.empty()) {
+        try { MessageBoxW(nullptr, Wide(status.id + "\n" + status.error).c_str(), L"MMDFacade：MME 加载失败", MB_OK | MB_ICONERROR); } catch (...) {}
+    }
+    if (!status.loaded) ConfigureMmeRenderStartup(on12Requested, false, nullptr);
     return safeToContinue;
 }
 }

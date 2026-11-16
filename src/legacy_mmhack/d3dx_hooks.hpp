@@ -2,6 +2,7 @@
 #include "runtime.hpp"
 #include "iat_hook.hpp"
 namespace mme_re::mmhack {
+BOOL set_mme_dx12_patch(BOOL enable) noexcept;
 IDirect3D9* WINAPI hooked_direct3d_create9(UINT sdk_version);
 HRESULT WINAPI hooked_load_mesh_w(LPCWSTR, DWORD, IDirect3DDevice9*, ID3DXBuffer**, ID3DXBuffer**, ID3DXBuffer**, DWORD*, ID3DXMesh**);
 HRESULT WINAPI hooked_create_effect_resource_a(IDirect3DDevice9*, HMODULE, LPCSTR, const D3DXMACRO*, ID3DXInclude*, DWORD, ID3DXEffectPool*, ID3DXEffect**, ID3DXBuffer**);

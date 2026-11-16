@@ -1,0 +1,251 @@
+slot,introducedAbi,declaration,forwarding
+0,1,~MMDPluginDLL1(),destroyN owns deletion; host never directly deletes
+1,1,"void QueryInterface(REFIID riid, void** ppvObj)",not forwarded
+2,1,void AddRef(),not forwarded
+3,1,void Release(),not forwarded
+4,1,void TestCooperativeLevel(),not forwarded
+5,1,void GetAvailableTextureMem(),not forwarded
+6,1,void EvictManagedResources(),not forwarded
+7,1,void GetDirect3D(IDirect3D9** ppD3D9),not forwarded
+8,1,void GetDeviceCaps(D3DCAPS9* pCaps),not forwarded
+9,1,"void GetDisplayMode(UINT iSwapChain, D3DDISPLAYMODE* pMode)",not forwarded
+10,1,void GetCreationParameters(D3DDEVICE_CREATION_PARAMETERS* pParameters),not forwarded
+11,1,"void SetCursorProperties(UINT XHotSpot, UINT YHotSpot, IDirect3DSurface9* pCursorBitmap)",not forwarded
+12,1,"void SetCursorPosition(int X, int Y, DWORD Flags)",not forwarded
+13,1,void ShowCursor(BOOL bShow),not forwarded
+14,1,"void CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS* pPresentationParameters, IDirect3DSwapChain9** pSwapChain)",not forwarded
+15,1,"void GetSwapChain(UINT iSwapChain, IDirect3DSwapChain9** pSwapChain)",not forwarded
+16,1,void GetNumberOfSwapChains(),not forwarded
+17,1,void Reset(D3DPRESENT_PARAMETERS* pPresentationParameters),device_reset_v2/effekseer_v2
+18,1,"void Present(CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindow, CONST RGNDATA* pDirtyRegion)",not forwarded
+19,1,"void GetBackBuffer(UINT iSwapChain, UINT iBackBuffer, D3DBACKBUFFER_TYPE Type, IDirect3DSurface9** ppBackBuffer)",not forwarded
+20,1,"void GetRasterStatus(UINT iSwapChain, D3DRASTER_STATUS* pRasterStatus)",not forwarded
+21,1,void SetDialogBoxMode(BOOL bEnableDialogs),not forwarded
+22,1,"void SetGammaRamp(UINT iSwapChain, DWORD Flags, CONST D3DGAMMARAMP* pRamp)",not forwarded
+23,1,"void GetGammaRamp(UINT iSwapChain, D3DGAMMARAMP* pRamp)",not forwarded
+24,1,"void CreateTexture(UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DTexture9** ppTexture, HANDLE* pSharedHandle)",not forwarded
+25,1,"void CreateVolumeTexture(UINT Width, UINT Height, UINT Depth, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DVolumeTexture9** ppVolumeTexture, HANDLE* pSharedHandle)",not forwarded
+26,1,"void CreateCubeTexture(UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DCubeTexture9** ppCubeTexture, HANDLE* pSharedHandle)",not forwarded
+27,1,"void CreateVertexBuffer(UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool, IDirect3DVertexBuffer9** ppVertexBuffer, HANDLE* pSharedHandle)",not forwarded
+28,1,"void CreateIndexBuffer(UINT Length, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DIndexBuffer9** ppIndexBuffer, HANDLE* pSharedHandle)",not forwarded
+29,1,"void CreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Lockable, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle)",not forwarded
+30,1,"void CreateDepthStencilSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Discard, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle)",not forwarded
+31,1,"void UpdateSurface(IDirect3DSurface9* pSourceSurface, CONST RECT* pSourceRect, IDirect3DSurface9* pDestinationSurface, CONST POINT* pDestPoint)",not forwarded
+32,1,"void UpdateTexture(IDirect3DBaseTexture9* pSourceTexture, IDirect3DBaseTexture9* pDestinationTexture)",not forwarded
+33,1,"void GetRenderTargetData(IDirect3DSurface9* pRenderTarget, IDirect3DSurface9* pDestSurface)",not forwarded
+34,1,"void GetFrontBufferData(UINT iSwapChain, IDirect3DSurface9* pDestSurface)",not forwarded
+35,1,"void StretchRect(IDirect3DSurface9* pSourceSurface, CONST RECT* pSourceRect, IDirect3DSurface9* pDestSurface, CONST RECT* pDestRect, D3DTEXTUREFILTERTYPE Filter)",not forwarded
+36,1,"void ColorFill(IDirect3DSurface9* pSurface, CONST RECT* pRect, D3DCOLOR color)",not forwarded
+37,1,"void CreateOffscreenPlainSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle)",not forwarded
+38,1,"void SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9* pRenderTarget)",not forwarded
+39,1,"void GetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9** ppRenderTarget)",not forwarded
+40,1,void SetDepthStencilSurface(IDirect3DSurface9* pNewZStencil),not forwarded
+41,1,void GetDepthStencilSurface(IDirect3DSurface9** ppZStencilSurface),not forwarded
+42,1,void BeginScene(),effekseer_v2 BeginScene
+43,1,void EndScene(),effekseer_v2 EndScene
+44,1,"void Clear(DWORD Count, CONST D3DRECT* pRects, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil)",not forwarded
+45,1,"void SetTransform(D3DTRANSFORMSTATETYPE State, CONST D3DMATRIX* pMatrix)",not forwarded
+46,1,"void GetTransform(D3DTRANSFORMSTATETYPE State, D3DMATRIX* pMatrix)",not forwarded
+47,1,"void MultiplyTransform(D3DTRANSFORMSTATETYPE State, CONST D3DMATRIX* pMatrix)",not forwarded
+48,1,void SetViewport(CONST D3DVIEWPORT9* pViewport),not forwarded
+49,1,void GetViewport(D3DVIEWPORT9* pViewport),not forwarded
+50,1,void SetMaterial(CONST D3DMATERIAL9* pMaterial),not forwarded
+51,1,void GetMaterial(D3DMATERIAL9* pMaterial),not forwarded
+52,1,"void SetLight(DWORD Index, CONST D3DLIGHT9* pLight)",not forwarded
+53,1,"void GetLight(DWORD Index, D3DLIGHT9* pLight)",not forwarded
+54,1,"void LightEnable(DWORD Index, BOOL Enable)",not forwarded
+55,1,"void GetLightEnable(DWORD Index, BOOL* pEnable)",not forwarded
+56,1,"void SetClipPlane(DWORD Index, CONST float* pPlane)",not forwarded
+57,1,"void GetClipPlane(DWORD Index, float* pPlane)",not forwarded
+58,1,"void SetRenderState(D3DRENDERSTATETYPE State, DWORD Value)",not forwarded
+59,1,"void GetRenderState(D3DRENDERSTATETYPE State, DWORD* pValue)",not forwarded
+60,1,"void CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9** ppSB)",not forwarded
+61,1,void BeginStateBlock(),not forwarded
+62,1,void EndStateBlock(IDirect3DStateBlock9** ppSB),not forwarded
+63,1,void SetClipStatus(CONST D3DCLIPSTATUS9* pClipStatus),not forwarded
+64,1,void GetClipStatus(D3DCLIPSTATUS9* pClipStatus),not forwarded
+65,1,"void GetTexture(DWORD Stage, IDirect3DBaseTexture9** ppTexture)",not forwarded
+66,1,"void SetTexture(DWORD Stage, IDirect3DBaseTexture9* pTexture)",not forwarded
+67,1,"void GetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD* pValue)",not forwarded
+68,1,"void SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value)",not forwarded
+69,1,"void GetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD* pValue)",not forwarded
+70,1,"void SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value)",not forwarded
+71,1,void ValidateDevice(DWORD* pNumPasses),not forwarded
+72,1,"void SetPaletteEntries(UINT PaletteNumber, CONST PALETTEENTRY* pEntries)",not forwarded
+73,1,"void GetPaletteEntries(UINT PaletteNumber, PALETTEENTRY* pEntries)",not forwarded
+74,1,void SetCurrentTexturePalette(UINT PaletteNumber),not forwarded
+75,1,void GetCurrentTexturePalette(UINT* PaletteNumber),not forwarded
+76,1,void SetScissorRect(CONST RECT* pRect),not forwarded
+77,1,void GetScissorRect(RECT* pRect),not forwarded
+78,1,void SetSoftwareVertexProcessing(BOOL bSoftware),not forwarded
+79,1,void GetSoftwareVertexProcessing(),not forwarded
+80,1,void SetNPatchMode(float nSegments),not forwarded
+81,1,void GetNPatchMode(),not forwarded
+82,1,"void DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount)",not forwarded
+83,1,"void DrawIndexedPrimitive(D3DPRIMITIVETYPE, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT startIndex, UINT primCount)",effekseer_v2 first-material draw observation
+84,1,"void DrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride)",not forwarded
+85,1,"void DrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT MinVertexIndex, UINT NumVertices, UINT PrimitiveCount, CONST void* pIndexData, D3DFORMAT IndexDataFormat, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride)",not forwarded
+86,1,"void ProcessVertices(UINT SrcStartIndex, UINT DestIndex, UINT VertexCount, IDirect3DVertexBuffer9* pDestBuffer, IDirect3DVertexDeclaration9* pVertexDecl, DWORD Flags)",not forwarded
+87,1,"void CreateVertexDeclaration(CONST D3DVERTEXELEMENT9* pVertexElements, IDirect3DVertexDeclaration9** ppDecl)",not forwarded
+88,1,void SetVertexDeclaration(IDirect3DVertexDeclaration9* pDecl),not forwarded
+89,1,void GetVertexDeclaration(IDirect3DVertexDeclaration9** ppDecl),not forwarded
+90,1,void SetFVF(DWORD FVF),not forwarded
+91,1,void GetFVF(DWORD* pFVF),not forwarded
+92,1,"void CreateVertexShader(CONST DWORD* pFunction, IDirect3DVertexShader9** ppShader)",not forwarded
+93,1,void SetVertexShader(IDirect3DVertexShader9* pShader),not forwarded
+94,1,void GetVertexShader(IDirect3DVertexShader9** ppShader),not forwarded
+95,1,"void SetVertexShaderConstantF(UINT StartRegister, CONST float* pConstantData, UINT Vector4fCount)",not forwarded
+96,1,"void GetVertexShaderConstantF(UINT StartRegister, float* pConstantData, UINT Vector4fCount)",not forwarded
+97,1,"void SetVertexShaderConstantI(UINT StartRegister, CONST int* pConstantData, UINT Vector4iCount)",not forwarded
+98,1,"void GetVertexShaderConstantI(UINT StartRegister, int* pConstantData, UINT Vector4iCount)",not forwarded
+99,1,"void SetVertexShaderConstantB(UINT StartRegister, CONST BOOL* pConstantData, UINT BoolCount)",not forwarded
+100,1,"void GetVertexShaderConstantB(UINT StartRegister, BOOL* pConstantData, UINT BoolCount)",not forwarded
+101,1,"void SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9* pStreamData, UINT OffsetInBytes, UINT Stride)",not forwarded
+102,1,"void GetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9** ppStreamData, UINT* pOffsetInBytes, UINT* pStride)",not forwarded
+103,1,"void SetStreamSourceFreq(UINT StreamNumber, UINT Setting)",not forwarded
+104,1,"void GetStreamSourceFreq(UINT StreamNumber, UINT* pSetting)",not forwarded
+105,1,void SetIndices(IDirect3DIndexBuffer9* pIndexData),not forwarded
+106,1,void GetIndices(IDirect3DIndexBuffer9** ppIndexData),not forwarded
+107,1,"void CreatePixelShader(CONST DWORD* pFunction, IDirect3DPixelShader9** ppShader)",not forwarded
+108,1,void SetPixelShader(IDirect3DPixelShader9* pShader),not forwarded
+109,1,void GetPixelShader(IDirect3DPixelShader9** ppShader),not forwarded
+110,1,"void SetPixelShaderConstantF(UINT StartRegister, CONST float* pConstantData, UINT Vector4fCount)",not forwarded
+111,1,"void GetPixelShaderConstantF(UINT StartRegister, float* pConstantData, UINT Vector4fCount)",not forwarded
+112,1,"void SetPixelShaderConstantI(UINT StartRegister, CONST int* pConstantData, UINT Vector4iCount)",not forwarded
+113,1,"void GetPixelShaderConstantI(UINT StartRegister, int* pConstantData, UINT Vector4iCount)",not forwarded
+114,1,"void SetPixelShaderConstantB(UINT StartRegister, CONST BOOL* pConstantData, UINT BoolCount)",not forwarded
+115,1,"void GetPixelShaderConstantB(UINT StartRegister, BOOL* pConstantData, UINT BoolCount)",not forwarded
+116,1,"void DrawRectPatch(UINT Handle, CONST float* pNumSegs, CONST D3DRECTPATCH_INFO* pRectPatchInfo)",not forwarded
+117,1,"void DrawTriPatch(UINT Handle, CONST float* pNumSegs, CONST D3DTRIPATCH_INFO* pTriPatchInfo)",not forwarded
+118,1,void DeletePatch(UINT Handle),not forwarded
+119,1,"void CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9** ppQuery)",not forwarded
+120,2,"void PostQueryInterface(REFIID riid, void** ppvObj, HRESULT& res)",not forwarded
+121,2,void PostAddRef(ULONG& res),not forwarded
+122,2,void PostRelease(ULONG& res),not forwarded
+123,2,void PostTestCooperativeLevel(HRESULT& res),not forwarded
+124,2,void PostGetAvailableTextureMem(UINT& res),not forwarded
+125,2,void PostEvictManagedResources(HRESULT& res),not forwarded
+126,2,"void PostGetDirect3D(IDirect3D9** ppD3D9, HRESULT& res)",not forwarded
+127,2,"void PostGetDeviceCaps(D3DCAPS9* pCaps, HRESULT& res)",not forwarded
+128,2,"void PostGetDisplayMode(UINT iSwapChain, D3DDISPLAYMODE* pMode, HRESULT& res)",not forwarded
+129,2,"void PostGetCreationParameters(D3DDEVICE_CREATION_PARAMETERS* pParameters, HRESULT& res)",not forwarded
+130,2,"void PostSetCursorProperties(UINT XHotSpot, UINT YHotSpot, IDirect3DSurface9* pCursorBitmap, HRESULT& res)",not forwarded
+131,2,"void PostSetCursorPosition(int X, int Y, DWORD Flags)",not forwarded
+132,2,"void PostShowCursor(BOOL bShow, BOOL& res)",not forwarded
+133,2,"void PostCreateAdditionalSwapChain(D3DPRESENT_PARAMETERS* pPresentationParameters, IDirect3DSwapChain9** pSwapChain, HRESULT& res)",not forwarded
+134,2,"void PostGetSwapChain(UINT iSwapChain, IDirect3DSwapChain9** pSwapChain, HRESULT& res)",not forwarded
+135,2,void PostGetNumberOfSwapChains(UINT& res),not forwarded
+136,2,"void PostReset(D3DPRESENT_PARAMETERS* pPresentationParameters, HRESULT& res)",device_reset_v2/effekseer_v2; no Effekseer post on failed reset
+137,2,"void PostPresent(CONST RECT* pSourceRect, CONST RECT* pDestRect, HWND hDestWindow, CONST RGNDATA* pDirtyRegion, HRESULT& res)",not forwarded
+138,2,"void PostGetBackBuffer(UINT iSwapChain, UINT iBackBuffer, D3DBACKBUFFER_TYPE Type, IDirect3DSurface9** ppBackBuffer, HRESULT& res)",not forwarded
+139,2,"void PostGetRasterStatus(UINT iSwapChain, D3DRASTER_STATUS* pRasterStatus, HRESULT& res)",not forwarded
+140,2,"void PostSetDialogBoxMode(BOOL bEnableDialogs, HRESULT& res)",not forwarded
+141,2,"void PostSetGammaRamp(UINT iSwapChain, DWORD Flags, CONST D3DGAMMARAMP* pRamp)",not forwarded
+142,2,"void PostGetGammaRamp(UINT iSwapChain, D3DGAMMARAMP* pRamp)",not forwarded
+143,2,"void PostCreateTexture(UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DTexture9** ppTexture, HANDLE* pSharedHandle, HRESULT& res)",not forwarded
+144,2,"void PostCreateVolumeTexture(UINT Width, UINT Height, UINT Depth, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DVolumeTexture9** ppVolumeTexture, HANDLE* pSharedHandle, HRESULT& res)",not forwarded
+145,2,"void PostCreateCubeTexture(UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DCubeTexture9** ppCubeTexture, HANDLE* pSharedHandle, HRESULT& res)",not forwarded
+146,2,"void PostCreateVertexBuffer(UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool, IDirect3DVertexBuffer9** ppVertexBuffer, HANDLE* pSharedHandle, HRESULT& res)",not forwarded
+147,2,"void PostCreateIndexBuffer(UINT Length, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DIndexBuffer9** ppIndexBuffer, HANDLE* pSharedHandle, HRESULT& res)",not forwarded
+148,2,"void PostCreateRenderTarget(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Lockable, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle, HRESULT& res)",not forwarded
+149,2,"void PostCreateDepthStencilSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Discard, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle, HRESULT& res)",not forwarded
+150,2,"void PostUpdateSurface(IDirect3DSurface9* pSourceSurface, CONST RECT* pSourceRect, IDirect3DSurface9* pDestinationSurface, CONST POINT* pDestPoint, HRESULT& res)",not forwarded
+151,2,"void PostUpdateTexture(IDirect3DBaseTexture9* pSourceTexture, IDirect3DBaseTexture9* pDestinationTexture, HRESULT& res)",not forwarded
+152,2,"void PostGetRenderTargetData(IDirect3DSurface9* pRenderTarget, IDirect3DSurface9* pDestSurface, HRESULT& res)",not forwarded
+153,2,"void PostGetFrontBufferData(UINT iSwapChain, IDirect3DSurface9* pDestSurface, HRESULT& res)",not forwarded
+154,2,"void PostStretchRect(IDirect3DSurface9* pSourceSurface, CONST RECT* pSourceRect, IDirect3DSurface9* pDestSurface, CONST RECT* pDestRect, D3DTEXTUREFILTERTYPE Filter, HRESULT& res)",not forwarded
+155,2,"void PostColorFill(IDirect3DSurface9* pSurface, CONST RECT* pRect, D3DCOLOR color, HRESULT& res)",not forwarded
+156,2,"void PostCreateOffscreenPlainSurface(UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9** ppSurface, HANDLE* pSharedHandle, HRESULT& res)",not forwarded
+157,2,"void PostSetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9* pRenderTarget, HRESULT& res)",not forwarded
+158,2,"void PostGetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9** ppRenderTarget, HRESULT& res)",not forwarded
+159,2,"void PostSetDepthStencilSurface(IDirect3DSurface9* pNewZStencil, HRESULT& res)",not forwarded
+160,2,"void PostGetDepthStencilSurface(IDirect3DSurface9** ppZStencilSurface, HRESULT& res)",not forwarded
+161,2,void PostBeginScene(HRESULT& res),effekseer_v2 PostBeginScene
+162,2,void PostEndScene(HRESULT& res),effekseer_v2 PostEndScene
+163,2,"void PostClear(DWORD Count, CONST D3DRECT* pRects, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil, HRESULT& res)",not forwarded
+164,2,"void PostSetTransform(D3DTRANSFORMSTATETYPE State, CONST D3DMATRIX* pMatrix, HRESULT& res)",not forwarded
+165,2,"void PostGetTransform(D3DTRANSFORMSTATETYPE State, D3DMATRIX* pMatrix, HRESULT& res)",not forwarded
+166,2,"void PostMultiplyTransform(D3DTRANSFORMSTATETYPE State, CONST D3DMATRIX* pMatrix, HRESULT& res)",not forwarded
+167,2,"void PostSetViewport(CONST D3DVIEWPORT9* pViewport, HRESULT& res)",not forwarded
+168,2,"void PostGetViewport(D3DVIEWPORT9* pViewport, HRESULT& res)",not forwarded
+169,2,"void PostSetMaterial(CONST D3DMATERIAL9* pMaterial, HRESULT& res)",not forwarded
+170,2,"void PostGetMaterial(D3DMATERIAL9* pMaterial, HRESULT& res)",not forwarded
+171,2,"void PostSetLight(DWORD Index, CONST D3DLIGHT9* pLight, HRESULT& res)",not forwarded
+172,2,"void PostGetLight(DWORD Index, D3DLIGHT9* pLight, HRESULT& res)",not forwarded
+173,2,"void PostLightEnable(DWORD Index, BOOL Enable, HRESULT& res)",not forwarded
+174,2,"void PostGetLightEnable(DWORD Index, BOOL* pEnable, HRESULT& res)",not forwarded
+175,2,"void PostSetClipPlane(DWORD Index, CONST float* pPlane, HRESULT& res)",not forwarded
+176,2,"void PostGetClipPlane(DWORD Index, float* pPlane, HRESULT& res)",not forwarded
+177,2,"void PostSetRenderState(D3DRENDERSTATETYPE State, DWORD Value, HRESULT& res)",not forwarded
+178,2,"void PostGetRenderState(D3DRENDERSTATETYPE State, DWORD* pValue, HRESULT& res)",not forwarded
+179,2,"void PostCreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9** ppSB, HRESULT& res)",not forwarded
+180,2,void PostBeginStateBlock(HRESULT& res),not forwarded
+181,2,"void PostEndStateBlock(IDirect3DStateBlock9** ppSB, HRESULT& res)",not forwarded
+182,2,"void PostSetClipStatus(CONST D3DCLIPSTATUS9* pClipStatus, HRESULT& res)",not forwarded
+183,2,"void PostGetClipStatus(D3DCLIPSTATUS9* pClipStatus, HRESULT& res)",not forwarded
+184,2,"void PostGetTexture(DWORD Stage, IDirect3DBaseTexture9** ppTexture, HRESULT& res)",not forwarded
+185,2,"void PostSetTexture(DWORD Stage, IDirect3DBaseTexture9* pTexture, HRESULT& res)",not forwarded
+186,2,"void PostGetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD* pValue, HRESULT& res)",not forwarded
+187,2,"void PostSetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value, HRESULT& res)",not forwarded
+188,2,"void PostGetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD* pValue, HRESULT& res)",not forwarded
+189,2,"void PostSetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value, HRESULT& res)",not forwarded
+190,2,"void PostValidateDevice(DWORD* pNumPasses, HRESULT& res)",not forwarded
+191,2,"void PostSetPaletteEntries(UINT PaletteNumber, CONST PALETTEENTRY* pEntries, HRESULT& res)",not forwarded
+192,2,"void PostGetPaletteEntries(UINT PaletteNumber, PALETTEENTRY* pEntries, HRESULT& res)",not forwarded
+193,2,"void PostSetCurrentTexturePalette(UINT PaletteNumber, HRESULT& res)",not forwarded
+194,2,"void PostGetCurrentTexturePalette(UINT* PaletteNumber, HRESULT& res)",not forwarded
+195,2,"void PostSetScissorRect(CONST RECT* pRect, HRESULT& res)",not forwarded
+196,2,"void PostGetScissorRect(RECT* pRect, HRESULT& res)",not forwarded
+197,2,"void PostSetSoftwareVertexProcessing(BOOL bSoftware, HRESULT& res)",not forwarded
+198,2,void PostGetSoftwareVertexProcessing(BOOL& res),not forwarded
+199,2,"void PostSetNPatchMode(float nSegments, HRESULT& res)",not forwarded
+200,2,void PostGetNPatchMode(float& res),not forwarded
+201,2,"void PostDrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount, HRESULT& res)",not forwarded
+202,2,"void PostDrawIndexedPrimitive(D3DPRIMITIVETYPE, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT startIndex, UINT primCount, HRESULT& res)",not forwarded
+203,2,"void PostDrawPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride, HRESULT& res)",not forwarded
+204,2,"void PostDrawIndexedPrimitiveUP(D3DPRIMITIVETYPE PrimitiveType, UINT MinVertexIndex, UINT NumVertices, UINT PrimitiveCount, CONST void* pIndexData, D3DFORMAT IndexDataFormat, CONST void* pVertexStreamZeroData, UINT VertexStreamZeroStride, HRESULT& res)",not forwarded
+205,2,"void PostProcessVertices(UINT SrcStartIndex, UINT DestIndex, UINT VertexCount, IDirect3DVertexBuffer9* pDestBuffer, IDirect3DVertexDeclaration9* pVertexDecl, DWORD Flags, HRESULT& res)",not forwarded
+206,2,"void PostCreateVertexDeclaration(CONST D3DVERTEXELEMENT9* pVertexElements, IDirect3DVertexDeclaration9** ppDecl, HRESULT& res)",not forwarded
+207,2,"void PostSetVertexDeclaration(IDirect3DVertexDeclaration9* pDecl, HRESULT& res)",not forwarded
+208,2,"void PostGetVertexDeclaration(IDirect3DVertexDeclaration9** ppDecl, HRESULT& res)",not forwarded
+209,2,"void PostSetFVF(DWORD FVF, HRESULT& res)",not forwarded
+210,2,"void PostGetFVF(DWORD* pFVF, HRESULT& res)",not forwarded
+211,2,"void PostCreateVertexShader(CONST DWORD* pFunction, IDirect3DVertexShader9** ppShader, HRESULT& res)",not forwarded
+212,2,"void PostSetVertexShader(IDirect3DVertexShader9* pShader, HRESULT& res)",not forwarded
+213,2,"void PostGetVertexShader(IDirect3DVertexShader9** ppShader, HRESULT& res)",not forwarded
+214,2,"void PostSetVertexShaderConstantF(UINT StartRegister, CONST float* pConstantData, UINT Vector4fCount, HRESULT& res)",not forwarded
+215,2,"void PostGetVertexShaderConstantF(UINT StartRegister, float* pConstantData, UINT Vector4fCount, HRESULT& res)",not forwarded
+216,2,"void PostSetVertexShaderConstantI(UINT StartRegister, CONST int* pConstantData, UINT Vector4iCount, HRESULT& res)",not forwarded
+217,2,"void PostGetVertexShaderConstantI(UINT StartRegister, int* pConstantData, UINT Vector4iCount, HRESULT& res)",not forwarded
+218,2,"void PostSetVertexShaderConstantB(UINT StartRegister, CONST BOOL* pConstantData, UINT BoolCount, HRESULT& res)",not forwarded
+219,2,"void PostGetVertexShaderConstantB(UINT StartRegister, BOOL* pConstantData, UINT BoolCount, HRESULT& res)",not forwarded
+220,2,"void PostSetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9* pStreamData, UINT OffsetInBytes, UINT Stride, HRESULT& res)",not forwarded
+221,2,"void PostGetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9** ppStreamData, UINT* pOffsetInBytes, UINT* pStride, HRESULT& res)",not forwarded
+222,2,"void PostSetStreamSourceFreq(UINT StreamNumber, UINT Setting, HRESULT& res)",not forwarded
+223,2,"void PostGetStreamSourceFreq(UINT StreamNumber, UINT* pSetting, HRESULT& res)",not forwarded
+224,2,"void PostSetIndices(IDirect3DIndexBuffer9* pIndexData, HRESULT& res)",not forwarded
+225,2,"void PostGetIndices(IDirect3DIndexBuffer9** ppIndexData, HRESULT& res)",not forwarded
+226,2,"void PostCreatePixelShader(CONST DWORD* pFunction, IDirect3DPixelShader9** ppShader, HRESULT& res)",not forwarded
+227,2,"void PostSetPixelShader(IDirect3DPixelShader9* pShader, HRESULT& res)",not forwarded
+228,2,"void PostGetPixelShader(IDirect3DPixelShader9** ppShader, HRESULT& res)",not forwarded
+229,2,"void PostSetPixelShaderConstantF(UINT StartRegister, CONST float* pConstantData, UINT Vector4fCount, HRESULT& res)",not forwarded
+230,2,"void PostGetPixelShaderConstantF(UINT StartRegister, float* pConstantData, UINT Vector4fCount, HRESULT& res)",not forwarded
+231,2,"void PostSetPixelShaderConstantI(UINT StartRegister, CONST int* pConstantData, UINT Vector4iCount, HRESULT& res)",not forwarded
+232,2,"void PostGetPixelShaderConstantI(UINT StartRegister, int* pConstantData, UINT Vector4iCount, HRESULT& res)",not forwarded
+233,2,"void PostSetPixelShaderConstantB(UINT StartRegister, CONST BOOL* pConstantData, UINT BoolCount, HRESULT& res)",not forwarded
+234,2,"void PostGetPixelShaderConstantB(UINT StartRegister, BOOL* pConstantData, UINT BoolCount, HRESULT& res)",not forwarded
+235,2,"void PostDrawRectPatch(UINT Handle, CONST float* pNumSegs, CONST D3DRECTPATCH_INFO* pRectPatchInfo, HRESULT& res)",not forwarded
+236,2,"void PostDrawTriPatch(UINT Handle, CONST float* pNumSegs, CONST D3DTRIPATCH_INFO* pTriPatchInfo, HRESULT& res)",not forwarded
+237,2,"void PostDeletePatch(UINT Handle, HRESULT& res)",not forwarded
+238,2,"void PostCreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9** ppQuery, HRESULT& res)",not forwarded
+239,3,const char* getPluginTitle() const,not forwarded
+240,3,void start(),ABI3/4 start after all creates
+241,3,void stop(),ABI3/4 stop before destroy
+242,3,"std::pair<bool, LRESULT> WndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)",not forwarded
+243,3,void WndProc(CWPSTRUCT* param),window_observer_v3 filtered messages
+244,3,"void MsgProc(int code, MSG* param)",not forwarded
+245,3,"void MouseProc(WPARAM wParam, MOUSEHOOKSTRUCT* param)",first_person_camera_v4 viewport mouse
+246,3,"void GetMsgProc(int code, MSG* param)",not forwarded
+247,3,"void KeyBoardProc(WPARAM wParam, LPARAM lParam)",first_person_camera_v4 WASD
+248,4,"void D3DXCreateEffectFromFileExW( LPDIRECT3DDEVICE9& pDevice, LPCWSTR& pSrcFile, CONST D3DXMACRO*& pDefines, LPD3DXINCLUDE& pInclude, LPCSTR& pSkipConstants, DWORD& Flags, LPD3DXEFFECTPOOL& pPool, LPD3DXEFFECT*& ppEffect, LPD3DXBUFFER*& ppCompilationErrors)",not forwarded
+249,4,"void PostD3DXCreateEffectFromFileExW( LPDIRECT3DDEVICE9& pDevice, LPCWSTR& pSrcFile, CONST D3DXMACRO*& pDefines, LPD3DXINCLUDE& pInclude, LPCSTR& pSkipConstants, DWORD& Flags, LPD3DXEFFECTPOOL& pPool, LPD3DXEFFECT*& ppEffect, LPD3DXBUFFER*& ppCompilationErrors, HRESULT& res)",not forwarded
