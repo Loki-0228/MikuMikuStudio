@@ -130,11 +130,11 @@ static void DiscoveryChecks(const fs::path& root) {
         fs::path package = nested / L"插件"; Write(package / "hello_menu.dll", "not a PE"); Write(package / "plugin.json", ManifestText("example.depth" + std::to_string(i)));
         Write(package / "ignored" / "hello_menu.dll", "not a PE"); Write(package / "ignored" / "plugin.json", ManifestText("example.ignored"));
     }
-    for (int depth : {0, 1, 2, 5}) {
+    for (int depth : {0, 1, 2, 3, 5}) {
         Write(p / "config.json", "{\"schemaVersion\":1,\"maxDepth\":" + std::to_string(depth) + ",\"disabledPlugins\":[]}");
         auto d = Discover(p); CHECK(d.config.maxDepth == depth); CHECK(d.packages.size() == size_t(depth ? depth : 1));
     }
-    Write(p / "config.json", "{broken"); auto d = Discover(p); CHECK(d.config.maxDepth == 2); CHECK(!d.diagnostics.empty());
+    Write(p / "config.json", "{broken"); auto d = Discover(p); CHECK(d.config.maxDepth == 3); CHECK(!d.diagnostics.empty());
     CHECK(Throws([&] { PackageFile(p, "../escape.dll"); }));
     CHECK(Throws([&] { PackageFile(p, "root.dll:evil"); }));
     CHECK(Throws([&] { PackageFile(p, "C:\\escape.dll"); }));

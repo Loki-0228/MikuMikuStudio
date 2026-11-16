@@ -49,6 +49,13 @@ void Bounds(int width,int height,int sidebar,int toolbar,FrameViewportMode mode,
         const bool display=FrameRectWithin(panels.overlay,geometry.presentationBounds);
         if(!display)continue; // The production gate rejects an unusable adaptive strip.
         Check(FrameRectWithin(panels.overlay,client),"admitted presentation never escapes the current client");
+        const RECT fitted=FitViewportPanelScene(geometry,panels,renderWidth,renderHeight);
+        if(!Empty(fitted)){
+            Check(FrameRectWithin(fitted,panels.overlay),"refitted scene remains inside its final presentation area");
+            Check((fitted.left==panels.overlay.left&&fitted.right==panels.overlay.right)||
+                (fitted.top==panels.overlay.top&&fitted.bottom==panels.overlay.bottom),
+                "aspect-fit fills one whole axis after toolbar compression or wrapping");
+        }
         if(mode!=FrameViewportMode::Docked)continue;
         const RECT nativePanel{0,height-160,width,height};
         Check(!Intersects(geometry.scene,nativePanel)&&!Intersects(panels.overlay,nativePanel),
@@ -65,6 +72,20 @@ void Bounds(int width,int height,int sidebar,int toolbar,FrameViewportMode mode,
     }
 }
 void Golden(){
+    {
+        FrameViewportGeometry compactGeometry;
+        Check(CalculateFrameViewport({0,0,540,360},250,0,FrameViewportMode::Docked,1920,1080,compactGeometry),
+            "small-window regression geometry is valid");
+        const auto panels=MakeViewportPanelLayout(compactGeometry.available,compactGeometry.scene,true,true);
+        Check(panels.overlay.bottom==compactGeometry.available.bottom+8,"compressed toolbar reclaims eight pixels");
+        const auto fitted=FitViewportPanelScene(compactGeometry,panels,1920,1080);
+        Check(fitted.top==panels.overlay.top&&fitted.bottom==panels.overlay.bottom&&fitted.right-fitted.left>compactGeometry.scene.right-compactGeometry.scene.left,
+            "small-window scene fills the reclaimed short edge without an extra black strip");
+        const int titleCenter=panels.TitleY(-25)+ViewportPanelLayout::Pixels(10*panels.topScale);
+        const int buttonCenter=panels.TopY(-12);
+        Check(std::abs(titleCenter-buttonCenter)<=3&&panels.TitleY(-25)>=panels.topBand.top,
+            "compressed model title stays vertically aligned with buttons instead of dropping to the lower edge");
+    }
     struct Case {int width,height,sidebar,toolbar;FrameViewportMode mode;RECT scene,available;};
     const Case cases[]={
         {1200,820,250,0,FrameViewportMode::Docked,{259,62,1200,590},{259,25,1200,628}},

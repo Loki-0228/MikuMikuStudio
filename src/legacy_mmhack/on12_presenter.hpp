@@ -1,11 +1,12 @@
 #pragma once
-#include <d3d9.h>
+#include "on12_output.hpp"
 
 namespace mme_re::mmhack {
 class On12Presenter {
 public:
   ~On12Presenter() { Reset(); }
-  On12Presenter() = default;
+  using OutputFactory = std::unique_ptr<On12Output>(*)();
+  explicit On12Presenter(OutputFactory factory = CreateOn12Output) : factory_(factory) {}
   On12Presenter(const On12Presenter&) = delete;
   On12Presenter& operator=(const On12Presenter&) = delete;
   void Reset() noexcept;
@@ -14,7 +15,9 @@ public:
 private:
   bool checked_ = false;
   bool on12_ = false;
-  IDirect3DSwapChain9* chain_ = nullptr;
+  OutputFactory factory_;
+  std::unique_ptr<On12Output> output_;
+  IDirect3DSurface9* cropped_ = nullptr;
   IDirect3DSurface9* resolved_ = nullptr;
   HWND child_ = nullptr;
   UINT width_ = 0, height_ = 0;

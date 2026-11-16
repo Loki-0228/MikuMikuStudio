@@ -48,7 +48,7 @@ HRESULT STDMETHODCALLTYPE Direct3DWrapper::CreateDevice(UINT adapter, D3DDEVTYPE
   if (result == S_OK && output && *output) *output = runtime_.wrap(*output);
   return result;
 }
-DeviceWrapper::DeviceWrapper(IDirect3DDevice9* value, Runtime& owner) : original_(value), runtime_(owner), router_(value, owner.state, owner.callbacks) {
+DeviceWrapper::DeviceWrapper(IDirect3DDevice9* value, Runtime& owner, On12Presenter::OutputFactory output) : original_(value), runtime_(owner), router_(value, owner.state, owner.callbacks), presenter_(output) {
   runtime_.device_wrappers.emplace(value, this);
   original_->AddRef(); // Extra retained reference observed in 0x1bd0.
 }
@@ -59,7 +59,7 @@ ULONG STDMETHODCALLTYPE DeviceWrapper::Release() {
   // Raw interfaces returned by QueryInterface or a mesh holding the native
   // device bypass this wrapper. A mesh holding this wrapper balances its own
   // AddRef/Release here; Mesh::GetDevice forwards whichever device it holds.
-  // Additional swap chains retain the native device. Release ours before
+  // Presentation surfaces retain the native device. Release ours before
   // evaluating the final reference count and before MME tears down resources.
   if (local_references_ == 1) presenter_.Reset();
   ULONG remaining = original_->Release();

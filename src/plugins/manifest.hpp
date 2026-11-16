@@ -24,7 +24,7 @@ struct Manifest {
     std::vector<Dependency> dependencies;
     std::vector<fs::path> nativeDependencies;
 };
-struct DiscoveryConfig { uint32_t maxDepth = 2; std::set<std::string> disabled, enabled; };
+struct DiscoveryConfig { uint32_t maxDepth = 3; std::set<std::string> disabled, enabled; };
 struct Discovery { DiscoveryConfig config; std::vector<Manifest> packages; std::vector<std::string> diagnostics, errors; size_t inspectedDlls = 0, cachedDlls = 0; };
 // Requires every component (including the root) to exist and not be a reparse point.
 fs::path PackageFile(const fs::path& root, std::string_view relative);

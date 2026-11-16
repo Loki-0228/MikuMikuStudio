@@ -5,7 +5,7 @@
 
 namespace mikumikustudio {
 // All coordinates use the window's DPI coordinate system, like its controls.
-// Extra rows consume existing letterbox margins; the scene never moves.
+// Choose wrapping from the base scene, then fit the displayed scene to overlay.
 struct ViewportPanelLayout {
     RECT overlay{}, topBand{}, bottomBand{};
     bool topWrapped = false, bottomWrapped = false;
@@ -21,6 +21,7 @@ struct ViewportPanelLayout {
     int TopY(int offset) const { return overlay.top - Pixels(12 * std::max(1.0f, topScale)) + Pixels((offset + 12) * topScale); }
     int TitleRight() const { return topWrapped ? overlay.right - Pixels(5 * std::max(1.0f, topScale)) : TopX(450); }
     int TitleBottom() const { return topBand.top + topRowHeight; }
+    int TitleY(int offset) const { return TopY(offset) - overlay.top + TitleBottom(); }
     float BottomColumn(int offset) const {
         float result = float(offset);
         for (int i = 0; i < fieldCount; ++i)
@@ -81,5 +82,19 @@ inline ViewportPanelLayout MakeViewportPanelLayout(RECT available, RECT scene,
     p.overlay.bottom = p.bottomBand.bottom - (p.bottomWrapped ? 2 : 1) * p.bottomRowHeight;
     p.bottomBand.top = p.overlay.bottom;
     return p;
+}
+
+inline RECT FitViewportPanelScene(const FrameViewportGeometry& geometry,
+        const ViewportPanelLayout& panels, int renderWidth, int renderHeight) noexcept {
+    if (!FrameRectWithin(panels.overlay, geometry.presentationBounds)) return {};
+    const auto& area = panels.overlay;
+    FrameViewportGeometry fitted;
+    // Reuse the aspect-fit and integer centering rules after adaptive controls
+    // have reclaimed space. Wrapping still uses the original geometry.scene,
+    // so the resulting scene cannot cause the toolbar to alternate layouts.
+    if (!CalculateFrameViewport({0, 0, area.right - area.left, area.bottom - area.top},
+            0, 0, FrameViewportMode::Fullscreen, renderWidth, renderHeight, fitted)) return {};
+    OffsetRect(&fitted.scene, area.left, area.top);
+    return fitted.scene;
 }
 }

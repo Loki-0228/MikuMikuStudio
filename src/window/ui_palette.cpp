@@ -576,7 +576,7 @@ static void PaintStatusText(MMDApp* app, HDC hdc, const ViewportPanelLayout& pan
         const int mappedX = bottom ? panels.BottomX(column)
             : xBase + ViewportPanelLayout::Pixels(column * scale);
         const int mappedY = bottom ? panels.BottomY(column, y - hideBottom)
-            : panels.TitleBottom() + ViewportPanelLayout::Pixels((y - hideTop) * scale);
+            : panels.TitleY(y - hideTop);
         const int saved = SaveDC(hdc);
         const RECT clip = bottom ? panels.bottomBand : RECT{
             panels.topBand.left, panels.topBand.top, panels.TitleRight(), panels.TitleBottom()};

@@ -29,8 +29,9 @@ HWND CreateViewport(HWND parent, const RECT& rectangle) {
 }
 }
 void On12Presenter::Reset() noexcept {
-  if (chain_) chain_->Release();
-  chain_ = nullptr;
+  output_.reset();
+  if (cropped_) cropped_->Release();
+  cropped_ = nullptr;
   if (resolved_) resolved_->Release();
   resolved_ = nullptr;
   if (child_) DestroyWindow(child_);
@@ -64,7 +65,13 @@ HRESULT On12Presenter::Present(IDirect3DDevice9* device, const RECT* source,
   D3DSURFACE_DESC description{};
   result = back->GetDesc(&description);
   if (FAILED(result)) return result;
-  const HWND target = window ? window : parameters.hDeviceWindow;
+  HWND target = window ? window : parameters.hDeviceWindow;
+  if (!target) {
+    D3DDEVICE_CREATION_PARAMETERS creation{};
+    result = device->GetCreationParameters(&creation);
+    if (FAILED(result)) return result;
+    target = creation.hFocusWindow;
+  }
   RECT client{};
   if (!GetClientRect(target, &client)) return D3DERR_INVALIDCALL;
   const RECT input = source ? *source : RECT{0, 0, LONG(description.Width), LONG(description.Height)};
@@ -72,51 +79,48 @@ HRESULT On12Presenter::Present(IDirect3DDevice9* device, const RECT* source,
   if (IsRectEmpty(&input) || IsRectEmpty(&output) || input.left < 0 || input.top < 0 ||
       input.right > LONG(description.Width) || input.bottom > LONG(description.Height)) return D3DERR_INVALIDCALL;
   const UINT outputWidth = UINT(output.right - output.left), outputHeight = UINT(output.bottom - output.top);
-  if (chain_ && (width_ != description.Width || height_ != description.Height ||
+  if (output_ && (width_ != description.Width || height_ != description.Height ||
       format_ != description.Format || window_ != target || !IsWindow(child_) ||
       samples_ != description.MultiSampleType || outputWidth_ != outputWidth || outputHeight_ != outputHeight)) Reset();
-  if (!chain_) {
+  if (!output_) {
     child_ = CreateViewport(target, output);
     if (!child_) { const auto error = GetLastError(); return error ? HRESULT_FROM_WIN32(error) : E_FAIL; }
-    parameters.BackBufferWidth = outputWidth;
-    parameters.BackBufferHeight = outputHeight;
-    parameters.BackBufferFormat = description.Format;
-    parameters.BackBufferCount = 1;
-    parameters.MultiSampleType = D3DMULTISAMPLE_NONE;
-    parameters.MultiSampleQuality = 0;
-    parameters.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    parameters.hDeviceWindow = child_;
-    parameters.EnableAutoDepthStencil = FALSE;
-    parameters.Flags = 0;
-    parameters.FullScreen_RefreshRateInHz = 0;
-    result = device->CreateAdditionalSwapChain(&parameters, &chain_);
+    // The final surface is shared with a dedicated DXGI swap chain. Keeping
+    // presentation outside D3D9's implicit chain also survives device Reset.
+    const auto outputFormat = description.Format == D3DFMT_X8R8G8B8 ? D3DFMT_A8R8G8B8 : description.Format;
+    result = device->CreateRenderTarget(outputWidth, outputHeight, outputFormat,
+        D3DMULTISAMPLE_NONE, 0, FALSE, &cropped_, nullptr);
     if (SUCCEEDED(result) && description.MultiSampleType != D3DMULTISAMPLE_NONE)
       result = device->CreateRenderTarget(description.Width, description.Height, description.Format,
           D3DMULTISAMPLE_NONE, 0, FALSE, &resolved_, nullptr);
     if (FAILED(result)) { Reset(); return result; }
+    try { output_ = factory_(); }
+    catch (const std::bad_alloc&) { Reset(); return E_OUTOFMEMORY; }
+    if (!output_) { Reset(); return E_OUTOFMEMORY; }
     width_ = description.Width; height_ = description.Height;
     format_ = description.Format; window_ = target; samples_ = description.MultiSampleType;
     outputWidth_ = outputWidth; outputHeight_ = outputHeight;
   }
   // MSAA resolves must cover the full, equally sized surface. Crop/scale only
-  // after resolving; the child then presents its entire buffer with null rects.
+  // after resolving; the child then presents its entire buffer through DXGI.
   IDirect3DSurface9* pixels = back.Get();
   if (resolved_) {
     result = device->StretchRect(back.Get(), nullptr, resolved_, nullptr, D3DTEXF_NONE);
     if (FAILED(result)) return result;
     pixels = resolved_;
   }
-  ComPtr<IDirect3DSurface9> outputBuffer;
-  result = chain_->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &outputBuffer);
-  if (SUCCEEDED(result)) result = device->StretchRect(pixels, &input, outputBuffer.Get(), nullptr, D3DTEXF_NONE);
+  result = device->StretchRect(pixels, &input, cropped_, nullptr, D3DTEXF_NONE);
   if (FAILED(result)) return result;
-  if (!EqualRect(&destination_, &output)) {
+  if (!EqualRect(&destination_, &output) || !(GetWindowLongPtrW(child_, GWL_STYLE) & WS_VISIBLE)) {
     if (!SetWindowPos(child_, HWND_BOTTOM, output.left, output.top, outputWidth, outputHeight,
-        SWP_NOACTIVATE | SWP_SHOWWINDOW)) return HRESULT_FROM_WIN32(GetLastError());
+        SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
+      const auto error = GetLastError();
+      return error ? HRESULT_FROM_WIN32(error) : E_FAIL;
+    }
     destination_ = output;
   }
-  // Always publish the complete viewport, also for a dirty-region request.
-  // Partial COPY presents on the GDI parent can succeed but display stale pixels.
-  return chain_->Present(nullptr, nullptr, nullptr, nullptr, 0);
+  result = output_->Present(device, cropped_, child_);
+  if (FAILED(result)) Reset();
+  return result;
 }
 }

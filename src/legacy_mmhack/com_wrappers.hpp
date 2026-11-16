@@ -49,7 +49,7 @@ private:
 };
 class DeviceWrapper final : public IDirect3DDevice9 {
 public:
-  DeviceWrapper(IDirect3DDevice9* original, Runtime& runtime);
+  DeviceWrapper(IDirect3DDevice9* original, Runtime& runtime, On12Presenter::OutputFactory output = CreateOn12Output);
   ~DeviceWrapper();
   IDirect3DDevice9* underlying() const noexcept { return original_; }
   // Original slot 0: 0x180001970

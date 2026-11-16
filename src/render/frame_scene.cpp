@@ -562,6 +562,18 @@ void RenderFrameScene(MMDApp* app) {
     antialias::PrepareFrame(app);
     UpdateDefaultEffect(app);
 
+#if !MMD_ORIGINAL_PROFILE
+    if (!app->RecordingWindow()) {
+        // An effect/state block can restore the viewport captured before a
+        // window resize. Bind the current scene rectangle for every frame,
+        // before preview scaling, AA and MME capture their render state.
+        const auto& scene = app->ViewportRect();
+        const D3DVIEWPORT9 viewport{DWORD(scene.left), DWORD(scene.top),
+            DWORD(scene.right - scene.left), DWORD(scene.bottom - scene.top), 0.0f, 1.0f};
+        if (FAILED(device->SetViewport(&viewport))) return;
+    }
+#endif
+
     for (int slot=0; slot<kModelSlotCount; ++slot)
         if (auto* model=app->ModelSlot(slot)) bone_scale::ApplyTransforms(model);
     SetupFrameWorldTransform(app);

@@ -29,10 +29,10 @@ PLUGINS/
 data/
 ```
 
-`PLUGINS/config.json` 与原生插件共用扫描规则：根目录深度为 0，默认最多扫描 2 层，允许配置 0–64。遇到插件包后不再向包内继续发现其他包。
+`PLUGINS/config.json` 与原生插件共用扫描规则：根目录深度为 0，默认最多扫描 3 层，允许配置 0–64。遇到插件包后不再向包内继续发现其他包。
 
 ```json
-{"schemaVersion":1,"maxDepth":2,"disabledPlugins":[]}
+{"schemaVersion":1,"maxDepth":3,"disabledPlugins":[]}
 ```
 
 `plugin.json`：

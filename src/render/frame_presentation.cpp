@@ -121,9 +121,9 @@ ViewportPanelLayout FramePanelLayout(MMDApp* app) {
     if(!build_profile::original&&!app->RecordingWindow()){
         FrameViewportGeometry geometry;
         ViewportToolbarRows rows;
-        if(!ReadFrameGeometry(app,geometry,&rows)||!FrameRectWithin(app->ViewportRect(),geometry.available))return {};
+        if(!ReadFrameGeometry(app,geometry,&rows)||!FrameRectWithin(app->ViewportRect(),geometry.presentationBounds))return {};
         const bool adaptive=app->FullscreenMode()==0;
-        auto panels=MakeViewportPanelLayout(geometry.available,app->ViewportRect(),adaptive,app->state.optflag[0]==0,
+        auto panels=MakeViewportPanelLayout(geometry.available,geometry.scene,adaptive,app->state.optflag[0]==0,
             adaptive&&app->state.optflag[0]==0?ViewportScaleCaptionWidth(app):36,adaptive?rows:ViewportToolbarRows{});
         if(!FrameRectWithin(panels.overlay,geometry.presentationBounds))return {};
         return panels;

@@ -254,10 +254,14 @@ void RefreshMainWindowViewport(MMDApp* app) {  // was Sub42C810
     const int bottomExtra = nativePanels.bottomExtra;
     if(editor){
         FrameViewportGeometry geometry;
+        const auto rows = FitViewportToolbarRows(nativePanels.bottomTop,ui_scale::Percent());
         if(IsIconic(hwnd)||!CalculateFrameViewport(view,s.SidebarWidth(),pluginHeight,FrameViewportMode::Docked,
             renderWidth,renderHeight,geometry,propertyHeight,plugins::LeftAreaWidth(app),plugins::RightAreaWidth(app),
-            bottomExtra,FitViewportToolbarRows(nativePanels.bottomTop,ui_scale::Percent()))){view={};return;}
-        view=geometry.scene;
+            bottomExtra,rows)){view={};return;}
+        const auto panels = MakeViewportPanelLayout(geometry.available,geometry.scene,true,
+            s.state.optflag[0]==0,s.state.optflag[0]==0?ViewportScaleCaptionWidth(app):36,rows);
+        view=FitViewportPanelScene(geometry,panels,renderWidth,renderHeight);
+        if(IsRectEmpty(&view))return;
     }else{
     const int availableHeight = std::max(1L, view.bottom - 217 - bottomExtra - pluginHeight - propertyHeight);
     const int sidebar = s.SidebarWidth();
@@ -383,11 +387,16 @@ void RefreshSeparateWindowViewport(MMDApp* app) {  // was Sub4290F0, 0x4290F0..0
     const int bottomExtra = MainPanelLayout(app, view.bottom).bottomExtra;
     if(editor){
         FrameViewportGeometry geometry;
+        const auto rows = FitViewportToolbarRows(view.bottom,ui_scale::Percent());
         if(IsIconic(target)||!CalculateFrameViewport(view,0,0,
             fullScreen?FrameViewportMode::Fullscreen:FrameViewportMode::Floating,renderWidth,renderHeight,geometry,
-            0,0,0,0,FitViewportToolbarRows(view.bottom,ui_scale::Percent()))){
+            0,0,0,0,rows)){
             view={};return;}
-        view=geometry.scene;
+        const auto panels = MakeViewportPanelLayout(geometry.available,geometry.scene,!fullScreen,
+            s.state.optflag[0]==0,!fullScreen&&s.state.optflag[0]==0?ViewportScaleCaptionWidth(app):36,
+            fullScreen?ViewportToolbarRows{}:rows);
+        view=FitViewportPanelScene(geometry,panels,renderWidth,renderHeight);
+        if(IsRectEmpty(&view))return;
     }else{
     int clientWidth = view.right;
     int clientHeight = view.bottom;

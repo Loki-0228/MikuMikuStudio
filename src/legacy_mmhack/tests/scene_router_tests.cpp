@@ -100,6 +100,18 @@ int main() {
     require(state.toon_textures.count(L"toon02.bmp") == 1 && state.toon_textures.count(L"DATA/toon02.bmp") == 0);
     record_texture_output(state, L"custom\\toon02.bmp", &output);
     require(state.toon_textures.count(L"custom/toon02.bmp") == 1);
+    output = reinterpret_cast<IDirect3DTexture9*>(0x5555);
+    record_texture_output(state, L"custom\\toon02.bmp", &output);
+    require(state.toon_textures.at(L"custom/toon02.bmp").resolve() == output);
+    output = nullptr;
+    record_texture_output(state, L"custom\\toon02.bmp", &output);
+    require(state.toon_textures.at(L"custom/toon02.bmp").resolve() == nullptr);
+    IDirect3DTexture9* sharedFirst[]{reinterpret_cast<IDirect3DTexture9*>(0x6666), nullptr};
+    IDirect3DTexture9* sharedReload[]{reinterpret_cast<IDirect3DTexture9*>(0x7777), nullptr};
+    record_texture_output(state, L"data\\toon01.bmp", sharedFirst + 1);
+    require(state.toon_textures.at(L"").resolve() == sharedFirst[0]);
+    record_texture_output(state, L"data\\toon01.bmp", sharedReload + 1);
+    require(state.toon_textures.at(L"").resolve() == sharedReload[0]);
     Runtime runtime(state);
     runtime.callbacks = callbacks;
     auto* wrapper = runtime.wrap(&device);
@@ -112,7 +124,19 @@ int main() {
     require(native_router.begin_scene(host) == S_OK && native_state.active_models->size() == 1);
     require(native_state.object_backing(id(0)).base == reinterpret_cast<std::byte*>(host_memory));
     require(native_state.object_backing(id(0)).filename == L"missing-wide-model.pmd");
+    const auto createdBeforeReplacement = counters.create, deletedBeforeReplacement = counters.erase;
+    Resource replacement;
+    host_memory[0] = &replacement;
+    // PMM reload can reuse the object address while the old GPU resource is
+    // still retained by an effect. Its nonzero reference count is not identity.
+    require(native_router.begin_scene(host) == S_OK);
+    require(counters.erase == deletedBeforeReplacement + 1 && counters.create == createdBeforeReplacement + 1 &&
+        resource.count == 1 && replacement.count == 2 &&
+        native_state.active_models->at(id(0)).retained_resource == &replacement);
+    require(native_router.begin_scene(host) == S_OK && counters.create == createdBeforeReplacement + 1 &&
+        counters.erase == deletedBeforeReplacement + 1);
     native_router.cleanup();
+    require(replacement.count == 1);
     host_count = 0;
     State failed_state;
     Device failed_device;

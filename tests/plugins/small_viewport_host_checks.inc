@@ -112,6 +112,9 @@ inline void Valid(MMDApp& app){
     Require(view.left>=0&&view.top>=0&&view.left<view.right&&view.top<view.bottom&&view.right<=client.right&&view.bottom<=client.bottom&&
         present.left<=view.left&&present.top<=view.top&&present.right>=view.right&&present.bottom>=view.bottom,
         "real scene and presentation rectangles are positive nested client regions");
+    Require((view.left==present.left&&view.right==present.right)||
+        (view.top==present.top&&view.bottom==present.bottom),
+        "actual scene fills one presentation axis after adaptive toolbar sizing");
     for(int id:{447,455,456,457,458,459,460}){
         RECT bounds{},intersection{};auto control=GetDlgItem(app.MainWindow(),id);
         Require(control&&GetWindowRect(control,&bounds),"observe actual camera and light trackbar geometry");
@@ -263,6 +266,8 @@ inline void Run(MMDApp* app){
     Require(app&&app==g_Block&&app->Renderer()&&app->Renderer()->device,"small viewport uses a real initialized isolated host");
     Require(!IsWindowVisible(app->MainWindow())&&!app->FloatingWindow()&&!app->RecordingWindow(),"viewport boundary fixture remains hidden and windowed");
     app->CameraMode()=1;PostLanguageSweep2(app);PostViewRefresh(app);
+    ClientSize(*app,1200,820);Valid(*app);
+    ClientSize(*app,540,360);Valid(*app);
     ClientSize(*app,1200,820);Valid(*app);
     Require(app->CameraKeys()&&app->LightKeys()&&mdl::KeyPoolIdentity(app->CameraKeys())&&mdl::KeyPoolIdentity(app->LightKeys())&&
         mdl::KeyPoolCapacity(app->CameraKeys())&&mdl::KeyPoolCapacity(app->LightKeys()),"real viewport fixture has valid original key pools");

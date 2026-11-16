@@ -57,6 +57,11 @@ HRESULT SceneRouter::begin_scene(const HostApi& host) {
   for (auto iterator = models_.begin(); iterator != models_.end();) {
     auto& model = iterator->second;
     bool remove = present.find(iterator->first) == present.end();
+    // Reloading a project can reuse its object ID/address while an effect
+    // still holds the previous resource alive. The host's current backing,
+    // not the old resource's reference count, identifies that replacement.
+    if (!remove && host.object_backing)
+      remove = host_resources[iterator->first] != model.retained_resource;
     if (!remove && model.retained_resource) {
       // The original probes the retained COM reference using Release/AddRef.
       const auto count = model.retained_resource->Release();

@@ -102,7 +102,7 @@ MMS 显式接受 `.efk`：使用同名 `.pmd` 或包内 `efk.pmd` 作为控制�
 插件只从 `<EXE>/PLUGINS` 递归发现；根目录的 `optional-plugins` 不单独扫描，新发布包不再创建它。
 `PLUGINS/LEGACY` 用于归放旧 MMD 插件包，各包仍需自己的 `plugin.json`，同样由上述递归扫描发现。
 其中宿主配套的 `MMDPlugin.dll` 负责旧插件导入依赖，不是可直接加载的用户插件包。
-退出 MMS 后可在 `PLUGINS` 内重命名或移动完整插件包。默认扫描两层子目录，
+退出 MMS 后可在 `PLUGINS` 内重命名或移动完整插件包。默认扫描三层子目录，
 更深分组由 `PLUGINS/config.json` 的 `maxDepth` 控制；禁用相机可将 `org.mikumikustudio.legacy.first-person-camera` 加入 `disabledPlugins`。
 
 Effekseer 使用用户提供的 v0.25 x64 包：将原始 `EffekseerForMMD.dll` 和 `efk.pmd` 复制到

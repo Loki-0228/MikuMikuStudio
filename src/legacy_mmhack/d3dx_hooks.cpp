@@ -39,12 +39,14 @@ void record_texture_output(State& state, const std::wstring& filename, IDirect3D
   if (filename.empty()) { key.clear(); captured = output; }
   else if (shared_toon(filename, key)) {
     captured = output;
-    if (key == L"toon01.bmp" && output) state.toon_textures.emplace(L"", TextureRecord{nullptr, output - 1});
+    if (key == L"toon01.bmp" && output) state.toon_textures.insert_or_assign(L"", TextureRecord{nullptr, output - 1});
   } else {
     key = filename;
     std::replace(key.begin(), key.end(), L'\\', L'/');
   }
-  state.toon_textures.emplace(std::move(key), TextureRecord{output ? *output : nullptr, captured});
+  // These pointers are borrowed. Loading the same path again must replace
+  // the previous texture, which may already have been released by the host.
+  state.toon_textures.insert_or_assign(std::move(key), TextureRecord{output ? *output : nullptr, captured});
 }
 BOOL set_mme_dx12_patch(BOOL enable) noexcept {
   if (!enable) {

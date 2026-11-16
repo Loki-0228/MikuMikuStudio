@@ -137,13 +137,25 @@ void InitializeSettings(const Manifest& manifest, const fs::path& install, const
     directory /= L"settings"; HoldDirectory(directory, retainedFiles, true);
     directory /= Wide(key); HoldDirectory(directory, retainedFiles, true);
     status.settingsFile = directory / L"MMEffect.ini";
-    // Serialize writers across all cache generations for this plugin identity.
+    // Pin the lock file, but serialize only settings initialization. Keeping
+    // an exclusive file handle for the process lifetime prevents a second MMS
+    // instance from loading MME even when all cached DLLs are identical.
     auto lock = retainedFiles.Hold(CreateFileW((directory / L"preferences.lock").c_str(),
-        GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        OPEN_ALWAYS, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     BY_HANDLE_FILE_INFORMATION info{};
     if (!GetFileInformationByHandle(lock, &info) ||
         (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) || info.nNumberOfLinks != 1)
         throw std::runtime_error("invalid legacy preferences lock");
+    struct InitializationLock {
+        HANDLE file;
+        OVERLAPPED offset{};
+        explicit InitializationLock(HANDLE value) : file(value) {
+            if (!LockFileEx(file, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &offset))
+                throw std::runtime_error("cannot lock legacy preferences initialization, error " + std::to_string(GetLastError()));
+        }
+        ~InitializationLock() { UnlockFileEx(file, 0, 1, 0, &offset); }
+    } initializationLock(lock);
     Publish(directory / L"plugin.id", identity);
     if (GetFileAttributesW(status.settingsFile.c_str()) != INVALID_FILE_ATTRIBUTES) {
         Handles check;
