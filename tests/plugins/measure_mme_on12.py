@@ -9,7 +9,7 @@ for mode in ['dx9','dx12']:
  folder=root/mode;shutil.copytree(a.fixture.resolve(),folder);folders[mode]=folder
  shutil.copy2(b/'tests/mme/Release/MikuMikuDance.exe',folder/'MikuMikuDance.exe')
  for dll in ['MMDFacade.dll','MMHack.dll']:shutil.copy2(b/'Release'/dll,folder/dll)
- shutil.copy2(b/'Release/PLUGINS/patch4mms/Patch4MMS.dll',folder/'PLUGINS/patch4mms/Patch4MMS.dll')
+ shutil.copy2(b/'Release/PLUGINS/dx12mmepatch/dx12mmepatch.dll',folder/'PLUGINS/dx12mmepatch/dx12mmepatch.dll')
 def hashes(folder):return {str(p.relative_to(folder)):hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.rglob('*.dll')}
 assert hashes(folders['dx9'])==hashes(folders['dx12'])
 k=c.WinDLL('kernel32',use_last_error=True);k.GetProcessTimes.argtypes=[w.HANDLE]+[c.POINTER(w.FILETIME)]*4

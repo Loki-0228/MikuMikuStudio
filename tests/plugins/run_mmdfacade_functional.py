@@ -51,9 +51,9 @@ def main():
             if args.automatic or args.no_mme: (mme/'plugin.json').unlink()
             if args.no_mme: (mme/'MMEffect.dll').unlink()
             if args.patch:
-                shutil.copytree(args.patch.resolve(), directory/'PLUGINS/patch4mms')
+                shutil.copytree(args.patch.resolve(), directory/'PLUGINS/dx12mmepatch')
                 write_json(directory/'PLUGINS/config.json', dict(schemaVersion=1,maxDepth=2,
-                    enabledPlugins=['patch4mms'],disabledPlugins=['patch4mms'] if args.patch_disabled else []))
+                    disabledPlugins=['patch4mms'] if args.patch_disabled else []))
             data=directory/'data'; data.mkdir()
             write_json(data/'settings.json',dict(schemaVersion=1,sections=dict(processor=dict(vertices=dict(mode='cpu')))))
             scene=directory/('effect' if args.ascii_effect else '中文特效'); shutil.copytree(args.effect.parent,scene)

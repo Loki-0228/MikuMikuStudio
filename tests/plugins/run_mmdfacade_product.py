@@ -55,9 +55,8 @@ def main():
                 (package / 'plugin.json').write_text(json.dumps(dict(schemaVersion=1, id='test.mme', name='MME',
                     version='0.37.0', kind='legacy_mme', entry='MMEffect.dll', architecture='x64',
                     minWindows='6.1.0', reloadPolicy='restart')), encoding='utf-8')
-            (directory / 'PLUGINS/config.json').write_text(json.dumps(dict(schemaVersion=1,maxDepth=3,disabledPlugins=[],
-                enabledPlugins=['patch4mms'] if args.patch else [])))
-            if args.patch: shutil.copytree(args.patch, directory/'PLUGINS/patch4mms')
+            (directory / 'PLUGINS/config.json').write_text(json.dumps(dict(schemaVersion=1,maxDepth=3,disabledPlugins=[])))
+            if args.patch: shutil.copytree(args.patch, directory/'PLUGINS/dx12mmepatch')
             (directory / 'data').mkdir()
             (directory / 'data/settings.json').write_text(json.dumps(dict(schemaVersion=1,
                 sections=dict(processor=dict(vertices=dict(mode='cpu'))))), encoding='utf-8')

@@ -15,8 +15,8 @@ for case,backend,reason in [('dx9',9,2),('dx9-first',9,2),('dx9-last',9,2),('dis
     folder=root/str(len(results)); shutil.copytree(source,folder)
     shutil.copy2(b/'tests/mme/Release/MikuMikuDance.exe',folder/'MikuMikuDance.exe')
     for name in ['MMDFacade.dll','MMHack.dll']: shutil.copy2(b/'Release'/name,folder/name)
-    package=folder/'PLUGINS/patch4mms'
-    for name in ['Patch4MMS.dll','Enable.cmd','Disable.cmd']: shutil.copy2(b/'Release/PLUGINS/patch4mms'/name,package/name)
+    package=folder/'PLUGINS/dx12mmepatch'
+    for name in ['dx12mmepatch.dll','plugin.json']: shutil.copy2(b/'Release/PLUGINS/dx12mmepatch'/name,package/name)
     config=folder/'PLUGINS/config.json'; settings=json.loads(config.read_text())
     flags=['--dx12']
     if case=='dx9': flags=['--dx9']
@@ -29,8 +29,8 @@ for case,backend,reason in [('dx9',9,2),('dx9-first',9,2),('dx9-last',9,2),('dis
         destination.parent.mkdir(parents=True,exist_ok=True); package.rename(destination)
     if case=='old-bridge': shutil.copy2(a.old_bridge,folder/'MMHack.dll')
     if case=='missing-mme': (folder/'PLUGINS/LEGACY/mme/MMEffect.dll').unlink()
-    if case=='corrupt-plugin': (package/'Patch4MMS.dll').write_bytes(b'Invalid DLL')
-    if case=='missing-entry': (package/'Patch4MMS.dll').unlink()
+    if case=='corrupt-plugin': (package/'dx12mmepatch.dll').write_bytes(b'Invalid DLL')
+    if case=='missing-entry': (package/'dx12mmepatch.dll').unlink()
     if case=='missing-service':
         manifest=json.loads((package/'plugin.json').read_text()); manifest['requiresServices']=[]
         (package/'plugin.json').write_text(json.dumps(manifest))

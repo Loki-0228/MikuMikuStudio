@@ -150,8 +150,8 @@ Manifest ReadManifest(const fs::path& file, const Log& log) {
     if (j.object.count("startup")) {
         const auto& startup = j.At("startup");
         m.startupRenderBackend = startup.At("renderBackend").String();
-        if (startup.object.size() != 1 || m.startupRenderBackend != "mme-d3d9on12" || !m.optIn)
-            throw std::invalid_argument("startup requires optIn and the supported mme-d3d9on12 backend");
+        if (startup.object.size() != 1 || m.startupRenderBackend != "mme-d3d9on12")
+            throw std::invalid_argument("startup requires the supported mme-d3d9on12 backend");
     }
     const auto& abi = j.At("abi"); m.major = abi.At("major").UInt(); m.minor = abi.At("minMinor").UInt();
     if (m.major != 1 || m.minor != 0) throw std::invalid_argument("unsupported plugin ABI");

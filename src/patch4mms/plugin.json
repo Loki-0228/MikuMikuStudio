@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
   "id": "patch4mms",
-  "name": "Patch4MMS",
-  "version": "0.1.0",
+  "name": "dx12mmepatch",
+  "version": "0.2.0",
   "kind": "native",
-  "entry": "Patch4MMS.dll",
+  "entry": "dx12mmepatch.dll",
   "architecture": "x64",
   "minWindows": "10.0.0",
   "abi": {
     "major": 1,
     "minMinor": 0
   },
-  "optIn": true,
+  "optIn": false,
   "startup": {
     "renderBackend": "mme-d3d9on12"
   },

@@ -1,5 +1,7 @@
 # MMDFacade 与 Patch4MMS 联调（2026-11-16）
 
+后续安装行为已由 [dx12mmepatch 复制安装记录](dx12mmepatch-copy-install-2026-11-16.md) 更新：目录和 DLL 改名，移除 Enable/Disable，复制后默认启用。下文保留本轮联调时的历史行为与证据。
+
 基于独立分支 `feature/mmdfacade-original-camera` 的 `bfd235d`，本地 abi 基线仍为 `19fb0255efdfd4330bf9be8f9fee35f84a8f9585`。源码、构建分别位于 `build/facade-original-src`、`build/facade-original-build`。没有修改另一个会话的 Patch4MMS/Compat 工作区，没有合并 abi、推送或覆盖在用安装。以下证据路径相对 `D:/MMD-Next/MMS-ABI-integration/build`。
 
 ## 接入内容

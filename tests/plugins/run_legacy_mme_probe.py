@@ -93,8 +93,8 @@ def main():
             if not args.bridge: raise ValueError("automatic MME requires the built-in bridge")
         else: (package / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
         (directory / "PLUGINS/config.json").write_text(json.dumps(dict(schemaVersion=1, maxDepth=3,
-            disabledPlugins=[], enabledPlugins=["patch4mms"] if args.patch else [])), encoding="utf-8")
-        if args.patch: shutil.copytree(args.patch, directory / "PLUGINS/patch4mms")
+            disabledPlugins=[])), encoding="utf-8")
+        if args.patch: shutil.copytree(args.patch, directory / "PLUGINS/dx12mmepatch")
         model = directory / "probe.x"
         model.write_text(X_MESH, encoding="ascii")
         model.with_suffix(".fx").write_text(FX, encoding="ascii")

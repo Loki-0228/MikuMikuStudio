@@ -6,7 +6,7 @@
 
 ```json
 {
-  "optIn": true,
+  "optIn": false,
   "startup": { "renderBackend": "mme-d3d9on12" },
   "requiresServices": [
     { "id": "mms.render.mme.on12", "major": 1, "minMinor": 0 }
@@ -14,7 +14,7 @@
 }
 ```
 
-这是完整原生清单的片段，不是独立清单。请求必须同时声明该只读服务，使旧宿主在加载 DLL 前拒绝插件。未知启动字段、未知后端、缺少 `optIn` 或缺少服务依赖均拒绝清单。
+这是完整原生清单的片段，不是独立清单。请求必须同时声明该只读服务，使旧宿主在加载 DLL 前拒绝插件。未知启动字段、未知后端或缺少服务依赖均拒绝清单。`optIn` 使用普通原生插件规则：缺省/false 表示复制安装后启用；true 表示必须额外启用。黑名单在两种情况下均优先。
 
 宿主使用与普通插件一致的发现、层级、重复 ID、依赖、`enabledPlugins`／`disabledPlugins` 规则。只有启用的原生包可以提出请求；声明本身不会提前执行插件 DLL。`legacy_mme` 不进入原生 `started` 集合，不能用普通 `dependencies` 表示“原版 MME 已加载”。该条件由宿主根据实际模块及安装路径校验。
 
@@ -44,4 +44,4 @@ extern "C" BOOL WINAPI MMSSetMmeDx12PatchEnabled(BOOL enable);
 
 本分支已联合验证原版 MME 的材质 FX 像素、Effekseer 粒子、相机、设备重置与退出，详见 `docs/records/mmdfacade-on12-integration-2026-11-16.md`。仅独立设备确认不能替代这些功能验证。
 
-随包的 `PLUGINS/patch4mms` 提供实际原生 ABI DLL 和声明。`Enable.cmd`/`Disable.cmd` 保留现有配置并更新启停条目，重启后生效。入口 DLL 的 PE 和直接工厂导出在启动时静态预检；普通插件的 create/start 不提前执行。启用的启动插件损坏或加载失败，宿主在初始化阶段汇总弹框。
+随包的 `PLUGINS/dx12mmepatch` 提供实际原生 ABI DLL 和声明，复制安装并重启即可生效，不再分发启用/停用脚本。内部 ID 保持 `patch4mms` 以兼容已有黑名单，宿主不会自动改写用户配置。入口 DLL 的 PE 和直接工厂导出在启动时静态预检；普通插件的 create/start 不提前执行。启用的启动插件损坏或加载失败，宿主在初始化阶段汇总弹框。

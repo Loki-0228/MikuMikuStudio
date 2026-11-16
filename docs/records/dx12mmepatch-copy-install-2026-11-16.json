@@ -1,0 +1,231 @@
+{
+  "sourceParent": "9992dc9563089c6b927983ce65ed0055ce10c192",
+  "failed": [
+    {
+      "case": "copy",
+      "passed": false,
+      "exitCode": 7,
+      "configUnchanged": true,
+      "originalsUnchanged": true,
+      "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\patch-copy-bpvdxmho\\0"
+    }
+  ],
+  "copyInstall": [
+    {
+      "case": "copy",
+      "passed": true,
+      "exitCode": 0,
+      "configUnchanged": true,
+      "originalsUnchanged": true,
+      "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\patch-copy-u30toh_e\\0"
+    },
+    {
+      "case": "existing-config",
+      "passed": true,
+      "exitCode": 0,
+      "configUnchanged": true,
+      "originalsUnchanged": true,
+      "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\patch-copy-u30toh_e\\1"
+    },
+    {
+      "case": "old-enabled",
+      "passed": true,
+      "exitCode": 0,
+      "configUnchanged": true,
+      "originalsUnchanged": true,
+      "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\patch-copy-u30toh_e\\2"
+    },
+    {
+      "case": "old-blacklist",
+      "passed": true,
+      "exitCode": 0,
+      "configUnchanged": true,
+      "originalsUnchanged": true,
+      "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\patch-copy-u30toh_e\\3"
+    },
+    {
+      "case": "optin-disabled",
+      "passed": true,
+      "exitCode": 0,
+      "configUnchanged": true,
+      "originalsUnchanged": true,
+      "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\patch-copy-u30toh_e\\4"
+    },
+    {
+      "case": "optin-enabled",
+      "passed": true,
+      "exitCode": 0,
+      "configUnchanged": true,
+      "originalsUnchanged": true,
+      "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\patch-copy-u30toh_e\\5"
+    },
+    {
+      "case": "dx9",
+      "passed": true,
+      "exitCode": 0,
+      "configUnchanged": true,
+      "originalsUnchanged": true,
+      "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\patch-copy-u30toh_e\\6"
+    },
+    {
+      "case": "grouped",
+      "passed": true,
+      "exitCode": 0,
+      "configUnchanged": true,
+      "originalsUnchanged": true,
+      "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\patch-copy-u30toh_e\\7"
+    },
+    {
+      "case": "missing-service",
+      "passed": true,
+      "exitCode": 8,
+      "configUnchanged": true,
+      "originalsUnchanged": true,
+      "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\patch-copy-u30toh_e\\8"
+    }
+  ],
+  "productDefault": {
+    "passed": true,
+    "cases": [
+      {
+        "backendRequested": null,
+        "exe": "MikuMikuDance.exe",
+        "layout": "PLUGINS/LEGACY",
+        "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-jxtdpz7w\\0",
+        "passed": true,
+        "terminated": false,
+        "menuPresent": true,
+        "mmeLoaded": true,
+        "actualOn12": true,
+        "exitCode": 0
+      },
+      {
+        "backendRequested": null,
+        "exe": "Renamed Studio.exe",
+        "layout": "PLUGINS/LEGACY",
+        "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-jxtdpz7w\\1",
+        "passed": true,
+        "terminated": false,
+        "menuPresent": true,
+        "mmeLoaded": true,
+        "actualOn12": true,
+        "exitCode": 0
+      },
+      {
+        "backendRequested": null,
+        "exe": "中文工作室.exe",
+        "layout": "PLUGINS/LEGACY",
+        "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-jxtdpz7w\\2",
+        "passed": true,
+        "terminated": false,
+        "menuPresent": true,
+        "mmeLoaded": true,
+        "actualOn12": true,
+        "exitCode": 0
+      },
+      {
+        "backendRequested": null,
+        "exe": "MikuMikuDance.exe",
+        "layout": "PLUGINS/legacy-mmdplugin",
+        "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-jxtdpz7w\\3",
+        "passed": true,
+        "terminated": false,
+        "menuPresent": true,
+        "mmeLoaded": true,
+        "actualOn12": true,
+        "exitCode": 0
+      },
+      {
+        "backendRequested": null,
+        "exe": "Renamed Studio.exe",
+        "layout": "PLUGINS/legacy-mmdplugin",
+        "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-jxtdpz7w\\4",
+        "passed": true,
+        "terminated": false,
+        "menuPresent": true,
+        "mmeLoaded": true,
+        "actualOn12": true,
+        "exitCode": 0
+      },
+      {
+        "backendRequested": null,
+        "exe": "中文工作室.exe",
+        "layout": "PLUGINS/legacy-mmdplugin",
+        "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-jxtdpz7w\\5",
+        "passed": true,
+        "terminated": false,
+        "menuPresent": true,
+        "mmeLoaded": true,
+        "actualOn12": true,
+        "exitCode": 0
+      },
+      {
+        "backendRequested": null,
+        "exe": "MikuMikuDance.exe",
+        "layout": "legacy-mmdplugin",
+        "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-jxtdpz7w\\6",
+        "passed": true,
+        "terminated": false,
+        "menuPresent": true,
+        "mmeLoaded": true,
+        "actualOn12": true,
+        "exitCode": 0
+      },
+      {
+        "backendRequested": null,
+        "exe": "Renamed Studio.exe",
+        "layout": "legacy-mmdplugin",
+        "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-jxtdpz7w\\7",
+        "passed": true,
+        "terminated": false,
+        "menuPresent": true,
+        "mmeLoaded": true,
+        "actualOn12": true,
+        "exitCode": 0
+      },
+      {
+        "backendRequested": null,
+        "exe": "中文工作室.exe",
+        "layout": "legacy-mmdplugin",
+        "directory": "D:\\MMD-Next\\MMS-ABI-integration\\build\\mmdfacade-product-jxtdpz7w\\8",
+        "passed": true,
+        "terminated": false,
+        "menuPresent": true,
+        "mmeLoaded": true,
+        "actualOn12": true,
+        "exitCode": 0
+      }
+    ],
+    "utilitySha256": "c778de083c77a6850b56f98ac8f056d0e8c104c833f24aea420d4715a87612c5"
+  },
+  "artifacts": [
+    {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\MikuMikuDance.exe",
+      "sha256": "d311f6a90ab16628b35eb2070bc4fb30f4162345619c9124aee15c9bd73e2484"
+    },
+    {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\MMDFacade.dll",
+      "sha256": "243cd960ab0dc44b1e1a6238ec73a12b80f7337446c1e8591b3329b1f31229d6"
+    },
+    {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\MMHack.dll",
+      "sha256": "fa449dfc2e4cdb0e467f618427f1313e6323fd8eeea9dec0661946f760d61bcf"
+    },
+    {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\PLUGINS\\dx12mmepatch\\dx12mmepatch.dll",
+      "sha256": "6e7a09d973a130ff4e524e08fb1174dc8707a2025a2a29d9740b5d77dce3c801"
+    },
+    {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\PLUGINS\\dx12mmepatch\\plugin.json",
+      "sha256": "f0875e8b767c25e15dcaa55535f3bbb6b7abe3c3debd570d644cdac35ca52f6b"
+    },
+    {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\facade-original-build\\Release\\PLUGINS\\dx12mmepatch\\README.md",
+      "sha256": "c9e551b10246ed55421b607bd30452337b83eb8236c65b6cb1c78fa2985ece07"
+    },
+    {
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\validation\\facade-copy-install\\dx12mmepatch-win-x64.zip",
+      "sha256": "fd41d9f49dded101922d9a85593752aa255d4c9ce6b29713a9f2c54146e960cf"
+    }
+  ]
+}
