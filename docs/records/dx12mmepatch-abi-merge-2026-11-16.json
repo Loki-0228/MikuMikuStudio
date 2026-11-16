@@ -227,8 +227,8 @@
       "sha256": "c9e551b10246ed55421b607bd30452337b83eb8236c65b6cb1c78fa2985ece07"
     },
     {
-      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\validation\\facade-copy-install\\dx12mmepatch-win-x64.zip",
-      "sha256": "fd41d9f49dded101922d9a85593752aa255d4c9ce6b29713a9f2c54146e960cf"
+      "path": "D:\\MMD-Next\\MMS-ABI-integration\\build\\validation\\facade-copy-install\\abi-package\\dx12mmepatch-win-x64.zip",
+      "sha256": "a8ac23e2f3e20e98cb1c773e60520fe56189000b5e4a7660d66833e7ef1bcdea"
     }
   ]
 }

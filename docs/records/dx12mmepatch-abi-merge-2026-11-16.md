@@ -26,6 +26,6 @@
 
 ## 安装
 
-使用配套的新宿主与 MMHack，将 `validation/facade-copy-install/dx12mmepatch-win-x64.zip` 中的文件夹复制到 `PLUGINS` 后重启即可。无需 Enable、无需用户编辑 JSON。升级旧包时替换原 `patch4mms` 文件夹，保留已有 config.json；旧黑名单继续有效。
+使用配套的新宿主与 MMHack，将 `validation/facade-copy-install/abi-package/dx12mmepatch-win-x64.zip` 中的文件夹复制到 `PLUGINS` 后重启即可。无需 Enable、无需用户编辑 JSON。升级旧包时替换原 `patch4mms` 文件夹，保留已有 config.json；旧黑名单继续有效。
 
 机器可读结果和当前构建摘要见 [JSON 快照](dx12mmepatch-abi-merge-2026-11-16.json)。复制安装的失败用例和修改说明见 [前置记录](dx12mmepatch-copy-install-2026-11-16.md)。
