@@ -29,7 +29,7 @@ bool SolveClusterWorld(btAlignedObjectArray<btSoftBody*>& bodies){
 }
 struct World {
     btSoftBodyRigidBodyCollisionConfiguration config;
-    btCollisionDispatcher dispatcher{&config};btDbvtBroadphase broadphase;
+    SoftGroundDispatcher dispatcher{&config};btDbvtBroadphase broadphase;
     btSequentialImpulseConstraintSolver solver;
     DynamicsWorld world{&dispatcher,&broadphase,&solver,&config};
     btBoxShape box{btVector3(1,.3f,1)};
@@ -73,6 +73,64 @@ struct World {
         cloth->updateNormals();cloth->updateBounds();world.ResetLocalTime();
     }
 };
+void SceneFloor(const processor::Selection& gpu) {
+    constexpr auto groundGroup = static_cast<short>(0x8000);
+    constexpr auto excludeGroup16 = static_cast<short>(0x7fff);
+    const processor::Selection cpu{processor::Mode::Cpu};
+    for (const auto& backend : {cpu, gpu}) {
+        btStaticPlaneShape plane(btVector3(0, 1, 0), 0);
+        btRigidBody floor(btRigidBody::btRigidBodyConstructionInfo(0, nullptr, &plane));
+        btSphereShape sphere(.25f);
+        btTransform drop = btTransform::getIdentity();
+        drop.setOrigin(btVector3(3, 2, 0));
+        btDefaultMotionState motion(drop);
+        btVector3 inertia;
+        sphere.calculateLocalInertia(1, inertia);
+        btRigidBody falling(btRigidBody::btRigidBodyConstructionInfo(1, &motion, &sphere, inertia));
+        World fixture(0, false, true);
+        // The unrelated model box shares group 16 and would catch the cloth
+        // before the floor if the soft body's mask were changed.
+        fixture.world.removeRigidBody(fixture.rigid.get());
+        auto transform = btTransform::getIdentity();
+        transform.setOrigin(btVector3(0, 1, 0));
+        fixture.rigid->setWorldTransform(transform);
+        fixture.rigid->setInterpolationWorldTransform(transform);
+        fixture.world.addRigidBody(fixture.rigid.get(), groundGroup, -1);
+        fixture.world.removeSoftBody(fixture.cloth.get());
+        fixture.world.addSoftBody(fixture.cloth.get(), 1, excludeGroup16);
+        fixture.world.addRigidBody(&floor, groundGroup, -1);
+        fixture.world.addRigidBody(&falling);
+        fixture.world.SetGround(&floor, fixture.dispatcher);
+
+        fixture.cloth->getCollisionShape()->setMargin(.05f);
+        bool solvedFloorOnGpu = false;
+        for (int frame = 0; frame < 90; ++frame) {
+            const auto gpuBefore = soft_compute::GetStatus().gpuSteps;
+            fixture.Step(backend);
+            solvedFloorOnGpu |= fixture.cloth->m_rcontacts.size() > 0 &&
+                soft_compute::GetStatus().gpuSteps > gpuBefore;
+        }
+        for (int i = 0; i < fixture.cloth->m_nodes.size(); ++i) {
+            const auto height = fixture.cloth->m_nodes[i].m_x.y();
+            Check(height >= 0 && height < .2f,
+                  "soft body rests on the enabled scene floor while excluding model group 16");
+        }
+        Check(fixture.cloth->getBroadphaseHandle()->m_collisionFilterMask == excludeGroup16,
+              "scene floor does not rewrite the model collision mask");
+        Check(std::abs(falling.getWorldTransform().getOrigin().y() - .25f) < .08f,
+              "ordinary rigid body rests on the same enabled scene floor");
+        if (backend.mode == processor::Mode::Adapter)
+            Check(solvedFloorOnGpu, "GPU soft solver actually processes scene floor contacts");
+
+        floor.setCollisionFlags(-1);
+        for (int frame = 0; frame < 35; ++frame) fixture.Step(backend);
+        for (int i = 0; i < fixture.cloth->m_nodes.size(); ++i)
+            Check(fixture.cloth->m_nodes[i].m_x.y() < -.5f, "shared floor switch also disables soft contacts");
+        Check(falling.getWorldTransform().getOrigin().y() < -.5f, "shared floor switch disables rigid contacts");
+        fixture.world.removeRigidBody(&falling);
+        fixture.world.removeRigidBody(&floor);
+    }
+}
 void Pair(const processor::Selection& gpu,bool anchor,bool contact,bool dynamic,int velocity,int drift) {
     World reference(0,anchor,contact,dynamic),actual(0,anchor,contact,dynamic);
     reference.cloth->m_cfg.viterations=actual.cloth->m_cfg.viterations=velocity;
@@ -241,6 +299,7 @@ int main(int argc,char** argv) {
     Pair(choice,true,false,true,0,0);
     Pair(choice,false,true,false,0,0);
     Pair(choice,false,false,false,2,2);
+    SceneFloor(choice);
     Grid(choice);
     SoftContacts(choice);Clusters(choice);
     FallbackAndAutomatic(choice);

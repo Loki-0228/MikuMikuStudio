@@ -32,6 +32,7 @@
 #include <string>
 #include <numeric>
 #include "d3d12_native_shaders.hpp"
+#include "ground_geometry.hpp"
 #include "model_toon.hpp"
 
 namespace mikumikustudio {
@@ -56,16 +57,37 @@ ComPtr<ID3DBlob> Compile(const char* source,const char* entry,const char* target
 }
 LRESULT CALLBACK NativeWindow(HWND hwnd,UINT message,WPARAM w,LPARAM l) {
     if(message==WM_NCHITTEST)return HTTRANSPARENT;
-    if(message==WM_ERASEBKGND)return 1;
     return DefWindowProcW(hwnd,message,w,l);
 }
+
+constexpr char kGroundGridShader[] = R"(
+struct GridVertex { float3 position; uint color; };
+StructuredBuffer<GridVertex> grid : register(t0);
+cbuffer Camera : register(b0) { row_major float4x4 worldViewProjection; }
+struct Varyings { float4 position : SV_Position; float3 color : COLOR0; };
+Varyings vs(uint id : SV_VertexID) {
+    GridVertex vertex = grid[id];
+    Varyings output;
+    output.position = mul(float4(vertex.position, 1), worldViewProjection);
+    output.color = float3((vertex.color >> 16) & 255, (vertex.color >> 8) & 255,
+                          vertex.color & 255) / 255;
+    return output;
+}
+float4 ps(Varyings input) : SV_Target { return float4(input.color, 1); }
+)";
+
 struct Native {
     gpu::Skinning skin;
+    HWND presentationWindow=nullptr;
     HWND window=nullptr;
+    RECT windowFrame{}, windowScene{};
     ComPtr<IDXGISwapChain3> swap;
     ComPtr<ID3D12DescriptorHeap> rtvs,dsvs,srvs;
     ComPtr<ID3D12RootSignature> drawRoot;
     std::array<ComPtr<ID3D12PipelineState>,12> drawPso;
+    ComPtr<ID3D12RootSignature> gridRoot;
+    ComPtr<ID3D12PipelineState> gridPso;
+    ComPtr<ID3D12Resource> gridVertices;
     ComPtr<ID3D12RootSignature> sortRoot;
     ComPtr<ID3D12PipelineState> sortPso;
     ComPtr<ID3D12Fence> fence;
@@ -117,7 +139,9 @@ struct Native {
     ~Native() {
         try {WaitAll();}catch(...){}
         if (pluginUsed) plugins::RetireDx12Viewport(generation);
+        swap.Reset();
         if(window)DestroyWindow(window);
+        if(presentationWindow)DestroyWindow(presentationWindow);
         if(event)CloseHandle(event);
     }
     ID3D12Device* Device(){return skin.Device();}
@@ -172,9 +196,22 @@ struct Native {
             static_cast<unsigned>(features.RaytracingTier), options);
         Check12(Device()->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)),"native fence");
         event=CreateEventW(nullptr,FALSE,FALSE,nullptr);if(!event)throw std::runtime_error("native event");
-        WNDCLASSW wc{};wc.lpfnWndProc=NativeWindow;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"MmdNativeD3D12Viewport";
+        // Own the full presentation area so letterbox bars get an opaque
+        // background. Keep the swap chain scoped to the scene rectangle.
+        WNDCLASSW wc{};
+        wc.lpfnWndProc=NativeWindow;
+        wc.hInstance=GetModuleHandleW(nullptr);
+        wc.lpszClassName=L"MmdNativeD3D12Presentation";
+        wc.hbrBackground=static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
         RegisterClassW(&wc);
-        window=CreateWindowExW(WS_EX_NOACTIVATE,wc.lpszClassName,L"D3D12",WS_CHILD,0,0,1,1,parent,nullptr,wc.hInstance,nullptr);
+        presentationWindow=CreateWindowExW(WS_EX_NOACTIVATE,wc.lpszClassName,nullptr,
+            WS_CHILD|WS_CLIPSIBLINGS,0,0,1,1,parent,nullptr,wc.hInstance,nullptr);
+        if(!presentationWindow)throw std::runtime_error("native presentation window");
+        wc.lpszClassName=L"MmdNativeD3D12Viewport";
+        wc.hbrBackground=nullptr;
+        RegisterClassW(&wc);
+        window=CreateWindowExW(WS_EX_NOACTIVATE,wc.lpszClassName,L"D3D12",
+            WS_CHILD,0,0,1,1,parent,nullptr,wc.hInstance,nullptr);
         if(!window)throw std::runtime_error("native viewport window");
         ComPtr<IDXGIFactory4> factory;Check12(graphics_runtime::CreateFactory2(0,IID_PPV_ARGS(&factory)),"native factory");
         DXGI_SWAP_CHAIN_DESC1 sd{};sd.Width=1;sd.Height=1;sd.Format=DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -219,15 +256,43 @@ struct Native {
             p.RasterizerState.FillMode=i>=6?D3D12_FILL_MODE_WIREFRAME:D3D12_FILL_MODE_SOLID;
             blend.DestBlend=(i%6)>=3?D3D12_BLEND_ONE:D3D12_BLEND_INV_SRC_ALPHA;
             Check12(Device()->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&drawPso[i])),"native graphics PSO");}
+        D3D12_ROOT_PARAMETER gridParameters[2]{};
+        gridParameters[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV;
+        gridParameters[0].ShaderVisibility=D3D12_SHADER_VISIBILITY_VERTEX;
+        gridParameters[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        gridParameters[1].Constants.Num32BitValues=16;
+        gridParameters[1].ShaderVisibility=D3D12_SHADER_VISIBILITY_VERTEX;
+        Root(gridParameters,2,gridRoot);
+        const auto gridVs=Compile(kGroundGridShader,"vs","vs_5_1");
+        const auto gridPs=Compile(kGroundGridShader,"ps","ps_5_1");
+        p.pRootSignature=gridRoot.Get();
+        p.VS={gridVs->GetBufferPointer(),gridVs->GetBufferSize()};
+        p.PS={gridPs->GetBufferPointer(),gridPs->GetBufferSize()};
+        p.PrimitiveTopologyType=D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+        p.RasterizerState.FillMode=D3D12_FILL_MODE_SOLID;
+        p.RasterizerState.CullMode=D3D12_CULL_MODE_NONE;
+        blend.BlendEnable=FALSE;
+        Check12(Device()->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&gridPso)),"native ground grid PSO");
+        Upload(gridVertices,kGroundGrid.data(),sizeof(kGroundGrid));
         for(auto& f:frames){Check12(Device()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(&f.allocator)),"native allocator");
             Check12(Device()->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,f.allocator.Get(),nullptr,IID_PPV_ARGS(&f.list)),"native commands");
             Check12(f.list->Close(),"native initial close");}
     }
     void Resize(MMDApp* app) {
         const RECT rect=app->ViewportRect();
+        const RECT frame=FramePresentationRect(app);
         const auto size=viewport_render_scale::PreviewSize(app,app->viewportRender.automatic,app->viewportRender.percent);
         const unsigned w=std::max(1u,size.width),h=std::max(1u,size.height);
-        SetWindowPos(window,HWND_TOP,rect.left,rect.top,std::max<LONG>(1,rect.right-rect.left),std::max<LONG>(1,rect.bottom-rect.top),SWP_NOACTIVATE|SWP_SHOWWINDOW);
+        if(!EqualRect(&frame,&windowFrame)||!EqualRect(&rect,&windowScene)){
+            if(!SetWindowPos(window,HWND_TOP,rect.left,rect.top,
+                rect.right-rect.left,rect.bottom-rect.top,SWP_NOACTIVATE|SWP_SHOWWINDOW) ||
+                !SetWindowPos(presentationWindow,window,frame.left,frame.top,
+                frame.right-frame.left,frame.bottom-frame.top,SWP_NOACTIVATE|SWP_SHOWWINDOW))
+                throw std::runtime_error("native viewport placement");
+            InvalidateRect(presentationWindow,nullptr,TRUE);
+            windowFrame=frame;
+            windowScene=rect;
+        }
         if(w==width&&h==height)return;WaitAll();
         for(auto& f:frames){f.ClearRetained();f.color.Reset();f.depth.Reset();}
         Check12(swap->ResizeBuffers(3,w,h,DXGI_FORMAT_B8G8R8A8_UNORM,0),"native resize");width=w;height=h;
@@ -441,6 +506,14 @@ struct Native {
         float c=app->state.blackBackgroundEnabled?0.f:1.f;float clear[4]={c,c,c,1};f.list->ClearRenderTargetView(rtv,clear,0,nullptr);
         f.list->ClearDepthStencilView(dsv,D3D12_CLEAR_FLAG_DEPTH,1,0,0,nullptr);f.list->OMSetRenderTargets(1,&rtv,FALSE,&dsv);
         D3D12_VIEWPORT vp{0,0,float(width),float(height),0,1};D3D12_RECT rect{0,0,LONG(width),LONG(height)};f.list->RSSetViewports(1,&vp);f.list->RSSetScissorRects(1,&rect);
+        if(app->GroundGridEnabled()){
+            f.list->SetPipelineState(gridPso.Get());
+            f.list->SetGraphicsRootSignature(gridRoot.Get());
+            f.list->SetGraphicsRootShaderResourceView(0,gridVertices->GetGPUVirtualAddress());
+            f.list->SetGraphicsRoot32BitConstants(1,16,&wvp,0);
+            f.list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+            f.list->DrawInstanced(static_cast<UINT>(kGroundGrid.size()),1,0,0);
+        }
         if(geometry){std::vector<unsigned char> constants(draws.size()*2*256);Constants value{};memcpy(value.wvp,&wvp,64);memcpy(value.wv,&wv,64);
             memcpy(value.light,app->LightDirection(),12);memcpy(value.lightColor,&app->SceneLight().Ambient,12);
             for(unsigned i=0;i<draws.size();++i){auto& d=draws[i];memcpy(value.diffuse,d.diffuse,16);memcpy(value.ambient,d.ambient,16);memcpy(value.specular,d.specular,16);

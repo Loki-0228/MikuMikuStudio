@@ -97,15 +97,18 @@ void CheckJournalBoundary() {
     const auto journal = JournalPath(scratch.path / "saved.pmm");
     Check(journal == scratch.path / "saved.pmm.mms-save.json", "journal is a sibling with the expected suffix");
     Check(JournalAbsent(journal), "there is no journal to handle");
-    Check(JournalAbsent(JournalPath(scratch.path / "missing" / "saved.pmm")),
-        "normal absence includes a missing parent directory");
+    Check(JournalAbsent(JournalPath(scratch.path / "missing" / "nested" / "saved.pmm")),
+        "normal absence includes missing parent directories");
 
     std::ofstream(journal) << "interrupted save";
     Check(!JournalAbsent(journal), "a regular journal requires handling");
     std::error_code error;
     const auto invalid = JournalPath(journal / "nested.pmm");
-    Check(!JournalAbsent(invalid,error) && error == std::errc::not_a_directory,
+    Check(!JournalAbsent(invalid, error) && error == std::errc::not_a_directory,
         "a failed path lookup is not proven absence");
+    const auto invalidNested = JournalPath(journal / "missing" / "nested.pmm");
+    Check(!JournalAbsent(invalidNested, error) && error == std::errc::not_a_directory,
+        "a missing component below a regular file is still an invalid path");
     bool reported = false;
     try { (void)JournalAbsent(invalid); }
     catch (const fs::filesystem_error& e) { reported = e.code() == error; }
@@ -115,11 +118,19 @@ void CheckJournalBoundary() {
     Check(!JournalAbsent(journal), "a directory at the journal path is not absence");
     fs::remove(journal);
     const auto linked = scratch.path / "other-file";
-    fs::create_symlink(linked, journal);
-    Check(!JournalAbsent(journal), "a dangling journal symlink is not absence");
-    std::ofstream(linked) << "unrelated file";
-    Check(!JournalAbsent(journal), "a live journal symlink is not absence");
-    fs::remove(journal);
+    fs::create_symlink(linked, journal, error);
+#ifdef _WIN32
+    if (error == std::error_code(ERROR_PRIVILEGE_NOT_HELD, std::system_category())) {
+        std::puts("SKIP journal symlinks: Windows denied symlink creation privilege");
+    } else
+#endif
+    {
+        Check(!error, "create symbolic link fixture");
+        Check(!JournalAbsent(journal), "a dangling journal symlink is not absence");
+        std::ofstream(linked) << "unrelated file";
+        Check(!JournalAbsent(journal), "a live journal symlink is not absence");
+        fs::remove(journal);
+    }
 
     Check(JournalAbsent(journal), "normal operation can resume once the journal is gone");
 }

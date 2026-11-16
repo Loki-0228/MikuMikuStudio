@@ -361,7 +361,9 @@ void Integration(Host& host,int width,bool utf8) {
                             return true;
                         }, error);
                     if (!sampled) std::printf("soft mesh sample: %s\n", error.c_str());
-                    Check(sampled && samples.size() == 3 && Near(samples.front(),initial) &&
+                    // Mesh sampling runs the same startup settling steps as playback.
+                    Check(sampled && samples.size() == 3 && samples.front() <= initial &&
+                        samples.front() > initial - .1f &&
                         samples.back() < samples.front(),
                         "mesh sampler renders private soft deformation at each output frame");
                     Check(host.world.StepSerial() == liveSerial && soft->m_nodes[1].m_x == livePosition &&

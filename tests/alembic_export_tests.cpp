@@ -11,6 +11,8 @@
 #include "mikumikustudio/recording_output_path.hpp"
 #include "mikumikustudio/physics_bake.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#include "mikumikustudio/pmx21.hpp"
+#include "mikumikustudio/scene_sampling.hpp"
 #include <Alembic/AbcGeom/All.h>
 #include <Alembic/AbcCoreOgawa/All.h>
 #include <filesystem>
@@ -129,10 +131,12 @@ LRESULT CALLBACK Dialogs(int code,WPARAM wp,LPARAM lp){
             const auto window=event.hwnd;
             if(inspectBakeRun&&GetDlgItem(window,126)){
                 CheckDlgButton(window,126,BST_UNCHECKED);CheckDlgButton(window,127,BST_CHECKED);
+                if(inspectBakeRun==3)SetDlgItemTextW(window,121,L"30");
                 SendMessageW(window,WM_COMMAND,IDOK,0);
                 Check(IsWindowEnabled(enabledEditor)&&!IsWindowEnabled(disabledEditor),"baking restores only previously enabled windows");
                 Check(IsWindowEnabled(GetDlgItem(window,IDOK))&&IsWindowEnabled(GetDlgItem(window,120)),"baking restores its controls after completion or cancellation");
-                EndDialog(window,IDCANCEL);
+                if(inspectBakeRun==3)SendDlgItemMessageW(window,127,BM_CLICK,0,0);
+                SendMessageW(window,WM_COMMAND,IDCANCEL,0);
             }else if(rejectKeyframeDialog&&GetDlgItem(window,100)){
                 ++rejectedKeyframeDialogs;EndDialog(window,IDCANCEL);
             }else if(inspectExport&&GetDlgItem(window,126)){
@@ -167,8 +171,8 @@ LRESULT CALLBACK Hidden(int code,WPARAM wp,LPARAM lp){
 }
 template<class T>void Put(std::ofstream& f,T value){f.write(reinterpret_cast<char*>(&value),sizeof value);}
 void Text(std::ofstream& f,const wchar_t* s){Put(f,uint32_t(wcslen(s)*2));f.write(reinterpret_cast<const char*>(s),wcslen(s)*2);}
-void Fixture(const std::filesystem::path& path){
-    std::ofstream f(path,std::ios::binary);f.write("PMX ",4);Put(f,2.f);
+void Fixture(const std::filesystem::path& path,bool soft=false){
+    std::ofstream f(path,std::ios::binary);f.write("PMX ",4);Put(f,soft?2.1f:2.f);
     for(uint8_t v:{8,0,0,1,1,1,1,1,1})Put(f,v);
     Text(f,L"ABC triangle");Text(f,L"ABC triangle");Text(f,L"");Text(f,L"");
     Put(f,3u);
@@ -185,7 +189,17 @@ void Fixture(const std::filesystem::path& path){
     Put(f,1u);Text(f,L"root");Text(f,L"root");for(int i=0;i<3;++i)Put(f,0.f);
     Put(f,int8_t(-1));Put(f,0u);Put(f,uint16_t(0x1a));for(int i=0;i<3;++i)Put(f,0.f);
     Put(f,0u);Put(f,1u);Text(f,L"Root");Text(f,L"Root");Put(f,uint8_t(1));Put(f,1u);Put(f,uint8_t(0));Put(f,int8_t(0));
-    Put(f,0u);Put(f,0u);Check(bool(f),"write fixture PMX");
+    Put(f,0u);Put(f,0u);
+    if(soft){
+        Put(f,1u);Text(f,L"Cloth");Text(f,L"Cloth");
+        Put(f,uint8_t(0));Put(f,uint8_t(0));Put(f,uint8_t(1));Put(f,uint16_t(0));Put(f,uint8_t(0));
+        Put(f,0);Put(f,0);Put(f,1.f);Put(f,.01f);Put(f,0);
+        for(float v:{1.f,.01f,0.f,0.f,0.f,0.f,.2f,0.f,1.f,.1f,1.f,.7f,.1f,1.f,.5f,.5f,.5f,.5f})Put(f,v);
+        for(int iterations:{0,4,0,4})Put(f,iterations);
+        for(int i=0;i<3;++i)Put(f,1.f);
+        Put(f,0u);Put(f,1u);Put(f,uint8_t(0));
+    }
+    Check(bool(f),"write fixture PMX");
 }
 void AttributeFixture(const std::filesystem::path& path,bool boneVertices=false){
     std::ofstream f(path,std::ios::binary);f.write("PMX ",4);Put(f,2.f);
@@ -263,6 +277,130 @@ void Same(const std::vector<Sample>& actual,const std::vector<Sample>& expected,
         }}
 }
 void Frame(MMDApp& app){app.DeltaTime()=1.f/30;app.state.messageSeen=1;FrameDriver(&app);}
+void CompareLiveSoftBake(MMDApp& app,const wchar_t* path,int rate){
+    LoadModelFile(&app,path,false);
+    Check(app.ModelSlot(0)&&pmx21::HasSoftBodies(app.ModelSlot(0)),"comparison model has PMX soft bodies");
+    app.PlaybackPhysicsMode()=2;
+    app.PlaybackTiming().physics.baseRateHz=rate;
+    using Meshes=std::vector<deformed_mesh_capture::Mesh>;
+    const auto capture=[&](Meshes& meshes){
+        native_mesh::SetBakeCapture(true);
+        app.state.messageSeen=1;
+        RenderFrameScene(&app);
+        std::string error;
+        Check(native_mesh::ReadBakeCapture(meshes,error)&&!meshes.empty(),"capture soft-body geometry");
+        native_mesh::SetBakeCapture(false);
+    };
+    constexpr std::array frames{0,1,5,10,20,30};
+    std::array<Meshes,frames.size()> baked;
+    std::string error;
+    const bool sampled=scene_sampling::Visit(app,0,30,30,[&](double time,bool output){
+        const auto found=std::find(frames.begin(),frames.end(),int(std::lround(time*30)));
+        if(output&&found!=frames.end())capture(baked[found-frames.begin()]);
+        return true;
+    },error);
+    if(!sampled)std::printf("sampling error: %s\n",error.c_str());
+    Check(sampled,"sample soft-body project bake");
+
+    app.PlaybackStartSeconds()=app.PlaybackCursorSeconds()=0;
+    app.PlaybackActive()=1;
+    app.state.optflag[0]=1;
+    UpdateBoneFrames(&app);
+    PreparePlaybackPhysics(&app,0);
+    auto& clock=app.PlaybackPhysicsClock();
+    double worst=0;
+    for(size_t i=0;i<frames.size();++i){
+        const double target=frames[i]/30.;
+        while(clock.Due(target,rate)){
+            app.PlaybackCursorSeconds()=clock.Next(rate);
+            ++clock.step;
+            AdvancePlaybackPhysicsTracks(&app);
+            StepPlaybackPhysics(&app,0,1.f/rate);
+        }
+        app.PlaybackCursorSeconds()=target;
+        app.CurrentFrame()=frames[i];
+        Meshes realtime;
+        capture(realtime);
+        const auto& cached=baked[i];
+        Check(cached.size()==realtime.size(),"live and baked material groups match");
+        double maximum=0, sum=0;
+        size_t vertices=0;
+        const char* maxMesh="";
+        for(size_t mesh=0;mesh<cached.size();++mesh){
+            Check(cached[mesh].name==realtime[mesh].name&&cached[mesh].positions.size()==realtime[mesh].positions.size(),"live and baked vertex mappings match");
+            for(size_t v=0;v<cached[mesh].positions.size();++v){
+                double delta=0;
+                for(int axis=0;axis<3;++axis){
+                    const double d=cached[mesh].positions[v][axis]-realtime[mesh].positions[v][axis];
+                    delta+=d*d;
+                }
+                if(delta>maximum){maximum=delta;maxMesh=cached[mesh].name.c_str();}
+                sum+=delta;
+                ++vertices;
+            }
+        }
+        worst=std::max(worst,std::sqrt(maximum));
+        std::printf("physics=%d Hz frame=%d vertices=%zu rmse=%.6f max=%.6f mesh=%s\n",rate,frames[i],vertices,std::sqrt(sum/vertices),std::sqrt(maximum),maxMesh);
+    }
+    app.PlaybackActive()=0;
+    Check(worst<.01,"baked and live soft-body motion match");
+}
+void SoftBakeRoundtrip(MMDApp& app,const std::filesystem::path& out){
+    const auto modelPath=out/L"cloth.pmx";
+    Fixture(modelPath,true);
+    LoadModelFile(&app,modelPath.c_str(),false);
+    auto* raw=app.ModelSlot(0);
+    Check(raw&&mdl::Mdl(raw)->maxFrame==0,"load cloth with no animation keys");
+    // With live simulation disabled, only the baked cache can produce movement.
+    app.PlaybackPhysicsMode()=0;
+    enabledEditor=CreateWindowExW(0,L"STATIC",L"modeless editor",WS_OVERLAPPED,0,0,10,10,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+    Check(enabledEditor!=nullptr,"create mesh bake UI lock witness");
+    inspectBakeRun=3;
+    alembic_export::ShowBakeDialog(&app);
+    inspectBakeRun=0;
+    DestroyWindow(enabledEditor);
+    Check(lockedProgress>0&&mesh_bake_cache::Has(raw),"closing the mesh bake dialog retains the installed cache");
+
+    const auto checkSamples=[&](const void* object){
+        std::vector<deformed_mesh_capture::Mesh> first,last;
+        std::string error;
+        Check(mesh_bake_cache::Sample(object,0,first,error)&&mesh_bake_cache::Sample(object,1,last,error),"read both ends of the baked cloth cache");
+        Check(first.size()==1&&last.size()==1&&first[0].positions.size()==3&&last[0].positions.size()==3,"cloth cache contains its triangle");
+        const auto lowest=[](const auto& positions){return std::min({positions[0][1],positions[1][1],positions[2][1]});};
+        std::printf("baked cloth minimum Y begin=%g end=%g\n",lowest(first[0].positions),lowest(last[0].positions));
+        Check(lowest(last[0].positions)<lowest(first[0].positions)-.1f,"cloth falls in the baked samples");
+    };
+    checkSamples(raw);
+    app.CurrentFrame()=30;
+    app.state.messageSeen=1;
+    RenderFrameScene(&app);
+    Check(native_mesh::RenderModel(raw)!=raw,"main viewport uses the cloth cache after closing the dialog");
+
+    const auto project=out/L"cloth.pmm";
+    wcscpy_s(app.EnvFileName(),256,project.c_str());
+    SaveSceneFile(&app);
+    Check(app.SceneModified()==0,"save the project and its cloth cache");
+    LoadSceneFile();
+    raw=app.ModelSlot(0);
+    Check(raw&&mesh_bake_cache::Has(raw),"reload the project and its cloth cache");
+    checkSamples(raw);
+    app.CurrentFrame()=30;
+    app.state.messageSeen=1;
+    RenderFrameScene(&app);
+    Check(native_mesh::RenderModel(raw)!=raw,"main viewport uses the cloth cache after reopening the project");
+
+    const auto window=app.MainWindow();
+    SetDlgItemTextA(window,panel::kPlayStartFrameEdit,"");
+    SetDlgItemTextA(window,panel::kPlayStopFrameEdit,"");
+    app.PlaybackStartsAtCurrentFrame()=0;
+    SendMessageW(window,WM_COMMAND,panel::kPlayButton,0);
+    Check(app.PlaybackActive()&&std::abs(app.PlaybackEndSeconds()-1)<1e-9,"automatic playback covers baked cloth without animation keys");
+    SendMessageW(window,WM_COMMAND,panel::kPlayButton,0);
+    SetDlgItemTextA(window,panel::kPlayStopFrameEdit,"10");
+    SendMessageW(window,WM_COMMAND,panel::kPlayButton,0);
+    Check(app.PlaybackActive()&&std::abs(app.PlaybackEndSeconds()-10./30.)<1e-9,"explicit playback end still takes precedence");
+    SendMessageW(window,WM_COMMAND,panel::kPlayButton,0);
+}
 std::vector<float> VertexFloats(void* pointer,unsigned count,unsigned floats){
     auto* buffer=static_cast<IDirect3DVertexBuffer9*>(pointer);Check(buffer!=nullptr,"vertex buffer exists");
     D3DVERTEXBUFFER_DESC description{};Check(SUCCEEDED(buffer->GetDesc(&description)),"vertex buffer size");
@@ -465,6 +603,18 @@ int wmain(int argc,wchar_t** argv){
     Check(InitMainWindowAndD3D(app,GetModuleHandleW(nullptr),SW_HIDE),"hidden renderer initialization");
     Check(!IsWindowVisible(app->MainWindow()),"test remains hidden");app->EnglishUI()=1;
     Check(bool(GetModuleHandleW(L"MMEffect.dll"))==mme,"expected MME runtime");Check((GetModuleHandleW(L"MMV.dll")!=nullptr)==(mmv||extra),"expected MMV runtime");Frame(*app);
+    if(mode==L"soft-bake"||mode==L"soft-compare"){
+        if(mode==L"soft-bake")SoftBakeRoundtrip(*app,out);
+        else{
+            Check(argc==5,"supply a soft-body PMX path and physics rate");
+            const int rate=_wtoi(argv[4]);
+            Check(rate>0&&rate<=1000&&rate%30==0,"choose a whole multiple of the sample rate");
+            CompareLiveSoftBake(*app,argv[3],rate);
+        }
+        Check(unexpectedDialogs==0,"cloth bake requires no unexpected modal dialogs");
+        ShutdownCleanup(app);g_Block=nullptr;delete app;UnhookWindowsHookEx(hide);UnhookWindowsHookEx(dialogs);
+        std::puts("PASS: cloth bake through the dialog, project reload and playback");return 0;
+    }
     if(mode==L"bone-vertices"){
         BoneSelectionRoundtrip(*app,out);
         Check(unexpectedDialogs==0,"selected-bone export requires no modal interaction");

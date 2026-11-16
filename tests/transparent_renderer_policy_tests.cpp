@@ -25,6 +25,7 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/deformed_mesh_capture.hpp"
 #include "mikumikustudio/transparent_peeling.hpp"
+#include "mikumikustudio/transparent_sort_cache.hpp"
 
 #if MMD_ORIGINAL_PROFILE
 #error This real draw-observer test must only be built in the full profile.
@@ -82,6 +83,7 @@ struct Uploads {
     // copies in this test EXE's image data, not in Uploads' stack storage.
     // No native/shared vtable is overwritten; one live IB owns each slot.
     inline static std::array<std::array<void*,14>,64> privateTables{};
+    MMDApp& app;
     IDirect3DDevice9* device;
     void* target = nullptr;
     CreateFn originalCreate = nullptr;
@@ -90,7 +92,7 @@ struct Uploads {
     unsigned failureHits = 0, draws = 0, drawsAtFailure = 0, created = 0, freed = 0;
     const char* error = nullptr;
 
-    explicit Uploads(IDirect3DDevice9* owned) : device(owned) {
+    Uploads(MMDApp& app, IDirect3DDevice9* owned) : app(app), device(owned) {
         Check(!active, "one upload tracker per process");
         MEMORY_BASIC_INFORMATION tableRegion{};
         Check(VirtualQuery(privateTables.data(),&tableRegion,sizeof(tableRegion))!=0 &&
@@ -110,6 +112,7 @@ struct Uploads {
     }
     ~Uploads() {
         failure = Failure::None;
+        transparent_sort_cache::Release(&app);
         // A failed assertion may leave buffers referenced by device state.
         // Restore only live objects; a zero-return Release clears its entry.
         for (auto& b : buffers) if (b.object)
@@ -130,8 +133,9 @@ struct Uploads {
         D3DFORMAT format, D3DPOOL pool, IDirect3DIndexBuffer9** out, HANDLE* shared) {
         auto& self = *active;
         const bool owned = d == self.device;
-        // Exclude legacy DYNAMIC local-material buffers from the fault target.
-        const bool scratch = usage == D3DUSAGE_WRITEONLY && pool == D3DPOOL_DEFAULT && format == D3DFMT_INDEX32;
+        // The bucket sorter streams dynamic indices; peeling uploads a static
+        // list. The fixture's original PMD/PMX indices are in the managed pool.
+        const bool scratch = (usage & D3DUSAGE_WRITEONLY) && pool == D3DPOOL_DEFAULT && format == D3DFMT_INDEX32;
         if (owned && scratch && self.Fail(Failure::Create)) { if (out) *out = nullptr; return E_OUTOFMEMORY; }
         const HRESULT hr = self.originalCreate(d,size,usage,format,pool,out,shared);
         if (!owned || FAILED(hr) || !out || !*out) return hr;
@@ -455,7 +459,10 @@ void CheckFaces(const Draws& draws, const std::vector<Expected>& expected, bool 
         Check(actual.material==e.second,"actual draw preserves expected material identity/order");
         Check(actual.vb==e.first->vb && actual.stride==sizeof(Vertex),"unsplit draw uses original VB and stride");
         Check(actual.indices==e.first->faces[e.second],"actual uploaded IB keeps nonsequential original indices");
-        Check(sorted ? actual.scratch && actual.ib!=e.first->ib : actual.ib==e.first->ib,"policy uses private IB; Off uses restored source IB");
+        if (sorted)
+            Check(actual.scratch && actual.ib!=e.first->ib, "sorted draw uses a private IB");
+        else
+            Check(actual.ib==e.first->ib, "authored-order draw uses its source IB");
     }
 }
 void SourceUnchanged(Model& model, bool pmx) {
@@ -502,6 +509,8 @@ void ScopeCases(Host& host, Uploads& uploads, Draws& draws, bool pmx, int resour
     for(bool cross:{false,true}) {
       host.app->TransparentSortCrossObjects()=cross;
       for(auto fault:{Uploads::Failure::Create,Uploads::Failure::Lock,Uploads::Failure::Unlock}) {
+        // Force a real upload so a warm buffer cannot bypass the injected fault.
+        transparent_sort_cache::Release(host.app.get());
         uploads.Reset(fault); std::printf("prepare-failure pmx=%d resource=%d cross=%d fault=%u\n",pmx,resource,cross,unsigned(fault));
         host.Frame(draws,uploads,resource);
         Check(uploads.failureHits==1,"fault reached private policy IB preparation");
@@ -575,7 +584,7 @@ int main(int argc,char** argv) {
         else Check(argc==1,"usage: transparent_renderer_policy_tests [--fixed-only|--maximum-only|--visibility-only|--uv-only]");
         Host host;
         {
-            Uploads uploads(host.device);
+            Uploads uploads(*host.app,host.device);
             {
                 Draws draws(*host.app,uploads);
                 for(int resource:{0,117,118}) {
@@ -593,6 +602,7 @@ int main(int argc,char** argv) {
                     if(!maximumOnly && !visibilityOnly) UvRendererChecks(host,uploads,draws,resource);
                 }
                 host.Unbind();
+                transparent_sort_cache::Release(host.app.get());
             } // Remove native draw observers before releasing upload hooks.
             Check(!uploads.error,uploads.error?uploads.error:"upload capture final health");
             for(const auto& b:uploads.buffers) Check(!b.object && !b.locked,"all owned IB references and locks released");

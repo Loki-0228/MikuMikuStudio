@@ -23,6 +23,7 @@ void CopyState(const unsigned char* source, unsigned char* target);
 void ExchangeRenderState(unsigned char* live, unsigned char* sampled) noexcept;
 void MeasureResources(const unsigned char* model, plugins::resource_budget::Collector& out);
 bool HasSoftBodies(const unsigned char* model);
+std::size_t SoftBodyCount(const unsigned char* model);
 void SyncSoftBodies(unsigned char* model, bool reset);
 void RefreshVertexMorphs(unsigned char* model);
 void ApplyImpulses(unsigned char* model);
@@ -36,6 +37,7 @@ inline void SetPresent(unsigned char*, bool) noexcept {}
 inline void CopyState(const unsigned char*, unsigned char*) {}
 inline void ExchangeRenderState(unsigned char*, unsigned char*) noexcept {}
 inline bool HasSoftBodies(const unsigned char*) { return false; }
+inline std::size_t SoftBodyCount(const unsigned char*) { return 0; }
 inline void SyncSoftBodies(unsigned char*, bool) {}
 inline void ApplyImpulses(unsigned char*) {}
 inline void WriteGpuSoftVertices(unsigned char*, std::vector<gpu::Vertex>&) {}

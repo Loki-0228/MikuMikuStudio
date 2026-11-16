@@ -33,6 +33,7 @@
 #include <Windows.h>
 #include <d3d9.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -41,6 +42,7 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/model.hpp"
 #include "mikumikustudio/panel_controls.hpp"
+#include "../render/ground_geometry.hpp"
 
 namespace mikumikustudio {
 
@@ -61,15 +63,6 @@ IDirect3DDevice9* RenderDeviceOf(MMDApp* app) {
         return nullptr;
     return r->device;  // +120032 (0x1D4E0)
 }
-
-// Line/ground vertex: D3DFVF_XYZ|D3DFVF_DIFFUSE (0x42), 16 bytes.
-struct LineVertex {
-    float x;
-    float y;
-    float z;
-    std::uint32_t color;
-};
-static_assert(sizeof(LineVertex) == 16);
 
 // Original Japanese message @0x52A294/0x52A234/0x52A1F8 (Shift-JIS):
 // "グラフィックカードの性能が足りません(MakeLine[23])"
@@ -162,7 +155,7 @@ bool MakeLineGeometry(MMDApp* app) {  // 0x40AF40
         lineVb->Release();
         lineVb = nullptr;
     }
-    if (FAILED(device->CreateVertexBuffer(1440, 8 /*D3DUSAGE_WRITEONLY*/,
+    if (FAILED(device->CreateVertexBuffer(sizeof(kGroundGrid), 8 /*D3DUSAGE_WRITEONLY*/,
                                           0x42 /*XYZ|DIFFUSE*/,
                                           D3DPOOL_MANAGED /*1*/,
                                           &lineVb, nullptr))) {
@@ -170,37 +163,9 @@ bool MakeLineGeometry(MMDApp* app) {  // 0x40AF40
         return false;
     }
 
-    LineVertex* verts = nullptr;
-    lineVb->Lock(0, 1440, reinterpret_cast<void**>(&verts), 0);     // 0x40b00b
-    constexpr std::uint32_t kAxisB = 0xFF0000FFu;   // -16776961 (blue)
-    constexpr std::uint32_t kAxisR = 0xFFFF0000u;   // -65536    (red)
-    constexpr std::uint32_t kAxisG = 0xFF00FF00u;   // -16711936 (green)
-    constexpr std::uint32_t kGrid  = 0xFFB4B4B4u;   // -4934476  (gray)
-
-    verts[0]  = {0.0f, 0.1f, 0.0f, kAxisB};    // 0x40b013..
-    verts[1]  = {0.0f, 0.1f, -65.0f, kAxisB};
-    verts[2]  = {0.0f, 0.1f, 0.0f, kAxisR};
-    verts[3]  = {65.0f, 0.1f, 0.0f, kAxisR};
-    verts[4]  = {0.0f, 0.1f, 0.0f, kAxisG};
-    verts[5]  = {0.0f, 65.0f, 0.0f, kAxisG};
-    verts[6]  = {0.0f, 0.1f, 0.0f, kGrid};
-    verts[7]  = {0.0f, 0.1f, 50.0f, kGrid};
-    verts[8]  = {0.0f, 0.1f, 0.0f, kGrid};
-    verts[9]  = {-50.0f, 0.1f, 0.0f, kGrid};
-
-    for (int t = 1; t <= 10; ++t) {             // 0x40b1c2 loop, v39 = 1..10
-        const float p = static_cast<float>(t) * 5.0f;
-        const float n = static_cast<float>(t) * -5.0f;
-        LineVertex* w = verts + 10 + 8 * (t - 1);
-        w[0] = {p, 0.1f, -50.0f, kGrid};        // 0x40b1d6..
-        w[1] = {p, 0.1f, 50.0f, kGrid};
-        w[2] = {n, 0.1f, -50.0f, kGrid};
-        w[3] = {n, 0.1f, 50.0f, kGrid};
-        w[4] = {-50.0f, 0.1f, p, kGrid};
-        w[5] = {50.0f, 0.1f, p, kGrid};
-        w[6] = {-50.0f, 0.1f, n, kGrid};
-        w[7] = {50.0f, 0.1f, n, kGrid};
-    }
+    GroundVertex* verts = nullptr;
+    lineVb->Lock(0, sizeof(kGroundGrid), reinterpret_cast<void**>(&verts), 0);
+    std::copy(kGroundGrid.begin(), kGroundGrid.end(), verts);
     lineVb->Unlock();                            // 0x40b38d
 
     // 2. line index buffer -----------------------------------------------
@@ -226,7 +191,7 @@ bool MakeLineGeometry(MMDApp* app) {  // 0x40AF40
     IDirect3DVertexBuffer9*& groundVb = s.GroundPlaneVertices();    // 651560
     device->CreateVertexBuffer(96, 8 /*WRITEONLY*/, 0x42,
                                D3DPOOL_MANAGED, &groundVb, nullptr);
-    LineVertex* ground = nullptr;
+    GroundVertex* ground = nullptr;
     groundVb->Lock(0, 96, reinterpret_cast<void**>(&ground), 0);    // 0x40b4a2
     constexpr std::uint32_t kWhite = 0x00FFFFFFu;
     ground[0] = {-50.0f, 0.0f, -50.0f, kWhite};   // 0x40b4ae..

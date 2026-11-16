@@ -1,6 +1,7 @@
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/legacy_mmd_plugin.hpp"
 #include "../../src/legacy_mmhack/tests/device_probe_base.hpp"
+#include <MinHook.h>
 #include <algorithm>
 #include <cstdio>
 #include <memory>
@@ -21,6 +22,41 @@ struct Device : mme_re::mmhack::test::DeviceProbeBase {
     HRESULT result = D3DERR_DEVICELOST;
     HRESULT STDMETHODCALLTYPE Reset(D3DPRESENT_PARAMETERS*) override { events.push_back(25); return result; }
 };
+struct StartupMessages {
+    inline static StartupMessages* active = nullptr;
+    HWND owner;
+    const wchar_t* expected = nullptr;
+    unsigned count = 0;
+    bool unexpected = false;
+
+    StartupMessages(HWND window, const std::wstring& mode) : owner(window) {
+        if (mode == L"missing") expected = L"MMDPlugin.dll compatibility component is missing";
+        if (mode == L"unsupported") expected = L"unsupported legacy MMDPlugin profile";
+        if (mode == L"wrong-version") expected = L"version does not match";
+        Check(MH_Initialize() == MH_OK, "initialize test-local notification hook");
+        active = this;
+        Check(MH_CreateHook(reinterpret_cast<void*>(&MessageBoxW),
+            reinterpret_cast<void*>(&Observe), nullptr) == MH_OK, "capture startup notification");
+        Check(MH_EnableHook(reinterpret_cast<void*>(&MessageBoxW)) == MH_OK, "enable startup notification capture");
+    }
+    ~StartupMessages() {
+        MH_DisableHook(reinterpret_cast<void*>(&MessageBoxW));
+        MH_RemoveHook(reinterpret_cast<void*>(&MessageBoxW));
+        MH_Uninitialize();
+        active = nullptr;
+    }
+    static int WINAPI Observe(HWND owner, LPCWSTR text, LPCWSTR title, UINT flags) {
+        auto& self = *active;
+        ++self.count;
+        self.unexpected |= !self.expected || owner != self.owner || !text || !title ||
+            wcscmp(title, L"MMDFacade：旧插件加载失败") != 0 || flags != (MB_OK | MB_ICONERROR) ||
+            (self.expected && text && !wcsstr(text, self.expected));
+        return IDOK;
+    }
+    void Verify() const {
+        Check(!unexpected && count == (expected ? 1u : 0u), "exactly the expected startup error is reported");
+    }
+};
 }
 extern "C" __declspec(dllexport) void __cdecl MMSFacadeTestEvent(int value, HRESULT result, const void* pointer) {
     events.push_back(value);
@@ -40,12 +76,14 @@ int wmain(int argc, wchar_t** argv) {
         window = CreateWindowW(L"STATIC", L"MMDFacade callback test", WS_OVERLAPPEDWINDOW,
             0, 0, 320, 240, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         Check(window != nullptr, "hidden window creation");
+        StartupMessages messages(window, mode);
         app = std::make_unique<MMDApp>();
         renderer = std::make_unique<D3DRenderer>();
         app->MainWindow() = window;
         app->Renderer() = renderer.get();
         renderer->device = &device;
         legacy_mmd_plugin::Start(app.get());
+        messages.Verify();
         if (mode == L"disabled" || mode == L"missing" || mode == L"unsupported" || mode == L"wrong-version") {
             Check(events.empty(), "rejected/disabled package executed a factory");
             legacy_mmd_plugin::Stop();
@@ -89,6 +127,7 @@ int wmain(int argc, wchar_t** argv) {
                 renderer->device = real;
                 events.clear();
                 legacy_mmd_plugin::Start(app.get());
+                messages.Verify();
                 Check(createdDevice == real && Count(20) == 1, "real device borrowed by factory");
                 events.clear();
                 const auto reset = legacy_mmd_plugin::ResetDevice(real, &parameters);

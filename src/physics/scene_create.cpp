@@ -120,20 +120,21 @@ bool SceneConstruct(PhysicsScene* scene, D3DRenderer* d3dSub) {
 #else
     scene->collisionConfig = new btSoftBodyRigidBodyCollisionConfiguration();
 #endif
-    scene->dispatcher =
-        new btCollisionDispatcher(scene->collisionConfig);           // 0x405D4F (0x12F0)
 #if MMD_ORIGINAL_PROFILE
+    auto* dispatcher = new btCollisionDispatcher(scene->collisionConfig);  // 0x405D4F
     scene->broadphase = new bt32BitAxisSweep3(
 #else
+    auto* dispatcher = new SoftGroundDispatcher(scene->collisionConfig);
     scene->broadphase = new history_physics::Broadphase(
 #endif
         btVector3(-10000.0f, -10000.0f, -10000.0f),
         btVector3(10000.0f, 10000.0f, 10000.0f), 1500000);
+    scene->dispatcher = dispatcher;
     scene->solver = new btSequentialImpulseConstraintSolver();       // 0x405E18
-    scene->world = new DynamicsWorld(                      // 0x405E5D (0x110)
-        scene->dispatcher, scene->broadphase, scene->solver,
+    auto* world = new DynamicsWorld(                       // 0x405E5D (0x110)
+        dispatcher, scene->broadphase, scene->solver,
         scene->collisionConfig);
-    btDiscreteDynamicsWorld* world = scene->world;
+    scene->world = world;
 
     world->getSolverInfo().m_solverMode &= ~1;             // 0x405E6B
     // m_localTime keeps the constructor's 1/60 (orig ctor 0x4FAC30 stores
@@ -164,6 +165,9 @@ bool SceneConstruct(PhysicsScene* scene, D3DRenderer* d3dSub) {
     world->addRigidBody(scene->groundBody,                 // 0x405FDF
                         static_cast<short>(0x8000), static_cast<short>(-1));
     scene->groundBody->setRestitution(0.88f);              // 0x405FEA
+#if !MMD_ORIGINAL_PROFILE
+    world->SetGround(scene->groundBody, *dispatcher);
+#endif
     return true;
 }
 

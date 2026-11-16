@@ -38,6 +38,7 @@ struct SoftBody {
     float config[18]{}, stiffness[3]{};
     int iterations[4]{};
     std::vector<Anchor> anchors;
+    std::vector<btVector3> bakedAnchorOffsets;
     std::vector<unsigned> pins, vertices;
     std::unique_ptr<btSoftBody> body;
     std::unique_ptr<soft_compute::State> compute;
@@ -48,7 +49,7 @@ struct State {
     bool present = true;
     std::vector<SoftBody> soft;
     ~State() {
-        if (world) for (auto& s : soft) if (s.body) world->removeSoftBody(s.body.get());
+        if (world) for (auto& s : soft) if (s.body) world->removeCollisionObject(s.body.get());
         if (world) world->getWorldInfo().m_sparsesdf.Reset();
     }
 };
@@ -164,7 +165,12 @@ bool CreateSoftBody(mdl::ModelRecord& model, SoftBody& soft, btSoftRigidDynamics
         if (found == nodes.end() || anchor.rigid < 0 || unsigned(anchor.rigid) >= model.rigidCount) continue;
         anchor.node=found->second;
         auto* rigid = static_cast<btRigidBody*>(model.rigidTable[anchor.rigid].body);
-        if (rigid) body->appendAnchor(found->second, rigid);
+        if (rigid) {
+            const int index=body->m_anchors.size();
+            body->appendAnchor(found->second, rigid);
+            if (static_cast<std::size_t>(index)<soft.bakedAnchorOffsets.size())
+                body->m_anchors[index].m_local=soft.bakedAnchorOffsets[index];
+        }
     }
     for (unsigned pin : soft.pins) {
         const auto found = nodes.find(pin);
@@ -350,6 +356,10 @@ void CopyState(const unsigned char* source, unsigned char* target) {
         std::copy_n(src.config, 18, dst.config); std::copy_n(src.stiffness, 3, dst.stiffness);
         std::copy_n(src.iterations, 4, dst.iterations);
         dst.anchors = src.anchors; dst.pins = src.pins;
+        // A reconstructed anchor must retain the bind-space offset created when
+        // the live body was loaded, even if the rigid has since moved.
+        if (src.body) for (int i=0;i<src.body->m_anchors.size();++i)
+            dst.bakedAnchorOffsets.push_back(src.body->m_anchors[i].m_local);
         copy->soft.push_back(std::move(dst));
     }
     states[target] = std::move(copy);
@@ -376,6 +386,7 @@ void MeasureResources(const unsigned char* model, plugins::resource_budget::Coll
     };
     for (const auto& soft : state.soft) {
         out.String(soft.name); out.String(soft.nameEn);
+        out.Vector(soft.bakedAnchorOffsets);
         out.Vector(soft.anchors); out.Vector(soft.pins); out.Vector(soft.vertices);
         if (!soft.body) continue;
         if (soft.compute) soft.compute->Measure(out);
@@ -407,7 +418,7 @@ void SuspendSoftBodies(unsigned char* model) noexcept {
     if (found == states.end()) return;
     auto& state = *found->second;
     for (auto& soft : state.soft) {
-        if (state.world && soft.body) state.world->removeSoftBody(soft.body.get());
+        if (state.world && soft.body) state.world->removeCollisionObject(soft.body.get());
         soft.compute.reset();soft.body.reset(); soft.initialized = false; soft.vertices.clear();
     }
     if (state.world) state.world->getWorldInfo().m_sparsesdf.Reset();
@@ -420,8 +431,11 @@ void SetPresent(unsigned char* model, bool present) noexcept {
     found->second->present = present;
 }
 bool HasSoftBodies(const unsigned char* model) {
+    return SoftBodyCount(model)!=0;
+}
+std::size_t SoftBodyCount(const unsigned char* model) {
     const auto found = states.find(model);
-    return found != states.end() && !found->second->soft.empty();
+    return found != states.end() ? found->second->soft.size() : 0;
 }
 void SyncSoftBodies(unsigned char* m, bool reset) {
     const auto found = states.find(m);

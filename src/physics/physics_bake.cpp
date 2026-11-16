@@ -15,6 +15,8 @@
 #include "mikumikustudio/scene_sampling.hpp"
 #include "mikumikustudio/accessory_layout.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
+#include "mikumikustudio/history_physics.hpp"
+#include "../app/playback_physics_samples.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
 #if !MMD_ORIGINAL_PROFILE
@@ -138,21 +140,37 @@ public:
 struct WorldCopy {
 #if MMD_ORIGINAL_PROFILE
     btDefaultCollisionConfiguration config;
+    btCollisionDispatcher dispatcher{&config};
 #else
     btSoftBodyRigidBodyCollisionConfiguration config;
+    SoftGroundDispatcher dispatcher{&config};
 #endif
-    btCollisionDispatcher dispatcher{&config};
-    btDbvtBroadphase broadphase;
+    static std::unique_ptr<btBroadphaseInterface> MakeBroadphase(const PhysicsScene& original, const MMDApp* playback) {
+#if !MMD_ORIGINAL_PROFILE
+        if(playback&&dynamic_cast<const history_physics::Broadphase*>(original.world->getBroadphase())) {
+            std::size_t handles=original.world->getNumCollisionObjects()+32;
+            for(int i=0;i<kModelSlotCount;++i)if(const auto* model=playback->ModelSlot(i))
+                handles+=pmx21::SoftBodyCount(model);
+            return std::make_unique<history_physics::Broadphase>(
+                btVector3(-10000,-10000,-10000),btVector3(10000,10000,10000),
+                static_cast<unsigned>(handles));
+        }
+#endif
+        return std::make_unique<btDbvtBroadphase>();
+    }
+    std::unique_ptr<btBroadphaseInterface> broadphase;
     btSequentialImpulseConstraintSolver solver;
-    DynamicsWorld world{&dispatcher,&broadphase,&solver,&config};
+    DynamicsWorld world;
     PhysicsScene scene{};
     std::vector<std::unique_ptr<btDefaultMotionState>> motions;
     std::vector<std::unique_ptr<btRigidBody>> bodies;
     std::vector<std::unique_ptr<btTypedConstraint>> joints;
     std::unordered_map<const btRigidBody*,btRigidBody*> bodyMap;
-    explicit WorldCopy(btDiscreteDynamicsWorld& original,const Settings& settings) {
+    explicit WorldCopy(const PhysicsScene& originalScene,const Settings& settings,const MMDApp* playback=nullptr)
+        : broadphase(MakeBroadphase(originalScene,playback)),world(&dispatcher,broadphase.get(),&solver,&config) {
+        auto& original = *originalScene.world;
         scene.world = &world;
-        world.getSolverInfo() = btContactSolverInfo();
+        world.getSolverInfo() = playback ? original.getSolverInfo() : btContactSolverInfo();
         world.getSolverInfo().m_erp = settings.erp;
         world.getSolverInfo().m_globalCfm = settings.cfm;
         world.setGravity(original.getGravity()); world.ResetLocalTime();
@@ -179,6 +197,12 @@ struct WorldCopy {
             auto* proxy=src->getBroadphaseHandle();
             world.addRigidBody(dst,proxy ? proxy->m_collisionFilterGroup : 1,proxy ? proxy->m_collisionFilterMask : -1);
             bodyMap[src]=dst;
+            if (src == originalScene.groundBody) {
+                scene.groundBody = dst;
+#if !MMD_ORIGINAL_PROFILE
+                world.SetGround(dst, dispatcher);
+#endif
+            }
         }
     }
     ~WorldCopy() {
@@ -376,7 +400,7 @@ static SceneResult ComputeBatch(MMDApp& app,const Request& request,bool wholeSce
     try {
         const std::uint64_t frames=1u+unsigned(request.lastFrame-request.firstFrame)/unsigned(request.step)+((request.lastFrame-request.firstFrame)%request.step?1u:0u);
         if(progress&&!progress(0,request.lastFrame)){result.error=Error::Cancelled;return result;}
-        WorldCopy world(*app.Physics()->world,request.settings);
+        WorldCopy world(*app.Physics(),request.settings);
         std::array<unsigned char*,kModelSlotCount> slots{};
         std::vector<std::unique_ptr<ModelCopy>> models;
         struct Target {unsigned char* live;ModelCopy* copy;std::vector<int> bones;std::unique_ptr<KeyBuilder> builder;};
@@ -1080,49 +1104,77 @@ bool Visit(MMDApp& app, int firstFrame, int lastFrame, int fps,
     }
     if (!app.Physics() || !app.Physics()->world) { error="The physics scene is unavailable"; return false; }
     try {
-        const auto settings=BulletDefaults();
-        WorldCopy world(*app.Physics()->world,settings);
+        const auto& timing=app.PlaybackTiming();
+        const int rate=playback_timing::PhysicsRate(timing);
+        WorldCopy world(*app.Physics(),timing.physics,&app);
         std::array<unsigned char*,kModelSlotCount> slots{};
+        std::array<unsigned char*,kModelSlotCount> liveSlots{};
         std::vector<std::unique_ptr<ModelCopy>> models;
         std::vector<unsigned char*> live;
         for(int i=0;i<kModelSlotCount;++i) if(auto* raw=app.ModelSlot(i)) {
             models.emplace_back(new ModelCopy(*mdl::Mdl(raw),true));
-            auto& copy=*models.back(); slots[i]=copy.raw();
-            world.Connect(copy,*mdl::Mdl(raw),settings);live.push_back(raw);
+            auto& copy=*models.back(); slots[i]=copy.raw();liveSlots[i]=raw;
+            world.Connect(copy,*mdl::Mdl(raw),timing.physics);live.push_back(raw);
         }
         struct AppRestore {
             MMDApp& app;
             FrameViewportPublicationWatch viewport;
             std::unique_ptr<MMDAppState> saved;
+            playback_timing::PhysicsClock clock;
             double cursor, start, end;
             std::vector<std::pair<mdl::AccessoryRecord*,mdl::AccessoryRecord>> accessories;
-            explicit AppRestore(MMDApp& a):app(a),viewport(&a),saved(new MMDAppState(a.state)), cursor(a.PlaybackCursorSeconds()), start(a.PlaybackStartSeconds()), end(a.PlaybackEndSeconds()) {
+            explicit AppRestore(MMDApp& a):app(a),viewport(&a),saved(new MMDAppState(a.state)),clock(a.PlaybackPhysicsClock()),cursor(a.PlaybackCursorSeconds()), start(a.PlaybackStartSeconds()), end(a.PlaybackEndSeconds()) {
                 for(int i=0;i<255;++i)if(auto* p=a.AccessorySlot(i)) accessories.emplace_back(p,*p);
             }
-            ~AppRestore(){for(auto& a:accessories)*a.first=a.second;viewport.PreserveGeometryInto(*saved);app.state=*saved;app.PlaybackCursorSeconds()=cursor;app.PlaybackStartSeconds()=start;app.PlaybackEndSeconds()=end;viewport.RestoreEditorUi();}
+            ~AppRestore(){for(auto& a:accessories)*a.first=a.second;viewport.PreserveGeometryInto(*saved);app.state=*saved;app.PlaybackPhysicsClock()=std::move(clock);app.PlaybackCursorSeconds()=cursor;app.PlaybackStartSeconds()=start;app.PlaybackEndSeconds()=end;viewport.RestoreEditorUi();}
         } restore(app);
-        Evaluate(models,slots,0,true);
-        for(auto& m:models){ModelDynamicReseat(m->raw());ModelKinematicSync(m->raw());}
-        for(auto& m:models)for(auto& r:m->rigids)if(auto* b=static_cast<btRigidBody*>(r.body)) {
-            if(r.mode==0)b->getMotionState()->getWorldTransform(b->getWorldTransform());
-            else b->getMotionState()->setWorldTransform(b->getWorldTransform());
-            b->setInterpolationWorldTransform(b->getWorldTransform());
-            b->setLinearVelocity(btVector3(0,0,0));b->setAngularVelocity(btVector3(0,0,0));
+        // Playback mutates private records only. The renderer still sees live
+        // object addresses, so installed caches and effect bindings keep working.
+        struct PlaybackWorld {
+            MMDApp& app;
+            PhysicsScene* original;
+            bool physicsOverridden;
+            const std::array<unsigned char*,kModelSlotCount>& live;
+            PlaybackWorld(MMDApp& a,PhysicsScene& scene,const std::array<unsigned char*,kModelSlotCount>& copies,
+                          const std::array<unsigned char*,kModelSlotCount>& originals):app(a),original(a.Physics()),physicsOverridden(a.NativePhysicsOverridden()),live(originals) {
+                app.Physics()=&scene;
+                app.NativePhysicsOverridden()=false;
+                for(int i=0;i<kModelSlotCount;++i)app.ModelSlot(i)=copies[i];
+            }
+            ~PlaybackWorld(){
+                for(int i=0;i<kModelSlotCount;++i)app.ModelSlot(i)=live[i];
+                app.Physics()=original;
+                app.NativePhysicsOverridden()=physicsOverridden;
+            }
+        };
+        app.PlaybackActive()=1;
+        app.state.optflag[0]=1;
+        if(layerPhysicsSuppressed)app.PlaybackPhysicsMode()=0;
+        else if(app.PlaybackPhysicsMode()==0)app.PlaybackPhysicsMode()=2;
+        auto& clock=app.PlaybackPhysicsClock();
+        clock.Reset(0);
+        app.PlaybackCursorSeconds()=0;
+        playback_timing::PhysicsSamples samples;
+        {
+            PlaybackWorld isolated(app,world.scene,slots,liveSlots);
+            for(auto& model:models)InitModelTrackCursors(model->raw(),0,app.NativePhysicsMode());
+            InitExportPlaybackTracks(&app,0);
+            PreparePlaybackPhysics(&app,0);
+            samples.Initialize(app,0,rate);
         }
-        world.world.updateAabbs();Readback(models,slots);
-        double time=0;
         const auto render=[&](double target,bool output) {
-            while(time+1e-9<target) {
-                const double next=std::min(target,time+1.0/60.0);
-                for(auto& m:models)bone_scale::RestoreTransforms(m->raw());
-                Evaluate(models,slots,next,false);
-                for(auto& m:models)ModelKinematicSync(m->raw());
-                SetGravity(app,world.world,next*30);
-                const float dt=float(next-time);
-                // A layered bake with an MMV solver owning the physics must not
-                // advance the same bodies a second time here.
-                if(!layerPhysicsSuppressed)world.world.stepSimulation(dt,1,dt);
-                Readback(models,slots);time=next;
+            {
+                PlaybackWorld isolated(app,world.scene,slots,liveSlots);
+                samples.RestoreSimulation();
+                const double tolerance=4*std::numeric_limits<double>::epsilon()*(std::max)(1.0,std::abs(target));
+                while(clock.Completed(rate)<target-tolerance) {
+                    app.PlaybackCursorSeconds()=clock.Next(rate);
+                    ++clock.step;
+                    AdvancePlaybackPhysicsTracks(&app);
+                    StepPlaybackPhysics(&app,0,1.f/rate);
+                    samples.Complete(app,clock.Completed(rate));
+                }
+                if(!samples.Apply(app,target))throw std::runtime_error("Cannot sample the playback pose at the requested time");
             }
             app.PlaybackCursorSeconds()=target;app.CurrentFrame()=int(std::floor(target*30+1e-6));
             app.PlaybackActive()=1;app.state.optflag[0]=1;app.state.messageSeen=1;

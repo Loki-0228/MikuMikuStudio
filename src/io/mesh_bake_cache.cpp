@@ -321,8 +321,8 @@ bool EnumerateChildren(const Archive& archive,
 // a fraction of a frame.  At a scale of 1 a boundary is already a whole frame and
 // the half-up rounding absorbs the tiny error a division and multiplication
 // round trip can leave, so the untimed behaviour is exactly the old one.
-double ScaledBoundarySeconds(double seconds, double timeScale) {
-    return std::floor(seconds * kBakeFrameRate * timeScale + 0.5) / kBakeFrameRate;
+int ScaledBoundaryFrame(double seconds, double timeScale) {
+    return static_cast<int>(std::floor(seconds * kBakeFrameRate * timeScale + 0.5));
 }
 
 std::size_t SampleIndex(const std::vector<double>& times, double seconds) {
@@ -1059,14 +1059,28 @@ bool RangeLimited(const void* object) {
     const auto found=store.objects.find(object);
     return found!=store.objects.end()&&found->second&&found->second->source->rangeLimited;
 }
+int LastPlaybackFrame() {
+    auto& store=GetStore();std::lock_guard<std::mutex> lock(store.mutex);
+    int last=0;
+    for(const auto& item:store.objects) {
+        const auto& entry=item.second;
+        if(!entry)continue;
+        const auto& source=*entry->source;
+        if(!source.rangeLimited)continue;
+        const int first=ScaledBoundaryFrame(source.firstSeconds,entry->timeScale);
+        const int end=ScaledBoundaryFrame(source.endSeconds,entry->timeScale);
+        if(first<end)last=(std::max)(last,end-1);
+    }
+    return last;
+}
 bool ActiveAt(const void* object,double seconds) {
     if(!std::isfinite(seconds))return false;
     auto& store=GetStore();std::lock_guard<std::mutex> lock(store.mutex);
     const auto found=store.objects.find(object);if(found==store.objects.end()||!found->second)return false;
     const auto& entry=*found->second;const auto& source=*entry.source;
     if(!source.rangeLimited)return true;
-    return seconds>=ScaledBoundarySeconds(source.firstSeconds,entry.timeScale)&&
-           seconds<ScaledBoundarySeconds(source.endSeconds,entry.timeScale);
+    return seconds>=ScaledBoundaryFrame(source.firstSeconds,entry.timeScale)/kBakeFrameRate&&
+           seconds<ScaledBoundaryFrame(source.endSeconds,entry.timeScale)/kBakeFrameRate;
 }
 
 bool Sample(const void* object, double seconds, std::vector<Mesh>& meshes,

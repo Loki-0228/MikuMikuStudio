@@ -25,14 +25,16 @@ public:
     inline static VertexUploads* active=nullptr;
     inline static std::array<std::array<void*,14>,8> tables{};
     std::array<Buffer,8> buffers{};
+    MMDApp& app;
     IDirect3DDevice9* device=nullptr;
     void* target=nullptr;
     CreateFn originalCreate=nullptr;
     unsigned created=0,freed=0;
     const char* error=nullptr;
 
-    explicit VertexUploads(IDirect3DDevice9* owned):device(owned) {
+    explicit VertexUploads(MMDApp& app, IDirect3DDevice9* owned):app(app),device(owned) {
         Check(!active,"one Maximum VB tracker at a time");
+        transparent_sort_cache::Release(&app);
         MEMORY_BASIC_INFORMATION region{};
         Check(VirtualQuery(tables.data(),&region,sizeof(region))!=0 && region.Type==MEM_IMAGE && region.State==MEM_COMMIT,
               "Maximum VB private vtables belong to the test image");
@@ -48,6 +50,7 @@ public:
         }
     }
     ~VertexUploads() {
+        transparent_sort_cache::Release(&app);
         for(auto& b:buffers) if(b.object) *reinterpret_cast<void***>(b.object)=b.original;
         if(target) { MH_DisableHook(target); MH_RemoveHook(target); }
         active=nullptr;
@@ -104,9 +107,13 @@ public:
         }
         const HRESULT hr=reinterpret_cast<UnlockFn>(b->original[12])(object); b->locked=nullptr; return hr;
     }
-    void CheckReleased() {
+    void CheckUnlocked() {
         Check(!error,error?error:"Maximum upload tracker healthy");
-        for(const auto& b:buffers) Check(!b.object && !b.locked,"Maximum frame releases expanded VB and its lock");
+        for(const auto& b:buffers) Check(!b.locked,"Maximum frame releases every expanded VB lock");
+    }
+    void CheckReleased() {
+        CheckUnlocked();
+        for(const auto& b:buffers) Check(!b.object,"cache teardown releases every expanded VB");
         Check(created==freed,"Maximum expanded VB reference counts return to zero");
     }
 };
@@ -301,7 +308,7 @@ void Scene(Host& host,Uploads& uploads,Draws& draws,bool pmx,int resource,unsign
     else { a->record->comboSelIndex=0; host.app->ModelSlot(0)=reinterpret_cast<unsigned char*>(a->record.get()); host.app->ModelSlot(1)=nullptr; }
     host.app->TransparentMaterialSortPrecision()=TransparentSortPrecision::Maximum;
     host.app->TransparentSortCrossObjects()=kind==1;
-    auto vertices=std::make_unique<VertexUploads>(host.device);
+    auto vertices=std::make_unique<VertexUploads>(*host.app,host.device);
     {
         Fragments fragments(*host.app,*vertices,uploads);
         for(unsigned repeat=0;repeat<2;++repeat) {
@@ -310,10 +317,12 @@ void Scene(Host& host,Uploads& uploads,Draws& draws,bool pmx,int resource,unsign
             host.Frame(draws,uploads,resource);
             VerifyFragments(fragments,draws,sources); VerifyPixels(host);
             VerifySource(*a,pmx,materialsA); if(b) VerifySource(*b,pmx,materialsB);
-            vertices->CheckReleased();
+            vertices->CheckUnlocked();
         }
     }
-    host.Unbind(); vertices->CheckReleased();
+    host.Unbind();
+    transparent_sort_cache::Release(host.app.get());
+    vertices->CheckReleased();
 }
 } // namespace maximum_renderer_checks
 

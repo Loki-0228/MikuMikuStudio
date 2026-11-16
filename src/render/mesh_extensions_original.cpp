@@ -165,6 +165,7 @@ bool BindGeneration(const void*, std::uint64_t) { return false; }
 bool Has(const void*) { return false; }
 bool ActiveAt(const void*, double) { return false; }
 bool RangeLimited(const void*) { return false; }
+int LastPlaybackFrame() { return 0; }
 bool Sample(const void*, double, std::vector<deformed_mesh_capture::Mesh>& meshes,
             std::string& error) {
     meshes.clear();

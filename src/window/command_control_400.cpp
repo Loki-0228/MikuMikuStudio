@@ -1,6 +1,7 @@
 #include "mikumikustudio/undo_storage.hpp"
 #include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
 #include <set>
 #include <array>
 #include <string>
@@ -1337,9 +1338,9 @@ static void Cmd400_PlayRangeEdits(MMDApp* app, HWND hwnd) {
     if (*text && !frame_limits::ParseSigned(text, start)) { MessageBeep(MB_ICONWARNING); return; }
     GetWindowTextA(GetDlgItem(hwnd, panel::kPlayStopFrameEdit), text, sizeof text);
     if (*text && !frame_limits::ParseSigned(text, end)) { MessageBeep(MB_ICONWARNING); return; }
-    const bool blankEnd=!text[0];
-    if(blankEnd)end=app->LastRegisteredFrame();
-    if(!frame_limits::ResolveRange(start,end,app->LastRegisteredFrame(),start,end,true)){MessageBeep(MB_ICONWARNING);return;}
+    const auto lastFrame=std::max<std::int32_t>(app->LastRegisteredFrame(),mesh_bake_cache::LastPlaybackFrame());
+    if(!*text)end=lastFrame;
+    if(!frame_limits::ResolveRange(start,end,lastFrame,start,end,true)){MessageBeep(MB_ICONWARNING);return;}
     if (app->PlaybackStartsAtCurrentFrame() != 0) {
         app->PlaybackStartSeconds() = FrameToSeconds(
             (std::max)(0,app->CurrentFrame()));
@@ -1351,7 +1352,7 @@ static void Cmd400_PlayRangeEdits(MMDApp* app, HWND hwnd) {
         }
     }
     if (end == 0) {
-        end = app->state.lastRegisteredFrame;
+        end = lastFrame;
     }
     app->PlaybackEndSeconds() = FrameToSeconds(end);
     app->PlaybackCursorSeconds() = app->PlaybackStartSeconds();

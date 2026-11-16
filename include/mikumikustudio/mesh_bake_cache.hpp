@@ -211,6 +211,8 @@ bool Has(const void* object);
 // to a whole 30 fps frame, so `seconds` is a time on the retimed timeline.
 bool ActiveAt(const void* object, double seconds);
 bool RangeLimited(const void* object);
+// Last inclusive frame among the installed caches with a playback range.
+int LastPlaybackFrame();
 
 // Reads every mesh cached for `object` at `seconds` using the nearest sample at
 // or before that time; a time outside the recorded range clamps to the first or
