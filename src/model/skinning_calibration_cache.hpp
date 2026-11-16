@@ -14,7 +14,7 @@ constexpr std::uint32_t kVersion=3;
 constexpr std::uint64_t kMagic=0x31484341434e4b53ull;
 inline std::filesystem::path Path(const wchar_t* product) {
     // Installation scope: never reuse another installation's cache.
-    return local_data::File((std::wstring(L"processor-config-")+product+L"-v1.bin").c_str());
+    return local_data::CacheFile((std::wstring(L"processor-config-")+product+L"-v1.bin").c_str());
 }
 inline std::wstring CpuKey() {
     wchar_t identifier[512]{};

@@ -127,6 +127,7 @@ void ModelPhysicsReadback(unsigned char* model);      // VA 0x004B25D0
 void PhysicsFrame(MMDApp* app, unsigned char selActive);  // FrameDriver physics section 0x46F0D0..
 void StepPlaybackPhysics(MMDApp* app, unsigned char selActive, float seconds);
 void PreparePlaybackPhysics(MMDApp* app, unsigned char selActive);
+bool AdvanceRecordingPhysicsPreroll(MMDApp* app, double target);
 void PlaybackCatchup(MMDApp* app, unsigned char selActive);
                                 // FrameDriver playback section 0x46EEE0..
 void PlaybackPoseAdvance(MMDApp* app, int advance);  // VA 0x004175A0

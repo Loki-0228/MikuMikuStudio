@@ -196,6 +196,10 @@ fs::path SystemImport(const fs::path& system, const std::wstring& name) {
 }
 PeInfo InspectPe(const fs::path& file) { return Pe(file).Info(); }
 bool HasNativeFactory(const fs::path& file) { return Pe(file).HasDirectExport("MMSPluginGetApi"); }
+bool HasPatch4MmsStartup(const fs::path& file) {
+    const Pe image(file);
+    return image.HasDirectExport("MMSPluginGetApi") && image.HasDirectExport("MMSPatch4MMSAutoStartV1");
+}
 std::set<std::string> InspectLegacyExports(const fs::path& file) {
     const Pe pe(file);
     std::set<std::string> result;

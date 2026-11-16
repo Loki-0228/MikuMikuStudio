@@ -11,8 +11,11 @@
 //
 // Nothing here is a product path: the executable is EXCLUDE_FROM_ALL, and the
 // renderer phase timers need MIKUMIKUSTUDIO_PERF; MMV host timers do not.
+#define NOMINMAX
 #include "mikumikustudio/perf_timing.hpp"
 #include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/graphics_runtime.hpp"
+#include <d3d12sdklayers.h>
 #include "mikumikustudio/d3dx_dyn.hpp"
 #include "mikumikustudio/sequential_file_reader.hpp"
 #include "mikumikustudio/gpu_model.hpp"
@@ -1199,6 +1202,13 @@ int wmain(int argc, wchar_t** argv) {
     Options options;
     const int parse = ParseOptions(argc, argv, options);
     if (parse != 0) return parse;
+    // Native capture validates with the debug layer. Enable it before startup
+    // enumerates or calibrates any D3D12 device, not after those devices exist.
+    if(options.native && options.output) {
+        ID3D12Debug* debug=nullptr;
+        if(FAILED(graphics_runtime::GetDebugInterface(IID_PPV_ARGS(&debug))))return kExitInit;
+        debug->EnableDebugLayer();debug->Release();
+    }
     skinning::SetPreference({wcscmp(options.processor, L"cpu") == 0 ? skinning::Mode::Cpu : skinning::Mode::Automatic});
     const bool native = options.native;
     const bool throughput = options.throughput;

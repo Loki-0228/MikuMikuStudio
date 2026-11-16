@@ -436,14 +436,14 @@ bool ReadMesh(const Archive& archive, const Child& child, std::size_t index,
 // ---------------------------------------------------------------------------
 
 // Shared root that every instance of the application uses: the fixed
-// <executable directory>/data/mesh_bake_cache.  It depends on neither the
+// <executable directory>/cache/mesh_bake_cache.  It depends on neither the
 // process cwd, TEMP/TMP, the executable file name nor the user profile, so an
 // installation always keeps its private copies beside its own executable.  The
 // directory is created when needed and is never removed by this module, not
 // even recursively.  An empty result means the executable directory could not
 // be obtained, and the caller must refuse rather than fall back elsewhere.
 std::filesystem::path SharedRoot() {
-    return local_data::File(L"mesh_bake_cache");
+    return local_data::CacheFile(L"mesh_bake_cache");
 }
 
 // Creates (once) the directory this process owns for its own copies: an

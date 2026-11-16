@@ -39,7 +39,8 @@ bake::Settings Sentinel() {
 
 bool Same(const bake::Settings& a, const bake::Settings& b) {
     return a.erp == b.erp && a.cfm == b.cfm && a.substeps == b.substeps &&
-           a.rateMultiplier == b.rateMultiplier && a.baseRateHz == b.baseRateHz && a.name == b.name;
+           a.rateMultiplier == b.rateMultiplier && a.baseRateHz == b.baseRateHz && a.name == b.name &&
+           a.solverIterations == b.solverIterations && a.parameterReferenceRateHz == b.parameterReferenceRateHz;
 }
 
 // Settings matching MakeJson output for any name.
@@ -142,7 +143,7 @@ void TestValidation() {
     s.cfm = -1.f;
     ExpectInvalid(s, bake::SettingsError::InvalidCfm, "negative CFM rejected");
     s.cfm = 1000001.f;
-    ExpectInvalid(s, bake::SettingsError::InvalidCfm, "CFM above 1e6 rejected");
+    Check(bake::ValidateSettings(s, error), "CFM above the slider range accepted");
     s.cfm = (std::numeric_limits<float>::quiet_NaN)();
     ExpectInvalid(s, bake::SettingsError::InvalidCfm, "NaN CFM rejected");
 
@@ -150,19 +151,19 @@ void TestValidation() {
     s.substeps = 0;
     ExpectInvalid(s, bake::SettingsError::InvalidSubsteps, "zero substeps rejected");
     s.substeps = 17;
-    ExpectInvalid(s, bake::SettingsError::InvalidSubsteps, "substeps above 16 rejected");
+    Check(bake::ValidateSettings(s, error), "legacy factors above 16 accepted if product fits");
 
     s = Named(L"x");
     s.rateMultiplier = 0;
     ExpectInvalid(s, bake::SettingsError::InvalidMultiplier, "zero rate multiplier rejected");
     s.rateMultiplier = 17;
-    ExpectInvalid(s, bake::SettingsError::InvalidMultiplier, "rate multiplier above 16 rejected");
+    Check(bake::ValidateSettings(s, error), "large rate multiplier accepted if product fits");
 
     s = Named(L"x");
     s.baseRateHz = 31;
-    ExpectInvalid(s, bake::SettingsError::InvalidBaseRate, "base rate other than 30/60 rejected");
+    Check(bake::ValidateSettings(s, error), "non-multiple rate accepted");
     s.baseRateHz = 120;
-    ExpectInvalid(s, bake::SettingsError::InvalidBaseRate, "base rate 120 rejected");
+    Check(bake::ValidateSettings(s, error), "high rate accepted");
 
     s = Named(L"x");
     s.name = std::wstring(128, L'a');
@@ -213,8 +214,8 @@ void TestRoundTrip() {
     Check(!encoded.empty(), "encode produces text for valid settings");
     Check(encoded.find("\"format\": \"MikuMikuStudioPhysicsPreset\"") != std::string::npos,
           "encode writes the format identifier");
-    Check(encoded.find("\"schemaVersion\": 1") != std::string::npos,
-          "encode writes schemaVersion 1");
+    Check(encoded.find("\"schemaVersion\": 2") != std::string::npos,
+          "encode writes schemaVersion 2");
     Check(encoded.find("0.200000003") != std::string::npos,
           "encode writes floats with max_digits10 so they round-trip");
 
@@ -225,7 +226,7 @@ void TestRoundTrip() {
     Check(Same(decoded, s), "encode/decode round trip preserves every field exactly");
 
     bake::Settings invalid = s;
-    invalid.baseRateHz = 45;
+    invalid.baseRateHz = 0;
     Check(bake::EncodePreset(invalid).empty(), "encode refuses a bad base rate");
     invalid = s;
     invalid.name = L"bad\u0007name";
@@ -260,6 +261,7 @@ void TestDecodeAccepts() {
     expected.rateMultiplier = 2;
     expected.baseRateHz = 30;
     expected.name = L"sci";
+    expected.parameterReferenceRateHz = 240;
     ExpectOk(sci, expected, "scientific notation and integer-valued decimals decode");
 
     const std::string spaced =
@@ -272,6 +274,7 @@ void TestDecodeAccepts() {
     expected.rateMultiplier = 1;
     expected.baseRateHz = 60;
     expected.name = L"spaced";
+    expected.parameterReferenceRateHz = 960;
     ExpectOk(spaced, expected, "whitespace, key order and value boundaries decode");
 }
 
@@ -323,8 +326,8 @@ void TestDecodeRejects() {
     const std::string base = MakeJson("\"x\"");
     ExpectError(With(base, "MikuMikuStudioPhysicsPreset", "MikuDanceStudioPhysicsPreset"),
                 bake::SettingsError::InvalidJson, "old MDS preset identifier is not accepted");
-    ExpectError(With(base, "\"schemaVersion\": 1", "\"schemaVersion\": 2"),
-                bake::SettingsError::UnsupportedVersion, "schemaVersion 2 is unsupported");
+    ExpectError(With(base, "\"schemaVersion\": 1", "\"schemaVersion\": 3"),
+                bake::SettingsError::UnsupportedVersion, "schemaVersion 3 is unsupported");
     ExpectError(With(base, "\"schemaVersion\": 1", "\"schemaVersion\": 1.5"),
                 bake::SettingsError::UnsupportedVersion,
                 "a non-integer schemaVersion is unsupported");
@@ -341,7 +344,7 @@ void TestDecodeRejects() {
                 "an out-of-range ERP is rejected");
     ExpectError(With(base, "\"erp\": 0.2", "\"erp\": -0.2"), bake::SettingsError::InvalidErp,
                 "a negative ERP is rejected");
-    ExpectError(With(base, "\"cfm\": 0.0", "\"cfm\": 2000000"), bake::SettingsError::InvalidCfm,
+    ExpectError(With(base, "\"cfm\": 0.0", "\"cfm\": 1e39"), bake::SettingsError::InvalidCfm,
                 "an out-of-range CFM is rejected");
     ExpectError(With(base, "\"cfm\": 0.0", "\"cfm\": NaN"), bake::SettingsError::InvalidJson,
                 "a NaN literal is rejected");
@@ -349,14 +352,14 @@ void TestDecodeRejects() {
                 "an Infinity literal is rejected");
     ExpectError(With(base, "\"substeps\": 1", "\"substeps\": 2.5"),
                 bake::SettingsError::InvalidSubsteps, "fractional substeps are rejected");
-    ExpectError(With(base, "\"substeps\": 1", "\"substeps\": 17"),
-                bake::SettingsError::InvalidSubsteps, "substeps above 16 are rejected");
+    ExpectError(With(base, "\"substeps\": 1", "\"substeps\": 2147483648"),
+                bake::SettingsError::InvalidSubsteps, "substeps outside int range are rejected");
     ExpectError(With(base, "\"substeps\": 1", "\"substeps\": 1e400"),
                 bake::SettingsError::InvalidSubsteps, "an overflowing substeps value is rejected");
     ExpectError(With(base, "\"simulationRateMultiplier\": 1", "\"simulationRateMultiplier\": 0"),
                 bake::SettingsError::InvalidMultiplier, "a zero rate multiplier is rejected");
-    ExpectError(With(base, "\"baseSimulationRateHz\": 60", "\"baseSimulationRateHz\": 45"),
-                bake::SettingsError::InvalidBaseRate, "an unsupported base rate is rejected");
+    ExpectError(With(base, "\"baseSimulationRateHz\": 60", "\"baseSimulationRateHz\": 0"),
+                bake::SettingsError::InvalidBaseRate, "a zero base rate is rejected");
     ExpectError(With(base, "\"erp\": 0.2", "\"erp\": 01"), bake::SettingsError::InvalidJson,
                 "a number with a leading zero is rejected");
     ExpectError(With(base, "\"erp\": 0.2", "\"erp\": 0."), bake::SettingsError::InvalidJson,

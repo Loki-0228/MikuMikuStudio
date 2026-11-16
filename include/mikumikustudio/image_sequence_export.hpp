@@ -24,6 +24,8 @@ struct Options {
     float fps = 30;
     bool closeAfterExport = false;
     int playbackFps = 30;
+    bool physicsStartEnabled = false;
+    int physicsStart = 0;
 };
 int FormatFromPath(const wchar_t*);
 bool SupportsAlpha(int format);

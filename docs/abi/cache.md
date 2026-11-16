@@ -2,6 +2,25 @@
 
 [返回功能总览](README.md)
 
+## 当前文件位置
+
+可重建缓存统一位于程序根目录的 `cache`，与 `data` 同级，不依赖启动时的工作目录。
+
+| 位置 | 内容 |
+| --- | --- |
+| `cache/MME`、`cache/Textures` 等受管目录 | 特效编译、纹理及渲染准备缓存 |
+| `cache/audio-cache` | 解码音频及播放临时副本 |
+| `cache/mesh_bake_work`、`cache/mesh_bake_cache` | 烘焙中间文件及当前会话的网格副本 |
+| `cache/mme_mesh_snapshots`、`cache/encoder_probes` | MME 材质分配转移、编码器探测临时文件 |
+| `cache/processor-config-*-v1.bin` | 可重新测量的硬件校准结果 |
+| `cache/plugins` | 旧插件识别结果、适配 DLL 副本及启动日志 |
+| `cache/logs` | 错误诊断日志 |
+| `data` | 设置、插件偏好及默认工程备份；不是缓存 |
+
+关闭程序后可删除 `cache`，下次需要时会重建；首次使用可能需要重新编译、解码或校准。MME 偏好仍在 `data/plugins/legacy_mme/settings`，清缓存不会清除它。工程旁的 `.mdsmesh.abc` 是已保存烘焙内容，必须随工程保留。缓存管理器仅清理其登记的可回收条目，其他模块仍按各自的文件生命周期清理临时文件。
+
+旧版 `data` 下的缓存不再读取或写入；升级不会自动删除旧目录。旧 `data/plugins/legacy_mme` 可能含设置，不能整目录当缓存删除。下文的历史验收记录可能仍使用旧路径。
+
 ## 当前推进范围
 
 ### 缓存删除并发ADS与维护失败

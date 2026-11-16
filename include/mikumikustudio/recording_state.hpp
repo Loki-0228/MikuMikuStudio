@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include "frame_limits.hpp"
 
 namespace mikumikustudio { class MMDApp; }
 
@@ -9,9 +10,14 @@ namespace mikumikustudio::recording_state {
 
 bool CheckEffectReady(MMDApp* app);
 void RestoreFullscreenEditor(MMDApp* app);
+int ResolvePhysicsStart(const MMDApp* app, int requested);
 
 inline bool ValidFps(float fps) noexcept {
     return std::isfinite(fps) && fps >= .001f && fps <= 240.f;
+}
+
+inline bool ValidPhysicsStart(bool enabled, int physicsStart, int outputStart) noexcept {
+    return !enabled || (physicsStart >= frame_limits::minimum && physicsStart <= outputStart);
 }
 
 inline std::int64_t FrameDuration(float fps) noexcept {

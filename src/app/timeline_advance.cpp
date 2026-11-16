@@ -370,7 +370,10 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled,
     const bool visualOnly = !physicsOnly && advance == 0 &&
                             modelsEnabled && s.PlaybackActive() && s.NativePhysicsMode() > 0;
     const int physicsMode = s.NativePhysicsMode();
-    const double seconds = s.PlaybackCursorSeconds();
+    const double sampleFrame = playback_timing::TimelineFrame(s.PlaybackCursorSeconds());
+    // Native tracks start at zero and their first key links to itself. Warm-up
+    // holds that base pose, then samples authored negative keys at solver time.
+    const double seconds = (std::max)(0.0, s.PlaybackCursorSeconds());
     playback_timing::VisualBridgeWindow bridge;
 #if !MMD_ORIGINAL_PROFILE
     if (visualOnly && physicsMode >= 2 && !s.FrameStepPlayback() && !s.RecordingWindow()) {
@@ -385,10 +388,12 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled,
         if (models[j] == nullptr) continue;
         if (visualOnly) SampleModelPlaybackVisual(models[j], seconds, bridge);
         else AdvanceModelKeyframes(models[j], seconds, physicsMode);
+        if (sampleFrame < 0) negative_frames::EvaluateModel(models[j], sampleFrame);
     }
 
     if (physicsOnly) {
         AdvancePlaybackGravityTrack(app, playback_timing::TimelineFrame(seconds));
+        if (sampleFrame < 0) negative_frames::EvaluateGlobals(app, sampleFrame);
         return;
     }
 
@@ -667,6 +672,7 @@ static void AdvancePlaybackTracks(MMDApp* app, int advance, bool modelsEnabled,
             }
         }
     }
+    if (sampleFrame < 0) negative_frames::EvaluateGlobals(app, sampleFrame);
 }
 
 void AdvancePlaybackPhysicsTracks(MMDApp* app) {

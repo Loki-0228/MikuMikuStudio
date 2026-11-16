@@ -62,7 +62,7 @@ void SaveBoundary(const wchar_t* name) {
     const fs::path pmm(name);
     Check(pmm.is_absolute() && pmm.filename() == L"assignments.pmm" &&
         pmm.parent_path().parent_path() == current->root,
-        "actual production snapshot is inside this EXE/data/mme_mesh_snapshots");
+        "actual production snapshot is inside this EXE/cache/mme_mesh_snapshots");
     Check(fs::is_directory(pmm.parent_path()), "production created the unique snapshot directory");
     const auto placeholder = bake_storage::Bytes(pmm);
     Check(std::string(placeholder.begin(), placeholder.end()) == "Native mesh assignment transfer\n",
@@ -181,7 +181,7 @@ bool Attempt(Context& context, MMDApp& app, const void* model, std::string& erro
 void Run(MMDApp& app, const fs::path& out, const bake_storage::Environment& environment) {
     environment.Reenter();
     auto* model = app.ModelSlot(0); Check(model != nullptr, "snapshot test has a real loaded model");
-    Context context; context.root = environment.install / L"data" / L"mme_mesh_snapshots";
+    Context context; context.root = environment.install / L"cache" / L"mme_mesh_snapshots";
     context.model = fs::path(mdl::Mdl(model)->path); context.window = app.MainWindow();
     Check(fs::equivalent(context.model, out / L"triangle.pmx"), "snapshot test targets only its generated model");
     Check(!fs::exists(context.root), "snapshot root is absent before controlled production calls");

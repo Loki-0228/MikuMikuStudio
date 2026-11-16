@@ -269,9 +269,9 @@ MikuMikuDance.exe <另一个新输出前缀> 1 --emm-default-off [素材PMM绝�
 
 `model_alpha_tests` 是 CPU 软件光栅的 alpha 分类回归，覆盖未知格式不默认透明、X8R8G8B8／R8G8B8 等直接不透明、A8R8G8B8／A8B8G8R8 与 DXT1／3／5 的像素 alpha 判定。
 
-`texture_prepare_cache_tests`（完整配置，显式模式）需要新的输出目录与 `d3dx9_43.dll` 路径，可选真实纹理：它比较缓存的缩放像素/元数据/mip 渲染与原入口，覆盖并行 worker、去重、热复用、仅内存、损坏/mtime 保持的编辑/不可写/禁用/缺失回退；ABI 默认目录为 `data/cache/Textures`。
+`texture_prepare_cache_tests`（完整配置，显式模式）需要新的输出目录与 `d3dx9_43.dll` 路径，可选真实纹理：它比较缓存的缩放像素/元数据/mip 渲染与原入口，覆盖并行 worker、去重、热复用、仅内存、损坏/mtime 保持的编辑/不可写/禁用/缺失回退；ABI 默认目录为 `cache/Textures`。
 
-`effect_compile_cache_tests` 是完整配置的效果编译缓存回归：默认假 D3DX 套件 165 项（键与失效、内存/磁盘命中、损坏条目回退、限制与不可写目录、磁盘预算、异常安全、内存模式、非 ASCII 路径与 Unicode 效果名），`--small-stack` 9 项，`--integration` 使用真实 D3DX DLL 与 D3D9 设备比较缓存与原入口输出。ABI 默认目录为 `data/cache/MME`，测试在临时目录与工作目录不同卷时把夹具放到工作目录所在卷。
+`effect_compile_cache_tests` 是完整配置的效果编译缓存回归：默认假 D3DX 套件 165 项（键与失效、内存/磁盘命中、损坏条目回退、限制与不可写目录、磁盘预算、异常安全、内存模式、非 ASCII 路径与 Unicode 效果名），`--small-stack` 9 项，`--integration` 使用真实 D3DX DLL 与 D3D9 设备比较缓存与原入口输出。ABI 默认目录为 `cache/MME`，测试在临时目录与工作目录不同卷时把夹具放到工作目录所在卷。
 
 `cache_manager_tests`（完整配置）覆盖缓存管理业务 Store：设置持久化、内存模式、共享/独占记账、工程清理、当前租约保护、LRU 自动回收、固定工程、手动清理、外来文件与非缓存目录保护、重解析点拒绝、跨进程租约、并发发布配额、失败加载不发布工程关联、失效优先与损坏索引恢复；策略回归另见 `cache_manager_policy_tests --store` 与 `--installation`。
 

@@ -77,7 +77,7 @@ std::string JsonQuote(std::string_view input) {
 LegacyDiscovery::LegacyDiscovery(const fs::path& root, Discovery& result, bool useCache)
     : root_(root), result_(result) {
     if (!useCache) return;
-    cache_ = root.parent_path() / L"data/plugins/legacy-discovery.json";
+    cache_ = root.parent_path() / L"cache/plugins/legacy-discovery.json";
     try {
         if (!fs::exists(cache_)) return;
         PackageFile(cache_.parent_path(), "legacy-discovery.json");
@@ -136,7 +136,7 @@ void LegacyDiscovery::Save() noexcept {
     if (cache_.empty()) return;
     try {
         auto parent = root_.parent_path(); CheckParents(parent);
-        for (const auto* part : {L"data", L"plugins"}) {
+        for (const auto* part : {L"cache", L"plugins"}) {
             parent /= part; fs::create_directory(parent); CheckParents(parent);
         }
         if (fs::exists(cache_)) PackageFile(parent, "legacy-discovery.json");

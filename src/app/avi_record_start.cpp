@@ -29,6 +29,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "mikumikustudio/image_sequence_export.hpp"
+#include "mikumikustudio/negative_frames.hpp"
 #include "mikumikustudio/default_effect.hpp"
 #include "mikumikustudio/wic_mov_recorder.hpp"
 #include <Windows.h>
@@ -86,6 +87,7 @@ std::uint64_t MMDApp::BeginRecordingStartAttempt() {
 }
 
 void MMDApp::InvalidateRecordingStartAttempt() {
+    RecordingPhysicsPrerollActive() = false;
     m_recordingStartGeneration = 0;
     m_recordingStartScene = 0;
 }
@@ -484,6 +486,11 @@ bool StartRecordGraph(MMDApp* app, std::int32_t outW, std::int32_t outH,
 }  // namespace
 
 // VA 0x0045E820 - windowed AVI record start.
+int recording_state::ResolvePhysicsStart(const MMDApp* app, int requested) {
+    const int earliest = negative_frames::Earliest(app);
+    return earliest < 0 ? (std::min)(requested, earliest) : requested;
+}
+
 bool recording_state::CheckEffectReady(MMDApp* app) {
     if (DefaultEffectReadyForCapture(app)) return true;
     MessageBoxW(app->MainWindow(), image_sequence::Text(app,

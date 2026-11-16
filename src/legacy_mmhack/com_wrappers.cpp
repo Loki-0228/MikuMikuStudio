@@ -59,9 +59,13 @@ ULONG STDMETHODCALLTYPE DeviceWrapper::Release() {
   // Raw interfaces returned by QueryInterface or a mesh holding the native
   // device bypass this wrapper. A mesh holding this wrapper balances its own
   // AddRef/Release here; Mesh::GetDevice forwards whichever device it holds.
+  // Additional swap chains retain the native device. Release ours before
+  // evaluating the final reference count and before MME tears down resources.
+  if (local_references_ == 1) presenter_.Reset();
   ULONG remaining = original_->Release();
   --local_references_;
   if (remaining == 1 || local_references_ == 0) {
+    presenter_.Reset();
     router_.cleanup();                 // 0x180001db0, before the retained Release
     remaining = original_->Release();
     delete this;                       // 0x180001c90, including identity-cache erase
@@ -73,10 +77,13 @@ HRESULT STDMETHODCALLTYPE DeviceWrapper::GetDirect3D(IDirect3D9** output) {
   if (result == S_OK && output && *output) *output = runtime_.wrap(*output);
   return result;
 }
-HRESULT STDMETHODCALLTYPE DeviceWrapper::Reset(D3DPRESENT_PARAMETERS* presentation) { return router_.reset(presentation); }
+HRESULT STDMETHODCALLTYPE DeviceWrapper::Reset(D3DPRESENT_PARAMETERS* presentation) {
+  presenter_.Reset();
+  return router_.reset(presentation);
+}
 HRESULT STDMETHODCALLTYPE DeviceWrapper::Present(const RECT* source, const RECT* destination, HWND window, const RGNDATA* dirty) {
   runtime_.state.drawn_window = window ? window : runtime_.state.reset_window;
-  return original_->Present(source, destination, window, dirty);
+  return presenter_.Present(original_, source, destination, window, dirty);
 }
 HRESULT STDMETHODCALLTYPE DeviceWrapper::BeginScene() { return router_.begin_scene(runtime_.host); }
 HRESULT STDMETHODCALLTYPE DeviceWrapper::EndScene() { router_.finish_scene(); return original_->EndScene(); }

@@ -167,6 +167,7 @@
 #include "dialog_scaffold.hpp"
 #include "playback_timing_ui.hpp"
 #include "export_save_prompt.hpp"
+#include "export_physics_start.hpp"
 
 namespace mikumikustudio {
 
@@ -664,6 +665,8 @@ struct VideoRecordingParameters {
     int start, end, width, height, stereoWidthMultiplier;
     float fps;
     bool includeWave, closeAfterExport, stereo;
+    bool physicsStartEnabled;
+    int physicsStart;
 
     void Apply(MMDApp& app) const {
         app.AviRecordStartFrame() = start;
@@ -676,6 +679,8 @@ struct VideoRecordingParameters {
         app.AviOutputHeight() = height;
         app.AviRecordFps() = fps;
         app.LastVideoExportFps() = fps;
+        app.ExportPhysicsStartEnabled() = physicsStartEnabled;
+        app.ExportPhysicsStartFrame() = physicsStart;
     }
 };
 
@@ -769,6 +774,7 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         return TRUE;
     }
     if (const auto handled = export_save_prompt::HandleMessage(hDlg, app, msg, wParam, lParam)) return handled;
+    if (export_physics_start::Handle(hDlg, msg, wParam)) return TRUE;
     if (msg == WM_INITDIALOG) {
         MakeDialogTopmostIfRequested(app, hDlg);
         LocalizeChineseDialog(app, hDlg);
@@ -812,6 +818,7 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
         SetWindowTextW(GetDlgItem(hDlg, panel::kAviCloseAfterExportCheckbox),
                        closeText);
         CheckDlgButton(hDlg, panel::kAviCloseAfterExportCheckbox, BST_UNCHECKED);
+        export_physics_start::Initialize(hDlg, app);
         export_save_prompt::Initialize(hDlg, app);
         const WaveAudioContext* audio = app->Audio();
         const bool audioAvailable = audio != nullptr && audio->dataSize > 0 &&
@@ -901,6 +908,9 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
 
             const auto startFrame = ReadIntFromEdit(hDlg, panel::kAviStartFrameEdit);
             const auto endFrame = ReadIntFromEdit(hDlg, panel::kAviEndFrameEdit);
+            bool physicsStartEnabled = false;
+            int physicsStart = 0;
+            if (!export_physics_start::Read(hDlg, app, startFrame, physicsStartEnabled, physicsStart)) return TRUE;
             const float fps = ReadFloatFromEdit(hDlg, panel::kAviFpsEdit);
             const bool stereo = IsDlgButtonChecked(hDlg, panel::kAvi3dVisionCheckbox) == BST_CHECKED;
             const auto width = ReadIntFromEdit(hDlg, panel::kAviWidthEdit);
@@ -978,7 +988,8 @@ INT_PTR __stdcall AviOutDlgProc(HWND hDlg, UINT msg, WPARAM wParam,
                 const VideoRecordingParameters parameters{startFrame, endFrame, width, height,
                     1 + (IsDlgButtonChecked(hDlg, panel::kAviLeftHalfCheckbox) != BST_CHECKED), fps,
                     IsDlgButtonChecked(hDlg, panel::kAviWaveCheckbox) == BST_CHECKED,
-                    IsDlgButtonChecked(hDlg, panel::kAviCloseAfterExportCheckbox) == BST_CHECKED, stereo};
+                    IsDlgButtonChecked(hDlg, panel::kAviCloseAfterExportCheckbox) == BST_CHECKED, stereo,
+                    physicsStartEnabled, physicsStart};
                 if (options) options->parameters = parameters;
                 else parameters.Apply(*app);
                 EndDialog(hDlg, 1);

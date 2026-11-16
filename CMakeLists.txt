@@ -89,7 +89,7 @@ endif()
 # Output layout.  The per-configuration runtime directory is the shipped
 # directory and must contain the program only, so build intermediates are
 # redirected out of it:
-#   <build>/Release            MikuMikuDance.exe (+ Data\ runtime assets)
+#   <build>/Release            MikuMikuStudio.exe (+ Data\ runtime assets)
 #   <build>/lib/<config>       static libraries and import libraries
 #   <build>/symbols/<config>   every PDB, for crash triage / debugging
 # ---------------------------------------------------------------------------
@@ -1201,7 +1201,7 @@ if (MIKUMIKUSTUDIO_BUILD_EFFECT_TESTS)
             list(APPEND pmx21_physics_tests cloth_compute_tests)
         endif()
     endif()
-    foreach (physics_test physics_pose_tests pmx_joint_tests ${pmx21_physics_tests} physics_bake_settings_tests physics_scale_tests affine_collision_shape_tests)
+    foreach (physics_test physics_pose_tests pmx_joint_tests ${pmx21_physics_tests} physics_bake_settings_tests physics_tuning_tests physics_scale_tests affine_collision_shape_tests)
         add_executable(${physics_test} EXCLUDE_FROM_ALL tests/${physics_test}.cpp)
         target_link_libraries(${physics_test} PRIVATE mikumikustudio_core winmm dsound)
         set_target_properties(${physics_test} PROPERTIES
@@ -1931,18 +1931,14 @@ add_dependencies(MikuMikuStudio MMSNvidiaAAFix)
 # /MANIFEST:NO keeps the linker from adding a default manifest on top of the
 # original one embedded through the .res.
 target_link_options(MikuMikuStudio PRIVATE
-    "/MAP:${CMAKE_CURRENT_BINARY_DIR}/MikuMikuDance.map"
+    "/MAP:${CMAKE_CURRENT_BINARY_DIR}/MikuMikuStudio.map"
     "/MANIFEST:NO"
     "${MIKUMIKUSTUDIO_GEN_RES}"
 )
 set_target_properties(MikuMikuStudio PROPERTIES
-    # The original x64 binary is MikuMikuDance.exe, and MikuMikuEffect needs
-    # that exact module name: its MMHack.dll statically imports the 15 Exp*
-    # entry points from "MikuMikuDance.exe", so a differently named host makes
-    # the loader fail to bind them (MME then either reports "Initialize error"
-    # or dereferences the unbound slots).  Porting-era comments that mention
-    # MikuMikuDanceE_v932x64 refer to the reference *distribution*.
-    OUTPUT_NAME "MikuMikuDance"
+    # Legacy MME imports are redirected through MMDFacade; the bridge resolves
+    # the current host, so the product filename is independent of the old ABI.
+    OUTPUT_NAME "MikuMikuStudio"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
     # Export the 37 Exp* symbols from the .def file (ordinals 1..37).
     ENABLE_EXPORTS ON
@@ -2010,7 +2006,7 @@ endif()
 # `cmake --install build --config Release --prefix build/Release` installs
 # to that same directory:
 #
-#   build\Release\MikuMikuDance.exe <- DirectShow push source is embedded
+#   build\Release\MikuMikuStudio.exe <- DirectShow push source is embedded
 #
 # The Windows WIC PNG encoder creates transparent MOV files without a separate codec.
 # The regression executables are EXCLUDE_FROM_ALL

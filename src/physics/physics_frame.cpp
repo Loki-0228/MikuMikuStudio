@@ -1049,11 +1049,17 @@ static void RunPhysicsFrame(MMDApp* app, unsigned char selActive, float timeline
     const float fixedStep = 1.f / playback_timing::PhysicsRate(timing);
     if (!visualOnly && (!pausedTrace || moved) && count > 0) {
         auto& solver = world->getSolverInfo();
-        solver.m_erp = timing.physics.erp;
-        solver.m_globalCfm = timing.physics.cfm;
+        const auto tuned = bake::SolverSettings(timing.physics, playback_timing::PhysicsRate(timing));
+        solver.m_erp = tuned.erp;
+        solver.m_globalCfm = tuned.cfm;
+        solver.m_numIterations = tuned.solverIterations;
+#if !MMD_ORIGINAL_PROFILE
+        if (auto* native = dynamic_cast<DynamicsWorld*>(world))
+            native->SetRateCompensation(playback_timing::PhysicsRate(timing));
+#endif
         for (int i = 0; i < world->getNumConstraints(); ++i)
             if (auto* joint = dynamic_cast<PlaybackSpringConstraint*>(world->getConstraint(i)))
-                joint->SetCfm(timing.physics.cfm);
+                joint->SetCfm(tuned.cfm);
     }
     const auto windRandom = [&] {
         return timeline ? s.PlaybackPhysicsClock().NextWindRandom() : std::rand();

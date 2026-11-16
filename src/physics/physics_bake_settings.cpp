@@ -1,50 +1,11 @@
 // MikuMikuStudio: physics bake parameter presets (UTF-8 JSON), standalone module.
 //
-// The wire format is the one fixed in docs/guides/physics-baking.md:
-//
-//     {
-//       "format": "MikuMikuStudioPhysicsPreset",
-//       "schemaVersion": 1,
-//       "name": "preset name",
-//       "erp": 0.2,
-//       "cfm": 0.0,
-//       "substeps": 1,
-//       "simulationRateMultiplier": 1,
-//       "baseSimulationRateHz": 60
-//     }
-//
-// Contract implemented here (header: include/mikumikustudio/physics_bake_settings.hpp):
-//
-//   * All eight keys are mandatory and no other key is accepted.  Duplicate
-//     keys, unknown keys, wrong value types, malformed numbers, numbers whose
-//     magnitude overflows the double range, substeps / rateMultiplier /
-//     baseSimulationRateHz without an exact integer value, trailing garbage
-//     after the closing brace and an unsupported schemaVersion are rejected.
-//   * The text is strict UTF-8 with an optional BOM.  Strings support the
-//     JSON escapes including \uXXXX with surrogate pairs.  Raw control
-//     characters inside strings and invalid UTF-8 byte sequences are
-//     rejected as InvalidJson.
-//   * Error precedence:
-//       1. input longer than 64 KiB                     -> TooLarge
-//       2. JSON syntax / UTF-8 / duplicate / unknown key
-//          / wrong value type                            -> InvalidJson,
-//          except a syntactically valid number that cannot be represented,
-//          which reports the owning field's error (see FieldError)
-//       3. missing key                                   -> MissingField
-//       4. format identifier mismatch                    -> InvalidJson
-//       5. schemaVersion != 1                            -> UnsupportedVersion
-//       6. value validation in Settings order: erp, cfm, substeps,
-//          rateMultiplier, baseRateHz, name
-//   * A failed DecodePreset / LoadPreset never touches the caller's
-//     Settings; a successful one replaces every field.
-//   * EncodePreset writes classic-locale numbers with max_digits10 so float
-//     values survive the round trip exactly, and escapes the name into valid
-//     UTF-8.  Invalid settings produce an empty string.
-//   * SavePreset validates first, writes a unique temp file next to the
-//     target, then replaces the target atomically with MoveFileExW
-//     (MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH).  On failure only
-//     the temp file this call created is removed: an existing preset keeps
-//     its old content and no foreign file is ever deleted.
+// Version 2 adds solver iterations and an ERP/CFM reference rate. Version 1
+// keeps its authored rate as reference, preserving its original ERP/CFM.
+// Both versions require all their fields and reject duplicate/unknown keys,
+// nonfinite values, invalid UTF-8 and trailing input. See the user guide.
+// Failed loads leave the settings unchanged. Saves replace the target only
+// after successfully writing a unique adjacent temporary file.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -71,22 +32,17 @@ constexpr std::size_t kMaxPresetBytes = 64u * 1024u;
 constexpr std::size_t kMaxNameCodePoints = 128u;
 constexpr double kErpMin = 0.0;
 constexpr double kErpMax = 1.0;
-constexpr double kCfmMin = 0.0;
-constexpr double kCfmMax = 1000000.0;
 constexpr int kSubstepsMin = 1;
-constexpr int kSubstepsMax = 16;
+constexpr int kSubstepsMax = (std::numeric_limits<int>::max)();
 constexpr int kMultiplierMin = 1;
-constexpr int kMultiplierMax = 16;
-constexpr int kBaseRateA = 30;
-constexpr int kBaseRateB = 60;
-constexpr double kSchemaVersion = 1.0;
+constexpr int kMultiplierMax = (std::numeric_limits<int>::max)();
+constexpr double kSchemaVersion = 2.0;
 constexpr const wchar_t* kFormatId = L"MikuMikuStudioPhysicsPreset";
 constexpr const wchar_t* kDefaultName = L"Bullet defaults";
 
-// The eight keys of the format, in the canonical order used for the
-// missing-field check.
+// Common version-1 keys precede the version-2 extensions.
 enum class Field : int {
-    Format, SchemaVersion, Name, Erp, Cfm, Substeps, RateMultiplier, BaseRateHz, Count, Unknown
+    Format, SchemaVersion, Name, Erp, Cfm, Substeps, RateMultiplier, BaseRateHz, Iterations, ReferenceRate, Count, Unknown
 };
 
 constexpr Field kFieldOrder[] = {
@@ -100,7 +56,9 @@ SettingsError FieldError(Field field) {
         case Field::Cfm: return SettingsError::InvalidCfm;
         case Field::Substeps: return SettingsError::InvalidSubsteps;
         case Field::RateMultiplier: return SettingsError::InvalidMultiplier;
+        case Field::ReferenceRate: return SettingsError::InvalidReferenceRate;
         case Field::BaseRateHz: return SettingsError::InvalidBaseRate;
+        case Field::Iterations: return SettingsError::InvalidIterations;
         default: return SettingsError::InvalidJson;
     }
 }
@@ -114,6 +72,8 @@ Field LookupField(const std::wstring& key) {
     if (key == L"substeps") return Field::Substeps;
     if (key == L"simulationRateMultiplier") return Field::RateMultiplier;
     if (key == L"baseSimulationRateHz") return Field::BaseRateHz;
+    if (key == L"solverIterations") return Field::Iterations;
+    if (key == L"parameterReferenceRateHz") return Field::ReferenceRate;
     return Field::Unknown;
 }
 
@@ -366,6 +326,8 @@ struct ParsedFields {
     int substeps = 0;
     int rateMultiplier = 0;
     int baseRateHz = 0;
+    int solverIterations = 10;
+    int parameterReferenceRateHz = 60;
 };
 
 bool ParseValue(Scanner& s, Field field, ParsedFields& fields, SettingsError& error) {
@@ -410,13 +372,17 @@ bool ParseValue(Scanner& s, Field field, ParsedFields& fields, SettingsError& er
             }
             fields.erp = static_cast<float>(value);
             return true;
-        case Field::Cfm:
-            if (!std::isfinite(value) || value < kCfmMin || value > kCfmMax) {
+        case Field::Cfm: {
+            // Parse directly to float so max_digits10 output of FLT_MAX can
+            // round back to FLT_MAX without a spurious double-range rejection.
+            const auto result = std::from_chars(token.data(),token.data()+token.size(),fields.cfm);
+            if (result.ec != std::errc{} || result.ptr != token.data()+token.size() ||
+                !std::isfinite(fields.cfm) || value < 0) {
                 error = SettingsError::InvalidCfm;
                 return false;
             }
-            fields.cfm = static_cast<float>(value);
             return true;
+        }
         case Field::Substeps: {
             int parsed = 0;
             if (!ExactInt(value, parsed) || parsed < kSubstepsMin || parsed > kSubstepsMax) {
@@ -437,12 +403,22 @@ bool ParseValue(Scanner& s, Field field, ParsedFields& fields, SettingsError& er
         }
         case Field::BaseRateHz: {
             int parsed = 0;
-            if (!ExactInt(value, parsed) || (parsed != kBaseRateA && parsed != kBaseRateB)) {
+            if (!ExactInt(value, parsed) || parsed < 1) {
                 error = SettingsError::InvalidBaseRate;
                 return false;
             }
             fields.baseRateHz = parsed;
             return true;
+        }
+        case Field::ReferenceRate: {
+            int parsed = 0;
+            if (!ExactInt(value,parsed) || parsed < 1) { error=SettingsError::InvalidReferenceRate; return false; }
+            fields.parameterReferenceRateHz=parsed; return true;
+        }
+        case Field::Iterations: {
+            int parsed = 0;
+            if (!ExactInt(value, parsed) || parsed < 1) { error = SettingsError::InvalidIterations; return false; }
+            fields.solverIterations = parsed; return true;
         }
         default:
             error = SettingsError::InvalidJson;
@@ -605,7 +581,7 @@ bool ValidateSettings(const Settings& settings, SettingsError& error) {
         error = SettingsError::InvalidErp;
         return false;
     }
-    if (!std::isfinite(settings.cfm) || settings.cfm < 0.f || settings.cfm > 1000000.f) {
+    if (!std::isfinite(settings.cfm) || settings.cfm < 0.f) {
         error = SettingsError::InvalidCfm;
         return false;
     }
@@ -617,10 +593,12 @@ bool ValidateSettings(const Settings& settings, SettingsError& error) {
         error = SettingsError::InvalidMultiplier;
         return false;
     }
-    if (settings.baseRateHz != kBaseRateA && settings.baseRateHz != kBaseRateB) {
+    if (!SimulationRate(settings)) {
         error = SettingsError::InvalidBaseRate;
         return false;
     }
+    if (settings.parameterReferenceRateHz < 1) { error = SettingsError::InvalidReferenceRate; return false; }
+    if (settings.solverIterations < 1) { error = SettingsError::InvalidIterations; return false; }
     if (!NameIsValid(settings.name)) {
         error = SettingsError::InvalidName;
         return false;
@@ -659,10 +637,13 @@ bool DecodePreset(std::string_view json, Settings& settings, SettingsError& erro
         error = SettingsError::InvalidJson;
         return false;
     }
-    if (fields.schemaVersion != kSchemaVersion) {
+    if (fields.schemaVersion != 1 && fields.schemaVersion != kSchemaVersion) {
         error = SettingsError::UnsupportedVersion;
         return false;
     }
+    const unsigned extended = (1u << unsigned(Field::Iterations)) | (1u << unsigned(Field::ReferenceRate));
+    if (fields.schemaVersion == 1 && (fields.seen & extended)) { error = SettingsError::InvalidJson; return false; }
+    if (fields.schemaVersion == 2 && (fields.seen & extended) != extended) { error = SettingsError::MissingField; return false; }
 
     Settings decoded;
     decoded.erp = fields.erp;
@@ -671,6 +652,8 @@ bool DecodePreset(std::string_view json, Settings& settings, SettingsError& erro
     decoded.rateMultiplier = fields.rateMultiplier;
     decoded.baseRateHz = fields.baseRateHz;
     decoded.name = std::move(fields.name);
+    decoded.solverIterations = fields.solverIterations;
+    decoded.parameterReferenceRateHz = fields.schemaVersion == 1 ? SimulationRate(decoded) : fields.parameterReferenceRateHz;
     if (!ValidateSettings(decoded, error)) return false;
 
     settings = std::move(decoded);
@@ -686,7 +669,7 @@ std::string EncodePreset(const Settings& settings) {
     out.reserve(256);
     out += "{\n";
     out += "\t\"format\": \"MikuMikuStudioPhysicsPreset\",\n";
-    out += "\t\"schemaVersion\": 1,\n";
+    out += "\t\"schemaVersion\": 2,\n";
     out += "\t\"name\": \"";
     out += EncodeJsonString(settings.name);
     out += "\",\n";
@@ -704,6 +687,8 @@ std::string EncodePreset(const Settings& settings) {
     out += ",\n";
     out += "\t\"baseSimulationRateHz\": ";
     out += FormatInt(settings.baseRateHz);
+    out += ",\n\t\"solverIterations\": " + FormatInt(settings.solverIterations);
+    out += ",\n\t\"parameterReferenceRateHz\": " + FormatInt(settings.parameterReferenceRateHz);
     out += "\n}";
     return out;
 }

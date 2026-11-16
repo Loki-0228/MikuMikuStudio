@@ -163,7 +163,7 @@ void Run(MMDApp& app, const fs::path& out, Environment& env) {
     Check(mesh_bake_cache::Empty(), "fresh hidden scene has no inherited bake bindings");
     app.CameraMode() = 0; for (int i = 0; i < 3; ++i) Frame(app);
     auto* raw = app.ModelSlot(0); Check(raw != nullptr, "storage uses the small loaded triangle only");
-    const auto work = env.install / L"data" / L"mesh_bake_work", cache = env.install / L"data" / L"mesh_bake_cache";
+    const auto work = env.install / L"cache" / L"mesh_bake_work", cache = env.install / L"cache" / L"mesh_bake_cache";
     Check(!fs::exists(work) && !fs::exists(cache), "no prior run owns either tested mesh-bake directory");
     alembic_export::Options options; options.lastFrame = 2; options.writeAbc = false; options.bakeIntoProject = true;
     Staging successful(work, L"MMS-mesh-bake.abc"); Scene initial(app, raw);
@@ -172,7 +172,7 @@ void Run(MMDApp& app, const fs::path& out, Environment& env) {
     Check(result.success && result.baked && !result.abcWritten && result.samples == 3 && result.meshes && mesh_bake_cache::Has(raw), "real bake-only export installs all three triangle samples");
     initial.Same(true); successful.Cleared();
     Check(!fs::exists(work / L"MMS-mesh-bake.abc") && fs::is_empty(work), "bake-only does not publish a user ABC or retain work files");
-    const auto oldFiles = CacheFiles(cache); Check(oldFiles.size() == 1 && !oldFiles.front().bytes.empty(), "Install retains exactly one actual nonempty archive below copied EXE/data/mesh_bake_cache");
+    const auto oldFiles = CacheFiles(cache); Check(oldFiles.size() == 1 && !oldFiles.front().bytes.empty(), "Install retains exactly one actual nonempty archive below copied EXE/cache/mesh_bake_cache");
     Check(oldFiles.front().path.parent_path().parent_path() == cache && oldFiles.front().path.parent_path().filename().wstring().rfind(L"mesh-cache-" + std::to_wstring(GetCurrentProcessId()) + L"-", 0) == 0,
         "installed archive is in the process-owned session directly below the expected data cache root");
     const auto oldSamples = Samples(raw);

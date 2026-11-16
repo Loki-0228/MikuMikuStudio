@@ -17,6 +17,7 @@
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/history_physics.hpp"
 #include "../app/playback_physics_samples.hpp"
+#include "tuned_constraint_solver.hpp"
 #include <btBulletDynamicsCommon.h>
 #include <BulletDynamics/ConstraintSolver/btGeneric6DofSpringConstraint.h>
 #if !MMD_ORIGINAL_PROFILE
@@ -115,8 +116,9 @@ class BakeJoint final : public btGeneric6DofSpringConstraint {
     btScalar erp_, cfm_;
 public:
     BakeJoint(btRigidBody& a, btRigidBody& b, const btTransform& fa, const btTransform& fb,
-              const mdl::JointRecord& joint, const Settings& settings)
-        : btGeneric6DofSpringConstraint(a, b, fa, fb, true), erp_(settings.erp), cfm_(settings.cfm) {
+              const mdl::JointRecord& joint, const SolverParameters& tuned)
+        : btGeneric6DofSpringConstraint(a, b, fa, fb, true) {
+        erp_ = tuned.erp; cfm_ = tuned.cfm;
         const auto* v = joint.limits;
         setLinearUpperLimit(btVector3(v[0],v[1],v[2]));
         setLinearLowerLimit(btVector3(v[3],v[4],v[5]));
@@ -125,8 +127,8 @@ public:
         for (int i=0;i<6;++i) if (joint.springs[i]>0) {
             enableSpring(i,true); setStiffness(i,joint.springs[i]);
         }
-        for(int i=0;i<3;++i)getRotationalLimitMotor(i)->m_ERP=settings.erp;
-        getTranslationalLimitMotor()->m_restitution=settings.erp;
+        for(int i=0;i<3;++i)getRotationalLimitMotor(i)->m_ERP=erp_;
+        getTranslationalLimitMotor()->m_restitution=erp_;
         // Loader joints meet at the same model-space point at rest.
         for (int i=0;i<6;++i) m_equilibriumPoint[i] = 0;
     }
@@ -159,7 +161,7 @@ struct WorldCopy {
         return std::make_unique<btDbvtBroadphase>();
     }
     std::unique_ptr<btBroadphaseInterface> broadphase;
-    btSequentialImpulseConstraintSolver solver;
+    TunedConstraintSolver solver;
     DynamicsWorld world;
     PhysicsScene scene{};
     std::vector<std::unique_ptr<btDefaultMotionState>> motions;
@@ -171,8 +173,14 @@ struct WorldCopy {
         auto& original = *originalScene.world;
         scene.world = &world;
         world.getSolverInfo() = playback ? original.getSolverInfo() : btContactSolverInfo();
-        world.getSolverInfo().m_erp = settings.erp;
-        world.getSolverInfo().m_globalCfm = settings.cfm;
+        const int rate = playback ? playback_timing::PhysicsRate(playback->PlaybackTiming()) : SimulationRate(settings);
+        const auto tuned = SolverSettings(settings, rate);
+        world.getSolverInfo().m_erp = tuned.erp;
+        world.getSolverInfo().m_globalCfm = tuned.cfm;
+        world.getSolverInfo().m_numIterations = tuned.solverIterations;
+#if !MMD_ORIGINAL_PROFILE
+        world.SetRateCompensation(rate);
+#endif
         world.setGravity(original.getGravity()); world.ResetLocalTime();
         for (int i=0;i<original.getNumCollisionObjects();++i) {
 #if !MMD_ORIGINAL_PROFILE
@@ -250,7 +258,7 @@ struct WorldCopy {
 #endif
             if (!source) { j.constraint=-1; continue; }
             btTransform fa,fb; physics_scale::JointBaseline(*source,fa,fb);
-            joints.emplace_back(new BakeJoint(*a,*b,fa,fb,j,settings));
+            joints.emplace_back(new BakeJoint(*a,*b,fa,fb,j,{world.getSolverInfo().m_erp,world.getSolverInfo().m_globalCfm,world.getSolverInfo().m_numIterations}));
             joints.back()->setUserConstraintId(j.constraint);
             world.addConstraint(joints.back().get(),false);
         }
@@ -426,14 +434,15 @@ static SceneResult ComputeBatch(MMDApp& app,const Request& request,bool wholeSce
             b->setInterpolationWorldTransform(b->getWorldTransform());b->setLinearVelocity(btVector3(0,0,0));b->setAngularVelocity(btVector3(0,0,0));
         }
         world.world.updateAabbs();Readback(models,slots);
-        const int ticks=request.settings.baseRateHz/30*request.settings.rateMultiplier;
-        const int subdivisions=request.settings.substeps;
-        const float dt=1.f/(request.settings.baseRateHz*request.settings.rateMultiplier*subdivisions);
+        const int rate=SimulationRate(request.settings);
+        const float dt=1.f/rate;
+        std::uint64_t physicsStep=0;
         const int finalFrame=request.lastFrame+(request.physics?1:0);
         BakePreview preview(&app);
         for(std::int64_t frame=0;frame<=finalFrame;++frame) {
-            if(frame>0)for(int tick=0;tick<ticks;++tick)for(int sub=0;sub<subdivisions;++sub) {
-                const double seconds=(frame-1)/30.0+(tick*subdivisions+sub+1)/static_cast<double>(request.settings.baseRateHz*request.settings.rateMultiplier*subdivisions);
+            const std::uint64_t stepsThroughFrame=static_cast<std::uint64_t>(frame)*rate/30;
+            while(physicsStep<stepsThroughFrame) {
+                const double seconds=double(++physicsStep)/rate;
                 Evaluate(models,slots,seconds,false);
                 for(auto& m:models)ModelKinematicSync(m->raw());
                 SetGravity(app,world.world,seconds*30);

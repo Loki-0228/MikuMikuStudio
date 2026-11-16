@@ -259,6 +259,10 @@ bool Validate(MMDApp* app, const Options& o, std::wstring& error) {
         error = Text(app, L"请填写有效的起止帧和帧率。起始帧不得小于 0，结束帧不得小于起始帧，帧率须为 0.001 到 240，图片总数不得超过 2147483647。",
             L"Enter a valid range and frame rate: start >= 0, end >= start, FPS 0.001 to 240, at most 2147483647 images.",
             L"開始フレームは0以上、終了は開始以上、FPSは0.001～240、画像数は2147483647以下で指定してください。");
+    } else if (!recording_state::ValidPhysicsStart(o.physicsStartEnabled, o.physicsStart, o.start)) {
+        error = Text(app, L"物理计算起始帧必须是有效整数，且不得晚于输出起始帧；可以输入负数。",
+            L"Physics start must be a valid whole frame no later than the first output frame; negative frames are allowed.",
+            L"物理計算の開始には出力開始フレーム以前の有効な整数を指定してください。負のフレームも指定できます。");
     } else if (o.format < 0 || o.format >= std::size(kFormats)) {
         error = Text(app, L"请选择图片格式。", L"Select an image format.", L"画像形式を選択してください。");
     } else if (o.prefix.find_first_of(L"<>:\"/\\|?*") != std::wstring::npos ||
@@ -320,6 +324,9 @@ bool Prepare(MMDApp* app, const Options& o, std::wstring& error) {
         return false;
     }
     sessions.insert_or_assign(app, Session{o});
+    app->ExportPhysicsStartEnabled() = o.physicsStartEnabled;
+    app->ExportPhysicsStartFrame() = o.physicsStartEnabled
+        ? recording_state::ResolvePhysicsStart(app, o.physicsStart) : o.physicsStart;
     return true;
 }
 

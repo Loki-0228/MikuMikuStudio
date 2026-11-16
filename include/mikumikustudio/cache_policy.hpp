@@ -44,7 +44,7 @@ private:
     std::filesystem::path root_, settings_;
 };
 
-// Per-installation production entry points: EXE-directory/data/cache and
+// Per-installation production entry points: EXE-directory/cache and
 // data/settings.json only. Original compatibility builds remain disabled.
 std::filesystem::path Root() noexcept;
 Result ReadCurrent(Snapshot& output) noexcept;

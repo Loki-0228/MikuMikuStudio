@@ -98,7 +98,7 @@ MMS 显式接受 `.efk`：使用同名 `.pmd` 或包内 `efk.pmd` 作为控制�
 
 ### 可选插件安装
 
-构建、安装及发布包直接提供 `PLUGINS/first-person-camera/`，含 DLL、许可、说明及正确摘要的清单，启动时即可发现。
+构建、安装及发布包直接提供 `PLUGINS/first-person-camera/`，含 DLL、许可和说明。新版宿主通过专用适配标记自动发现并启用，无需 `plugin.json`；构建和安装会移除这个随包目录中遗留的清单。保留 `MMSFirstPersonCamera.dll` 文件名，文件夹可改名、分组，也可直接将 DLL 放在 `PLUGINS` 根目录。
 插件只从 `<EXE>/PLUGINS` 递归发现；根目录的 `optional-plugins` 不单独扫描，新发布包不再创建它。
 `PLUGINS/LEGACY` 用于归放旧 MMD 插件包，各包仍需自己的 `plugin.json`，同样由上述递归扫描发现。
 其中宿主配套的 `MMDPlugin.dll` 负责旧插件导入依赖，不是可直接加载的用户插件包。

@@ -7,6 +7,8 @@
 #include "BulletCollision/CollisionShapes/btBoxShape.h"
 #include "BulletSoftBody/btSoftRigidDynamicsWorld.h"
 #include <map>
+#include <vector>
+#include "mikumikustudio/physics_bake_settings.hpp"
 #endif
 #include <cstdint>
 
@@ -47,6 +49,9 @@ public:
     inline static SoftBodySolver solveSoftBody = nullptr;
     using ClusterSolver = bool (*)(btAlignedObjectArray<btSoftBody*>&);
     inline static ClusterSolver solveClusters = nullptr;
+    void SetRateCompensation(int rate) noexcept {
+        softStepRatio_ = rate > 0 ? 60.0 / rate : 1.0;
+    }
     void SetGround(btRigidBody* ground, SoftGroundDispatcher& dispatcher) noexcept {
         softGroundDispatcher_ = &dispatcher;
         dispatcher.SetGround(ground);
@@ -136,6 +141,23 @@ private:
     }
     void internalSingleStepSimulation(btScalar dt) override {
         if (beforeStep) beforeStep(*this);
+        // PMX soft damping is applied once per step; rigid-body damping already
+        // uses pow(1-damping, dt) in Bullet and must not be converted twice.
+        auto& soft = getSoftBodyArray();
+        const bool compensate = softStepRatio_ != 1.0;
+        if (compensate) {
+            savedDamping_.resize(soft.size());
+            for (int i = 0; i < soft.size(); ++i) {
+                savedDamping_[i] = soft[i]->m_cfg.kDP;
+                soft[i]->m_cfg.kDP = bake::PerStepFraction(soft[i]->m_cfg.kDP, softStepRatio_);
+            }
+        }
+        struct Restore {
+            btAlignedObjectArray<btSoftBody*>& bodies;
+            const std::vector<btScalar>& damping;
+            bool active;
+            ~Restore() { if (active) for (int i = 0; i < bodies.size(); ++i) bodies[i]->m_cfg.kDP = damping[i]; }
+        } restore{soft, savedDamping_, compensate};
         if (!solveSoftBody && (!softGroundDispatcher_ || !softGroundDispatcher_->Ground())) {
             DynamicsWorldBase::internalSingleStepSimulation(dt);
             return;
@@ -154,6 +176,8 @@ private:
     std::uint64_t stepSerial_ = 0;
     std::map<btSoftBody*, SoftGroundContact> softGround_;
     SoftGroundDispatcher* softGroundDispatcher_ = nullptr;
+    double softStepRatio_ = 1.0;
+    std::vector<btScalar> savedDamping_;
 #endif
 };
 

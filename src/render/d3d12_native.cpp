@@ -18,6 +18,11 @@
 #include "mikumikustudio/runtime_log.hpp"
 #include "mikumikustudio/graphics_runtime.hpp"
 #include "mikumikustudio/plugin_runtime.hpp"
+#include "mikumikustudio/mmv4mms.hpp"
+#include "mikumikustudio/native_mesh.hpp"
+#include "mikumikustudio/deformed_mesh_capture.hpp"
+#include "mikumikustudio/mesh_bake_cache.hpp"
+#include "mikumikustudio/transparent_capture.hpp"
 #include <d3d12.h>
 #include <d3d12sdklayers.h>
 #include <dxgi1_6.h>
@@ -31,9 +36,16 @@
 #include <stdexcept>
 #include <string>
 #include <numeric>
+#include <regex>
+#include "fxaa_shader.hpp"
+#include "smaa_shader.hpp"
+#include "antialias_shader.hpp"
+#include "../../third_party/smaa/AreaTex.h"
+#include "../../third_party/smaa/SearchTex.h"
 #include "d3d12_native_shaders.hpp"
 #include "ground_geometry.hpp"
 #include "model_toon.hpp"
+#include "mikumikustudio/antialias.hpp"
 
 namespace mikumikustudio {
 namespace {
@@ -84,9 +96,10 @@ struct Native {
     ComPtr<IDXGISwapChain3> swap;
     ComPtr<ID3D12DescriptorHeap> rtvs,dsvs,srvs;
     ComPtr<ID3D12RootSignature> drawRoot;
-    std::array<ComPtr<ID3D12PipelineState>,12> drawPso;
+    std::array<ComPtr<ID3D12PipelineState>,60> drawPso;
     ComPtr<ID3D12RootSignature> gridRoot;
-    ComPtr<ID3D12PipelineState> gridPso;
+    std::array<ComPtr<ID3D12PipelineState>,5> gridPso;
+    unsigned sampleIndex=0, allocatedSampleIndex=~0u;
     ComPtr<ID3D12Resource> gridVertices;
     ComPtr<ID3D12RootSignature> sortRoot;
     ComPtr<ID3D12PipelineState> sortPso;
@@ -94,7 +107,7 @@ struct Native {
     HANDLE event=nullptr;UINT64 sequence=0;
     unsigned width=0,height=0,rtvStep=0,srvStep=0;
     struct Frame {
-        ComPtr<ID3D12Resource> color,depth,sourceIndices,indices,constants,capture,sortKeys;
+        ComPtr<ID3D12Resource> color,depth,multisampleColor,resolvedDepth,sourceIndices,indices,constants,capture,sortKeys;
         ComPtr<ID3D12CommandAllocator> allocator;
         ComPtr<ID3D12GraphicsCommandList> list;
         ComPtr<ID3D12GraphicsCommandList> effectList, presentList;
@@ -134,7 +147,7 @@ struct Native {
     bool pluginUsed = false;
     const uint64_t generation = ++nextGeneration;
     struct Constants {
-        float wvp[16],wv[16],light[4],lightColor[4],diffuse[4],ambient[4],specular[4],camera[4],flags[4];
+        float wvp[16],wv[16],light[4],lightColor[4],diffuse[4],ambient[4],specular[4],camera[4],flags[4],previousWvp[16],motionWvp[16],previousWv[16];
     };
     ~Native() {
         try {WaitAll();}catch(...){}
@@ -173,6 +186,7 @@ struct Native {
         ComPtr<ID3DBlob> code,error;Check12(graphics_runtime::SerializeRootSignature(&d,D3D_ROOT_SIGNATURE_VERSION_1,&code,&error),"native root serialize");
         Check12(Device()->CreateRootSignature(0,code->GetBufferPointer(),code->GetBufferSize(),IID_PPV_ARGS(&root)),"native root");
     }
+#include "d3d12_native_aa.inc"
     void Initialize(HWND parent,bool validation) {
         captureEnabled=validation;
         // The preview runs on this run's actual main-render adapter (the
@@ -218,14 +232,14 @@ struct Native {
         sd.SampleDesc.Count=1;sd.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;sd.BufferCount=3;sd.SwapEffect=DXGI_SWAP_EFFECT_FLIP_DISCARD;
         ComPtr<IDXGISwapChain1> first;Check12(factory->CreateSwapChainForHwnd(skin.Queue(),window,&sd,nullptr,nullptr,&first),"native swapchain");
         Check12(first.As(&swap),"native swapchain3");factory->MakeWindowAssociation(window,DXGI_MWA_NO_ALT_ENTER);
-        D3D12_DESCRIPTOR_HEAP_DESC hd{};hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV;hd.NumDescriptors=3;
+        D3D12_DESCRIPTOR_HEAP_DESC hd{};hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV;hd.NumDescriptors=6;
         Check12(Device()->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&rtvs)),"native RTV heap");
         hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_DSV;Check12(Device()->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&dsvs)),"native DSV heap");
         hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;hd.NumDescriptors=30000*3;hd.Flags=D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         Check12(Device()->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&srvs)),"native SRV heap");
         rtvStep=Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         srvStep=Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        D3D12_ROOT_PARAMETER rp[3]{};rp[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV;
+        D3D12_ROOT_PARAMETER rp[4]{};rp[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV;
         rp[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_CBV;
         D3D12_DESCRIPTOR_RANGE range{D3D12_DESCRIPTOR_RANGE_TYPE_SRV,3,1,0,0};
         rp[2].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;rp[2].DescriptorTable={1,&range};
@@ -233,7 +247,8 @@ struct Native {
         for(unsigned i=0;i<2;++i){auto& s=samplers[i];s.Filter=D3D12_FILTER_MIN_MAG_MIP_LINEAR;
             s.AddressU=s.AddressV=s.AddressW=i?D3D12_TEXTURE_ADDRESS_MODE_CLAMP:D3D12_TEXTURE_ADDRESS_MODE_WRAP;
             s.MaxLOD=D3D12_FLOAT32_MAX;s.ComparisonFunc=D3D12_COMPARISON_FUNC_ALWAYS;s.MaxAnisotropy=1;s.ShaderRegister=i;}
-        Root(rp,3,drawRoot,samplers,2);
+        rp[3].ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV;rp[3].Descriptor.ShaderRegister=4;
+        Root(rp,4,drawRoot,samplers,2);
         auto vs=Compile(kNativeShader,"vs","vs_5_1"),ps=Compile(kNativeShader,"ps","ps_5_1");
         D3D12_GRAPHICS_PIPELINE_STATE_DESC p{};p.pRootSignature=drawRoot.Get();
         p.VS={vs->GetBufferPointer(),vs->GetBufferSize()};p.PS={ps->GetBufferPointer(),ps->GetBufferSize()};
@@ -252,10 +267,20 @@ struct Native {
         blend.DestBlend=D3D12_BLEND_INV_SRC_ALPHA;blend.BlendOp=D3D12_BLEND_OP_ADD;
         blend.SrcBlendAlpha=D3D12_BLEND_ONE;blend.DestBlendAlpha=D3D12_BLEND_INV_SRC_ALPHA;blend.BlendOpAlpha=D3D12_BLEND_OP_ADD;
         blend.RenderTargetWriteMask=D3D12_COLOR_WRITE_ENABLE_ALL;
+        for(unsigned mode=0;mode<5;++mode) {
+            p.SampleDesc.Count=mode==4?1:1u<<mode;
+            p.NumRenderTargets=mode==4?2:1;p.RTVFormats[1]=mode==4?DXGI_FORMAT_R32G32B32A32_FLOAT:DXGI_FORMAT_UNKNOWN;
+            p.BlendState.IndependentBlendEnable=TRUE;p.BlendState.RenderTarget[1].RenderTargetWriteMask=15;
+            D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS quality{p.RTVFormats[0],p.SampleDesc.Count,D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE,0};
+            if(mode && (FAILED(Device()->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,&quality,sizeof quality))||!quality.NumQualityLevels))continue;
+            quality.Format=DXGI_FORMAT_D32_FLOAT;
+            if(mode && (FAILED(Device()->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,&quality,sizeof quality))||!quality.NumQualityLevels))continue;
         for(unsigned i=0;i<12;++i){p.RasterizerState.CullMode=(i%3)==0?D3D12_CULL_MODE_BACK:(i%3)==1?D3D12_CULL_MODE_NONE:D3D12_CULL_MODE_FRONT;
             p.RasterizerState.FillMode=i>=6?D3D12_FILL_MODE_WIREFRAME:D3D12_FILL_MODE_SOLID;
             blend.DestBlend=(i%6)>=3?D3D12_BLEND_ONE:D3D12_BLEND_INV_SRC_ALPHA;
-            Check12(Device()->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&drawPso[i])),"native graphics PSO");}
+            Check12(Device()->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&drawPso[mode*12+i])),"native graphics PSO");}
+        }
+        p.SampleDesc.Count=1;p.NumRenderTargets=1;p.RTVFormats[1]=DXGI_FORMAT_UNKNOWN;
         D3D12_ROOT_PARAMETER gridParameters[2]{};
         gridParameters[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV;
         gridParameters[0].ShaderVisibility=D3D12_SHADER_VISIBILITY_VERTEX;
@@ -272,7 +297,11 @@ struct Native {
         p.RasterizerState.FillMode=D3D12_FILL_MODE_SOLID;
         p.RasterizerState.CullMode=D3D12_CULL_MODE_NONE;
         blend.BlendEnable=FALSE;
-        Check12(Device()->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&gridPso)),"native ground grid PSO");
+        for(unsigned mode=0;mode<5;++mode)if(drawPso[mode*12]) {
+            p.SampleDesc.Count=mode==4?1:1u<<mode;
+            p.NumRenderTargets=mode==4?2:1;p.RTVFormats[1]=mode==4?DXGI_FORMAT_R32G32B32A32_FLOAT:DXGI_FORMAT_UNKNOWN;
+            Check12(Device()->CreateGraphicsPipelineState(&p,IID_PPV_ARGS(&gridPso[mode])),"native ground grid PSO");
+        }
         Upload(gridVertices,kGroundGrid.data(),sizeof(kGroundGrid));
         for(auto& f:frames){Check12(Device()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(&f.allocator)),"native allocator");
             Check12(Device()->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,f.allocator.Get(),nullptr,IID_PPV_ARGS(&f.list)),"native commands");
@@ -293,20 +322,41 @@ struct Native {
             windowFrame=frame;
             windowScene=rect;
         }
-        if(w==width&&h==height)return;WaitAll();
-        for(auto& f:frames){f.ClearRetained();f.color.Reset();f.depth.Reset();}
+        antialias::Initialize(app);
+        const auto& aa=app->antialiasing;
+        unsigned samples=1;
+        if(aa.enabled)switch(aa.algorithm) {
+        case antialias::Algorithm::MmdOriginal:samples=aa.originalSamples>=2?aa.originalSamples:4;break;
+        case antialias::Algorithm::Msaa2:samples=2;break;
+        case antialias::Algorithm::Msaa4:samples=4;break;
+        case antialias::Algorithm::Msaa8:samples=8;break;
+        default:break;
+        }
+        sampleIndex=samples>=8?3:samples>=4?2:samples>=2?1:0;
+        while(sampleIndex&&!drawPso[sampleIndex*12])--sampleIndex;
+        if(w==width&&h==height&&sampleIndex==allocatedSampleIndex)return;WaitAll();
+        allocatedSampleIndex=sampleIndex;
+        aaSamples=0;
+        for(auto& f:frames){f.ClearRetained();f.color.Reset();f.depth.Reset();f.multisampleColor.Reset();f.resolvedDepth.Reset();}
         Check12(swap->ResizeBuffers(3,w,h,DXGI_FORMAT_B8G8R8A8_UNORM,0),"native resize");width=w;height=h;
         for(unsigned i=0;i<3;++i){auto& f=frames[i];Check12(swap->GetBuffer(i,IID_PPV_ARGS(&f.color)),"native backbuffer");
             auto rtv=rtvs->GetCPUDescriptorHandleForHeapStart();rtv.ptr+=i*rtvStep;Device()->CreateRenderTargetView(f.color.Get(),nullptr,rtv);
             D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;D3D12_RESOURCE_DESC d{};
             d.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;d.Width=w;d.Height=h;d.DepthOrArraySize=1;d.MipLevels=1;
-            d.Format=DXGI_FORMAT_R32_TYPELESS;d.SampleDesc.Count=1;d.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+            d.Format=DXGI_FORMAT_R32_TYPELESS;d.SampleDesc.Count=1u<<sampleIndex;d.Flags=D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
             D3D12_CLEAR_VALUE clear{};clear.Format=DXGI_FORMAT_D32_FLOAT;clear.DepthStencil.Depth=1;
             Check12(Device()->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&d,D3D12_RESOURCE_STATE_DEPTH_WRITE,&clear,IID_PPV_ARGS(&f.depth)),"native depth");
             auto dsv=dsvs->GetCPUDescriptorHandleForHeapStart();dsv.ptr+=i*Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
             D3D12_DEPTH_STENCIL_VIEW_DESC view{};
-            view.Format=DXGI_FORMAT_D32_FLOAT;view.ViewDimension=D3D12_DSV_DIMENSION_TEXTURE2D;
-            Device()->CreateDepthStencilView(f.depth.Get(),&view,dsv);}
+            view.Format=DXGI_FORMAT_D32_FLOAT;view.ViewDimension=sampleIndex?D3D12_DSV_DIMENSION_TEXTURE2DMS:D3D12_DSV_DIMENSION_TEXTURE2D;
+            Device()->CreateDepthStencilView(f.depth.Get(),&view,dsv);
+            if(sampleIndex) {
+                d.Format=DXGI_FORMAT_B8G8R8A8_UNORM;d.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+                D3D12_CLEAR_VALUE colorClear{};colorClear.Format=d.Format;colorClear.Color[3]=1;
+                Check12(Device()->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&d,D3D12_RESOURCE_STATE_RENDER_TARGET,&colorClear,IID_PPV_ARGS(&f.multisampleColor)),"native multisample color");
+                rtv.ptr+=3*rtvStep;Device()->CreateRenderTargetView(f.multisampleColor.Get(),nullptr,rtv);
+            }
+        }
     }
     IDirect3DTexture9* FindTexture(MMDApp* app,const wchar_t* path,bool* alpha=nullptr) {
         if(!path||!path[0])return nullptr;
@@ -319,39 +369,62 @@ struct Native {
         auto it=textures.find(source);if(it!=textures.end())return it->second.gpu.Get();
         D3DSURFACE_DESC old{};if(source)Check12(source->GetLevelDesc(0,&old),"native source texture");
         else {old.Width=old.Height=1;old.Format=D3DFMT_A8R8G8B8;}
-        DXGI_FORMAT format;unsigned bytes=4,block=1;
+        DXGI_FORMAT format;
         switch(old.Format){case D3DFMT_A8R8G8B8:format=DXGI_FORMAT_B8G8R8A8_UNORM;break;
         case D3DFMT_X8R8G8B8:format=DXGI_FORMAT_B8G8R8X8_UNORM;break;
-        case D3DFMT_DXT1:format=DXGI_FORMAT_BC1_UNORM;bytes=8;block=4;break;
-        case D3DFMT_DXT3:format=DXGI_FORMAT_BC2_UNORM;bytes=16;block=4;break;
-        case D3DFMT_DXT5:format=DXGI_FORMAT_BC3_UNORM;bytes=16;block=4;break;
-        case D3DFMT_A16B16G16R16F:format=DXGI_FORMAT_R16G16B16A16_FLOAT;bytes=8;break;
-        case D3DFMT_A32B32G32R32F:format=DXGI_FORMAT_R32G32B32A32_FLOAT;bytes=16;break;
+        case D3DFMT_DXT1:format=DXGI_FORMAT_BC1_UNORM;break;
+        case D3DFMT_DXT3:format=DXGI_FORMAT_BC2_UNORM;break;
+        case D3DFMT_DXT5:format=DXGI_FORMAT_BC3_UNORM;break;
+        case D3DFMT_A16B16G16R16F:format=DXGI_FORMAT_R16G16B16A16_FLOAT;break;
+        case D3DFMT_A32B32G32R32F:format=DXGI_FORMAT_R32G32B32A32_FLOAT;break;
         default:throw std::runtime_error("Native texture format is not yet supported");}
         Texture t;t.source=source;D3D12_HEAP_PROPERTIES hp{};hp.Type=D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC d{};d.Dimension=D3D12_RESOURCE_DIMENSION_TEXTURE2D;d.Width=old.Width;d.Height=old.Height;
-        d.DepthOrArraySize=1;d.MipLevels=1;d.Format=format;d.SampleDesc.Count=1;
+        UINT levels=source?source->GetLevelCount():1;
+        // D3D9 hides automatically generated mip levels from GetLevelCount and
+        // LockRect. Rebuild the host's BGRA8 autogen chain in the DX12 upload.
+        const bool generate=source && levels==1 && (old.Usage&D3DUSAGE_AUTOGENMIPMAP) &&
+            (old.Format==D3DFMT_A8R8G8B8 || old.Format==D3DFMT_X8R8G8B8);
+        if(generate)for(UINT size=std::max(old.Width,old.Height);size>1;size/=2)++levels;
+        d.DepthOrArraySize=1;d.MipLevels=UINT16(levels);d.Format=format;d.SampleDesc.Count=1;
         Check12(Device()->CreateCommittedResource(&hp,D3D12_HEAP_FLAG_NONE,&d,D3D12_RESOURCE_STATE_COPY_DEST,nullptr,IID_PPV_ARGS(&t.gpu)),"native texture");
-        D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};UINT rows;UINT64 rowBytes,total;
-        Device()->GetCopyableFootprints(&d,0,1,0,&footprint,&rows,&rowBytes,&total);
+        std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(levels);
+        std::vector<UINT> rows(levels);std::vector<UINT64> rowBytes(levels);UINT64 total;
+        Device()->GetCopyableFootprints(&d,0,levels,0,footprints.data(),rows.data(),rowBytes.data(),&total);
         ComPtr<ID3D12Resource> upload;Buffer(upload,total,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
-        D3DLOCKED_RECT locked{};DWORD white=0xffffffff;
-        if(source)Check12(source->LockRect(0,&locked,nullptr,D3DLOCK_READONLY),"native texture read");
-        else {locked.pBits=&white;locked.Pitch=4;}
-        void* mapped=nullptr;D3D12_RANGE noRead{0,0};HRESULT mapResult=upload->Map(0,&noRead,&mapped);
-        if(FAILED(mapResult)){if(source)source->UnlockRect(0);Check12(mapResult,"native texture upload");}
-        for(unsigned y=0;y<rows;++y)memcpy(static_cast<char*>(mapped)+footprint.Offset+y*footprint.Footprint.RowPitch,
-            static_cast<const char*>(locked.pBits)+y*locked.Pitch,static_cast<size_t>(rowBytes));
-        upload->Unmap(0,nullptr);if(source)source->UnlockRect(0);
-        D3D12_TEXTURE_COPY_LOCATION dst{};dst.pResource=t.gpu.Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        D3D12_TEXTURE_COPY_LOCATION src{};src.pResource=upload.Get();src.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;src.PlacedFootprint=footprint;
-        frame.list->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
+        void* mapped=nullptr;D3D12_RANGE noRead{0,0};Check12(upload->Map(0,&noRead,&mapped),"native texture upload");
+        struct Unmap { ID3D12Resource* resource; ~Unmap(){resource->Unmap(0,nullptr);} } unmap{upload.Get()};
+        for(UINT level=0;level<levels;++level) {
+            D3DLOCKED_RECT locked{};DWORD white=0xffffffff;
+            auto* destination=static_cast<char*>(mapped)+footprints[level].Offset;
+            if(generate&&level) {
+                const auto& prior=footprints[level-1];const auto& current=footprints[level];
+                const auto* pixels=static_cast<const unsigned char*>(mapped)+prior.Offset;
+                for(UINT y=0;y<current.Footprint.Height;++y)for(UINT x=0;x<current.Footprint.Width;++x) {
+                    const UINT x0=x*prior.Footprint.Width/current.Footprint.Width,x1=(x+1)*prior.Footprint.Width/current.Footprint.Width;
+                    const UINT y0=y*prior.Footprint.Height/current.Footprint.Height,y1=(y+1)*prior.Footprint.Height/current.Footprint.Height;
+                    const UINT count=(x1-x0)*(y1-y0);unsigned channels[4]{};
+                    for(UINT sy=y0;sy<y1;++sy)for(UINT sx=x0;sx<x1;++sx)
+                        for(UINT c=0;c<4;++c)channels[c]+=pixels[sy*prior.Footprint.RowPitch+sx*4+c];
+                    for(UINT c=0;c<4;++c)reinterpret_cast<unsigned char*>(destination)[y*current.Footprint.RowPitch+x*4+c]=static_cast<unsigned char>((channels[c]+count/2)/count);
+                }
+            } else {
+            if(source)Check12(source->LockRect(level,&locked,nullptr,D3DLOCK_READONLY),"native texture mip read");
+            else {locked.pBits=&white;locked.Pitch=4;}
+            for(UINT y=0;y<rows[level];++y)memcpy(destination+y*footprints[level].Footprint.RowPitch,
+                static_cast<const char*>(locked.pBits)+y*locked.Pitch,static_cast<size_t>(rowBytes[level]));
+            if(source)source->UnlockRect(level);
+            }
+            D3D12_TEXTURE_COPY_LOCATION dst{};dst.pResource=t.gpu.Get();dst.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;dst.SubresourceIndex=level;
+            D3D12_TEXTURE_COPY_LOCATION src{};src.pResource=upload.Get();src.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;src.PlacedFootprint=footprints[level];
+            frame.list->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
+        }
         auto barrier=Barrier(t.gpu.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);frame.list->ResourceBarrier(1,&barrier);
         frame.uploads.push_back(upload);return textures.emplace(source,std::move(t)).first->second.gpu.Get();
     }
     void Descriptor(IDirect3DTexture9* texture,Frame& f,unsigned slot) {
         auto* r=TextureResource(texture,f);D3D12_SHADER_RESOURCE_VIEW_DESC d{};d.Format=r->GetDesc().Format;
-        d.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;d.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;d.Texture2D.MipLevels=1;
+        d.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D;d.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;d.Texture2D.MipLevels=r->GetDesc().MipLevels;
         auto handle=srvs->GetCPUDescriptorHandleForHeapStart();handle.ptr+=size_t(slot)*srvStep;Device()->CreateShaderResourceView(r,&d,handle);
     }
     void Gather(MMDApp* app,const float world[16],Frame& f,unsigned frameSlot) {
@@ -372,7 +445,7 @@ struct Native {
         const bool geometry=simulated||stamp!=geometryStamp||!geometryRevision;
         if(geometry){geometryStamp=std::move(stamp);++geometryRevision;packed.vertices.clear();}
         packed.parameters.geometryRevision=geometryRevision;
-        if(identity!=modelIdentity){WaitAll();textures.clear();modelIdentity=std::move(identity);}
+        if(identity!=modelIdentity){WaitAll();aaSamples=0;textures.clear();modelIdentity=std::move(identity);}
         unsigned vertexBase=0;
         for(int order=0;order<=kModelSlotCount;++order)for(int slot=0;slot<kModelSlotCount;++slot){
             auto* model=app->ModelSlot(slot);if(!model||mdl::Mdl(model)->comboSelIndex!=order)continue;
@@ -486,6 +559,12 @@ struct Native {
         f.ClearRetained();
         Check12(f.allocator->Reset(),"native allocator reset");Check12(f.list->Reset(f.allocator.Get(),nullptr),"native list reset");
         Gather(app,world,f,slot);
+        AaPrepare(app,f);
+        const auto frameDelta=static_cast<long long>(app->CurrentFrame())-aaFrame;
+        if(aaSamples&&(aaLastSlot==slot || frameDelta<0 || (frameDelta>8&&!app->PlaybackActive()) ||
+            aaIndices!=indices || aaBackground!=(app->state.blackBackgroundEnabled!=0) || aaWireframe!=(app->WireframeRenderingEnabled()!=0)))aaSamples=0;
+        aaFrame=app->CurrentFrame();aaIndices=indices;aaBackground=app->state.blackBackgroundEnabled;aaWireframe=app->WireframeRenderingEnabled();
+        const unsigned pipelineIndex=aaEnabled?4:sampleIndex;
         D3DMATRIX view{},projection{},wv{},wvp{};app->Renderer()->device->GetTransform(D3DTS_VIEW,&view);app->Renderer()->device->GetTransform(D3DTS_PROJECTION,&projection);
         auto& api=d3dx::Get();api.Load();api.multiply(reinterpret_cast<d3dx::D3DXMATRIXF*>(&wv),reinterpret_cast<const d3dx::D3DXMATRIXF*>(world),reinterpret_cast<const d3dx::D3DXMATRIXF*>(&view));
         api.multiply(reinterpret_cast<d3dx::D3DXMATRIXF*>(&wvp),reinterpret_cast<const d3dx::D3DXMATRIXF*>(&wv),reinterpret_cast<const d3dx::D3DXMATRIXF*>(&projection));
@@ -500,40 +579,84 @@ struct Native {
             const auto state=sorting?SortTransparent(f,ticket,wv):D3D12_RESOURCE_STATE_COPY_DEST;
             auto b=Barrier(f.indices.Get(),state,kSceneIndices);f.list->ResourceBarrier(1,&b);f.indicesReady=true;
         }
+        auto& aa=aaFrames[slot];
+        auto& previous=aaFrames[aaSamples?aaLastSlot:slot];
+        const bool motionValid=aaEnabled&&aaSamples&&geometry&&previous.vertexCount==ticket.count&&previous.vertices;
+        const D3DMATRIX motionWvp=wvp;
+        aa.jitter[0]=aa.jitter[1]=0;
+        if(aaEnabled&&AaTemporalMode(aaAlgorithm)) {
+            const auto halton=[](unsigned n,unsigned base){float value=0,weight=1;while(n){weight/=base;value+=weight*(n%base);n/=base;}return value;};
+            const bool taa=aaAlgorithm==antialias::Algorithm::Taa;
+            const float phase=aaSamples%2?-.25f:.25f;
+            aa.jitter[0]=(taa?halton(aaSamples%8+1,2)-.5f:phase)/width;
+            aa.jitter[1]=(taa?halton(aaSamples%8+1,3)-.5f:phase)/height;
+            for(int i=0;i<4;++i){wvp.m[i][0]+=2*aa.jitter[0]*wvp.m[i][3];wvp.m[i][1]-=2*aa.jitter[1]*wvp.m[i][3];}
+        }
         auto b=Barrier(f.color.Get(),D3D12_RESOURCE_STATE_PRESENT,D3D12_RESOURCE_STATE_RENDER_TARGET);f.list->ResourceBarrier(1,&b);
-        auto rtv=rtvs->GetCPUDescriptorHandleForHeapStart();rtv.ptr+=slot*rtvStep;
+        auto rtv=rtvs->GetCPUDescriptorHandleForHeapStart();rtv.ptr+=(slot+(sampleIndex?3:0))*rtvStep;
         auto dsv=dsvs->GetCPUDescriptorHandleForHeapStart();dsv.ptr+=slot*Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
         float c=app->state.blackBackgroundEnabled?0.f:1.f;float clear[4]={c,c,c,1};f.list->ClearRenderTargetView(rtv,clear,0,nullptr);
-        f.list->ClearDepthStencilView(dsv,D3D12_CLEAR_FLAG_DEPTH,1,0,0,nullptr);f.list->OMSetRenderTargets(1,&rtv,FALSE,&dsv);
+        f.list->ClearDepthStencilView(dsv,D3D12_CLEAR_FLAG_DEPTH,1,0,0,nullptr);if(aaEnabled) {
+            auto motionBarrier=Barrier(aa.motion.Get(),D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET);f.list->ResourceBarrier(1,&motionBarrier);
+            const auto motionRtv=AaRtv(aa.motion.Get(),slot*16+15);const float zero[4]{};f.list->ClearRenderTargetView(motionRtv,zero,0,nullptr);
+            const D3D12_CPU_DESCRIPTOR_HANDLE targets[]={rtv,motionRtv};f.list->OMSetRenderTargets(2,targets,FALSE,&dsv);
+        }else f.list->OMSetRenderTargets(1,&rtv,FALSE,&dsv);
         D3D12_VIEWPORT vp{0,0,float(width),float(height),0,1};D3D12_RECT rect{0,0,LONG(width),LONG(height)};f.list->RSSetViewports(1,&vp);f.list->RSSetScissorRects(1,&rect);
         if(app->GroundGridEnabled()){
-            f.list->SetPipelineState(gridPso.Get());
+            f.list->SetPipelineState(gridPso[pipelineIndex].Get());
             f.list->SetGraphicsRootSignature(gridRoot.Get());
             f.list->SetGraphicsRootShaderResourceView(0,gridVertices->GetGPUVirtualAddress());
             f.list->SetGraphicsRoot32BitConstants(1,16,&wvp,0);
             f.list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
             f.list->DrawInstanced(static_cast<UINT>(kGroundGrid.size()),1,0,0);
         }
-        if(geometry){std::vector<unsigned char> constants(draws.size()*2*256);Constants value{};memcpy(value.wvp,&wvp,64);memcpy(value.wv,&wv,64);
+        if(geometry){std::vector<unsigned char> constants(draws.size()*2*512);Constants value{};memcpy(value.wvp,&wvp,64);memcpy(value.wv,&wv,64);
             memcpy(value.light,app->LightDirection(),12);memcpy(value.lightColor,&app->SceneLight().Ambient,12);
             for(unsigned i=0;i<draws.size();++i){auto& d=draws[i];memcpy(value.diffuse,d.diffuse,16);memcpy(value.ambient,d.ambient,16);memcpy(value.specular,d.specular,16);
-                value.flags[0]=0;value.flags[1]=float(d.sphereMode);memcpy(constants.data()+i*512,&value,sizeof value);value.flags[0]=1;memcpy(constants.data()+i*512+256,&value,sizeof value);}
+                value.flags[0]=0;value.flags[1]=float(d.sphereMode);value.flags[2]=motionValid?1.f:0.f;
+                memcpy(value.previousWvp,motionValid?&previous.camera:&motionWvp,64);memcpy(value.motionWvp,&motionWvp,64);
+                memcpy(value.previousWv,motionValid?&previous.view:&wv,64);
+                memcpy(constants.data()+i*1024,&value,sizeof value);value.flags[0]=1;memcpy(constants.data()+i*1024+512,&value,sizeof value);}
             Upload(f.constants,constants.data(),constants.size());ID3D12DescriptorHeap* heaps[]={srvs.Get()};f.list->SetDescriptorHeaps(1,heaps);
             f.list->SetGraphicsRootSignature(drawRoot.Get());f.list->SetGraphicsRootShaderResourceView(0,skin.OutputResource(ticket)->GetGPUVirtualAddress());
+            f.list->SetGraphicsRootShaderResourceView(3,(motionValid?previous.vertices.Get():skin.OutputResource(ticket))->GetGPUVirtualAddress());
             D3D12_INDEX_BUFFER_VIEW ib{f.indices->GetGPUVirtualAddress(),UINT(indices.size()*4),DXGI_FORMAT_R32_UINT};f.list->IASetIndexBuffer(&ib);f.list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             for(unsigned pass=0;pass<3;++pass)for(unsigned i=0;i<draws.size();++i){auto& d=draws[i];if(!d.count||d.diffuse[3]<=0)continue;
                 if(pass<2&&d.alpha!=(pass==1))continue;if(pass==2&&(!d.edge||app->WireframeRenderingEnabled()))continue;
                 unsigned pso=pass==2?2:(d.twoSided?1:0)+(d.additive?3:0);
                 if(app->WireframeRenderingEnabled())pso+=6;
-                f.list->SetPipelineState(drawPso[pso].Get());
-                f.list->SetGraphicsRootConstantBufferView(1,f.constants->GetGPUVirtualAddress()+i*512+(pass==2?256:0));
+                f.list->SetPipelineState(drawPso[pipelineIndex*12+pso].Get());
+                f.list->SetGraphicsRootConstantBufferView(1,f.constants->GetGPUVirtualAddress()+i*1024+(pass==2?512:0));
                 auto srv=srvs->GetGPUDescriptorHandleForHeapStart();srv.ptr+=size_t(d.textureSlot)*srvStep;f.list->SetGraphicsRootDescriptorTable(2,srv);
                 f.list->DrawIndexedInstanced(d.count,1,d.first,0,0);}
+        }
+        if(aaEnabled) {
+            auto motionBarrier=Barrier(aa.motion.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);f.list->ResourceBarrier(1,&motionBarrier);
+            if(geometry) {
+                const bool fresh=Buffer(aa.vertices,UINT64(ticket.count)*sizeof(gpu::Output),D3D12_HEAP_TYPE_DEFAULT,D3D12_RESOURCE_STATE_COPY_DEST);
+                const auto source=skin.OutputResource(ticket);
+                auto src=Barrier(source,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_SOURCE);f.list->ResourceBarrier(1,&src);
+                if(!fresh){auto dst=Barrier(aa.vertices.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_DEST);f.list->ResourceBarrier(1,&dst);}
+                f.list->CopyBufferRegion(aa.vertices.Get(),0,source,0,UINT64(ticket.count)*sizeof(gpu::Output));
+                std::swap(src.Transition.StateBefore,src.Transition.StateAfter);f.list->ResourceBarrier(1,&src);
+                auto dst=Barrier(aa.vertices.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);f.list->ResourceBarrier(1,&dst);
+                aa.vertexCount=ticket.count;aa.camera=motionWvp;aa.view=wv;
+            }else aa.vertexCount=0;
+        }
+        if(sampleIndex) {
+            D3D12_RESOURCE_BARRIER resolve[]={Barrier(f.multisampleColor.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_RESOLVE_SOURCE),
+                Barrier(f.color.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_RESOLVE_DEST)};
+            f.list->ResourceBarrier(2,resolve);
+            f.list->ResolveSubresource(f.color.Get(),0,f.multisampleColor.Get(),0,DXGI_FORMAT_B8G8R8A8_UNORM);
+            for(auto& transition:resolve)std::swap(transition.Transition.StateBefore,transition.Transition.StateAfter);
+            f.list->ResourceBarrier(2,resolve);
+            rtv.ptr-=3*rtvStep;
         }
         ID3D12CommandList* lists[3] = {f.list.Get()};
         UINT listCount = 1;
         auto* present = f.list.Get();
         if (plugins::HasDx12ViewportPass()) {
+            auto* pluginDepth=ResolvePluginDepth(f,slot);
             Check12(f.list->Close(), "native scene close");
             OpenList(f, f.effectList);
             MmsDx12ViewportFrameV1 frame{};
@@ -541,7 +664,7 @@ struct Native {
             frame.deviceGeneration = generation;
             frame.slot = slot; frame.width = width; frame.height = height;
             frame.device = Device(); frame.commands = f.effectList.Get();
-            frame.color = f.color.Get(); frame.depth = f.depth.Get(); frame.colorRtv = rtv;
+            frame.color = f.color.Get(); frame.depth = pluginDepth; frame.colorRtv = rtv;
             if (geometry) {
                 frame.vertices = skin.OutputResource(ticket);
                 frame.indices = f.indices.Get();
@@ -564,6 +687,7 @@ struct Native {
             present = f.presentList.Get();
             lists[listCount++] = present;
         }
+        AaFinish(present,slot);
         if(captureEnabled){
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};UINT rows;UINT64 rowBytes,total;
             auto desc=f.color->GetDesc();Device()->GetCopyableFootprints(&desc,0,1,0,&footprint,&rows,&rowBytes,&total);
@@ -657,6 +781,18 @@ bool WaitD3D12Native(){
     catch(const std::exception& e){status=e.what();return false;}
 }
 void ShutdownD3D12Native(){native.reset();}
+bool D3D12NativeEligible(MMDApp* app) {
+    if(!enabled || !app || !FrameViewportRenderable(app) || LegacyMmeModule() || legacy_mmd_plugin::RequiresD3D9Rendering() ||
+        app->RecordingWindow() || app->FloatingWindow() || app->FullscreenMode() || mmv4mms::Active() ||
+        TransparentExportActive(app) || NativeBakePreviewActive() || deformed_mesh_capture::Active() ||
+        native_mesh::BakeCaptureActive() || !mesh_bake_cache::Empty())return false;
+    for(int i=0;i<255;++i)if(app->AccessorySlot(i))return false;
+    return true;
+}
+bool D3D12NativeNeedsFrame() {
+    return !native || (native->aaEnabled && Native::AaTemporalMode(native->aaAlgorithm) &&
+        native->aaSamples<(native->aaAlgorithm==antialias::Algorithm::Taa?8u:2u));
+}
 bool RenderD3D12Native(MMDApp* app,const float world[16]) {
     if(!enabled || !FrameViewportRenderable(app))return false;
     try {
@@ -685,6 +821,8 @@ void EnableD3D12Native(bool enabled,bool) {
     status=enabled?"DX12 features are disabled in this build":"disabled";
 }
 bool RenderD3D12Native(MMDApp*,const float[16]) {return false;}
+bool D3D12NativeEligible(MMDApp*) {return false;}
+bool D3D12NativeNeedsFrame() {return false;}
 void ShutdownD3D12Native() {}
 bool ValidateD3D12Native(const wchar_t*) {return false;}
 const char* D3D12NativeStatus() {return status;}

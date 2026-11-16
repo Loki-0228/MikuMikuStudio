@@ -228,7 +228,7 @@ void AttributeFixture(const std::filesystem::path& path,bool boneVertices=false)
     for(int material=0;material<2;++material){
         Text(f,L"surface");Text(f,L"surface");
         for(float v:{.8f,.8f,.8f,1.f,0.f,0.f,0.f,1.f,.4f,.4f,.4f})Put(f,v);
-        Put(f,uint8_t(0x11));for(float v:{0.f,0.f,0.f,1.f})Put(f,v);Put(f,1.f);
+        Put(f,uint8_t(material==0?0x10:0x01));for(float v:{0.f,0.f,0.f,1.f})Put(f,v);Put(f,1.f);
         Put(f,int8_t(-1));Put(f,int8_t(-1));Put(f,uint8_t(0));Put(f,uint8_t(1));Put(f,uint8_t(0));Text(f,L"");Put(f,3u);
     }
     Put(f,boneVertices?2u:1u);
@@ -481,6 +481,11 @@ void AttributeRoundtrip(MMDApp& app,const std::filesystem::path& out,bool benchm
     const auto replayMs=std::chrono::duration<double,std::milli>(Clock::now()-begin).count();
     auto* render=native_mesh::RenderModel(raw);Check(render!=raw,"complete cache publishes real render proxy");
     const auto& proxy=*mdl::Mdl(render);Check(proxy.vertexCount==6,"material partition duplicates shared original vertices");
+    const auto* proxyMaterials=static_cast<const mdl::ModelMaterialRecord*>(proxy.materials);
+    Check(proxyMaterials[0].doubleSided!=0 && proxyMaterials[0].flags==0x10,
+          "single-sided PMX material retains its enabled outline after mesh baking");
+    Check(proxyMaterials[1].doubleSided==0 && proxyMaterials[1].flags==0x01,
+          "double-sided PMX material does not acquire an unwanted outline after baking");
     const auto actual=VertexFloats(proxy.vertexBuffer,6,24),actualEdges=VertexFloats(proxy.vertexBuffer2,6,4);
     double attributeChecksum=0,expectedChecksum=0;size_t output=0;
     for(const auto& material:expected)for(auto source:material){

@@ -118,7 +118,7 @@ void Publish(const fs::path& path, const Bytes& bytes) {
     // A cached DLL must equal the freshly adapted source, even on a cache hit.
     if (ReadImage(path, retainedFiles) != bytes) throw std::runtime_error("legacy cache image content differs");
 }
-void InitializeSettings(const Manifest& manifest, const fs::path& cache) {
+void InitializeSettings(const Manifest& manifest, const fs::path& install, const fs::path& cache) {
     const Bytes identity(manifest.id.begin(), manifest.id.end());
     const std::string domain = "MME preferences identity v1";
     cache_files::crypto::Sha256 hash;
@@ -127,8 +127,14 @@ void InitializeSettings(const Manifest& manifest, const fs::path& cache) {
         throw std::runtime_error("legacy preferences identity unavailable");
     constexpr char hex[] = "0123456789abcdef"; std::string key;
     for (auto value : digest) { key += hex[value >> 4]; key += hex[value & 15]; }
-    auto directory = cache.parent_path() / L"settings";
-    HoldDirectory(directory, retainedFiles, true);
+    // Preferences survive cache deletion and DLL generation changes. Keep the
+    // existing installation data location, independent of the adapted images.
+    auto directory = install;
+    for (const auto* part : {L"data", L"plugins", L"legacy_mme"}) {
+        directory /= part; HoldDirectory(directory, retainedFiles, true);
+    }
+    const auto oldCacheRoot = directory;
+    directory /= L"settings"; HoldDirectory(directory, retainedFiles, true);
     directory /= Wide(key); HoldDirectory(directory, retainedFiles, true);
     status.settingsFile = directory / L"MMEffect.ini";
     // Serialize writers across all cache generations for this plugin identity.
@@ -151,14 +157,16 @@ void InitializeSettings(const Manifest& manifest, const fs::path& cache) {
     }
     // Older caches have no package identity. Never guess which user's settings
     // to adopt from a same-DLL cache shared by multiple possible package IDs.
-    for (const auto& entry : fs::directory_iterator(cache.parent_path())) {
-        const auto name = entry.path().filename().wstring();
-        if (name.size() != 64 || name.find_first_not_of(L"0123456789abcdef") != std::wstring::npos) continue;
-        const DWORD attributes = GetFileAttributesW(entry.path().c_str());
-        if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
-        if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) throw std::runtime_error("legacy preferences cache is a reparse point");
-        if (GetFileAttributesW((entry.path() / L"MMEffect.ini").c_str()) != INVALID_FILE_ATTRIBUTES)
-            throw std::runtime_error("unattributed old MMEffect.ini: copy the chosen preferences into " + Utf8(status.settingsFile.native()));
+    for (const auto& root : {oldCacheRoot, cache.parent_path()}) {
+        for (const auto& entry : fs::directory_iterator(root)) {
+            const auto name = entry.path().filename().wstring();
+            if (name.size() != 64 || name.find_first_not_of(L"0123456789abcdef") != std::wstring::npos) continue;
+            const DWORD attributes = GetFileAttributesW(entry.path().c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+            if (attributes & FILE_ATTRIBUTE_REPARSE_POINT) throw std::runtime_error("legacy preferences cache is a reparse point");
+            if (GetFileAttributesW((entry.path() / L"MMEffect.ini").c_str()) != INVALID_FILE_ATTRIBUTES)
+                throw std::runtime_error("unattributed old MMEffect.ini: copy the chosen preferences into " + Utf8(status.settingsFile.native()));
+        }
     }
     const auto original = manifest.entry.parent_path() / L"MMEffect.ini";
     Bytes bytes;
@@ -258,7 +266,7 @@ LegacyMmdImage PrepareLegacyMmdImage(const Manifest& manifest, const fs::path& i
         images[2] = ReadImage(PackageFile(manifest.package, "efk.pmd"), source);
     auto directory = install;
     HoldDirectory(directory, retainedFiles, false);
-    for (const auto& part : {std::wstring(L"data"), std::wstring(L"plugins"), std::wstring(L"legacy_mmdplugin"),
+    for (const auto& part : {std::wstring(L"cache"), std::wstring(L"plugins"), std::wstring(L"legacy_mmdplugin"),
             Wide(manifest.id), Wide(CacheKey(images))}) {
         directory /= part; HoldDirectory(directory, retainedFiles, true);
     }
@@ -328,13 +336,13 @@ bool BootstrapLegacyMme() noexcept {
             ReadImage(LegacyComponentFile(install, "MMDFacade.dll"), source)};
         auto directory = install;
         HoldDirectory(directory, retainedFiles, false);
-        for (const auto& part : {std::wstring(L"data"), std::wstring(L"plugins"), std::wstring(L"legacy_mme"), Wide(CacheKey(images))}) {
+        for (const auto& part : {std::wstring(L"cache"), std::wstring(L"plugins"), std::wstring(L"legacy_mme"), Wide(CacheKey(images))}) {
             directory /= part; HoldDirectory(directory, retainedFiles, true);
         }
         status.directory = directory;
         const wchar_t* names[] = {L"MMHack.dll", L"MMEffect.dll", L"MMDFacade.dll"};
         for (size_t i = 0; i < images.size(); ++i) Publish(directory / names[i], images[i]);
-        InitializeSettings(*legacy, directory);
+        InitializeSettings(*legacy, install, directory);
         PreloadSystemImports(directory);
         const bool safeSearch = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "AddDllDirectory") != nullptr;
         const DWORD flags = safeSearch ? LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32 : LOAD_WITH_ALTERED_SEARCH_PATH;

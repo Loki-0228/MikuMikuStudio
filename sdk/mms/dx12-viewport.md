@@ -13,11 +13,13 @@
 | 借用项 | 回调入口与返回状态 |
 | --- | --- |
 | `color` | `RENDER_TARGET`，B8G8R8A8_UNORM，可用 `colorRtv` |
-| `depth` | `DEPTH_WRITE`，R32_TYPELESS，按 R32_FLOAT 创建 SRV |
+| `depth` | `DEPTH_WRITE`，单采样 R32_TYPELESS，按 R32_FLOAT / TEXTURE2D 创建 SRV |
 | `vertices` | `NON_PIXEL_SHADER_RESOURCE`，更新后的模型顶点，位置为记录开头的三个 float |
 | `indices` | `INDEX_BUFFER \| NON_PIXEL_SHADER_RESOURCE`，R32_UINT 三角形索引 |
 
 有几何时顶点缓冲来自同一帧绘制使用的 GPU 蒙皮结果。矩阵为行主序，使用行向量，D3D 深度范围为 0–1。光向量指向光传播方向。无几何时顶点和索引缓冲为空。项目路径为回调期有效的 NUL 结尾 UTF-16 字符串。
+
+启用 MSAA 时，宿主先解析颜色，并将每个像素的最近深度写入单采样纹理，再调用插件；插件无需切换到多采样 SRV。FXAA、TAA、SMAA 后处理在插件录制之后、捕获和呈现之前执行。时间抗锯齿的运动历史覆盖宿主绘制的模型，插件自行产生或移动的几何不提供运动历史。
 
 借入的接口、描述符和指针只在当前回调有效。宿主保留录制命令所引用的宿主资源至 fence 完成。插件用 `retain` 为命令引用的每个插件 DX12 对象登记一个强引用，包括资源、描述符堆、根签名和 PSO。宿主每帧最多接收 48 个对象，到对应 slot 的 fence 完成后释放。禁止登记由插件 DLL 自行实现的 COM 对象。命令引用的插件内存与描述符内容在 fence 完成前保持有效且不可覆写。宿主开始同一 slot 的下一次回调前等待其 fence，窗口缩放与设备退休也先等待旧帧。任何借用项的状态转换由录制者在返回成功前恢复。
 

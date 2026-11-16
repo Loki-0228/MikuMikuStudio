@@ -2,6 +2,16 @@
 
 本页按功能归并实现、诊断与验收资料。各记录中的「当前」「已完成」只适用于其注明的源码、构建和测试条件；当前使用入口见[文档导航](../../README.md)。
 
+## DX12 预览与烘焙轮廓线（2026-11-16）
+
+DX12 原生视口原先在 DX9 抗锯齿处理之前返回，因此切换菜单算法不会改变原生输出。现已在 DX12 中实现离屏 MSAA 及颜色解析，并复用现有 FXAA、TAA、SMAA 1x 和 T2x 着色器。时域历史使用前后帧蒙皮顶点、相机矩阵和线性深度；跳帧、改变视口或算法时清空历史。DX12 的选项切换和帧准备不再重置辅助 DX9 设备，普通 DX9 仍使用原有流程。
+
+贴图上传保留显式 mip 链；对主加载器产生的 BGRA8 自动 mip 纹理重建缩小层级。原因是 [D3D9 的 GetLevelCount](https://learn.microsoft.com/en-us/windows/win32/api/d3d9/nf-d3d9-idirect3dbasetexture9-getlevelcount) 对自动 mip 纹理只返回 1，且子级不可直接读取。
+
+烘焙网格代理按 PMX 的 `0x10` 标志恢复描边，双面标志 `0x01` 单独保留；PMD 的旧标志映射不变。无需为此重新烘焙已有缓存，回放时重新构造代理即可。
+
+本机验证：RTX 4070 Laptop GPU。隐藏测试窗口覆盖全部十种算法、关闭后恢复、时域运动及跳帧、视口缩放、插件单采样深度、显式和自动 mip、DX12 透明排序；实际桌面知更鸟 PMX 逐项截图，模型源文件哈希未变。另验证烘焙属性、ABC/工程重开与软体回放，以及普通 DX9 排序。日志与截图保留在本地 `build/render-quality-validation`，不据此声称其他显卡的性能或完整第三方插件兼容性。
+
 ## 记录索引
 - [NVIDIA 双面绘制修复的绑定范围与重新安装](#record-nvidia-fix-binding)
 - [TAA 与 SMAA T2x 的 GPU 运动历史优化](#record-temporal-aa-gpu)

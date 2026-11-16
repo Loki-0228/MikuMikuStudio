@@ -27,11 +27,11 @@ def main():
     cases = []
     u.GetMenuStringW.argtypes = [w.HMENU, w.UINT, w.LPWSTR, c.c_int, w.UINT]
     for layout in ['PLUGINS/LEGACY', 'PLUGINS/legacy-mmdplugin', 'legacy-mmdplugin']:
-        for name in ['MikuMikuDance.exe', 'Renamed Studio.exe', '中文工作室.exe']:
+        for name in ['MikuMikuStudio.exe', 'Renamed Studio.exe', '中文工作室.exe']:
             directory = root / str(len(cases))
             directory.mkdir()
             exe = directory / name
-            shutil.copy2(build / 'Release/MikuMikuDance.exe', exe)
+            shutil.copy2(build / 'Release/MikuMikuStudio.exe', exe)
             for dll in ['MMDFacade.dll', 'MMHack.dll']:
                 if dll == 'MMDFacade.dll' and args.facade_state == 'missing':
                     continue
@@ -90,7 +90,7 @@ def main():
                     raise RuntimeError(f'upstream menu absent: {titles}')
                 case['menuPresent'] = True
                 if args.mme:
-                    startup_log = directory / 'data/plugins/legacy_mme/startup.log'
+                    startup_log = directory / 'cache/plugins/legacy_mme/startup.log'
                     mme_trace = startup_log.read_text(encoding='utf-8', errors='replace') if startup_log.exists() else ''
                     if args.facade_state == 'present':
                         if 'test.mme loaded from' not in mme_trace:

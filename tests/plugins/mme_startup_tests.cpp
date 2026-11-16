@@ -1,14 +1,21 @@
 #include "mikumikustudio/mme_render_startup.hpp"
 #include "common.hpp"
+#include "manifest.hpp"
+#include "loader_win32.hpp"
 #include <d3d9on12.h>
 #include <iostream>
+#include <fstream>
 #include <thread>
 using namespace mikumikustudio::plugins;
 namespace {
 void Check(bool ok, const char* what) { if (!ok) throw std::runtime_error(what); }
+#include "patch4mms_discovery_checks.inc"
 }
 int wmain(int argc, wchar_t** argv) {
     try {
+        if (argc == 5 && std::wstring(argv[2]) == L"discovery") {
+            PatchDiscovery(argv[1], argv[3], argv[4]); return 0;
+        }
         Check(argc == 3, "expected fixture and scenario");
         const std::wstring mode = argv[2];
         const auto bridge = LoadLibraryW(argv[1]); Check(bridge != nullptr, "test bridge load");

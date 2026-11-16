@@ -202,15 +202,18 @@ LRESULT CALLBACK DialogHook(int code,WPARAM wp,LPARAM lp){
             return CallNextHookEx(nullptr,code,wp,lp);
         }
         if(wcscmp(cls,L"#32770")==0){++dialogs;
-            if(inspect && GetDlgItem(m.hwnd,120)){
-                wchar_t text[80]{};GetDlgItemTextW(m.hwnd,120,text,80);Check(std::abs(wcstod(text,nullptr)-.2)<1e-7,"ERP starts at Bullet default");
-                GetDlgItemTextW(m.hwnd,121,text,80);Check(wcstod(text,nullptr)==0,"CFM starts at Bullet default");
-                Check(GetDlgItemInt(m.hwnd,122,nullptr,FALSE)==1,"one default substep");
-                Check(GetDlgItemInt(m.hwnd,123,nullptr,FALSE)==1,"default multiplier one");
-                Check(GetDlgItemInt(m.hwnd,124,nullptr,FALSE)==60,"default base rate 60");
-                Capture(m.hwnd,L"-advanced");SetDlgItemTextW(m.hwnd,123,L"2");GetDlgItemTextW(m.hwnd,125,text,80);Check(!wcscmp(text,L"120 Hz"),"derived frequency updates");
-                SetDlgItemTextW(m.hwnd,123,L"100000");SetDlgItemTextW(m.hwnd,124,L"100000");GetDlgItemTextW(m.hwnd,125,text,80);Check(!wcscmp(text,L"—"),"invalid inputs never overflow derived frequency");
-                SetDlgItemTextW(m.hwnd,123,L"2");SetDlgItemTextW(m.hwnd,124,L"60");SetDlgItemTextW(m.hwnd,120,L"2e-1");SendMessageW(m.hwnd,WM_COMMAND,IDOK,0);
+            if(inspect && GetDlgItem(m.hwnd,3701)){
+                wchar_t text[512]{};GetDlgItemTextW(m.hwnd,3702,text,80);Check(std::abs(wcstod(text,nullptr)-.2)<1e-7,"ERP starts at Bullet default");
+                Check(!GetDlgItem(m.hwnd,3700),"time compensation has no mode switch");
+                Check(GetDlgItemInt(m.hwnd,3701,nullptr,FALSE)==60,"default physics rate 60");
+                Check(GetDlgItemInt(m.hwnd,3704,nullptr,FALSE)==10,"default ten solver iterations");
+                for(int id:{3701,3702,3703,3704})Check(GetDlgItem(m.hwnd,id+100)&&IsWindowEnabled(GetDlgItem(m.hwnd,id)),"each value has an enabled edit and trackbar");
+                Capture(m.hwnd,L"-settings");
+                SetDlgItemTextW(m.hwnd,3701,L"120");GetDlgItemTextW(m.hwnd,3702,text,80);
+                Check(std::abs(wcstod(text,nullptr)-.2)<1e-7,"rate changes preserve the authored ERP reference");
+                GetDlgItemTextW(m.hwnd,3705,text,512);Check(wcsstr(text,L"0.10557")!=nullptr,"hint displays compensated ERP");
+                SetDlgItemTextW(m.hwnd,3701,L"960");SetDlgItemTextW(m.hwnd,3702,L"2e-1");
+                SendMessageW(m.hwnd,WM_COMMAND,IDOK,0);
             }else if(inspect && GetDlgItem(m.hwnd,100)){
                 const wchar_t* titles[][3]={
                     {L"キー焼き込み",L"Keyframe baking",L"关键帧烧录"},
@@ -403,6 +406,18 @@ void ScenePhysicsUnit(){
     std::printf("scene physics: error=%d models=%zu steps=%llu time_ms=%llu\n",int(scene.error),scene.models.size(),scene.simulationSteps,GetTickCount64()-start);
     Check(scene.error==bake::Error::None&&scene.models.size()==2,"scene bake collects both dynamic models on camera page");
     Check(scene.simulationSteps==10,"scene bake advances one shared world rather than one world per model");
+    for(int rate:{15,75,120,960}) {
+        request.settings.baseRateHz=rate;
+        auto timed=bake::ComputeScene(*app,request);
+        Check(timed.error==bake::Error::None&&timed.simulationSteps==static_cast<unsigned long long>(5*rate/30),
+              "bake runs the exact fixed-step count for arbitrary positive Hz");
+    }
+    request.settings.baseRateHz=60;
+    request.settings.solverIterations=25;
+    auto refined=bake::ComputeScene(*app,request);
+    Check(refined.error==bake::Error::None&&refined.simulationSteps==scene.simulationSteps,
+          "solver iterations do not subdivide bake time");
+    request.settings.solverIterations=10;
     request.preview=true;
     auto previewed=bake::ComputeScene(*app,request);request.preview=false;
     Check(previewed.error==scene.error&&previewed.simulationSteps==scene.simulationSteps&&previewed.models.size()==scene.models.size(),"preview preserves simulation step count");

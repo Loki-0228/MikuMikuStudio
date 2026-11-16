@@ -3,6 +3,7 @@
 #include "image_sequence_dialog.hpp"
 #include "dialog_scaffold.hpp"
 #include "export_save_prompt.hpp"
+#include "export_physics_start.hpp"
 #include "mikumikustudio/panel_controls.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/recording_state.hpp"
@@ -90,6 +91,7 @@ bool ReadSettings(HWND dialog, DialogContext& c, Options& o) {
     while (tail && iswspace(*tail)) ++tail;
     valid = valid && tail != fps.c_str() && tail && *tail == L'\0';
     o.closeAfterExport = IsDlgButtonChecked(dialog, panel::kAviCloseAfterExportCheckbox) == BST_CHECKED;
+    if (!export_physics_start::Read(dialog, c.app, o.start, o.physicsStartEnabled, o.physicsStart)) return false;
     if (!valid) {
         Error(dialog, c.app, Text(c.app, L"请填写有效的尺寸、起止帧和帧率。", L"Enter valid dimensions, frame range and frame rate.", L"有効な画像サイズ、フレーム範囲、FPSを入力してください。"));
         return false;
@@ -134,12 +136,14 @@ INT_PTR CALLBACK DialogProc(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
         wchar_t fps[32]{}; swprintf_s(fps, L"%g", c->options.fps);
         SetDlgItemTextW(dialog, panel::kAviFpsEdit, fps);
         CheckDlgButton(dialog, panel::kAviCloseAfterExportCheckbox, c->options.closeAfterExport ? BST_CHECKED : BST_UNCHECKED);
+        export_physics_start::Initialize(dialog, c->app, c->options.physicsStartEnabled, c->options.physicsStart);
         export_save_prompt::Initialize(dialog, c->app);
         c->updating = false;
         UpdateExample(dialog, *c);
         return TRUE;
     }
     if (!c) return FALSE;
+    if (export_physics_start::Handle(dialog, message, wp)) return TRUE;
     if (message == WM_COMMAND && c->scene != c->app->SceneGeneration()) {
         EndDialog(dialog, IDCANCEL);
         return TRUE;

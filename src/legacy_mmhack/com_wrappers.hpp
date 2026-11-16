@@ -2,6 +2,7 @@
 #pragma once
 #include "runtime.hpp"
 #include "scene_router.hpp"
+#include "on12_presenter.hpp"
 namespace mme_re::mmhack {
 class Direct3DWrapper final : public IDirect3D9 {
 public:
@@ -294,6 +295,7 @@ private:
   Runtime& runtime_;
   ULONG local_references_ = 1;
   SceneRouter router_;
+  On12Presenter presenter_;
 };
 class MeshWrapper final : public ID3DXMesh {
 public:

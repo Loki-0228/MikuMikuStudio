@@ -5,8 +5,8 @@
 namespace mikumikustudio::runtime_log {
 // Runtime diagnostics for the shipped build.  Always enabled, independently
 // of the porting-era DIAG probes. The newest messages stay in a bounded
-// in-memory ring. A fatal fault saves error-*.log in the configured backup
-// folder (data/backups beside the EXE by default) and shows a modal report.
+// in-memory ring. A fatal fault saves error-*.log in the diagnostic
+// folder (cache/logs beside the EXE by default) and shows a modal report.
 // The process only ends after the user presses OK.
 void Initialize() noexcept;
 // Optional application-owned, best-effort recovery before showing a fatal error.

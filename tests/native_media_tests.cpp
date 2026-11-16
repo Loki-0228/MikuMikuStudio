@@ -190,8 +190,8 @@ int wmain(int argc, wchar_t** argv) {
         const auto source = directory / (std::wstring(L"tone.") + extension);
         CheckResult(media::PrepareAudio(&audio, source.c_str(), playable, error), error, "native audio decode");
         Check(playable != source.wstring() && fs::exists(playable), "decoded cache exists");
-        const auto cacheDirectory=(local_data::File(L"audio-cache")/L"decoded").lexically_normal();
-        Check(fs::path(playable).parent_path().lexically_normal()==cacheDirectory,"decoded audio stays inside this executable's data directory");
+        const auto cacheDirectory=(local_data::CacheFile(L"audio-cache")/L"decoded").lexically_normal();
+        Check(fs::path(playable).parent_path().lexically_normal()==cacheDirectory,"decoded audio stays inside this executable's cache directory");
         const auto cacheFiles=[&](){std::set<fs::path> files;for(const auto& entry:fs::directory_iterator(cacheDirectory))files.insert(entry.path());return files;};
         const auto beforeLimited=cacheFiles();
         WaveAudioContext limited{};std::wstring limitedPlayable,limitedError;bool exceeded=false;

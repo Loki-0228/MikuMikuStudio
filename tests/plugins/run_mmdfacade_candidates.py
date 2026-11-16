@@ -118,7 +118,7 @@ def run_case(args, directory, layout, name, mode):
                 raise RuntimeError('product loaded a different MMDPlugin provider')
             if not any(Path(p).name.lower() == 'mmdfacade.dll' for p in paths):
                 raise RuntimeError('MMDFacade module absent')
-            mme_trace = (directory / 'data/plugins/legacy_mme/startup.log').read_text(encoding='utf-8', errors='replace')
+            mme_trace = (directory / 'cache/plugins/legacy_mme/startup.log').read_text(encoding='utf-8', errors='replace')
             if 'test.mme loaded from' not in mme_trace:
                 raise RuntimeError('MME control did not load')
             trace = (directory / 'runtime.log').read_text(encoding='utf-8', errors='replace')

@@ -4,6 +4,8 @@
 #include <cstring>
 #include <new>
 namespace { struct Instance { MmsHostV1 host; }; }
+#pragma comment(linker, "/EXPORT:MMSPatch4MMSAutoStartV1")
+extern "C" uint32_t MMS_CALL MMSPatch4MMSAutoStartV1() { return 1; }
 #pragma comment(linker, "/EXPORT:MMSPluginGetApi")
 extern "C" MmsResult MMS_CALL MMSPluginGetApi(uint32_t major, uint32_t minor,
     uint32_t bytes, MmsPluginApiV1* api) {

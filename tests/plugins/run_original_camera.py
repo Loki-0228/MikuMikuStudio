@@ -47,7 +47,7 @@ def main():
             run = subprocess.run([str(exe)], cwd=directory, env=environment, capture_output=True,
                 timeout=40, creationflags=subprocess.CREATE_NO_WINDOW)
             (directory / 'result.log').write_bytes(run.stdout + run.stderr)
-            cached = list((directory / 'data/plugins/legacy_mmdplugin').glob('**/' + original.name))
+            cached = list((directory / 'cache/plugins/legacy_mmdplugin').glob('**/' + original.name))
             unchanged = hashlib.sha256(dll.read_bytes()).hexdigest() == SHA and len(cached) == 1 and hashlib.sha256(cached[0].read_bytes()).hexdigest() == SHA
             case = dict(exe=name, provider=layout, package=str(package.relative_to(directory)),
                 automatic=args.automatic, exitCode=run.returncode, originalAndCacheUnchanged=unchanged,

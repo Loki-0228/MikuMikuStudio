@@ -850,8 +850,8 @@ bool RegisterGlobalImpl(MMDApp* app,Global kind,int frame) try {
 } catch(...) {
     return false;
 }
-void EvaluateGlobalsImpl(MMDApp* app,int frame) {
-    auto found=states.find(app);if(found==states.end() || frame>=0)return;
+void EvaluateGlobalsImpl(MMDApp* app,double frame) {
+    auto found=states.find(app);if(found==states.end() || !std::isfinite(frame) || frame>=0)return;
     std::vector<int> kinds;
     for(const auto& key:found->second.keys)if(!key.model && Current(*app,key) && std::find(kinds.begin(),kinds.end(),key.target)==kinds.end())kinds.push_back(key.target);
     for(int kind:kinds) {
@@ -1080,7 +1080,7 @@ MmsResult PlanSignedSelectedDeletion(MMDApp& app,std::shared_ptr<SelectedDeletio
 }
 #endif
 bool RegisterGlobal(MMDApp* app,Global kind,int frame) {return RegisterGlobalImpl(app,kind,frame);}
-void EvaluateGlobals(MMDApp* app,int frame) {EvaluateGlobalsImpl(app,frame);}
+void EvaluateGlobals(MMDApp* app,double frame) {EvaluateGlobalsImpl(app,frame);}
 bool RegisterAccessory(MMDApp* app,int slot,int frame) try {
     if(!app || slot<0 || slot>=255 || !app->AccessorySlot(slot) || frame>=0 || frame<frame_limits::minimum)return false;
     auto values=GlobalPose(app,1000+slot);if(!GlobalValid(values,1000+slot))return false;
@@ -1137,8 +1137,8 @@ bool RegisterMorph(unsigned char* model,int morph,int frame,float value) try {
 } catch(...) {
     return false;
 }
-void EvaluateModel(unsigned char* model,int frame) {
-    auto* app=Owner(model);if(!app || frame>=0)return;
+void EvaluateModel(unsigned char* model,double frame) {
+    auto* app=Owner(model);if(!app || !std::isfinite(frame) || frame>=0)return;
     auto found=states.find(app);if(found==states.end())return;
     std::map<std::pair<bool,int>,std::vector<const Key*>> tracks;
     for(const auto& key:found->second.keys)if(key.model==model && Current(*app,key))tracks[{key.morph,key.target}].push_back(&key);

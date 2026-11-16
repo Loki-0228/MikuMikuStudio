@@ -221,7 +221,7 @@ struct Asset::Impl {
         }
     }
     void Cache() {
-        const auto directory = local_data::File(L"audio-cache");
+        const auto directory = local_data::CacheFile(L"audio-cache");
         if (directory.empty()) throw std::invalid_argument("audio cache directory unavailable");
         std::filesystem::create_directories(directory);
         static std::atomic<std::uint64_t> next{1};

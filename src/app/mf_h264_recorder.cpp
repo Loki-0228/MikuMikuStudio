@@ -745,7 +745,7 @@ bool CreateEncoderProbe(bool system, std::int32_t width, std::int32_t height,
     if (!std::isfinite(fps) || fps <= 0.0f) fps = 30.0f;
 
     const std::filesystem::path probeDirectory =
-        local_data::File(L"encoder_probes");
+        local_data::CacheFile(L"encoder_probes");
     if (probeDirectory.empty())
         return false;
     std::error_code error;

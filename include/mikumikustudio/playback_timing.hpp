@@ -28,11 +28,10 @@ struct Settings {
 inline bool Valid(const Settings& settings) {
     const auto& physics = settings.physics;
     return settings.playbackFps >= kMinPlaybackFps && settings.playbackFps <= kMaxPlaybackFps &&
-        physics.baseRateHz >= 1 && physics.baseRateHz <= 1000 &&
-        physics.substeps >= 1 && physics.substeps <= 16 &&
-        physics.rateMultiplier >= 1 && physics.rateMultiplier <= 16 &&
-        std::isfinite(physics.erp) && physics.erp >= 0 && physics.erp <= 1 &&
-        std::isfinite(physics.cfm) && physics.cfm >= 0 && physics.cfm <= 1000000;
+        bake::ValidParameters(physics) &&
+        (!settings.followPlaybackFps ||
+         std::int64_t(settings.playbackFps) * physics.substeps <=
+             (std::numeric_limits<int>::max)() / physics.rateMultiplier);
 }
 
 inline double Speed(const Settings& settings) noexcept {
@@ -50,7 +49,12 @@ inline double TimelineFrame(double seconds) noexcept {
 
 inline int PhysicsRate(const Settings& settings) noexcept {
     const int baseRate = settings.followPlaybackFps ? settings.playbackFps : settings.physics.baseRateHz;
-    return baseRate * settings.physics.rateMultiplier * settings.physics.substeps;
+    std::int64_t rate = baseRate;
+    for (int factor : {settings.physics.substeps, settings.physics.rateMultiplier}) {
+        if (rate < 1 || factor < 1 || rate > (std::numeric_limits<int>::max)() / factor) return 60;
+        rate *= factor;
+    }
+    return static_cast<int>(rate);
 }
 
 // Frames at or before a reset do not prove the legacy working pose was

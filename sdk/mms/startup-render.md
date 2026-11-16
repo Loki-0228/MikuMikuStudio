@@ -34,7 +34,7 @@ extern "C" BOOL WINAPI MMSSetMmeDx12PatchEnabled(BOOL enable);
 - 工厂、硬件设备创建或后端确认失败后，宿主释放本轮设备及工厂，调用 `FALSE`，重新走原来的 DX9 创建路径。返回真必须保证恢复 DX9；返回假时停止初始化，不能声称已回退。
 - 导出缺失或 `TRUE` 返回假时，不尝试 On12，使用 DX9 并记录原因。现有 MME 导出签名、序号不变；新增导出不能占用既有序号。
 
-本分支的配套 MMHack 已提供该接口，位于新增的 23 号导出；既有 1–22 号保持原样。旧版 MMHack 不包含这个接口，单独放入普通 Patch 插件 DLL 不会增加桥接能力。宿主不按插件文件名或插件 ID 特判，也不加载原版 EXE 固定地址。
+本分支的配套 MMHack 已提供该接口，位于新增的 23 号导出；既有 1–22 号保持原样。旧版 MMHack 不包含这个接口，单独放入普通 Patch 插件 DLL 不会增加桥接能力。启动协调器按已发现插件的启动声明工作，也不加载原版 EXE 固定地址。
 
 ## 只读服务
 
@@ -44,4 +44,6 @@ extern "C" BOOL WINAPI MMSSetMmeDx12PatchEnabled(BOOL enable);
 
 本分支已联合验证原版 MME 的材质 FX 像素、Effekseer 粒子、相机、设备重置与退出，详见 `docs/records/mmdfacade-on12-integration-2026-11-16.md`。仅独立设备确认不能替代这些功能验证。
 
-随包的 `PLUGINS/dx12mmepatch` 提供实际原生 ABI DLL 和声明，复制安装并重启即可生效，不再分发启用/停用脚本。内部 ID 保持 `patch4mms` 以兼容已有黑名单，宿主不会自动改写用户配置。入口 DLL 的 PE 和直接工厂导出在启动时静态预检；普通插件的 create/start 不提前执行。启用的启动插件损坏或加载失败，宿主在初始化阶段汇总弹框。
+随包的 `dx12mmepatch.dll` 无需 `plugin.json`。发现器静态检查直接导出 `MMSPluginGetApi` 和 `MMSPatch4MMSAutoStartV1`，生成上述启动声明，复制安装并重启即可启用；不提前执行 DLL。文件夹可自由改名、分组，也可将 DLL 放在 `PLUGINS` 根目录，仍受 `maxDepth`、重复 ID 和黑名单规则控制；DLL 文件名须保留。内部 ID 保持 `patch4mms`，不会自动改写用户配置。手工提供的显式清单仍优先，其他普通原生插件仍需要清单。
+
+随包的 `MMSFirstPersonCamera.dll` 同样支持免清单发现，通过其专用适配标记和 ABI 4 直接导出识别；普通原版 MMD/MME DLL 仍只在 `PLUGINS/LEGACY` 内自动识别。编译、安装会移除两个随包目录中的遗留 `plugin.json`。升级须使用配套新版宿主和 DLL。启用的启动插件损坏或加载失败，宿主在初始化阶段汇总弹框。

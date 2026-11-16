@@ -39,7 +39,7 @@ fs::path Fresh(const fs::path& requested) {
     Check(requested.is_absolute(), "cache evidence directory must be explicitly absolute");
     const auto out = requested.lexically_normal(), executable = Executable(); std::error_code error;
     Check(!fs::exists(out, error) && !error && out != out.root_path() && !Same(out, executable.parent_path()) &&
-          !Inside(out, executable.parent_path() / L"data"), "refuse existing output, executable/data directories and all overwrites");
+          !Inside(out, executable.parent_path() / L"cache"), "refuse existing output, executable/cache directories and all overwrites");
     Check(fs::create_directories(out, error) && !error, "create a fresh cache evidence directory"); return out;
 }
 void NewText(const fs::path& file, const std::string& text) {
@@ -64,7 +64,7 @@ struct Environment {
     ~Environment() { SetCurrentDirectoryW(before.c_str()); }
     void NoFallback() const {
         Check(!fs::exists(working / L"MikuMikuStudio") && !fs::exists(temporary / L"MikuMikuStudio") &&
-              !fs::exists(alternateTemporary / L"MikuMikuStudio") && !fs::exists(working / L"data"), "no cache root appears under changed cwd, TEMP or TMP");
+              !fs::exists(alternateTemporary / L"MikuMikuStudio") && !fs::exists(working / L"cache"), "no cache root appears under changed cwd, TEMP or TMP");
     }
 };
 std::vector<fs::path> Copies() {
@@ -81,7 +81,7 @@ fs::path Installed(Scene& scene, const fs::path& source, float value) {
     WriteArchive(source, {{kModelChild, value}}, 3, 30.0, 0.0); const auto sourceBytes = ReadFileBytes(source); std::string error;
     Check(Install(scene.app, source, error), "install real archive into the copied installation: " + error);
     const auto copies = Copies();
-    Check(copies.size() == 1 && Same(copies[0].parent_path().parent_path(), SharedTempRoot()), "actual private copy is inside EXE/data/mesh_bake_cache, independently of the changed environment");
+    Check(copies.size() == 1 && Same(copies[0].parent_path().parent_path(), SharedTempRoot()), "actual private copy is inside EXE/cache/mesh_bake_cache, independently of the changed environment");
     Check(ReadFileBytes(copies[0]) == sourceBytes, "private archive is an exact copy of the real source");
     Check(fs::remove(source) && !fs::exists(source), "remove the original external source after its private copy is established");
     ExpectTriangle(SampleAt(scene.Model0(), 0, "source removed")[0], kModelChild, value, "private archive remains sampleable after the original source is removed"); return copies[0];
@@ -131,32 +131,32 @@ struct Child {
     void Ready(HANDLE ready) const { const HANDLE waits[]{ready, process.hProcess}; Check(WaitForMultipleObjects(2, waits, FALSE, 30000) == WAIT_OBJECT_0, "peer reached its live lease without exiting or timing out"); }
     void Finish(HANDLE done) const { const HANDLE waits[]{done, process.hProcess}; const auto signaled = WaitForMultipleObjects(2, waits, FALSE, 30000); Check(signaled == WAIT_OBJECT_0 || signaled == WAIT_OBJECT_0 + 1, "peer reaches its terminal cleanup state within the bound"); Wait(process.hProcess, "peer process exits after cleanup"); DWORD code = 1; Check(GetExitCodeProcess(process.hProcess, &code) && code == 0 && WaitForSingleObject(done, 0) == WAIT_OBJECT_0, "peer exits successfully only after signaling actual cleanup completion"); }
 };
-void BlockedData(const fs::path& out, Scene& scene, const Environment& environment) {
-    const auto data = Executable().parent_path() / L"data";
-    Check(!fs::exists(data), "specialized parent starts in a fresh copied installation without data");
+void BlockedCache(const fs::path& out, Scene& scene, const Environment& environment) {
+    const auto data = Executable().parent_path() / L"cache";
+    Check(!fs::exists(data), "specialized parent starts in a fresh copied installation without cache");
     const auto retained = out / fs::u8path(std::string("retained") + cache::kSidecarSuffix); WriteArchive(retained, {{kModelChild, 42.f}}, 3, 30.0, 0.0);
     const auto retainedBytes = ReadFileBytes(retained); extension::Document original;
     extension::Set(original, kRecordKey, BuildValue({{0, 0, retained.filename().u8string()}})); std::string error;
     const auto reference = out / L"reference.pmm";
     Check(Load(scene.app, reference, original, error) && !fs::exists(data), "load a real persistent archive without preparing any installation cache directory: " + error);
-    auto snapshot = cache::CaptureSave(scene.app); NewText(data, "owned data-root blocker\n");
+    auto snapshot = cache::CaptureSave(scene.app); NewText(data, "owned cache-root blocker\n");
     const auto candidate = out / L"blocked-candidate.abc"; WriteArchive(candidate, {{kModelChild, 99.f}}, 3, 30.0, 0.0); const auto candidateBytes = ReadFileBytes(candidate);
-    Check(!Install(scene.app, candidate, error) && !error.empty() && Has(scene.Model0()), "file-blocked data root refuses installation without replacing the live archive or falling back");
+    Check(!Install(scene.app, candidate, error) && !error.empty() && Has(scene.Model0()), "file-blocked cache root refuses installation without replacing the live archive or falling back");
     ExpectTriangle(SampleAt(scene.Model0(), 0, "failed cache installation")[0], kModelChild, 42.f, "failed private-copy preparation preserves actual native cache sampling");
-    Check(ReadFileBytes(data) == "owned data-root blocker\n" && ReadFileBytes(candidate) == candidateBytes && ReadFileBytes(retained) == retainedBytes, "failed preparation preserves the blocker, old source and candidate bytes");
+    Check(ReadFileBytes(data) == "owned cache-root blocker\n" && ReadFileBytes(candidate) == candidateBytes && ReadFileBytes(retained) == retainedBytes, "failed preparation preserves the blocker, old source and candidate bytes");
     Clear(); Check(Empty(), "live clear retires bindings while the immutable snapshot keeps its persistent archive");
     extension::Document document; const auto project = out / L"blocked-snapshot.pmm";
     Check(snapshot(project, document, error) && extension::Find(document, kRecordKey), "retained save snapshot remains publishable after preparation failure and live Clear: " + error);
     WriteProjectFile(project, document); extension::Document reopened; std::uint64_t standard = 0;
     Check(ReadProjectFile(project, reopened, standard) && Load(scene.app, project, reopened, error), "unchanged MMS extension and published sidecar reopen after blocked cache preparation");
     ExpectTriangle(SampleAt(scene.Model0(), 0, "reopened blocked snapshot")[0], kModelChild, 42.f, "failed candidate never replaces the immutable saved mesh");
-    snapshot = {}; Clear(); Check(ReadFileBytes(retained) == retainedBytes && ReadFileBytes(data) == "owned data-root blocker\n", "last snapshot release does not delete persistent user sidecars or the blocking file");
+    snapshot = {}; Clear(); Check(ReadFileBytes(retained) == retainedBytes && ReadFileBytes(data) == "owned cache-root blocker\n", "last snapshot release does not delete persistent user sidecars or the blocking file");
     environment.NoFallback(); Check(DeleteFileW(data.c_str()) && !fs::exists(data), "remove only the exact blocking file this test created");
-    Trace("blocked data root preserves native state, immutable snapshot and all source bytes without fallback");
+    Trace("blocked cache root preserves native state, immutable snapshot and all source bytes without fallback");
 }
 void Concurrent(const fs::path& out, Scene& scene, const fs::path& peerExecutable, bool sameInstallation) {
     const auto role = sameInstallation ? L"same" : L"cross"; const auto round = out / role; Check(fs::create_directory(round), "create fresh synchronized cache round"); Environment environment(round);
-    const auto expectedRoot = Executable().parent_path() / L"data" / L"mesh_bake_cache";
+    const auto expectedRoot = Executable().parent_path() / L"cache" / L"mesh_bake_cache";
     Check(Same(SharedTempRoot(), expectedRoot), "changed cwd/TEMP/TMP cannot change the independently derived cache root");
     const auto copy = Installed(scene, round / L"caller-source.abc", 71.f); const auto ownBytes = ReadFileBytes(copy);
     const auto foreign = copy.parent_path() / (std::wstring(L"caller-foreign-") + role + L".txt"); NewText(foreign, kForeign);
@@ -166,7 +166,7 @@ void Concurrent(const fs::path& out, Scene& scene, const fs::path& peerExecutabl
     Handle go(CreateEventW(nullptr, TRUE, FALSE, EventName(base, L"go").c_str())); Check(go.value && GetLastError() != ERROR_ALREADY_EXISTS, "create a new private cleanup event");
     Handle done(CreateEventW(nullptr, TRUE, FALSE, EventName(base, L"done").c_str())); Check(done.value && GetLastError() != ERROR_ALREADY_EXISTS, "create a new private completed event");
     const auto peerOut = round / L"peer-output"; Child child; child.Start(peerExecutable, peerOut, base, role); child.Ready(ready.value);
-    const auto peer = ReadEvidence(peerOut / L"lease.bin"); const auto expectedPeerRoot = peerExecutable.parent_path() / L"data" / L"mesh_bake_cache";
+    const auto peer = ReadEvidence(peerOut / L"lease.bin"); const auto expectedPeerRoot = peerExecutable.parent_path() / L"cache" / L"mesh_bake_cache";
     Check(peer.process == child.process.dwProcessId && peer.process != GetCurrentProcessId() && Same(peer.root, expectedPeerRoot) &&
           Same(peer.session.parent_path(), peer.root) && Same(peer.copy.parent_path(), peer.session) && Same(peer.foreign.parent_path(), peer.session) &&
           !Same(peer.session, copy.parent_path()), "two actual processes expose distinct private sessions under their own independently expected installation roots");
@@ -190,8 +190,8 @@ int Run(const fs::path& requested, const fs::path& secondExecutable) {
     Check(!Same(executable.parent_path(), secondExecutable.parent_path()) && !fs::equivalent(executable.parent_path(), secondExecutable.parent_path()), "two separately copied installations are required for the complete storage cohort");
     const auto out = Fresh(requested); Environment environment(out);
     auto app = std::make_unique<MMDApp>(); ::new (static_cast<void*>(&app->state)) MMDAppState{}; ResetSlots(*app); Scene scene(*app); scene.BindModel0();
-    BlockedData(out, scene, environment); Concurrent(out, scene, executable, true); Concurrent(out, scene, secondExecutable, false);
+    BlockedCache(out, scene, environment); Concurrent(out, scene, executable, true); Concurrent(out, scene, secondExecutable, false);
     Clear(); Check(Empty() && Copies().empty(), "no private archive remains after all local leases are released"); environment.NoFallback();
-    std::printf("PASS installation storage root=%ls other=%ls evidence=%ls\n", SharedTempRoot().c_str(), (secondExecutable.parent_path() / L"data" / L"mesh_bake_cache").c_str(), out.c_str()); return 0;
+    std::printf("PASS installation storage root=%ls other=%ls evidence=%ls\n", SharedTempRoot().c_str(), (secondExecutable.parent_path() / L"cache" / L"mesh_bake_cache").c_str(), out.c_str()); return 0;
 }
 }

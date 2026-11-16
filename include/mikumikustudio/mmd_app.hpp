@@ -1186,6 +1186,9 @@ public:
     std::int32_t& AviOutputWidth() { return m_aviOutputWidth; }
     std::int32_t& AviOutputHeight() { return m_aviOutputHeight; }
     bool& AviCloseAfterExport() { return m_aviCloseAfterExport; }
+    bool& ExportPhysicsStartEnabled() { return m_exportPhysicsStartEnabled; }
+    int& ExportPhysicsStartFrame() { return m_exportPhysicsStartFrame; }
+    bool& RecordingPhysicsPrerollActive() { return m_recordingPhysicsPrerollActive; }
     std::uint32_t& H264AverageBitrate() { return m_h264AverageBitrate; }
     bool& AviRenderResolutionOverridden() {
         return m_aviRenderResolutionOverridden;
@@ -1730,6 +1733,9 @@ private:
     std::int32_t m_aviOutputWidth{};
     std::int32_t m_aviOutputHeight{};
     bool m_aviCloseAfterExport = false;
+    bool m_exportPhysicsStartEnabled = false;
+    int m_exportPhysicsStartFrame = 0;
+    bool m_recordingPhysicsPrerollActive = false;
     std::uint32_t m_h264AverageBitrate = 6'000'000;
     bool m_aviRenderResolutionOverridden = false;
     std::int32_t m_aviSavedRenderWidth = 0;

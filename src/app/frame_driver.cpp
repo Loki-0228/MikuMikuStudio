@@ -648,8 +648,11 @@ void FrameDriver(MMDApp* app) {
     // constant 30.0 (dbl_52BA68); EnableWindow pushes 0 (0x479D58).
     if (s.state.recordPlaybackStartPending != 0) {       // 0x9EDD8
         antialias::ResetHistory(app);
+        const int physicsStart = s.ExportPhysicsStartEnabled() &&
+            recording_state::ValidPhysicsStart(true, s.ExportPhysicsStartFrame(), s.AviRecordStartFrame())
+            ? recording_state::ResolvePhysicsStart(app, s.ExportPhysicsStartFrame()) : s.AviRecordStartFrame();
         s.CurrentFrame() =
-            s.AviRecordStartFrame();
+            physicsStart;
         s.state.frameStepPlayback = 1;          // 0x9ED90
         // (was a raw 650128 literal = 0x9EB90, one of the +/-0x100
         // decimal slips; 0x9ED90 = 650640)
@@ -661,7 +664,8 @@ void FrameDriver(MMDApp* app) {
         s.PlaybackEndSeconds() = static_cast<double>(fb) / g_FrameScale;
 
         s.state.aviBackgroundSample = s.state.aviRecordStartFrame;
-        s.PlaybackCursorSeconds() = s.PlaybackStartSeconds();
+        s.PlaybackCursorSeconds() = double(physicsStart) / g_FrameScale;
+        s.RecordingPhysicsPrerollActive() = physicsStart < fa;
 
         if (s.state.aviRecordStartFrame ==
             s.CurrentFrame())
@@ -681,6 +685,17 @@ void FrameDriver(MMDApp* app) {
         EnableWindow(GetDlgItem(static_cast<HWND>(s.Hwnd()), panel::kPlayButton),
                      FALSE);
         s.state.recordPlaybackStartPending = 0;
+    }
+
+    if (s.RecordingPhysicsPrerollActive()) {
+        // Pre-roll uses the same fixed solver ticks and animation tracks as
+        // recording. Yield between batches so the export can be cancelled.
+        if (!AdvanceRecordingPhysicsPreroll(app, s.PlaybackStartSeconds())) return;
+        s.RecordingPhysicsPrerollActive() = false;
+        s.CurrentFrame() = s.AviRecordStartFrame();
+        PlaybackPoseAdvance(app, 0);
+        PhysicsFrame(app, 0);
+        antialias::ResetHistory(app);
     }
 
     // Export time follows the output FPS; disk/encoder latency must not become

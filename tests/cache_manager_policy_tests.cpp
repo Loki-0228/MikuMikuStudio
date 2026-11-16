@@ -527,7 +527,7 @@ void Installation(const fs::path& output) {
     Check(cache::Configure(snapshot, {}, snapshot) == Result::Disabled && !snapshot.IsValid(), "original Configure disabled");
     Check(!cache::Enabled() && !fs::exists(installation / L"data"), "original wrappers do not write data");
 #else
-    const auto expectedRoot = installation / L"data" / L"cache";
+    const auto expectedRoot = installation / L"cache";
     const auto expectedSettings = installation / L"data" / L"settings.json";
     Check(cache::Root() == expectedRoot, "production root uses own EXE directory despite env and cwd");
     Check(cache::ReadCurrent(snapshot) == Result::Ok && Equal(snapshot.Value(), {}) && cache::Enabled(), "fresh production defaults ignore decoys");
@@ -600,7 +600,7 @@ void Installation(const fs::path& output) {
         Bytes(cwd / L"settings.json") == "cwd must not be used\n", "environment and cwd decoys unchanged");
     Check(std::distance(fs::directory_iterator(decoy), fs::directory_iterator()) == 2 &&
         std::distance(fs::directory_iterator(cwd), fs::directory_iterator()) == 1, "no fallback files in decoy locations");
-    Check(!fs::exists(installation / L"Cache") && !fs::exists(installation / L"cache.ini"), "no legacy cache root or ini written");
+    Check(!fs::exists(installation / L"data" / L"cache") && !fs::exists(installation / L"cache.ini"), "no legacy data/cache root or ini written");
     Check(Bytes(output / L"project.pmm") == "project sentinel\n" && Bytes(output / L"history.bin") == "history sentinel\n",
         "configuration leaves project and history untouched");
     NewFile(output / L"installation-result.txt", "profile=" + std::string(MMD_ORIGINAL_PROFILE ? "original" : "full") +

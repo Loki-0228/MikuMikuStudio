@@ -20,4 +20,11 @@ inline std::filesystem::path File(const wchar_t* name) {
     const auto directory = ExecutableDirectory();
     return directory.empty() ? std::filesystem::path() : directory / L"data" / name;
 }
+// Rebuildable runtime files are separate from settings and project recovery.
+inline std::filesystem::path CacheFile(const wchar_t* name = L"") {
+    const auto directory = ExecutableDirectory();
+    if (directory.empty()) return {};
+    const auto root = directory / L"cache";
+    return *name ? root / name : root;
+}
 }

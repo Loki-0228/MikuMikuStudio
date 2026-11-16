@@ -137,7 +137,7 @@ void MediaEntryAndLegacyCapture(){
 }
 void InvalidAndBudgets(){
     Files files;Scene f;NativePoseTestBinding binding(*f.app,f.history);f.Import(files.a);const auto before=f.Digest();
-    const auto directory=local_data::File(L"audio-cache");
+    const auto directory=local_data::CacheFile(L"audio-cache");
     const auto caches=[&](){std::set<fs::path> result;for(const auto& entry:fs::directory_iterator(directory))if(entry.is_regular_file())result.insert(entry.path());return result;};
     const auto baseline=caches();const Format format{1,24,1,20,true};const auto samples=Known(format);const auto good=Container(format,samples.raw);
     const auto invalid=files.directory/L"invalid-wide.wav";

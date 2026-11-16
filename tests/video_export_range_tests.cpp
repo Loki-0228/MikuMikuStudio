@@ -185,6 +185,17 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
           context->app->AviRecordEndFrame() == 404 && context->app->AviRecordFps() == 24,
           "initialization does not commit the pending frame range or FPS");
     Check(!IsWindowVisible(dialog), "dialog stays hidden before its first display");
+    Check(Text(dialog, panel::kExportPhysicsStartEdit) == L"0" &&
+          IsDlgButtonChecked(dialog, panel::kExportPhysicsStartCheckbox) == BST_UNCHECKED &&
+          !IsWindowEnabled(GetDlgItem(dialog, panel::kExportPhysicsStartEdit)),
+          "physics pre-roll defaults to unchecked with frame zero");
+    CheckDlgButton(dialog, panel::kExportPhysicsStartCheckbox, BST_CHECKED);
+    AviOutDlgProc(dialog, WM_COMMAND, MAKEWPARAM(panel::kExportPhysicsStartCheckbox, BN_CLICKED), 0);
+    Check(IsWindowEnabled(GetDlgItem(dialog, panel::kExportPhysicsStartEdit)), "checking pre-roll enables precise frame input");
+    SetDlgItemTextW(dialog, panel::kExportPhysicsStartEdit, L"");
+    for (wchar_t c : std::wstring(L"-60"))
+        SendDlgItemMessageW(dialog, panel::kExportPhysicsStartEdit, WM_CHAR, c, 0);
+    Check(Text(dialog, panel::kExportPhysicsStartEdit) == L"-60", "physics input accepts a typed minus sign");
     if (context->cancel) {
         SetDlgItemInt(dialog, panel::kAviStartFrameEdit, 22, FALSE);
         SetDlgItemInt(dialog, panel::kAviEndFrameEdit, 99999, FALSE);
@@ -251,6 +262,8 @@ void Run(MMDApp* app, const RangeCase& range, unsigned opening,
               "IDOK reads the displayed range and selected FPS");
         Check(app->AviOutputWidth() == app->RenderWidth() && app->AviOutputHeight() == app->RenderHeight(),
               "IDOK reads the original render dimensions without inserted digits");
+        Check(app->ExportPhysicsStartEnabled() && app->ExportPhysicsStartFrame() == -60,
+              "video export commits the selected physics start separately from output start");
         Check(std::wstring(app->AviOutputPath()) == (MMD_ORIGINAL_PROFILE
                 ? L"video-export-range-test.avi" : L"video-export-range-test.mp4"),
               "IDOK follows the profile's real AVI or MP4 path selection");

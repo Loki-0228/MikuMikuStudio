@@ -1,5 +1,11 @@
 # MikuMikuStudio (MMS)
 
+当前 ABI 源码生成 `MikuMikuStudio.exe`；旧发布包仍可能使用 `MikuMikuDance.exe`。MME 通过配套的 MMDFacade / MMHack 桥接识别宿主，不再要求主程序使用旧文件名。
+
+Current ABI builds produce `MikuMikuStudio.exe`; older releases may still use `MikuMikuDance.exe`. The bundled MMDFacade / MMHack bridge supports the new host name.
+
+現在の ABI ビルドは `MikuMikuStudio.exe` を生成します。旧リリースでは `MikuMikuDance.exe` の場合があります。付属の MMDFacade / MMHack は新しいホスト名に対応しています。
+
 [English](#english) | [中文](#中文) | [日本語](#日本語)
 
 [Release notes / 发布日志 / リリースノート](https://github.com/Loki-0228/MikuMikuStudio/releases/latest)

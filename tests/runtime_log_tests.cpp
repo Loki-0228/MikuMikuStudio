@@ -128,7 +128,7 @@ __declspec(noinline) void ExhaustStack(unsigned depth) {
 int WINAPI HiddenMessage(HWND, LPCWSTR text, LPCWSTR, UINT) {
     if (shutdownMode) TerminateProcess(GetCurrentProcess(), 245);
     const bool ok = text && (blocked ? wcsstr(text, L"could not save error log") :
-        wcsstr(text, L"error log:") && wcsstr(text, customLog ? customLogDirectory : L"\\data\\backups\\error-"));
+        wcsstr(text, L"error log:") && wcsstr(text, customLog ? customLogDirectory : L"\\cache\\logs\\error-"));
     if (!ok) TerminateProcess(GetCurrentProcess(), 251);
     if (nullExecute && (!wcsstr(text, L"fault context registers:") ||
         !wcsstr(text, L"null execute callsite:") || !wcsstr(text, L"bytes[-16,+8)")))
@@ -387,9 +387,9 @@ int wmain(int argc, wchar_t** argv) {
         fs::copy_file(executable, child);
         const bool custom = std::wstring(mode) == L"custom-log" || std::wstring(mode) == L"custom-log-outside";
         const auto logFolder = custom ? (std::wstring(mode) == L"custom-log" ? directory / L"用户备份" :
-            root / L"external-logs" / mode) : directory / L"data" / L"backups";
+            root / L"external-logs" / mode) : directory / L"cache" / L"logs";
         if (custom) fs::create_directories(logFolder);
-        if (std::wstring(mode) == L"blocked") { fs::create_directories(directory / L"data"); std::ofstream(directory / L"data" / L"backups") << "keep this file"; }
+        if (std::wstring(mode) == L"blocked") { fs::create_directories(directory / L"cache"); std::ofstream(directory / L"cache" / L"logs") << "keep this file"; }
         std::wstring command = L"\"" + child.wstring() + L"\" --child " + mode;
         STARTUPINFOW start{sizeof(start)}; start.dwFlags = STARTF_USESHOWWINDOW; start.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION process{};
@@ -413,11 +413,11 @@ int wmain(int argc, wchar_t** argv) {
             value == L"stack-overflow" ? EXCEPTION_STACK_OVERFLOW :
             value == L"seh" || closing || insideWrite || nullCall || memoryFault || protectedHeader || custom ? EXCEPTION_ACCESS_VIOLATION : 0xE0000004;
         Check(code == expected, "child exits through expected production fatal path");
-        Check(!fs::exists(cwd / L"data" / L"backups"), "working directory never receives crash files");
-        if (value == L"normal") { Check(!fs::exists(directory / L"data" / L"backups"), "normal run creates no crash folder"); continue; }
+        Check(!fs::exists(cwd / L"cache" / L"logs"), "working directory never receives crash files");
+        if (value == L"normal") { Check(!fs::exists(directory / L"cache" / L"logs"), "normal run creates no crash folder"); continue; }
         Check(fs::exists(cwd / L"validated-dialog.ok") != closing,
             "non-shutdown faults reach the validated dialog and shutdown faults stay silent");
-        if (value == L"blocked") { Check(Bytes(directory / L"data" / L"backups") == "keep this file", "failed log creation preserves existing file"); continue; }
+        if (value == L"blocked") { Check(Bytes(directory / L"cache" / L"logs") == "keep this file", "failed log creation preserves existing file"); continue; }
         if (concurrent || insideWrite) Check(fs::exists(cwd / L"validated-dialog.ok"),
             "fault handler reaches a consistent dialog after concurrent or interrupted writes");
         unsigned logs = 0;

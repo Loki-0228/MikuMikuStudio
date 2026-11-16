@@ -231,7 +231,7 @@ void TestCacheDirectoryPaths() {
     wchar_t executable[32768]{};
     const DWORD count = GetModuleFileNameW(nullptr, executable, 32768);
     Check(count != 0 && count < 32768, "executable path is available");
-    const auto expected = std::filesystem::path(executable).parent_path() / L"data" / L"cache" / L"MME";
+    const auto expected = std::filesystem::path(executable).parent_path() / L"cache" / L"MME";
     Check(std::filesystem::path(CacheDirectory()) == expected, "default cache belongs to the executable");
     const auto before = std::filesystem::current_path();
     std::filesystem::current_path(directory.path);

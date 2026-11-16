@@ -397,7 +397,6 @@ bool SaveSettings(const fs::path& path, const Settings& value) {
 const Settings& Current() {
     if (!loaded) {
         settings = LoadCurrentSettings(); loaded = true;
-        runtime_log::SetErrorLogDirectory(settings.directory.c_str());
     }
     return settings;
 }
@@ -419,7 +418,6 @@ bool Configure(MMDApp* app, const Settings& value, std::wstring& error) {
         error = L"无法保存自动备份设置。 / Cannot save automatic backup settings."; return false;
     }
     settings = value; loaded = true;
-    runtime_log::SetErrorLogDirectory(settings.directory.c_str());
     nextSave = GetTickCount64() + ULONGLONG(settings.intervalMinutes) * 60000;
     nextScan = 0;
     RefreshCapacity(app);

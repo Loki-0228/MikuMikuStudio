@@ -226,7 +226,7 @@ void PreparePlaybackPhysics(MMDApp* app, unsigned char selActive) {
 }
 
 namespace {
-double AdvanceFixedPhysics(MMDApp* app, unsigned char selActive, double target) {
+double AdvanceFixedPhysics(MMDApp* app, unsigned char selActive, double target, bool bounded = false) {
     if (app->NativePhysicsMode() <= 0 || !PlayWorld(app)) return target;
     PreparePlaybackPhysics(app, selActive);
     auto& clock = app->PlaybackPhysicsClock();
@@ -244,7 +244,7 @@ double AdvanceFixedPhysics(MMDApp* app, unsigned char selActive, double target) 
     }
     // A suspended real-time window may be many frames behind. Keep the next
     // step pending across pumps instead of skipping solver input samples.
-    unsigned budget = app->FrameStepPlayback() ? UINT_MAX : 8192;
+    unsigned budget = app->FrameStepPlayback() && !bounded ? UINT_MAX : 8192;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8);
     const double epsilon = 4 * std::numeric_limits<double>::epsilon() * (std::max)(1.0, std::abs(target));
     while (budget-- && (clock.Due(target, rate) || (cached && clock.Completed(rate) < target - epsilon))) {
@@ -253,13 +253,18 @@ double AdvanceFixedPhysics(MMDApp* app, unsigned char selActive, double target) 
         AdvancePlaybackPhysicsTracks(app);
         StepPlaybackPhysics(app, selActive, seconds);
         if (cached) clock.samples->Complete(*app, clock.Completed(rate));
-        if (cached && std::chrono::steady_clock::now() >= deadline) break;
+        if ((cached || bounded) && std::chrono::steady_clock::now() >= deadline) break;
     }
     // Only completed endpoints can supply a display sample. The rolling bake
     // is at most one fixed tick ahead; display FPS never changes the solver dt.
     if (cached && !(clock.visualSampleReady = clock.samples->Apply(*app, target))) return previous;
     return clock.Due(target, rate) ? Cursor(app) : target;
 }
+}
+
+bool AdvanceRecordingPhysicsPreroll(MMDApp* app, double target) {
+    Cursor(app) = AdvanceFixedPhysics(app, 0, target, true);
+    return Cursor(app) >= target;
 }
 
 // Physics-cursor catch-up of the FrameDriver (0x46EEE0..0x46F575).

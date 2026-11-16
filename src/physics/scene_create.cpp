@@ -1,3 +1,4 @@
+#include "tuned_constraint_solver.hpp"
 // ===========================================================================
 // VA 0x004032B0 - SceneConstruct  (original: sub_4032B0, 0x2D5A bytes)
 // ===========================================================================
@@ -130,7 +131,7 @@ bool SceneConstruct(PhysicsScene* scene, D3DRenderer* d3dSub) {
         btVector3(-10000.0f, -10000.0f, -10000.0f),
         btVector3(10000.0f, 10000.0f, 10000.0f), 1500000);
     scene->dispatcher = dispatcher;
-    scene->solver = new btSequentialImpulseConstraintSolver();       // 0x405E18
+    scene->solver = new TunedConstraintSolver();
     auto* world = new DynamicsWorld(                       // 0x405E5D (0x110)
         dispatcher, scene->broadphase, scene->solver,
         scene->collisionConfig);

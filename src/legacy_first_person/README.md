@@ -8,7 +8,10 @@ ABI 4 工厂及输入回调保留；原版的 `MMDMainData` 读写改为 MMS 明
 退出 MMS 后可在 `PLUGINS` 内重命名或移动完整插件包，例如 `PLUGINS/相机工具/第一人称/`。
 插件发现只以 `PLUGINS` 为根，根目录的 `optional-plugins` 不单独扫描。
 默认扫描两层子目录，更深的分组按现有 `PLUGINS/config.json` 的 `maxDepth` 配置。
-`plugin.json` 的 SHA-256 必须与 DLL 一致。停用时在 `PLUGINS/config.json` 的
+新版宿主通过 DLL 中的相机适配标记自动识别本插件，不再需要 `plugin.json`，也无需单独启用。
+保留 `MMSFirstPersonCamera.dll` 文件名；也可直接放在 `PLUGINS` 根目录。
+编译和安装会删除输出目录中本插件的遗留清单。普通原版旧插件仍只在 `PLUGINS/LEGACY` 内自动识别。
+停用时在 `PLUGINS/config.json` 的
 `disabledPlugins` 中加入 `org.mikumikustudio.legacy.first-person-camera`，重启生效。
 独立 `MMDPlugin.dll` 仍由主程序安装包提供，新旧提供者目录均受支持。
 

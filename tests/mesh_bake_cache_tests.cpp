@@ -240,7 +240,7 @@ std::filesystem::path SharedTempRoot() {
     wchar_t executable[32768]{};
     const auto length = GetModuleFileNameW(nullptr, executable, 32768);
     Check(length && length < 32768, "resolve the actual test executable for its independent cache-root expectation");
-    return std::filesystem::path(executable).parent_path() / L"data" / L"mesh_bake_cache";
+    return std::filesystem::path(executable).parent_path() / L"cache" / L"mesh_bake_cache";
 }
 
 // The private directories of this process, found by the process id the module

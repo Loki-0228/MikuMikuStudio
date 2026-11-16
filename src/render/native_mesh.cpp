@@ -216,7 +216,7 @@ std::filesystem::path PreserveEffectAssignments(IDirect3DDevice9* device){
     if(!mikumikustudio::LegacyMmeModule())return {};
     const UINT state=GetMenuState(GetMenu(host->MainWindow()),40022,MF_BYCOMMAND);
     if(state==UINT(-1))throw std::runtime_error("Native mesh cannot preserve the current MME assignments: autosave command unavailable");
-    const auto root=local_data::File(L"mme_mesh_snapshots");
+    const auto root=local_data::CacheFile(L"mme_mesh_snapshots");
     if(root.empty())throw std::runtime_error("Native mesh cannot preserve the current MME assignments: the application executable directory is unavailable");
     std::error_code rootError;std::filesystem::create_directories(root,rootError);
     if(rootError)throw std::runtime_error("Native mesh cannot create the MME assignment snapshot root: "+rootError.message());
@@ -420,7 +420,7 @@ void Upload(Proxy& p,const mesh_data::ObjectOutput& out,const mesh_data::Object&
         p.materials.resize(mesh.materialCount);for(uint32_t i=0;i<mesh.materialCount;++i){auto& b=p.materials[i];const auto& a=mesh.materials[i];
             if(i<sourceMaterials)b=static_cast<const mdl::ModelMaterialRecord*>(source.materials)[i];else b={};
             memcpy(b.diffuse,a.diffuse,16);memcpy(b.diffuseMirror,a.diffuse,16);memcpy(b.ambient,a.ambient,12);memcpy(b.specular,a.specular,12);b.specularPower=a.power;
-            memcpy(b.edgeColor,a.edgeColor,16);b.edgeSize=a.edgeSize;b.flags=uint8_t(a.flags);b.sphereMode=uint8_t(a.sphereMode);b.doubleSided=(a.flags&1)!=0;b.faceVertexCount=out.hidden?0:counts[i];
+            memcpy(b.edgeColor,a.edgeColor,16);b.edgeSize=a.edgeSize;b.flags=uint8_t(a.flags);b.sphereMode=uint8_t(a.sphereMode);b.doubleSided=(a.flags&(pmx?0x10u:1u))!=0;b.faceVertexCount=out.hidden?0:counts[i];
             PathCopy(b.texturePath,paths[i][0]);PathCopy(b.spherePath,paths[i][1]);PathCopy(b.toonPath,paths[i][2]);}
         m.vertexCount=mesh.vertexCount;m.indexCount=out.hidden?0:mesh.triangleCount*3;m.vertexBuffer=p.vb.Get();m.vertexBuffer2=p.edge.Get();m.indexBuffer=p.ib.Get();m.indices=p.indices.data();m.materials=p.materials.data();m.materialCount=mesh.materialCount;m.pmxVertexIndexSize=4;
         if(pmx){

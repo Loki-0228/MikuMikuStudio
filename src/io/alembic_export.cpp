@@ -204,7 +204,7 @@ Result Export(MMDApp& app,const std::filesystem::path& path,const Options& optio
             }
             target=destination.path;
         } else {
-            const auto workRoot=local_data::File(L"mesh_bake_work");
+            const auto workRoot=local_data::CacheFile(L"mesh_bake_work");
             if(workRoot.empty())throw std::runtime_error("The internal mesh bake work directory is unavailable: the application executable directory cannot be located");
             std::error_code directoryError;
             std::filesystem::create_directories(workRoot,directoryError);

@@ -7,6 +7,9 @@
 #include <Windows.h>
 #include <MinHook.h>
 #include <d3d12sdklayers.h>
+#include <wrl/client.h>
+#include "mikumikustudio/plugin_runtime.hpp"
+#include "../sdk/mms/include/mms/dx12_viewport.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -20,6 +23,7 @@
 #include <string>
 #include <vector>
 #include "mikumikustudio/d3d12_native.hpp"
+#include "mikumikustudio/antialias.hpp"
 #include "mikumikustudio/build_profile.hpp"
 #include "mikumikustudio/d3d12_skinning.hpp"
 #include "mikumikustudio/d3dx_dyn.hpp"
@@ -250,6 +254,8 @@ DWORD Capture(Host& host, const fs::path& destination) {
     return ReadCenter(destination);
 }
 
+#include "d3d12_antialias_checks.inc"
+
 bool HardwareChecks(Host& host, const fs::path& output) {
     Check(output.is_absolute() && !fs::exists(output) && fs::is_directory(output.parent_path()),
           "hardware output must be a new absolute directory with an existing parent");
@@ -338,6 +344,54 @@ bool HardwareChecks(Host& host, const fs::path& output) {
         Check(std::abs(int((resumed >> shift) & 255) - int((nearFirst >> shift) & 255)) <= 2,
               "returning to Off restores authored order while retaining cross-object preference");
     Check(host.app->TransparentSortCrossObjects(), "Off does not erase stored cross-object preference");
+    host.app->antialiasing.initialized=true;
+    host.app->antialiasing.enabled=false;
+    geometry.Set(false,false);
+    geometry.materials[0].diffuse[3]=1;
+    const auto pixels=[&](const fs::path& file){
+        std::ifstream stream(file,std::ios::binary);BITMAPFILEHEADER header{};BITMAPINFOHEADER info{};
+        stream.read(reinterpret_cast<char*>(&header),sizeof header);stream.read(reinterpret_cast<char*>(&info),sizeof info);
+        std::vector<DWORD> data(size_t(info.biWidth)*unsigned(-info.biHeight));stream.seekg(header.bfOffBits);
+        stream.read(reinterpret_cast<char*>(data.data()),data.size()*4);Check(bool(stream),"read AA capture pixels");return data;
+    };
+    Capture(host,output/L"aa-off.bmp");const auto off=pixels(output/L"aa-off.bmp");
+    {
+    DepthProbe depth;
+    for(unsigned algorithm=0;algorithm<unsigned(antialias::Algorithm::Count);++algorithm) {
+        host.app->antialiasing.enabled=true;host.app->antialiasing.algorithm=antialias::Algorithm(algorithm);
+        const auto legacySamples=host.renderer->presentParameters.MultiSampleType;
+        antialias::PrepareFrame(host.app.get());
+        Check(host.renderer->presentParameters.MultiSampleType==legacySamples,"native AA preparation does not reset the D3D9 auxiliary device");
+        const auto file=output/(L"aa-"+std::to_wstring(algorithm)+L".bmp");
+        for(unsigned sample=0;sample<8;++sample)if(!RenderD3D12Native(host.app.get(),host.World()))throw std::runtime_error(D3D12NativeStatus());
+        Capture(host,file);const auto filtered=pixels(file);
+        Check(filtered!=off,"each enabled AA algorithm changes real GPU edge coverage");
+        Check(host.Child()==oldChild,"AA selection preserves the DX12 viewport");
+        depth.Verify();
+    }
+    host.app->antialiasing.enabled=false;
+    Capture(host,output/L"aa-disabled-again.bmp");
+    Check(pixels(output/L"aa-disabled-again.bmp")==off,"disabling AA restores the original unfiltered frame");
+    }
+    for(unsigned algorithm:{5u,8u,9u}) {
+        host.app->antialiasing.enabled=true;host.app->antialiasing.algorithm=antialias::Algorithm(algorithm);
+        host.app->CurrentFrame()=0;
+        const auto prefix=L"temporal-"+std::to_wstring(algorithm);
+        Capture(host,output/(prefix+L"-fresh.bmp"));const auto fresh=pixels(output/(prefix+L"-fresh.bmp"));
+        for(unsigned i=0;i<8;++i)Check(RenderD3D12Native(host.app.get(),host.World()),"warm moving-surface history");
+        geometry.bones[0].matInit[12]=1.4f;host.app->CurrentFrame()=1;
+        const DWORD exposed=Capture(host,output/(prefix+L"-moved.bmp"));
+        Check((exposed&0xffffff)==0,"moving geometry leaves no history at the newly exposed center");
+        geometry.bones[0].matInit[12]=0;host.app->CurrentFrame()=100;
+        Capture(host,output/(prefix+L"-seek.bmp"));
+        Check(pixels(output/(prefix+L"-seek.bmp"))==fresh,"timeline seek discards temporal history and restarts jitter");
+        host.app->viewportRender.automatic=false;host.app->viewportRender.percent=50;
+        Capture(host,output/(prefix+L"-resize.bmp"));
+        host.app->viewportRender.automatic=true;host.app->viewportRender.percent=100;
+        Capture(host,output/(prefix+L"-restore.bmp"));
+        Check(pixels(output/(prefix+L"-restore.bmp"))==fresh,"viewport resize resets history without a DX9 fallback");
+    }
+    MipChecks(host,geometry,output);
     std::puts("PASS optional hardware authored order, stable sorting and DX12 viewport continuity");
     return true;
 }
@@ -364,7 +418,7 @@ int wmain(int argc, wchar_t** argv) {
 #endif
         return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "FAIL d3d12_sort_policy_tests: %s (%u checks)\n", error.what(), checks);
+        std::fprintf(stderr, "FAIL d3d12_sort_policy_tests: %s (%u checks), status=%s\n", error.what(), checks, D3D12NativeStatus());
         return 1;
     }
 }

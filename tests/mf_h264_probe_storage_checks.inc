@@ -69,7 +69,7 @@ HRESULT WINAPI Factory(LPCWSTR url, IMFByteStream* stream, IMFAttributes* attrib
     openedPath = fs::path(url).lexically_normal();
     Check(openedPath.is_absolute() && openedPath.parent_path() == probeRoot &&
           openedPath.filename().wstring().find(L"MMS-encoder-probe-") == 0 && openedPath.extension() == L".mp4",
-          "actual Sink Writer URL is inside this copied installation data/encoder_probes");
+          "actual Sink Writer URL is inside this copied installation cache/encoder_probes");
     UINT32 hardware = 99;
     Check(SUCCEEDED(attributes->GetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, &hardware)) &&
           hardware == (expectedHardware ? TRUE : FALSE), "production preserves the requested hardware attribute");
@@ -126,7 +126,7 @@ void Run(const fs::path& outputArgument) {
     install = fs::canonical(fs::path(executable).parent_path());
     Check(Bytes(install / L"encoder-probe-test-installation.txt") == "MMS encoder probe test installation v1\n",
           "explicit copied installation marker has exact LF bytes");
-    Check(!fs::exists(install / L"data"), "copied installation starts without a data directory");
+    Check(!fs::exists(install / L"cache"), "copied installation starts without a cache directory");
     Check(outputArgument.is_absolute(), "output argument is absolute");
     const auto output = outputArgument.lexically_normal();
     Check(!fs::exists(output) && fs::is_directory(output.parent_path()) &&
@@ -134,7 +134,7 @@ void Run(const fs::path& outputArgument) {
           "output is fresh and separate from the copied installation");
     Check(fs::create_directory(output), "create only the fresh explicit output directory");
     Environment environment(fs::canonical(output));
-    probeRoot = install / L"data" / L"encoder_probes";
+    probeRoot = install / L"cache" / L"encoder_probes";
     std::printf("probe storage installation=%ls\noutput=%ls\n", install.c_str(), output.c_str());
     Check(MH_Initialize() == MH_OK, "initialize only process-local storage hooks");
     Hook(MFCreateSinkWriterFromURL, Factory);
@@ -145,14 +145,14 @@ void Run(const fs::path& outputArgument) {
     Check(MH_EnableHook(reinterpret_cast<void*>(GetModuleFileNameW)) == MH_OK, "inject unavailable executable location");
     const bool missingResult = CreateEncoderProbe(false, 16, 16, 30.f, 1000000, probe);
     Check(MH_DisableHook(reinterpret_cast<void*>(GetModuleFileNameW)) == MH_OK, "restore executable location lookup");
-    Check(!missingResult && !factoryCalls && Empty(probe) && !fs::exists(install / L"data"),
-          "unknown executable directory refuses before MF and creates no data tree");
+    Check(!missingResult && !factoryCalls && Empty(probe) && !fs::exists(install / L"cache"),
+          "unknown executable directory refuses before MF and creates no cache tree");
     environment.NoFallback();
-    CreateOwned(install / L"data");
+    CreateOwned(install / L"cache");
     Check(!CreateEncoderProbe(false, 16, 16, 30.f, 1000000, probe) && !factoryCalls && Empty(probe),
-          "a file occupying data prevents probe creation before MF");
-    RemoveOwned(install / L"data"); environment.NoFallback();
-    Check(fs::create_directory(install / L"data"), "create the owned data directory after removing its owned blocker");
+          "a file occupying cache prevents probe creation before MF");
+    RemoveOwned(install / L"cache"); environment.NoFallback();
+    Check(fs::create_directory(install / L"cache"), "create the owned cache directory after removing its owned blocker");
     CreateOwned(probeRoot);
     Check(!CreateEncoderProbe(false, 16, 16, 30.f, 1000000, probe) && !factoryCalls && Empty(probe),
           "a file occupying encoder_probes prevents probe creation before MF");

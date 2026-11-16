@@ -34,7 +34,7 @@
 // that copy, so the caller may delete the input file at any time afterwards.
 // The private directory is created on first use as
 //
-//     <executable directory>\data\mesh_bake_cache\
+//     <executable directory>\cache\mesh_bake_cache\
 //         mesh-cache-<process id>-<32 random hex digits>\
 //
 // and is only accepted when this process created it, so several running

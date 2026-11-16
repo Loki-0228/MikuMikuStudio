@@ -2,6 +2,7 @@
 #include "mikumikustudio/system_settings.hpp"
 #include "../app/settings_json.hpp"
 #include "mikumikustudio/antialias.hpp"
+#include "mikumikustudio/d3d12_native.hpp"
 #include "mikumikustudio/antialias_motion.hpp"
 #include "mikumikustudio/mmd_app.hpp"
 #include "mikumikustudio/ported_funcs.hpp"
@@ -708,12 +709,13 @@ static bool SelectInternal(MMDApp* app,Algorithm algorithm,std::wstring& error,b
     auto* r=app->Renderer();const auto previous=r->presentParameters;
     const unsigned samples=Samples(app,algorithm);
     const unsigned quality=algorithm==Algorithm::MmdOriginal?before.originalQuality:0;
+    const bool native=D3D12NativeEligible(app);
     bool ok=true;
-    if(algorithm<=Algorithm::Msaa8 && (samples!=unsigned(previous.MultiSampleType) || quality!=previous.MultiSampleQuality)) {
+    if(!native && algorithm<=Algorithm::Msaa8 && (samples!=unsigned(previous.MultiSampleType) || quality!=previous.MultiSampleQuality)) {
         r->presentParameters.MultiSampleType=D3DMULTISAMPLE_TYPE(samples);r->presentParameters.MultiSampleQuality=quality;
         ok=PostDeviceReset(app);
     }
-    if(ok && PostProcess(app->antialiasing))ok=SUCCEEDED(Ensure(app));
+    if(ok && !native && PostProcess(app->antialiasing))ok=SUCCEEDED(Ensure(app));
     if(!ok) {
         app->antialiasing=before;r->presentParameters=previous;Release(app);PostDeviceReset(app);
         error=app->EnglishUI()==2?L"无法启用此抗锯齿算法，已恢复之前的设置。":app->EnglishUI()==1?
@@ -761,6 +763,12 @@ bool Toggle(MMDApp* app,std::wstring& error) {
 void PrepareFrame(MMDApp* app) {
     if(build_profile::original)return;
     Initialize(app);
+    // Native AA owns its offscreen targets. Resetting the auxiliary D3D9
+    // device here invalidates textures before the native scene can upload them.
+    if(D3D12NativeEligible(app)) {
+        if(D3D12NativeNeedsFrame())app->state.messageSeen=1;
+        return;
+    }
     // A completed worker cannot post to a potentially destroyed window. Keep
     // polling on the UI thread until the requested frame resources exist.
     if(Initializing(app))app->state.messageSeen=1;

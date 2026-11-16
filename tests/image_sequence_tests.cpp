@@ -23,6 +23,7 @@
 #include "mikumikustudio/bone_key_pool.hpp"
 #include "mikumikustudio/key_pool.hpp"
 #include "mikumikustudio/frame_limits.hpp"
+#include "mikumikustudio/recording_state.hpp"
 #include "mikumikustudio/frame_presentation.hpp"
 #include "mikumikustudio/ui_scale.hpp"
 #include "ui_scale_popup_fixture.hpp"
@@ -44,6 +45,8 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include "btBulletDynamicsCommon.h"
+#include "negative_cursor_checks.hpp"
 
 extern "C" float ExpGetFrameTime();
 
@@ -143,10 +146,13 @@ void Capture(HWND dialog, const fs::path& path) {
 }
 seq::DialogContext* dialogContext = nullptr;
 bool cancelDialog = false;
+int earliestDialogPhysicsFrame = 0;
 INT_PTR CALLBACK Probe(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
     if (message != WM_INITDIALOG) return seq::DialogProc(dialog, message, wp, lp);
     seq::DialogProc(dialog, message, wp, lp);
     auto& c = *dialogContext;
+    Check(Read(dialog, panel::kExportPhysicsStartEdit) == std::to_wstring(earliestDialogPhysicsFrame) &&
+        !IsWindowEnabled(GetDlgItem(dialog, panel::kExportPhysicsStartEdit)), "sequence pre-roll defaults to the earliest registered frame");
     Check(Read(dialog, panel::kAviWidthEdit) == L"1920" && Read(dialog, panel::kAviHeightEdit) == L"1080", "dialog dimensions initialized once");
     Check(SendDlgItemMessageW(dialog, seq::FormatCombo, CB_GETCOUNT, 0, 0) == 7, "seven single-image formats");
     wchar_t selected[32]{};
@@ -170,6 +176,18 @@ INT_PTR CALLBACK Probe(HWND dialog, UINT message, WPARAM wp, LPARAM lp) {
     expectWarning = true; seq::DialogProc(dialog, WM_COMMAND, IDOK, 0); expectWarning = false;
     Check(!seq::Active(c.app), "invalid FPS does not arm export");
     SetDlgItemTextW(dialog, panel::kAviFpsEdit, L"29.97");
+    CheckDlgButton(dialog, panel::kExportPhysicsStartCheckbox, BST_CHECKED);
+    seq::DialogProc(dialog, WM_COMMAND, MAKEWPARAM(panel::kExportPhysicsStartCheckbox, BN_CLICKED), 0);
+    Check(IsWindowEnabled(GetDlgItem(dialog, panel::kExportPhysicsStartEdit)), "sequence physics frame input follows its checkbox");
+    for (const auto* invalid : {L"1", L"-1.5", L"-", L"-2147483648"}) {
+        SetDlgItemTextW(dialog, panel::kExportPhysicsStartEdit, invalid);
+        expectWarning = true; seq::DialogProc(dialog, WM_COMMAND, IDOK, 0); expectWarning = false;
+        Check(!seq::Active(c.app), "later, fractional, incomplete and overflowing physics frames are rejected");
+    }
+    SetDlgItemTextW(dialog, panel::kExportPhysicsStartEdit, L"");
+    for (wchar_t ch : std::wstring(L"-60"))
+        SendDlgItemMessageW(dialog, panel::kExportPhysicsStartEdit, WM_CHAR, ch, 0);
+    Check(Read(dialog, panel::kExportPhysicsStartEdit) == L"-60", "sequence physics input accepts a typed minus sign");
     CheckDlgButton(dialog, panel::kAviCloseAfterExportCheckbox, BST_CHECKED);
     seq::DialogProc(dialog, WM_COMMAND, IDOK, 0);
     return TRUE;
@@ -186,7 +204,8 @@ void DialogTests(MMDApp* app) {
             Check(result == (cancel ? IDCANCEL : IDOK), "real dialog completes through production callback");
             Check(seq::Active(app) == !cancel, "cancel does not prepare export");
             if (!cancel) Check(c.options.width == 640 && c.options.height == 360 &&
-                c.options.prefix == L"镜头A_" && c.options.fps == 29.97f && c.options.closeAfterExport,
+                c.options.prefix == L"镜头A_" && c.options.fps == 29.97f && c.options.closeAfterExport &&
+                c.options.physicsStartEnabled && c.options.physicsStart == (std::min)(-60, earliestDialogPhysicsFrame),
                 "dialog commits all displayed settings");
             seq::Abort(app);
         }
@@ -199,7 +218,16 @@ void DialogTests(MMDApp* app) {
         GetMenuStringW(file, seq::kMenuCommand, menuText, 128, MF_BYCOMMAND);
         if (language == 2) Check(std::wstring(menuText) == L"导出图片序列(&I)…", "Chinese sequence export naming is consistent");
     }
-    Check(warnings == 3, "all three languages reject invalid FPS");
+    Check(warnings == 15, "all three languages reject invalid FPS and physics frame inputs");
+    Check(negative_frames::RegisterGlobal(app, negative_frames::Global::Gravity, -90), "register earlier project frame for dialog default");
+    earliestDialogPhysicsFrame = -90;
+    seq::DialogContext c{app, app->SceneGeneration()}; c.options.directory = output.wstring();
+    c.options.width = 1920; c.options.height = 1080; c.options.end = 500;
+    dialogContext = &c; cancelDialog = false;
+    Check(UiDialogBoxParamA(GetModuleHandleW(nullptr), MAKEINTRESOURCEA(seq::kDialog), app->MainWindow(),
+        Probe, reinterpret_cast<LPARAM>(&c)) == IDOK && c.options.physicsStart == -90,
+        "dialog begins at the earliest key and corrects a later typed physics start");
+    seq::Abort(app); negative_frames::Reset(app); earliestDialogPhysicsFrame = 0;
 }
 void NamesAndValidation(MMDApp* app) {
     seq::Options o; o.directory = output.wstring(); o.width = 64; o.height = 48;
@@ -223,6 +251,15 @@ void NamesAndValidation(MMDApp* app) {
     o.prefix = L""; Check(seq::Validate(app, o, error), "empty prefix permitted");
     o.fps = 0; Check(!seq::Validate(app, o, error), "zero FPS rejected");
     o.fps = 30; o.start = 600; Check(!seq::Validate(app, o, error), "reversed range rejected");
+    o.start = 10; o.end = 20; o.physicsStartEnabled = true;
+    for (int start : {INT_MIN, 11, INT_MAX}) {
+        o.physicsStart = start;
+        Check(!seq::Validate(app, o, error), "physics start outside output pre-roll range rejected");
+    }
+    for (int start : {frame_limits::minimum, -60, -1, 0, 5, 10}) {
+        o.physicsStart = start;
+        Check(seq::Validate(app, o, error), "valid physics start accepted independently of output range");
+    }
 }
 void Start(MMDApp* app, const seq::Options& o) {
     std::wstring error;
@@ -878,6 +915,7 @@ void StillImageLanguageTests(MMDApp* app) {
 #include "transparent_capture_failure_checks.hpp"
 #include "antialias_image_sequence_checks.hpp"
 #include "image_sequence_continuity_checks.hpp"
+#include "export_physics_preroll_checks.hpp"
 #include "image_export_render_state_checks.inc"
 
 void StillImageReentryTests(MMDApp* app) {
@@ -1878,6 +1916,7 @@ static int RunImageSequenceTests(int argc, wchar_t** argv) {
     MenuEntryTests(app);
     CheckImageExportRenderState(app);
     CameraAndContinuityTests(app);
+    ExportPhysicsPrerollTests(app);
     StillImageLanguageTests(app);
     TransparentImages(app);
     TransparentStillFailures(app);

@@ -1,5 +1,6 @@
 #include "manifest.hpp"
 #include "legacy_discovery.hpp"
+#include "loader_win32.hpp"
 #include <charconv>
 #include <iterator>
 
@@ -235,10 +236,38 @@ Discovery Discover(const fs::path& directory, bool useCache) {
             if (!Plain(p)) continue;
             if (fs::is_directory(p)) {
                 // LEGACY is an explicit namespace, with its own depth origin.
-                // Ordinary PLUGINS folders never infer plugins from raw DLLs.
+                // Ordinary folders never infer legacy plugins from raw DLLs.
                 if (!legacy && !depth && Lower(p.filename().native()) == L"legacy") scan(p, 0, true);
                 else if (depth < result.config.maxDepth) scan(p, depth + 1, legacy);
-            } else if (legacy && !flatManifest && Lower(p.extension().native()) == L".dll") automatic.Inspect(p);
+            } else if (!flatManifest) {
+                // Bundled components have explicit static markers. Directory
+                // names are user-controlled; other loose DLLs are not inferred.
+                const auto name = Lower(p.filename().native());
+                if (name != L"dx12mmepatch.dll" && name != L"mmsfirstpersoncamera.dll") {
+                    if (legacy && Lower(p.extension().native()) == L".dll") automatic.Inspect(p);
+                    continue;
+                }
+                try {
+                    const auto entry = PackageFile(dir, Utf8(p.filename().native()));
+                    Manifest m; m.file = m.entry = entry; m.package = dir;
+                    if (name == L"dx12mmepatch.dll") {
+                        if (!HasPatch4MmsStartup(entry)) throw std::invalid_argument("missing Patch4MMS automatic-start marker");
+                        m.id = "patch4mms"; m.name = "dx12mmepatch"; m.version = {0, 2, 0};
+                        m.minWindows = {10, 0, 0}; m.startupRenderBackend = "mme-d3d9on12";
+                        m.capabilities = {"render.observe"}; m.services = {{"mms.render.mme.on12", 1, 0}};
+                    } else {
+                        const auto exports = InspectLegacyExports(entry);
+                        if (!exports.count("MMSLegacyCameraAdapterVersion") || !exports.count("version") ||
+                                !exports.count("create4") || !exports.count("destroy4"))
+                            throw std::invalid_argument("missing MMS camera adapter markers");
+                        m.kind = Manifest::Kind::LegacyMmdPlugin; m.major = 4;
+                        m.id = "org.mikumikustudio.legacy.first-person-camera"; m.name = "FirstPersonCamera (MMS)";
+                        m.version = {1, 0, 0}; m.minWindows = {6, 1, 0};
+                        m.legacyProfile = "first_person_camera_v4"; m.legacyEntrySha256 = Sha256(entry);
+                    }
+                    result.packages.push_back(std::move(m));
+                } catch (const std::exception& e) { fail(Utf8(p.native()) + ": " + e.what()); }
+            }
         }
     };
     try { scan(root, 0, false); } catch (const std::exception& e) { fail(e.what()); result.packages.clear(); }

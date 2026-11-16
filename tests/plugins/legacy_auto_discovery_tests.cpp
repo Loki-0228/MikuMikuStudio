@@ -34,6 +34,12 @@ int wmain(int argc, wchar_t** argv) {
         Check(discovered.inspectedDlls == 1 && discovered.cachedDlls == 0, "cold recognition counters");
         auto warm = Discover(plugins);
         Check(warm.inspectedDlls == 0 && warm.cachedDlls == 1 && warm.packages.size() == 1, "persistent warm cache");
+        const auto cache = install.root / L"cache/plugins/legacy-discovery.json";
+        Check(fs::is_regular_file(cache) && !fs::exists(install.root / L"data"), "discovery cache is separate from persistent data");
+        Check(fs::remove(cache), "remove only the isolated discovery cache");
+        auto rebuilt = Discover(plugins);
+        Check(rebuilt.inspectedDlls == 1 && rebuilt.cachedDlls == 0 && rebuilt.packages.size() == 1 && fs::is_regular_file(cache),
+            "missing cache is rebuilt without changing plugin discovery");
         const auto id = discovered.packages.front().id;
         std::ofstream(plugins / L"config.json") << "{\"schemaVersion\":1,\"maxDepth\":2,\"disabledPlugins\":[\"" << id << "\"]}";
         auto disabled = Discover(plugins);
@@ -62,7 +68,7 @@ int wmain(int argc, wchar_t** argv) {
             "changed DLL must invalidate only its own record");
         Check(!changed.diagnostics.empty(), "unsupported ABI 4 must be reported");
         fs::copy_file(argv[1], folder / L"MMDFirstPersonCamera.dll", fs::copy_options::overwrite_existing);
-        std::ofstream(install.root / L"data/plugins/legacy-discovery.json") << "broken cache";
+        std::ofstream(install.root / L"cache/plugins/legacy-discovery.json") << "broken cache";
         auto repaired = Discover(plugins);
         Check(repaired.packages.size() == 1 && repaired.inspectedDlls == 2, "corrupt cache must rebuild");
         fs::rename(folder, folder.parent_path() / L"自由分组");

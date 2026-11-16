@@ -122,7 +122,9 @@ def main():
             trace = (directory / "runtime.log").read_text(encoding="utf-8", errors="replace")
             case["actualDeviceOn12"] = "MME_BACKEND D3D12 active via D3D9On12" in trace
             case["passed"] &= case["actualDeviceOn12"]
-        case["cacheDlls"] = [str(p.relative_to(directory)) for p in (directory / "data").rglob("*.dll")]
+        case["cacheDlls"] = [str(p.relative_to(directory)) for p in (directory / "cache").rglob("*.dll")]
+        case["cacheSeparated"] = bool(case["cacheDlls"]) and not any((directory / "data").rglob("*.dll"))
+        case["passed"] &= case["cacheSeparated"]
         stable = list((directory / "data/plugins/legacy_mme/settings").glob("*/MMEffect.ini"))
         case["stableSettings"] = len(stable) == 1 and "wide=retained" in stable[0].read_text(encoding="utf-8", errors="replace")
         case["passed"] = case["passed"] and case["stableSettings"]
@@ -136,7 +138,7 @@ def main():
                     env=environment, stdin=subprocess.DEVNULL, stdout=out,
                     stderr=subprocess.STDOUT, timeout=90, creationflags=subprocess.CREATE_NO_WINDOW)
             case["upgradeExitCode"] = upgrade.returncode
-            generations = [p for p in (directory / "data/plugins/legacy_mme").iterdir() if p.is_dir() and len(p.name) == 64]
+            generations = [p for p in (directory / "cache/plugins/legacy_mme").iterdir() if p.is_dir() and len(p.name) == 64]
             case["upgradeRetainedSettings"] = upgrade.returncode == 0 and len(generations) == 2 and len(stable) == 1 and \
                 stable[0].read_text(encoding="utf-8", errors="replace").count("wide=retained") >= 2 and \
                 all(not (p / "MMEffect.ini").exists() for p in generations)
@@ -184,6 +186,20 @@ def main():
                 stable[0].unlink()
                 backup.rename(stable[0])
             case["passed"] = case["passed"] and case["lockedPreferencesRefused"] and case["unattributedPreferencesRefused"] and case["hardlinkedPreferencesRefused"]
+        if case["passed"] and index == 0:
+            # Make the generated cache absent while retaining all settings.
+            # Keep the old cache as evidence instead of deleting test files.
+            preferences_before = stable[0].read_bytes()
+            (directory / "cache").rename(directory / "cache-before-rebuild")
+            with (directory / "rebuild.log").open("wb") as out:
+                rebuilt = subprocess.run([str(exe), str(model), "1", "--legacy-package", "--"+args.backend], cwd=directory,
+                    env=environment, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                    timeout=90, creationflags=subprocess.CREATE_NO_WINDOW)
+            case["cacheRebuiltWithSettings"] = rebuilt.returncode == 0 and \
+                bool(list((directory / "cache/plugins/legacy_mme").glob("*/*.dll"))) and \
+                stable[0].read_bytes().count(b"wide=retained") > preferences_before.count(b"wide=retained") and \
+                not any((directory / "data").rglob("*.dll"))
+            case["passed"] &= case["cacheRebuiltWithSettings"]
         report["cases"].append(case)
         print(name, case["passed"], case.get("exitCode"), flush=True)
         if not case["passed"]:

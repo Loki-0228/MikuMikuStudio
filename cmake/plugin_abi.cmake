@@ -34,8 +34,13 @@ add_custom_command(TARGET mms_first_person_camera POST_BUILD
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_legacy_camera.cmake"
     VERBATIM)
 install(TARGETS mms_first_person_camera RUNTIME DESTINATION PLUGINS/first-person-camera)
-install(FILES "$<TARGET_FILE_DIR:mms_first_person_camera>/plugin.json"
-    src/legacy_first_person/LICENSE src/legacy_first_person/README.md
+add_custom_target(mms_camera_remove_manifest
+    COMMAND "${CMAKE_COMMAND}" -E rm -f
+        "${CMAKE_BINARY_DIR}/$<CONFIG>/PLUGINS/first-person-camera/plugin.json"
+    VERBATIM)
+add_dependencies(mms_first_person_camera mms_camera_remove_manifest)
+install(CODE "file(REMOVE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/PLUGINS/first-person-camera/plugin.json\")")
+install(FILES src/legacy_first_person/LICENSE src/legacy_first_person/README.md
     DESTINATION PLUGINS/first-person-camera)
 add_dependencies(MikuMikuStudio mms_first_person_camera)
 add_executable(legacy_auto_discovery_tests EXCLUDE_FROM_ALL tests/plugins/legacy_auto_discovery_tests.cpp)
@@ -1185,6 +1190,8 @@ add_executable(mme_startup_tests EXCLUDE_FROM_ALL tests/plugins/mme_startup_test
 target_include_directories(mme_startup_tests PRIVATE src/plugins)
 target_link_libraries(mme_startup_tests PRIVATE mms_plugin_runtime)
 add_dependencies(mme_startup_tests mme_startup_bridge)
+add_dependencies(mme_startup_tests mms_patch4mms mms_first_person_camera)
+add_test(NAME mme_startup_discovery COMMAND mme_startup_tests "$<TARGET_FILE:mms_patch4mms>" discovery "$<TARGET_FILE:mme_startup_bridge>" "$<TARGET_FILE:mms_first_person_camera>")
 set_target_properties(mme_startup_tests mme_startup_bridge PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests/$<CONFIG>")
 foreach(scenario dx9 disabled missing bridge-missing deny fallback disable-failed hardware)
     add_test(NAME mme_startup_${scenario} COMMAND mme_startup_tests "$<TARGET_FILE:mme_startup_bridge>" "${scenario}")

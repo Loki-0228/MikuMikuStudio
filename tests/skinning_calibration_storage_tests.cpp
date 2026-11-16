@@ -313,13 +313,13 @@ int wmain(int argc, wchar_t** argv) {
     const auto install = InstallDirectory();
     const auto marker = Bytes(install / L"calibration-test-installation.txt");
     Check(std::string(marker.begin(), marker.end()) == "MMS calibration test installation v1\n", "require explicit copied-installation marker");
-    const auto data = install / L"data", local = data / L"processor-config-MMS-v1.bin";
-    Check(!fs::exists(data), "copied installation must have no preexisting data directory");
+    const auto cacheRoot = install / L"cache", local = cacheRoot / L"processor-config-MMS-v1.bin";
+    Check(!fs::exists(cacheRoot), "copied installation must have no preexisting cache directory");
     const fs::path supplied(argv[2]);
     Check(supplied.is_absolute(), "storage output must be an absolute path");
     const auto out = supplied.lexically_normal();
-    Check(!fs::exists(out) && fs::is_directory(out.parent_path()) && out != install && out != data,
-        "output must be a fresh directory separate from installation data");
+    Check(!fs::exists(out) && fs::is_directory(out.parent_path()) && out != install && out != cacheRoot,
+        "output must be a fresh directory separate from installation cache");
     Check(fs::create_directory(out), "create only new evidence output");
     Environment environment(out);
     Check(!fs::equivalent(environment.cwd, install) && !fs::equivalent(environment.temp, install), "runtime directories differ from installation");
@@ -339,23 +339,23 @@ int wmain(int argc, wchar_t** argv) {
     Check(!skin::startupAttempted && device.allocations == 0 && skin::GetStartupMeasurements().empty(), "null arguments do not consume startup or load any cache");
     skin::SetPreference({skin::Mode::Cpu}); skin::InitializeAutomatic(app.get(), &device);
     Check(!skin::startupAttempted && device.allocations == 0 && skin::GetStartupMeasurements().empty(), "explicit CPU preference does not calibrate or import cache");
-    Check(!fs::exists(data) && Bytes(legacy) == legacyBytes, "startup guards leave installation and legacy witness unchanged");
+    Check(!fs::exists(cacheRoot) && Bytes(legacy) == legacyBytes, "startup guards leave installation and legacy witness unchanged");
 
     Miss(*app, device);
-    Check(!fs::exists(local) && !fs::exists(data) && Bytes(legacy) == legacyBytes, "missing local cache never migrates the valid legacy witness");
-    Check(cache::Path(L"MMS") == local, "production cache path uses this executable's lowercase data directory");
+    Check(!fs::exists(local) && !fs::exists(cacheRoot) && Bytes(legacy) == legacyBytes, "missing local cache never migrates the valid legacy witness");
+    Check(cache::Path(L"MMS") == local, "production cache path uses this executable's lowercase cache directory");
     NoFallback(environment);
 
-    const std::string obstruction = "MMS owned calibration data obstruction\n";
-    NewFile(data, obstruction);
+    const std::string obstruction = "MMS owned calibration cache obstruction\n";
+    NewFile(cacheRoot, obstruction);
     Miss(*app, device);
-    const auto blocked = Bytes(data);
+    const auto blocked = Bytes(cacheRoot);
     Check(std::string(blocked.begin(), blocked.end()) == obstruction && Bytes(legacy) == legacyBytes,
         "blocked local storage preserves obstruction and does not borrow legacy measurements");
-    Check(DeleteFileW(data.c_str()) != FALSE, "remove only the verified owned obstruction file");
+    Check(DeleteFileW(cacheRoot.c_str()) != FALSE, "remove only the verified owned obstruction file");
     NoFallback(environment);
 
-    Check(fs::create_directory(data), "create new installation data for the corrupt-cache case");
+    Check(fs::create_directory(cacheRoot), "create new installation cache for the corrupt-cache case");
     NewFile(local, "MMS deliberately truncated calibration\n");
     const auto corrupt = Bytes(local);
     Miss(*app, device);
@@ -377,6 +377,6 @@ int wmain(int argc, wchar_t** argv) {
     NoFallback(environment);
     skin::Shutdown();
     std::printf("install=%ls\nlocal=%ls\nlegacy_witness=%ls\n", install.c_str(), local.c_str(), legacy.c_str());
-    std::printf("PASS: %u checks; real startup cache selection, failed allocation, CPU fallback and isolated data; no GPU enumeration or hardware benchmark\n", checks);
+    std::printf("PASS: %u checks; real startup cache selection, failed allocation, CPU fallback and isolated cache; no GPU enumeration or hardware benchmark\n", checks);
     return 0;
 }

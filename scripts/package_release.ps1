@@ -40,7 +40,7 @@ foreach ($build in $builds) {
         throw "构建目录不属于当前源码或构建档错误：$($build.Path)"
     }
     if ($platform -ne 'x64') { throw "发布包要求 x64 构建：$($build.Path)" }
-    if (-not (Test-Path -LiteralPath (Join-Path $build.Path 'Release/MikuMikuDance.exe'))) {
+    if (-not (Test-Path -LiteralPath (Join-Path $build.Path 'Release/MikuMikuStudio.exe'))) {
         throw "缺少 Release 程序：$($build.Path)"
     }
 }
@@ -61,7 +61,7 @@ foreach ($build in $builds) {
     $name = 'MikuMikuStudio-' + $Version + '-windows-x64-' + $build.Name
     $stage = Join-Path $output $name
     New-Item -ItemType Directory -Path $stage | Out-Null
-    Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MikuMikuDance.exe') -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MikuMikuStudio.exe') -Destination $stage
     Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MMDFacade.dll') -Destination $stage
     Copy-Item -LiteralPath (Join-Path $build.Path 'Release/MMHack.dll') -Destination $stage
     $pluginRoot = Join-Path $stage 'PLUGINS'
@@ -71,8 +71,13 @@ foreach ($build in $builds) {
     Copy-Item -LiteralPath (Join-Path $build.Path 'Release/PLUGINS/LEGACY/MMDPlugin.dll') -Destination $legacyMmdRoot
     $cameraRoot = Join-Path $pluginRoot 'first-person-camera'
     New-Item -ItemType Directory -Path $cameraRoot | Out-Null
-    foreach ($cameraFile in @('MMSFirstPersonCamera.dll', 'plugin.json', 'LICENSE', 'README.md')) {
+    foreach ($cameraFile in @('MMSFirstPersonCamera.dll', 'LICENSE', 'README.md')) {
         Copy-Item -LiteralPath (Join-Path $build.Path "Release/PLUGINS/first-person-camera/$cameraFile") -Destination $cameraRoot
+    }
+    $patchRoot = Join-Path $pluginRoot 'dx12mmepatch'
+    New-Item -ItemType Directory -Path $patchRoot | Out-Null
+    foreach ($patchFile in @('dx12mmepatch.dll', 'README.md')) {
+        Copy-Item -LiteralPath (Join-Path $build.Path "Release/PLUGINS/dx12mmepatch/$patchFile") -Destination $patchRoot
     }
     [IO.File]::WriteAllText((Join-Path $pluginRoot 'config.json'), '{"schemaVersion":1,"maxDepth":2,"disabledPlugins":[]}' + "`n")
     Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination $stage
@@ -81,18 +86,18 @@ foreach ($build in $builds) {
     $readme = @"
 # MikuMikuStudio $Version ($($build.Name))
 
-Windows x64 ${releaseLabelZh}。解压到独立目录后运行 MikuMikuDance.exe。
+Windows x64 ${releaseLabelZh}。解压到独立目录后运行 MikuMikuStudio.exe。
 完整包与最小包请分别解压。已有设置、模型和插件的安装目录请保留。
 两个主程序包均不含英伟达修复插件。需要时单独下载 MMSNvidiaAAFix.dll，安装方法见 RELEASE_NOTES.md。
 更新内容、使用限制与安装方法见 RELEASE_NOTES.md，源码提交和文件校验值见 RELEASE_BUILD.json。
 
 Windows x64 ${releaseLabelEn}. Extract full and minimal into separate directories.
-Run MikuMikuDance.exe. Keep existing installations that contain settings, models, or plugins.
+Run MikuMikuStudio.exe. Keep existing installations that contain settings, models, or plugins.
 Neither application package includes the NVIDIA fix. Download MMSNvidiaAAFix.dll separately if needed; see RELEASE_NOTES.md for installation.
 See RELEASE_NOTES.md for changes, usage limits, and installation instructions.
 
 Windows x64 ${releaseLabelJa}。完全版と最小版は別々のフォルダーに展開してください。
-MikuMikuDance.exe を実行します。設定やモデル、プラグインを含む既存の環境は残してください。
+MikuMikuStudio.exe を実行します。設定やモデル、プラグインを含む既存の環境は残してください。
 NVIDIA 修正 DLL は両パッケージに含まれません。必要な場合のみ別途ダウンロードし、導入方法は RELEASE_NOTES.md を参照してください。
 変更内容、利用上の制限、導入方法は RELEASE_NOTES.md、ソースコミットは RELEASE_BUILD.json を参照してください。
 

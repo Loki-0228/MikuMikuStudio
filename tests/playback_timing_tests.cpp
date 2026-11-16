@@ -4,6 +4,8 @@
 #include "mikumikustudio/ported_funcs.hpp"
 #include "mikumikustudio/recording_state.hpp"
 #include "mikumikustudio/frame_rate.hpp"
+#include "../src/window/playback_timing_ui.hpp"
+#include "../src/window/physics_settings_controls.hpp"
 #if !MMD_ORIGINAL_PROFILE
 #include "../src/animation/native_camera_sampling.hpp"
 #endif
@@ -24,6 +26,46 @@ void Check(bool value, const char* label) {
     if (value) return;
     ++failures;
     std::printf("FAIL %s\n", label);
+}
+
+bool cancelSettings = false;
+int settingsDialogs = 0;
+LRESULT CALLBACK HideSettings(int code,WPARAM wp,LPARAM lp) {
+    if (code==HCBT_CREATEWND) {
+        auto* creation=reinterpret_cast<CBT_CREATEWNDW*>(lp)->lpcs;
+        if (!(creation->style&WS_CHILD)) creation->style&=~WS_VISIBLE;
+    }
+    return CallNextHookEx(nullptr,code,wp,lp);
+}
+LRESULT CALLBACK SettingsHook(int code,WPARAM wp,LPARAM lp) {
+    if (code>=0) {
+        const auto& message=*reinterpret_cast<CWPRETSTRUCT*>(lp);
+        if (message.message==WM_INITDIALOG && GetDlgItem(message.hwnd,physics_settings_controls::Rate)) {
+            ++settingsDialogs;
+            SetDlgItemTextW(message.hwnd,physics_settings_controls::Rate,L"960");
+            SetDlgItemTextW(message.hwnd,physics_settings_controls::Iterations,L"25");
+            SendMessageW(message.hwnd,WM_COMMAND,cancelSettings?IDCANCEL:IDOK,0);
+        }
+    }
+    return CallNextHookEx(nullptr,code,wp,lp);
+}
+void LiveSettingsDialog() {
+    auto app=std::make_unique<MMDApp>(); app->state=MMDAppState{};
+    auto hide=SetWindowsHookExW(WH_CBT,HideSettings,nullptr,GetCurrentThreadId());
+    auto inspect=SetWindowsHookExW(WH_CALLWNDPROCRET,SettingsHook,nullptr,GetCurrentThreadId());
+    Check(hide && inspect,"install hooks on the test's own dialogs");
+    for(int language:{0,1,2}) {
+        app->EnglishUI()=language; app->PlaybackTiming()=playback_timing::Settings{};
+        cancelSettings=true; playback_timing_ui::HandleCommand(app.get(),32925);
+        Check(app->PlaybackTiming().physics.baseRateHz==60 && app->PlaybackTiming().physics.solverIterations==10,
+              "Cancel preserves live physics settings");
+        cancelSettings=false; playback_timing_ui::HandleCommand(app.get(),32925);
+        const auto& settings=app->PlaybackTiming();
+        Check(settings.physics.baseRateHz==960 && settings.physics.solverIterations==25 && !settings.followPlaybackFps,
+              "live dialog applies rate and iterations separately in every language");
+    }
+    UnhookWindowsHookEx(inspect); UnhookWindowsHookEx(hide);
+    Check(settingsDialogs==6,"live settings dialogs complete without extra prompts");
 }
 
 struct Result {
@@ -92,6 +134,7 @@ Result Simulate(int playbackFps, int outputFps, bool recording, bool noise = fal
 
     auto& timing = app->PlaybackTiming();
     timing.playbackFps = playbackFps;
+    timing.physics.solverIterations = 23;
     timing.physics.erp = .3f;
     timing.physics.cfm = .001f;
     timing.followPlaybackFps = followPlayback;
@@ -122,8 +165,9 @@ Result Simulate(int playbackFps, int outputFps, bool recording, bool noise = fal
         PhysicsFrame(app.get(), 0);
     }
     if (!pluginOwnsPhysics) {
-        Check(world.getSolverInfo().m_erp == .3f && world.getSolverInfo().m_globalCfm == .001f,
-              "live native physics receives configured ERP and CFM");
+        const auto tuned=bake::SolverSettings(timing.physics,playback_timing::PhysicsRate(timing));
+        Check(world.getSolverInfo().m_erp == tuned.erp && world.getSolverInfo().m_globalCfm == tuned.cfm && world.getSolverInfo().m_numIterations == 23,
+              "live native physics receives independent ERP, CFM and iteration settings");
     }
     const Result result{body.getWorldTransform().getOrigin(),
         app->PlaybackPhysicsClock().step, app->PlaybackCursorSeconds() * 30};
@@ -210,6 +254,7 @@ void CheckCompletedPresentation() {
 }  // namespace
 
 int main() {
+    LiveSettingsDialog();
     // The conversion to seconds and back can round up at 31 and down at 123.
     CheckRecordingStartKey(31);
     CheckRecordingStartKey(123);

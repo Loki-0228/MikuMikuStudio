@@ -1,4 +1,5 @@
 #include "baking_menu_commands.hpp"
+#include "physics_settings_controls.hpp"
 #include "mikumikustudio/frame_limits.hpp"
 #include "mikumikustudio/ui_translation.hpp"
 #define WIN32_LEAN_AND_MEAN
@@ -27,7 +28,7 @@
 namespace mikumikustudio::bake {
 namespace {
 constexpr int Start=100,End=101,Last=102,Keys=104,Selected=105,Presets=106,Advanced=107,Details=108,
-    Bar=109,Status=110,Erp=120,Cfm=121,Substeps=122,Multiplier=123,BaseRate=124,Rate=125,Name=126,Save=127,Load=128,Help=129,
+    Bar=109,Status=110,Name=126,Save=127,Load=128,
     ClearCurrent=130,ClearAll=131,ClearNote=132,Info=133,
     Step=140,Channels=141,ChannelSummary=142,Preview=145,
     GroupList=160,FieldList=161,FieldAll=162,FieldNone=163,ChannelNote=164,GroupLabel=165,GroupAll=167;
@@ -37,6 +38,7 @@ constexpr int MainHeight(BakeKind kind) { return OptionsRow(kind)+118; }
 bool previewEnabled = true;
 struct Context {
     MMDApp* app{};Request request;bool advanced=false,details=false,running=false,cancel=false,clear=false,channels=false;
+    physics_settings_controls::Editor controls;
     BakeKind kind=BakeKind::Keyframes;
     bool sceneKeyframes=false;
     HWND tooltip{};std::map<int,std::wstring> tips;
@@ -54,14 +56,6 @@ std::wstring Value(HWND dlg,int id) {
     std::wstring text(n+1,L'\0');GetWindowTextW(edit,text.data(),n+1);text.resize(n);return text;
 }
 void Set(HWND dlg,int id,const std::wstring& value){SetDlgItemTextW(dlg,id,value.c_str());}
-std::wstring Number(float v){char text[64];const auto formatted=std::to_chars(text,text+sizeof text,v);return std::wstring(text,formatted.ptr);}
-bool Real(HWND dlg,int id,float& value) {
-    auto text=Value(dlg,id);wchar_t* end=nullptr;auto locale=_create_locale(LC_NUMERIC,"C");
-    double parsed=_wcstod_l(text.c_str(),&end,locale);_free_locale(locale);
-    while(end && iswspace(*end))++end;
-    if(text.empty() || end==text.c_str() || !end || *end || !std::isfinite(parsed) || std::abs(parsed)>1e30)return false;
-    value=static_cast<float>(parsed);return std::isfinite(value);
-}
 bool Integer(HWND dlg,int id,int& value){char text[256]{};GetDlgItemTextA(dlg,id,text,sizeof text);return frame_limits::Parse(text,value);}
 HWND Control(HWND dlg,const wchar_t* kind,const wchar_t* text,DWORD style,int id,int x,int y,int w,int h) {
     RECT r{x,y,x+w,y+h};MapDialogRect(dlg,&r);
@@ -209,10 +203,12 @@ void SyncGroups(HWND d,Context& c) {
 const wchar_t* SettingMessage(Context& c,SettingsError e) {
     switch(e){
     case SettingsError::InvalidErp:return Text(c,L"ERP 必须是 0 到 1 之间的有限数值。",L"ERP must be a finite value from 0 to 1.",L"ERP は 0～1 の有限数値を入力してください。");
-    case SettingsError::InvalidCfm:return Text(c,L"CFM 必须是 0 到 1000000 之间的有限数值。",L"CFM must be a finite value from 0 to 1000000.",L"CFM は 0～1000000 の有限数値を入力してください。");
-    case SettingsError::InvalidSubsteps:return Text(c,L"物理子步数必须是 1 到 16 的整数。",L"Physics substeps must be an integer from 1 to 16.",L"物理サブステップ数は 1～16 の整数を入力してください。");
-    case SettingsError::InvalidMultiplier:return Text(c,L"内部计算倍率必须是 1 到 16 的整数。",L"The simulation rate multiplier must be an integer from 1 to 16.",L"内部計算倍率は 1～16 の整数を入力してください。");
-    case SettingsError::InvalidBaseRate:return Text(c,L"基准频率必须为 30 或 60 Hz。",L"The base rate must be 30 or 60 Hz.",L"基本周波数は 30 または 60 Hz です。");
+    case SettingsError::InvalidCfm:return Text(c,L"CFM 必须是非负有限数值。",L"CFM must be finite and nonnegative.",L"CFM は非負の有限数値を入力してください。");
+    case SettingsError::InvalidSubsteps:return Text(c,L"物理子步数必须是 正整数。",L"Physics substeps must be a positive integer.",L"物理サブステップ数は 正の整数を入力してください。");
+    case SettingsError::InvalidMultiplier:return Text(c,L"内部计算倍率必须是 正整数。",L"The simulation rate multiplier must be a positive integer.",L"内部計算倍率は 正の整数を入力してください。");
+    case SettingsError::InvalidReferenceRate:
+    case SettingsError::InvalidBaseRate:return Text(c,L"有效物理帧率须为可表示的正整数。",L"The effective physics rate must be a representable positive integer.",L"有効物理周波数は表現可能な正の整数です。");
+    case SettingsError::InvalidIterations:return Text(c,L"迭代次数须为正整数。",L"Iterations must be a positive integer.",L"反復回数は正の整数です。");
     case SettingsError::InvalidName:return Text(c,L"预设名称不得超过 128 个字符或包含控制字符。",L"Use a preset name of up to 128 characters without control characters.",L"プリセット名は制御文字を含まない 128 文字以内にしてください。");
     case SettingsError::IoRead:return Text(c,L"无法读取预设文件。请检查文件路径和读取权限。",L"Cannot read the preset. Check the path and read permissions.",L"プリセットを読み込めません。パスと読み取り権限を確認してください。");
     case SettingsError::IoWrite:return Text(c,L"无法保存预设。请检查目标文件夹的写入权限。原文件未更改。",L"Cannot save the preset. Check write permissions. The original file was not changed.",L"保存できません。書き込み権限を確認してください。元のファイルは変更されていません。");
@@ -221,21 +217,16 @@ const wchar_t* SettingMessage(Context& c,SettingsError e) {
     default:return Text(c,L"预设内容无效。请检查 UTF-8 JSON 格式、重复或缺失字段及参数类型。当前参数未更改。",L"Invalid preset. Check the UTF-8 JSON, duplicate or missing fields, and value types. Current settings were not changed.",L"プリセットが無効です。UTF-8 JSON、重複または不足した項目と型を確認してください。現在の設定は変更されていません。");
     }
 }
-void RateText(HWND d,Context& c){int rate,mult;if(Integer(d,BaseRate,rate)&&(rate==30||rate==60)&&Integer(d,Multiplier,mult)&&mult>=1&&mult<=16)Set(d,Rate,std::to_wstring(rate*mult)+L" Hz");else Set(d,Rate,L"—");}
 void FillSettings(HWND d,Context& c) {
-    const auto& s=c.request.settings;Set(d,Erp,Number(s.erp));Set(d,Cfm,Number(s.cfm));
-    Set(d,Substeps,std::to_wstring(s.substeps));Set(d,Multiplier,std::to_wstring(s.rateMultiplier));
-    Set(d,BaseRate,std::to_wstring(s.baseRateHz));Set(d,Name,s.name);RateText(d,c);
+    c.controls.Set(c.request.settings);
+    Set(d,Name,c.request.settings.name);
 }
-bool ReadSettings(HWND d,Context& c,Settings& s){
-    s=c.request.settings;SettingsError error=SettingsError::None;
-    if(!Real(d,Erp,s.erp))error=SettingsError::InvalidErp;
-    else if(!Real(d,Cfm,s.cfm))error=SettingsError::InvalidCfm;
-    else if(!Integer(d,Substeps,s.substeps))error=SettingsError::InvalidSubsteps;
-    else if(!Integer(d,Multiplier,s.rateMultiplier))error=SettingsError::InvalidMultiplier;
-    else if(!Integer(d,BaseRate,s.baseRateHz))error=SettingsError::InvalidBaseRate;
+bool ReadSettings(HWND d,Context& c,Settings& s) {
+    std::wstring message;
+    if (!c.controls.Read(s,message)) { ErrorBox(d,c,message.c_str()); return false; }
     s.name=Value(d,Name);
-    if(error!=SettingsError::None || !ValidateSettings(s,error)){ErrorBox(d,c,SettingMessage(c,error));return false;}
+    SettingsError error;
+    if (!ValidateSettings(s,error)) { ErrorBox(d,c,SettingMessage(c,error)); return false; }
     return true;
 }
 void PresetFile(HWND d,Context& c,bool save) {
@@ -258,29 +249,15 @@ INT_PTR Dialog(HWND owner,Context& c,int height) {
     return DialogBoxIndirectParamW(GetModuleHandleW(nullptr),reinterpret_cast<DLGTEMPLATE*>(data.data()),owner,Proc,reinterpret_cast<LPARAM>(&c));
 }
 void InitAdvanced(HWND d,Context& c) {
-    const auto title=Text(c,L"高级物理设置",L"Advanced physics settings",L"物理演算の詳細設定");SetWindowTextW(d,title);
-    const std::array<std::pair<int,const wchar_t*>,5> fields{{
-        {Erp,Text(c,L"误差修正系数（ERP）",L"Error reduction (ERP)",L"誤差補正係数（ERP）")},
-        {Substeps,Text(c,L"物理子步数",L"Physics substeps",L"物理サブステップ数")},
-        {Cfm,Text(c,L"约束柔化系数（CFM）",L"Constraint softness (CFM)",L"拘束の柔らかさ（CFM）")},
-        {Multiplier,Text(c,L"内部计算倍率",L"Internal simulation rate multiplier",L"内部計算倍率")},
-        {BaseRate,Text(c,L"基准频率（Hz）",L"Base rate (Hz)",L"基本周波数（Hz）")}}};
-    int y=15;for(const auto& f:fields){Label(d,f.second,12,y+3,220);Control(d,L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,f.first,245,y,120,16);y+=25;}
-    Label(d,Text(c,L"物理计算频率",L"Simulation rate",L"物理計算周波数"),12,y+3,220);
-    Control(d,L"STATIC",L"",SS_RIGHT,Rate,245,y+3,120,14);y+=25;
-    Label(d,Text(c,L"预设名称",L"Preset name",L"プリセット名"),12,y+3,80);Control(d,L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,Name,105,y,260,17);
-    SendDlgItemMessageW(d,Name,EM_SETLIMITTEXT,256,0);
-    Control(d,L"BUTTON",Text(c,L"读取预设…",L"Load preset…",L"読み込み…"),WS_TABSTOP|BS_PUSHBUTTON,Load,12,197,97,20);
-    Control(d,L"BUTTON",Text(c,L"保存预设…",L"Save preset…",L"保存…"),WS_TABSTOP|BS_PUSHBUTTON,Save,118,197,97,20);
-    Control(d,L"STATIC",L"",0,Help,12,226,353,47);
+    SetWindowTextW(d,Text(c,L"烘焙物理设置",L"Bake physics settings",L"ベイク物理設定"));
+    c.controls.Create(d,c.app->EnglishUI(),12,12,353,c.request.settings);
+    Label(d,Text(c,L"预设名称",L"Preset name",L"プリセット名"),12,223,80);
+    Control(d,L"EDIT",c.request.settings.name.c_str(),WS_TABSTOP|ES_AUTOHSCROLL,Name,105,220,260,17);
+    SendDlgItemMessageW(d,Name,EM_SETLIMITTEXT,128,0);
+    Control(d,L"BUTTON",Text(c,L"读取预设…",L"Load preset…",L"読み込み…"),WS_TABSTOP|BS_PUSHBUTTON,Load,12,249,97,20);
+    Control(d,L"BUTTON",Text(c,L"保存预设…",L"Save preset…",L"保存…"),WS_TABSTOP|BS_PUSHBUTTON,Save,118,249,97,20);
     Control(d,L"BUTTON",Text(c,L"确定",L"OK",L"OK"),WS_TABSTOP|BS_DEFPUSHBUTTON,IDOK,199,281,78,21);
     Control(d,L"BUTTON",Text(c,L"取消",L"Cancel",L"キャンセル"),WS_TABSTOP|BS_PUSHBUTTON,IDCANCEL,287,281,78,21);
-    Tip(d,c,Erp,Text(c,L"控制约束位置误差的修正程度。较大的值可能引起抖动，并不总是更稳定。",L"Controls correction of constraint position errors. Higher values may cause jitter and do not guarantee stability.",L"拘束位置の誤差を補正する強さです。大きな値は振動を起こす場合があります。"));
-    Tip(d,c,Cfm,Text(c,L"允许关节约束误差，使关节变软。不改变碰撞接触硬度或弹簧刚度。",L"Allows joint constraint error to soften joints. Does not change contact hardness or spring stiffness.",L"ジョイントの拘束を柔らかくします。接触の硬さやばねの剛性は変わりません。"));
-    Tip(d,c,Substeps,Text(c,L"每次物理更新细分为此数量的等长时间步。默认 1。增加会提高计算成本，不改变动画帧率。",L"Divides each physics update into this many equal time steps. Default: 1. More steps cost more computation; animation FPS stays unchanged.",L"物理更新を等間隔の時間ステップに分割します。既定値は 1。動画のフレームレートは変わりません。"));
-    Tip(d,c,Multiplier,Text(c,L"物理计算频率 = 基准频率 × 倍率。默认 1。子步数在每次更新内进一步细分时间。",L"Simulation rate = base rate × multiplier. Default: 1. Substeps subdivide each update further.",L"物理計算周波数＝基本周波数×倍率。既定値は 1。サブステップは各更新をさらに分割します。"));
-    Tip(d,c,BaseRate,Text(c,L"支持 30 或 60 Hz，默认 60 Hz。此设置不改变视频输出帧率。",L"Use 30 or 60 Hz. Default: 60 Hz. This does not change the exported video frame rate.",L"30 または 60 Hz。既定値は 60 Hz。出力動画のフレームレートは変わりません。"));
-    FillSettings(d,c);Set(d,Help,c.tips[Erp]);
 }
 const wchar_t* ScopeNote(const Context& c) {
     if(IsPhysics(c))return IsModel(c)
@@ -570,6 +547,7 @@ INT_PTR CALLBACK Proc(HWND d,UINT msg,WPARAM wp,LPARAM lp) {
         }
     }
     if(msg==WM_CLOSE){if(c->running)c->cancel=true;else EndDialog(d,IDCANCEL);return TRUE;}
+    if(c && c->advanced && c->controls.Handle(msg,wp,lp))return TRUE;
     if(msg==WM_COMMAND){const int id=LOWORD(wp),code=HIWORD(wp);
         if(id==IDCANCEL){if(c->running)c->cancel=true;else EndDialog(d,IDCANCEL);return TRUE;}
         if(c->running)return TRUE;
@@ -625,8 +603,6 @@ INT_PTR CALLBACK Proc(HWND d,UINT msg,WPARAM wp,LPARAM lp) {
             return TRUE;
         }
         if(c->advanced){
-            if(code==EN_SETFOCUS&&c->tips.count(id))Set(d,Help,c->tips[id]);
-            if(code==EN_CHANGE&&(id==Multiplier||id==BaseRate))RateText(d,*c);
             if(id==Save||id==Load){PresetFile(d,*c,id==Save);return TRUE;}
             if(id==IDOK){Settings settings;if(ReadSettings(d,*c,settings)){c->request.settings=settings;EndDialog(d,IDOK);}return TRUE;}
         }else if(c->details){if(id==IDOK){c->request.selectedOnly=IsDlgButtonChecked(d,Selected)==BST_CHECKED;EndDialog(d,IDOK);return TRUE;}}

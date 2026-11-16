@@ -255,7 +255,7 @@ std::filesystem::path Root() noexcept {
         return {};
     } else {
         try {
-            return local_data::File(L"cache");
+            return local_data::CacheFile();
         } catch (...) {
             return {};
         }

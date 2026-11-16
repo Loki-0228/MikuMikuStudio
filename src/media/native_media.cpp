@@ -110,7 +110,7 @@ bool PrepareAudio(WaveAudioContext* audio, const wchar_t* source, std::wstring& 
         Check(type->GetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, &bits), L"Audio bit depth");
         if (!rate || channels < 1 || channels > 2 || bits != 16)
             throw Failure{MF_E_INVALIDMEDIATYPE, L"Audio must decode to mono or stereo PCM16"};
-        const auto directory=local_data::File(L"audio-cache")/L"decoded";
+        const auto directory=local_data::CacheFile(L"audio-cache")/L"decoded";
         if(directory.parent_path().empty())throw Failure{E_ACCESSDENIED,L"Locate decoded audio cache"};
         std::filesystem::create_directories(directory);
         const auto folder=directory.wstring();wchar_t temporary[MAX_PATH]{};
